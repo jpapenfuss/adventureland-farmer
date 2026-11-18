@@ -28,6 +28,9 @@
 //  - v9.6: quest chain is finite: each recipe is crafted at most quest_craft_max times (remembered across reloads;
 //    banked copies count); material farming stops when outlevelled (quest_farm_min_xp) or stalled
 //    (quest_stall_min); a guide farm row is followed at most guide_farm_max_min at a stretch.
+//  - v9.7: guide quests first: any quest recipe the guide's rows/plans name is worked to completion, ahead of hunts,
+//    with no time or xp limits; guide farm rows run until done (paused only on a real stall, then retried);
+//    guide quests, craft history and stall timers persist across reloads (offline time not counted).
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -112,10 +115,12 @@ const CFG = {
 	quest_craft_max: 1,            // skip a recipe while you already hold this many of its output (bags + worn)
 	quest_craft_skip: [],          // recipe ids never to craft
 	quest_farm: true,              // farm the drops the next quest recipe is missing (bees for wings, ...)
-	quest_farm_max_h: 3,           // ...unless finishing it would take longer than this at our estimated rate
-	quest_farm_min_xp: 0.25,       // ...or the material's pack gives < this fraction of the best pack's xp/s (outlevelled)
-	quest_stall_min: 40,           // no progress on the material for this long → shelve the recipe for 6h
-	guide_farm_max_min: 90,        // follow one guide farm row at most this long in a row, then ignore it for 3h
+	quest_farm_max_h: 3,           // ...unless finishing it would take longer than this (not applied to guide quests)
+	quest_farm_min_xp: 0.25,       // ...or the pack gives < this fraction of the best pack's xp/s (not applied to guide quests)
+	quest_stall_min: 60,           // no progress on a quest material for this long → pause that recipe/row
+	quest_shelve_h: 2,             // ...for this long, then retry (guide quests are never dropped for good)
+	guide_farm_max_min: 360,       // a guide farm row that doesn't name its material: pause after this long in a row
+	guide_quest_keep_h: 24,        // keep working a guide quest this long after the guide last listed it
 	hunt_first: false,             // true: an active monster hunt outranks quest farming
 	park_key: null,                // e.g. "P": key that toggles park()/resume() (overrides that key's default binding)
 	auto_monster_hunt: true,       // start/turn in Daisy's hunts even when the guide's 3 rows don't show it, and farm the target if safe
@@ -156,7 +161,10 @@ const state = {
 	directive: null,      // { monster, map, boundary, count, reason, until } from an advisor farm row
 	crafted: {},          // recipe id -> times crafted (persisted)
 	bank_seen: {},        // item -> qty at the last bank visit (persisted)
-	guide_ignore: {},     // "monster:map" -> until (guide farm rows over the time cap)
+	guide_ignore: {},     // "monster:map" -> until (paused guide farm rows)
+	guide_quests: {},     // recipe id -> { first, last } seen in the guide (persisted)
+	qprog: null,          // { key, have, t } progress on the current quest material (persisted)
+	gprog: null,          // { key, have, t } progress on the current guide farm row (persisted)
 	best_score: 0,
 };
 const pack_key = (p) => `${p.map}:${p.boundary.join(",")}`;
@@ -862,6 +870,7 @@ async function run_craft(a) {
 	await wait_budget(1, 30);
 	const r = await T(auto_craft(a.recipe));
 	game_log(`craft ${a.recipe} at ${G.npcs[npc]?.name || npc}: ${r && !r.failed ? "OK" : "FAILED"}`, r && !r.failed ? "#58D685" : "#E25C5C");
+	if (r && !r.failed) { state.crafted[a.recipe] = (state.crafted[a.recipe] || 0) + 1; save_state(); }
 	return r;
 }
 function hunt_directive() {
@@ -913,11 +922,12 @@ function best_source(item) {
 const held = (name, level) => character.items.reduce((n, i) => n + (i && i.name === name && (i.level || 0) === (level || 0) ? i.q || 1 : 0), 0);
 // First wanted quest recipe that is short only on farmable drops, and the quickest of its missing materials.
 // Skips recipes that would take longer than quest_farm_max_h at our estimated rate.
-function quest_directive() {
+function quest_directive(guide_only) {
 	if (!CFG.quest_farm || !CFG.quest_crafts) return null;
 	for (const id of quest_recipes()) {
 		const r = G.craft[id];
-		if (!recipe_open(id)) continue;
+		const guided = is_guide_quest(id);
+		if (guided !== !!guide_only || !recipe_open(id)) continue;
 		const missing = r.items.filter(([q, n, l]) => held(n, l) < q);
 		if (!missing.length) continue; // craftable now; quest_crafts() handles it
 		if (missing.some(([, n, l]) => l || GEAR.has(G.items[n]?.type))) continue; // can't farm an upgraded item
@@ -929,23 +939,23 @@ function quest_directive() {
 			total_s += secs;
 			if (!pickm || secs < pickm.secs) pickm = { ...src, secs, item: n, have: held(n, l), need: q };
 		}
-		if (!pickm || total_s > CFG.quest_farm_max_h * 3600) continue;
+		if (!pickm || (!guided && total_s > CFG.quest_farm_max_h * 3600)) continue; // guide quests: however long it takes
 		// Opportunity cost: don't farm bees at level 50. Skip while the material's pack gives less than
 		// quest_farm_min_xp × the best pack's xp/s (the recipe stays open; crafting still happens if drops arrive).
 		const f = fight_profile(pickm.monster);
 		const qxp = state.measured[pack_key(pickm)] ?? (f ? f.xp * pickm.ips / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
-		if (state.best_score > 0 && qxp < CFG.quest_farm_min_xp * state.best_score) continue;
+		if (!guided && state.best_score > 0 && qxp < CFG.quest_farm_min_xp * state.best_score) continue;
 		// Stall detector: if the count hasn't moved in quest_stall_min while this is the target, park the recipe
 		const sk = id + ":" + pickm.item, now = Date.now();
 		if (!state.qprog || state.qprog.key !== sk || pickm.have > state.qprog.have) state.qprog = { key: sk, have: pickm.have, t: now };
 		else if (now - state.qprog.t > CFG.quest_stall_min * 60_000) {
-			state.gear_skip["qc:" + id] = now + 6 * 3600_000;
-			game_log(`quest: no ${pickm.item} in ${CFG.quest_stall_min} min farming ${pickm.monster}; shelving ${id} for 6h`, "#E25C5C");
+			state.gear_skip["qc:" + id] = now + CFG.quest_shelve_h * 3600_000;
+			game_log(`quest: no ${pickm.item} in ${CFG.quest_stall_min} min farming ${pickm.monster}; retrying ${id} in ${CFG.quest_shelve_h}h`, "#E25C5C");
 			state.qprog = null;
 			continue;
 		}
 		return { monster: pickm.monster, map: pickm.map, boundary: pickm.boundary, count: pickm.count, guide_safe: false,
-			reason: `${id}: ${pickm.item} ${pickm.have}/${pickm.need}, ~${Math.ceil(total_s / 60)} min` };
+			reason: `${guided ? "guide quest " : ""}${id}: ${pickm.item} ${pickm.have}/${pickm.need}, ~${Math.ceil(total_s / 60)} min` };
 	}
 	return null;
 }
@@ -958,17 +968,27 @@ function refresh_directive() {
 	let g = state.guide_farm && state.guide_farm.until > now ? state.guide_farm : null;
 	// A guide farm row is followed for at most guide_farm_max_min in a row, then ignored for 3h (the guide's
 	// rows aren't guaranteed to end; e.g. a material plan whose drop never comes)
+	// Guide farm rows are followed until the guide drops them. Only a real stall pauses one: the row's material
+	// count not rising for quest_stall_min, or (when the row doesn't name its material) guide_farm_max_min in a row.
+	// A paused row comes back after quest_shelve_h.
 	if (g) {
 		const gk = `${g.monster}:${g.map}`;
+		const have = g.item ? held(g.item) : 0;
 		if ((state.guide_ignore[gk] || 0) > now) g = null;
-		else if (!state.guide_since || state.guide_since.key !== gk) state.guide_since = { key: gk, t: now };
-		else if (now - state.guide_since.t > CFG.guide_farm_max_min * 60_000) {
-			state.guide_ignore[gk] = now + 3 * 3600_000;
-			game_log(`guide: farmed ${g.monster} for ${CFG.guide_farm_max_min} min (${g.reason}); ignoring that row for 3h`, "#E25C5C");
-			g = null;
+		else if (!state.gprog || state.gprog.key !== gk || have > state.gprog.have) state.gprog = { key: gk, have, t: now };
+		else {
+			const limit = (g.item ? CFG.quest_stall_min : CFG.guide_farm_max_min) * 60_000;
+			if (now - state.gprog.t > limit) {
+				state.guide_ignore[gk] = now + CFG.quest_shelve_h * 3600_000;
+				game_log(`guide: ${g.item ? "no " + g.item + " from" : "no end to"} ${g.monster} in ${Math.round(limit / 60_000)} min; pausing that row ${CFG.quest_shelve_h}h`, "#E25C5C");
+				state.gprog = null;
+				g = null;
+			}
 		}
-	} else state.guide_since = null;
-	const order = CFG.hunt_first ? [hunt_directive, quest_directive] : [quest_directive, hunt_directive];
+	}
+	// guide quests > hunt > other quests (hunt_first: hunt > all quests)
+	const gq = () => quest_directive(true), oq = () => quest_directive(false);
+	const order = CFG.hunt_first ? [hunt_directive, gq, oq] : [gq, hunt_directive, oq];
 	let d = g;
 	for (const f of order) if (!d) d = f();
 	if (d) {
@@ -1163,6 +1183,19 @@ async function gear_step() {
 	}
 	state.protect = protect;
 
+	// Quest recipes the guide is working toward: a row or plan names the recipe or its output
+	// (e.g. the "working" lesson → wcap, a plan whose tree contains wgloves). Remembered across reloads and
+	// for guide_quest_keep_h after the guide stops listing it (its HUD shows only a few rows at a time).
+	const named = new Set(protect);
+	for (const r of prog.rows || []) if (r.action?.recipe) named.add(r.action.recipe);
+	for (const id in G.craft) {
+		const r = G.craft[id];
+		if (!r.quest || !(named.has(id) || named.has(r.output?.name || id))) continue;
+		const g = (state.guide_quests[id] = state.guide_quests[id] || { first: Date.now() });
+		if (!g.last) game_log(`guide quest: ${id} (${G.npcs[r.quest]?.name || r.quest})`, "#67A464");
+		g.last = Date.now();
+	}
+
 	// Farm directive from the advisor
 	const farm = (prog.rows || []).find((r) => {
 		if (r.kind !== "farm") return false;
@@ -1173,8 +1206,10 @@ async function gear_step() {
 	// a route without a usable boundary falls back to the monster's spawn data; no spawn at all → ignore the row
 	const area = route && G.monsters[route.monster] && resolve_area(route.monster, route.map, route.boundary, route.count);
 	if (route && !area) game_log(`guide: farm row for ${route.monster} has no usable area; ignoring it`, "gray");
-	state.guide_farm = area ? { monster: route.monster, ...area, reason: "guide " + (farm.reason?.id || "").replace("progression.reason.", ""),
-		guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 } : null;
+	// the material this row is farming, when the row says (used for stall detection instead of a time cap)
+	const mat = [farm?.target?.name, farm?.action?.item, farm?.action?.name, route?.item, route?.drop].find((n) => n && G.items[n]);
+	state.guide_farm = area ? { monster: route.monster, ...area, reason: "guide " + (farm.reason?.id || "").replace("progression.reason.", "") + (mat ? ` (${mat} ${held(mat)})` : ""),
+		item: mat, guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 } : null;
 	refresh_directive();
 
 	state.guide_rows = (prog.rows || []).map((r) => r.id);
@@ -1220,18 +1255,23 @@ function has_inputs(recipe) {
 	return recipe.items.every(([q, name, level]) =>
 		character.items.some((i) => i && i.name === name && (i.level || 0) === (level || 0) && !i.l && (i.q || 1) >= q));
 }
+const is_guide_quest = (id) => !!state.guide_quests[id] && Date.now() - (state.guide_quests[id].last || 0) < CFG.guide_quest_keep_h * 3600_000;
+// Guide quests come first (in the order the guide first asked for them) and bypass the quest_crafts filter;
+// then your own quest_crafts selection.
 function quest_recipes() {
 	const mode = CFG.quest_crafts;
 	if (!mode) return [];
-	const out = [];
+	const guide = [], own = [];
 	for (const id in G.craft) {
 		const r = G.craft[id];
 		if (!r.quest || CFG.quest_craft_skip.includes(id)) continue;
+		if (is_guide_quest(id)) { guide.push(id); continue; }
 		if (Array.isArray(mode) ? !mode.includes(id) : mode === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type))) continue;
-		out.push(id);
+		own.push(id);
 	}
-	if (Array.isArray(mode)) out.sort((a, b) => mode.indexOf(a) - mode.indexOf(b)); // list order = priority
-	return out;
+	guide.sort((a, b) => state.guide_quests[a].first - state.guide_quests[b].first);
+	if (Array.isArray(mode)) own.sort((a, b) => mode.indexOf(a) - mode.indexOf(b)); // list order = priority
+	return [...guide, ...own];
 }
 function next_quest_craft() {
 	for (const id of quest_recipes()) {
@@ -1359,7 +1399,7 @@ function save_state() {
 	if (typeof set !== "function") return;
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
-		guide_ignore: state.guide_ignore });
+		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog });
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
@@ -1373,6 +1413,11 @@ function load_state() {
 	Object.assign(state.crafted, d.crafted || {});
 	Object.assign(state.bank_seen, d.bank_seen || {});
 	Object.assign(state.guide_ignore, live(d.guide_ignore));
+	Object.assign(state.guide_quests, d.guide_quests || {});
+	// Stall timers resume where they were; time spent offline doesn't count against them
+	const off = now - (d.at || now);
+	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
+	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
 	game_log(`Loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.danger).length} danger notes`, "gray");
 }
 load_state();

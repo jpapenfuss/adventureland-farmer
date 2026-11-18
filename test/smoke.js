@@ -193,6 +193,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items[10] = { name: id };
 		return Promise.resolve({ success: true });
 	};
+	assert(vm.runInContext("state.crafted.wcap === 1", ctx), "guide craft row counted in craft history");
+	vm.runInContext("state.crafted = {}", ctx);
 	const n15 = await vm.runInContext("quest_crafts()", ctx);
 	assert(n15 === 1 && crafted.join() === "wcap", `crafted wcap once, skipped gear-input armorring (${crafted})`);
 	assert(walked[0] && walked[0].x === 81 && walked[0].y === -253, "walked to Cole");
@@ -237,16 +239,45 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext(`state.bank_seen.wcap = 1`, ctx);
 	assert(!vm.runInContext(`recipe_open("wcap")`, ctx), "banked output counts as owned");
 	vm.runInContext(`state.bank_seen = {}`, ctx);
-	// guide farm row over the time cap is ignored
-	vm.runInContext(`state.guide_farm = { monster: "goo", map: "main", boundary: [100,100,400,400], count: 5, reason: "guide material", until: Date.now() + 1e6 };
-		refresh_directive(); state.guide_since.t -= CFG.guide_farm_max_min * 60000 + 1; refresh_directive();`, ctx);
-	assert(vm.runInContext(`state.guide_ignore["goo:main"] > Date.now() && (!state.directive || state.directive.monster !== "goo")`, ctx), "guide farm row dropped after time cap");
-	vm.runInContext(`state.guide_farm = null; state.guide_ignore = {}`, ctx);
+	// guide farm row: kept while its material count rises; paused when it stalls; unnamed rows use the long cap
+	vm.runInContext(`state.guide_farm = { monster: "goo", map: "main", boundary: [100,100,400,400], count: 5, item: "gslime", reason: "guide material", until: Date.now() + 1e6 };
+		state.directive = null; state.gprog = null; refresh_directive();`, ctx);
+	assert(vm.runInContext(`state.directive.monster === "goo"`, ctx), "guide farm row followed");
+	vm.runInContext(`state.gprog.t -= CFG.quest_stall_min * 60000 - 5000; character.items[1].q += 1; refresh_directive(); state.gprog.t -= 10000; refresh_directive()`, ctx);
+	assert(vm.runInContext(`state.directive.monster === "goo"`, ctx), "rising material count keeps the row going past the stall window");
+	vm.runInContext(`state.gprog.t -= CFG.quest_stall_min * 60000 + 1; refresh_directive()`, ctx);
+	assert(vm.runInContext(`state.guide_ignore["goo:main"] > Date.now() && state.guide_ignore["goo:main"] < Date.now() + CFG.quest_shelve_h * 3600000 + 1000`, ctx),
+		"stalled guide row paused for quest_shelve_h, not dropped");
+	vm.runInContext(`state.guide_ignore = {}; state.gprog = null; state.guide_farm.item = undefined; refresh_directive();
+		state.gprog.t -= CFG.quest_stall_min * 60000 + 1; refresh_directive()`, ctx);
+	assert(vm.runInContext(`!state.guide_ignore["goo:main"]`, ctx), "row without a material isn't paused at the stall window");
+	vm.runInContext(`state.gprog.t -= CFG.guide_farm_max_min * 60000; refresh_directive()`, ctx);
+	assert(vm.runInContext(`state.guide_ignore["goo:main"] > Date.now()`, ctx), "...but is at guide_farm_max_min");
+	vm.runInContext(`state.guide_farm = null; state.guide_ignore = {}; state.gprog = null`, ctx);
 
-	// 17) persistence round trip
 	const store = {};
 	ctx.set = (k, v) => ((store[k] = JSON.stringify(v)), true);
 	ctx.get = (k) => (k in store ? JSON.parse(store[k]) : null);
+	// guide quests: recorded from guide rows, first in line, and not subject to the xp floor / time cap
+	ctx.get_progression = () => ({ ready: true, plans: [], rows: [{ id: "r1", kind: "farm", reason: { id: "progression.reason.bees" }, target: { name: "wcap" } }] });
+	vm.runInContext("state.guide_quests = {}; state.crafted = {}", ctx);
+	await vm.runInContext("gear_step()", ctx);
+	assert(vm.runInContext(`is_guide_quest("wcap")`, ctx), "guide row naming wcap marks it a guide quest");
+	vm.runInContext("state.best_score = 1e6; CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
+	const g16 = vm.runInContext("quest_directive(true)", ctx);
+	assert(g16 && /guide quest wcap/.test(g16.reason), "guide quest farmed even when outlevelled and slow");
+	assert(vm.runInContext("quest_directive(false)", ctx) === null, "same recipe not offered as an own-choice quest");
+	vm.runInContext("state.best_score = 0; CFG.quest_farm_max_h = 3", ctx);
+
+	// persistence: guide quests and stall timers survive; offline time doesn't count against the timer
+	vm.runInContext(`state.qprog = { key: "wcap:beewings", have: 20, t: Date.now() - 600000 }; save_state()`, ctx);
+	const saved = JSON.parse(Object.values(store)[0]); saved.at -= 3600000; saved.qprog.t -= 3600000; store[Object.keys(store)[0]] = JSON.stringify(saved); // saved an hour ago
+	vm.runInContext(`state.guide_quests = {}; state.qprog = null; load_state()`, ctx);
+	assert(vm.runInContext(`is_guide_quest("wcap") && Math.abs(Date.now() - state.qprog.t - 600000) < 5000`, ctx),
+		"guide quests + stall timer restored, offline hour not counted");
+	ctx.get_progression = undefined;
+
+	// 17) persistence round trip
 	vm.runInContext(`state.measured["main:1,2,3,4"] = 12.5; state.danger.bee = 0.6; state.cooldown.x = Date.now() + 1e6; state.cooldown.old = 1; save_state();
 		state.measured = {}; state.danger = {}; state.cooldown = {}; load_state();`, ctx);
 	assert(vm.runInContext(`state.measured["main:1,2,3,4"] === 12.5 && state.danger.bee === 0.6 && state.cooldown.x > 0 && !("old" in state.cooldown)`, ctx),
