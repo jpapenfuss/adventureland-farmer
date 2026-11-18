@@ -25,6 +25,9 @@
 //  - v9.5: farms the drops the next quest recipe is missing (G.drops rates × estimated kills/s, capped at
 //    quest_farm_max_h); hunt/quest directives no longer need the guide (v8 never farmed a hunt target without it);
 //    learned state persists across reloads (set/get, saved every 60s and in on_destroy); park()/resume().
+//  - v9.6: quest chain is finite: each recipe is crafted at most quest_craft_max times (remembered across reloads;
+//    banked copies count); material farming stops when outlevelled (quest_farm_min_xp) or stalled
+//    (quest_stall_min); a guide farm row is followed at most guide_farm_max_min at a stretch.
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -110,6 +113,9 @@ const CFG = {
 	quest_craft_skip: [],          // recipe ids never to craft
 	quest_farm: true,              // farm the drops the next quest recipe is missing (bees for wings, ...)
 	quest_farm_max_h: 3,           // ...unless finishing it would take longer than this at our estimated rate
+	quest_farm_min_xp: 0.25,       // ...or the material's pack gives < this fraction of the best pack's xp/s (outlevelled)
+	quest_stall_min: 40,           // no progress on the material for this long → shelve the recipe for 6h
+	guide_farm_max_min: 90,        // follow one guide farm row at most this long in a row, then ignore it for 3h
 	hunt_first: false,             // true: an active monster hunt outranks quest farming
 	park_key: null,                // e.g. "P": key that toggles park()/resume() (overrides that key's default binding)
 	auto_monster_hunt: true,       // start/turn in Daisy's hunts even when the guide's 3 rows don't show it, and farm the target if safe
@@ -148,6 +154,10 @@ const state = {
 	bad_ids: {},          // entity id -> until timestamp (no HP progress)
 	prog: null,           // { id, hp, t } progress watch on current target
 	directive: null,      // { monster, map, boundary, count, reason, until } from an advisor farm row
+	crafted: {},          // recipe id -> times crafted (persisted)
+	bank_seen: {},        // item -> qty at the last bank visit (persisted)
+	guide_ignore: {},     // "monster:map" -> until (guide farm rows over the time cap)
+	best_score: 0,
 };
 const pack_key = (p) => `${p.map}:${p.boundary.join(",")}`;
 // [x1,y1,x2,y2] with finite numbers and positive area; anything else would crash pack_key/in_boundary every tick
@@ -309,6 +319,7 @@ function pick_pack() {
 		}
 	}
 	state.last_pick = now;
+	state.best_score = best ? best.score : 0; // best xp/s pack on free choice (quest opportunity-cost reference)
 	// Advisor directive (quest/material farm) overrides the xp/s choice when we can safely fight it
 	const d = state.directive;
 	if (d && d.until > now && farmable_type(d.monster) && !state.safe[d.monster] && d.guide_safe) {
@@ -866,6 +877,9 @@ function hunt_directive() {
 const DROP_FALLBACK = { beewings: [["bee", 0.01]], gslime: [["goo", 0.001]], spores: [["minimush", 1 / 60]],
 	crabclaw: [["crab", 0.001]], frogt: [["squigtoad", 1 / 400]], ascale: [["armadillo", 0.0008]], feather0: [["bigbird", 0.05]],
 	dstones: [["stoneworm", 1 / 300]], pleather: [["porcupine", 0.001]], bfur: [["arcticbee", 0.001]], cscale: [["croc", 0.0009]] };
+function drop_rate(mt, item) {
+	return (drop_sources(item).find(([m]) => m === mt) || [, 0])[1];
+}
 function drop_sources(item) {
 	const out = [], mons = G.drops?.monsters;
 	if (mons) for (const mt in mons) for (const d of mons[mt] || []) if (Array.isArray(d) && d[1] === item && typeof d[0] === "number") out.push([mt, d[0]]);
@@ -903,8 +917,7 @@ function quest_directive() {
 	if (!CFG.quest_farm || !CFG.quest_crafts) return null;
 	for (const id of quest_recipes()) {
 		const r = G.craft[id];
-		if (owned(r.output?.name || id) >= CFG.quest_craft_max || (state.gear_skip["qc:" + id] || 0) > Date.now()) continue;
-		if ((r.cost || 0) > character.gold - CFG.gold_reserve) continue;
+		if (!recipe_open(id)) continue;
 		const missing = r.items.filter(([q, n, l]) => held(n, l) < q);
 		if (!missing.length) continue; // craftable now; quest_crafts() handles it
 		if (missing.some(([, n, l]) => l || GEAR.has(G.items[n]?.type))) continue; // can't farm an upgraded item
@@ -917,6 +930,20 @@ function quest_directive() {
 			if (!pickm || secs < pickm.secs) pickm = { ...src, secs, item: n, have: held(n, l), need: q };
 		}
 		if (!pickm || total_s > CFG.quest_farm_max_h * 3600) continue;
+		// Opportunity cost: don't farm bees at level 50. Skip while the material's pack gives less than
+		// quest_farm_min_xp × the best pack's xp/s (the recipe stays open; crafting still happens if drops arrive).
+		const f = fight_profile(pickm.monster);
+		const qxp = state.measured[pack_key(pickm)] ?? (f ? f.xp * pickm.ips / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
+		if (state.best_score > 0 && qxp < CFG.quest_farm_min_xp * state.best_score) continue;
+		// Stall detector: if the count hasn't moved in quest_stall_min while this is the target, park the recipe
+		const sk = id + ":" + pickm.item, now = Date.now();
+		if (!state.qprog || state.qprog.key !== sk || pickm.have > state.qprog.have) state.qprog = { key: sk, have: pickm.have, t: now };
+		else if (now - state.qprog.t > CFG.quest_stall_min * 60_000) {
+			state.gear_skip["qc:" + id] = now + 6 * 3600_000;
+			game_log(`quest: no ${pickm.item} in ${CFG.quest_stall_min} min farming ${pickm.monster}; shelving ${id} for 6h`, "#E25C5C");
+			state.qprog = null;
+			continue;
+		}
 		return { monster: pickm.monster, map: pickm.map, boundary: pickm.boundary, count: pickm.count, guide_safe: false,
 			reason: `${id}: ${pickm.item} ${pickm.have}/${pickm.need}, ~${Math.ceil(total_s / 60)} min` };
 	}
@@ -928,7 +955,19 @@ function quest_directive() {
 // so without get_progression the hunt target was never farmed).
 function refresh_directive() {
 	const now = Date.now();
-	const g = state.guide_farm && state.guide_farm.until > now ? state.guide_farm : null;
+	let g = state.guide_farm && state.guide_farm.until > now ? state.guide_farm : null;
+	// A guide farm row is followed for at most guide_farm_max_min in a row, then ignored for 3h (the guide's
+	// rows aren't guaranteed to end; e.g. a material plan whose drop never comes)
+	if (g) {
+		const gk = `${g.monster}:${g.map}`;
+		if ((state.guide_ignore[gk] || 0) > now) g = null;
+		else if (!state.guide_since || state.guide_since.key !== gk) state.guide_since = { key: gk, t: now };
+		else if (now - state.guide_since.t > CFG.guide_farm_max_min * 60_000) {
+			state.guide_ignore[gk] = now + 3 * 3600_000;
+			game_log(`guide: farmed ${g.monster} for ${CFG.guide_farm_max_min} min (${g.reason}); ignoring that row for 3h`, "#E25C5C");
+			g = null;
+		}
+	} else state.guide_since = null;
 	const order = CFG.hunt_first ? [hunt_directive, quest_directive] : [quest_directive, hunt_directive];
 	let d = g;
 	for (const f of order) if (!d) d = f();
@@ -1160,7 +1199,22 @@ async function gear_step() {
 // ---------- Quest crafting ----------
 const owned = (name) =>
 	character.items.reduce((n, i) => n + (i && i.name === name ? i.q || 1 : 0), 0) +
-	Object.values(character.slots || {}).filter((i) => i && i.name === name).length;
+	Object.values(character.slots || {}).filter((i) => i && i.name === name).length +
+	(state.bank_seen[name] || 0);
+// Bank contents are only visible inside the bank; remember the last look so banked copies still count
+setInterval(() => {
+	if (!character.bank) return;
+	const seen = {};
+	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i) seen[i.name] = (seen[i.name] || 0) + (i.q || 1);
+	state.bank_seen = seen;
+}, 2000);
+// A recipe is "open" until crafted quest_craft_max times (remembered across reloads) or while you hold that many
+// outputs. This is what makes the Cole chain finite: every recipe is done once, then the bot moves on.
+function recipe_open(id) {
+	const r = G.craft[id];
+	return (state.crafted[id] || 0) < CFG.quest_craft_max && owned(r.output?.name || id) < CFG.quest_craft_max &&
+		!((state.gear_skip["qc:" + id] || 0) > Date.now()) && (r.cost || 0) <= character.gold - CFG.gold_reserve;
+}
 // auto_craft (client functions.js) needs ONE unlocked stack per input holding the full amount at the exact level
 function has_inputs(recipe) {
 	return recipe.items.every(([q, name, level]) =>
@@ -1181,11 +1235,7 @@ function quest_recipes() {
 }
 function next_quest_craft() {
 	for (const id of quest_recipes()) {
-		const r = G.craft[id];
-		const output = r.output?.name || id;
-		if (owned(output) >= CFG.quest_craft_max || (state.gear_skip["qc:" + id] || 0) > Date.now()) continue;
-		if ((r.cost || 0) > character.gold - CFG.gold_reserve) continue;
-		if (has_inputs(r)) return id;
+		if (recipe_open(id) && has_inputs(G.craft[id])) return id;
 	}
 	return null;
 }
@@ -1207,6 +1257,8 @@ async function quest_crafts() {
 		game_log(`craft ${id} at ${G.npcs[r.quest]?.name || r.quest}: ${ok ? "OK" : "FAILED " + (res?.reason || res?.response || "")}`, ok ? "#58D685" : "#E25C5C");
 		if (!ok) { state.gear_skip["qc:" + id] = Date.now() + 300_000; break; } // don't walk back every 15s for a failing recipe
 		n++;
+		state.crafted[id] = (state.crafted[id] || 0) + 1;
+		save_state();
 		await sleep_ms(400);
 		await equip_if_empty(r.output?.name || id);
 	}
@@ -1306,7 +1358,8 @@ const SAVE_KEY = "farmer_v9:" + character.name;
 function save_state() {
 	if (typeof set !== "function") return;
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
-		cooldown: state.cooldown, gear_skip: state.gear_skip });
+		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
+		guide_ignore: state.guide_ignore });
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
@@ -1317,6 +1370,9 @@ function load_state() {
 	Object.assign(state.danger, d.danger || {});
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.gear_skip, live(d.gear_skip));
+	Object.assign(state.crafted, d.crafted || {});
+	Object.assign(state.bank_seen, d.bank_seen || {});
+	Object.assign(state.guide_ignore, live(d.guide_ignore));
 	game_log(`Loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.danger).length} danger notes`, "gray");
 }
 load_state();

@@ -214,15 +214,34 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null);
 	character.items[0] = { name: "beewings", q: 20 }; character.items[1] = { name: "gslime", q: 3 };
 	character.slots = {};
+	assert(!vm.runInContext(`recipe_open("wcap")`, ctx), "crafted recipe stays closed even after the cap is gone (no perpetual re-farm)");
+	vm.runInContext("state.crafted = {}", ctx);
 	const d16 = vm.runInContext("quest_directive()", ctx);
 	assert(d16 && d16.monster === "bee" && /beewings 20\/50/.test(d16.reason), `quest directive farms bees (${d16 && d16.reason})`);
-	vm.runInContext("refresh_directive(); pick_pack()", ctx);
+	vm.runInContext("state.directive = null; refresh_directive(); pick_pack()", ctx);
 	assert(st().pack && st().pack.mtype === "bee", "pick_pack follows the quest directive");
 	character.items[0].q = 60;
 	assert(vm.runInContext("quest_directive()", ctx) === null, "no directive once inputs are complete (crafting takes over)");
 	vm.runInContext("CFG.quest_farm_max_h = 0.0001", ctx); character.items[0].q = 20;
 	assert(vm.runInContext("quest_directive()", ctx) === null, "recipe too slow to finish is skipped");
 	vm.runInContext("CFG.quest_farm_max_h = 3", ctx);
+	// outlevelled: best pack gives 100x the bee pack's xp/s → no quest farming
+	vm.runInContext("state.best_score = 1e6", ctx);
+	assert(vm.runInContext("quest_directive()", ctx) === null, "outlevelled material farm skipped (opportunity cost)");
+	vm.runInContext("state.best_score = 0", ctx);
+	// stall: count doesn't move for quest_stall_min → recipe shelved
+	vm.runInContext("quest_directive(); state.qprog.t -= CFG.quest_stall_min * 60000 + 1", ctx);
+	assert(vm.runInContext("quest_directive()", ctx) === null && vm.runInContext(`state.gear_skip["qc:wcap"] > Date.now()`, ctx), "stalled recipe shelved");
+	vm.runInContext(`delete state.gear_skip["qc:wcap"]`, ctx);
+	// banked copy counts as owned
+	vm.runInContext(`state.bank_seen.wcap = 1`, ctx);
+	assert(!vm.runInContext(`recipe_open("wcap")`, ctx), "banked output counts as owned");
+	vm.runInContext(`state.bank_seen = {}`, ctx);
+	// guide farm row over the time cap is ignored
+	vm.runInContext(`state.guide_farm = { monster: "goo", map: "main", boundary: [100,100,400,400], count: 5, reason: "guide material", until: Date.now() + 1e6 };
+		refresh_directive(); state.guide_since.t -= CFG.guide_farm_max_min * 60000 + 1; refresh_directive();`, ctx);
+	assert(vm.runInContext(`state.guide_ignore["goo:main"] > Date.now() && (!state.directive || state.directive.monster !== "goo")`, ctx), "guide farm row dropped after time cap");
+	vm.runInContext(`state.guide_farm = null; state.guide_ignore = {}`, ctx);
 
 	// 17) persistence round trip
 	const store = {};
