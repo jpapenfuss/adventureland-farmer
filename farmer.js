@@ -16,6 +16,10 @@
 //  - v9.2: governor takes max(own meter, server-reported character.cc) and real equip/unequip costs; chests far
 //    than 400px wait 45s (goldm drops to 1 past 400px); quest crafts/exchanges go to the quest NPC; respawn waits
 //    the server's rip_time instead of polling; use_town retries back off 1.5s (no cooldown, cant_escape >5 targets).
+//  - v9.3: fight safety follows the server's damage formula (pierce, evasion/avoidance, 1hp, reflection, dreturn,
+//    lifesteal, self_healing, chase at charge speed); kiteable mobs still count 1/kite_slack of their damage;
+//    every target is re-checked with its live stats, so levelled-up elites are skipped. Bags: junk sells early
+//    with a computer; if selling can't free space, materials/gems/quest items go to the bank.
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -73,6 +77,7 @@ const CFG = {
 	errand_timeout_ms: 180_000, // an errand (sell/guide/restock) still running after this is assumed hung; its lock is released
 	hp_pot: "hpot1", mp_pot: "mpot1", pot_min: 30, pot_buy: 200,
 	kite_margin: 25,
+	kite_slack: 4,           // a kiteable mob's damage counts 1/kite_slack toward safety (kiting isn't perfect)
 	loot_range: 400,         // server drops the gold multiplier past 400px from the chest
 	loot_wait_ms: 45_000,    // a chest farther than loot_range is opened anyway after this long (before it's lost)
 	force_type: null,
@@ -85,6 +90,9 @@ const CFG = {
 	auto_sell_gear: true,    // sell +0 normal-grade equipment with no title (.p) that isn't in keep
 	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"],
 	sell_max_value: 20_000,  // never auto-sell gear the NPC values above this
+	sell_batch: 4,           // with a computer, sell as soon as this many junk items pile up
+	bank: true,              // when selling doesn't free enough space, deposit materials/gems/quest items/etc. in the bank
+	bank_extra: 0,           // bank only if free slots after selling are <= sell_when_free + this
 	// Gear progression
 	gear: true,                    // guide driver on/off
 	gear_interval_ms: 15_000,      // how often to re-read the guide while farming
@@ -133,9 +141,6 @@ function valid_boundary(b) {
 }
 
 // ---------- Scoring ----------
-function mitigate(dmg, def) {
-	return typeof damage_multiplier === "function" ? dmg * damage_multiplier(def || 0) : dmg * Math.max(0.05, 1 - (def || 0) / 1000);
-}
 
 // Excludes everything that isn't a normal respawning XP mob: training dummies (unlist, attack 0,
 // respawn 0), pets/critters (cute; puppies & kitties are -500 xp), immune/passive/peaceful/stationary
@@ -150,17 +155,72 @@ function farmable_entity(e) {
 		farmable_type(e.mtype) && !((state.bad_ids[e.id] || 0) > Date.now());
 }
 
+// Levelled-up monsters (server level_monster/calculate_monster_stats): each level past 1 adds hp/2 and xp;
+// attack ×(1+L·0.125), frequency +L·0.034, speed +L·0.24, L=min(level,12). Live entities carry these values.
+// One fight, modelled on the server's complete_attack():
+//   hit = attack · damage_multiplier(target_defense − attacker_pierce) · (1 + incdmgamp/100)
+//   "1hp" targets take 1 per hit; evasion (physical only) and avoidance make hits miss;
+//   reflection bounces magical hits back at full value; dreturn hits melee (range<75) physical attackers;
+//   lifesteal and self_healing heal the monster.
+// m: monster stats (G def, leveled() def, or a live entity merged over its def). Returns null if we can't hurt it.
+function fight_math(m) {
+	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
+	const ours = character.damage_type || G.classes[character.ctype].damage_type || "physical";
+	const our_magic = ours === "magical";
+	const pct = (v) => Math.min(1, Math.max(0, (v || 0) / 100));
+	let hit = character.attack * dm((our_magic ? m.resistance : m.armor) - (our_magic ? character.rpiercing : character.apiercing) || 0);
+	hit *= 1 + (m.incdmgamp || 0) / 100;
+	if (m["1hp"]) hit = 1;
+	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
+	const theirs_magic = m.damage_type === "magical";
+	const their_hit = (m.attack || 0) * dm((theirs_magic ? character.resistance : character.armor) - (theirs_magic ? m.rpiercing : m.apiercing) || 0);
+	const their_dps = their_hit * (m.frequency || 1);
+	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
+		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0);
+	const our_dps = hit * land * character.frequency - heal_dps;
+	if (!(our_dps > 0)) return null;
+	const ttk = (m.hp || m.max_hp) / our_dps;
+	const reflect_dps = our_magic ? character.attack * character.frequency * pct(m.reflection) : 0;
+	const dreturn_dps = !our_magic && character.range < 75 ? character.attack * character.frequency * (m.dreturn || 0) / 100 : 0;
+	// Kiting: a monster with a target moves at its charge speed (server), not its idle speed
+	const chase = m.charge || m.speed || 0;
+	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
+	return { ttk, xp: m.xp, their_dps, self_dps: reflect_dps + dreturn_dps, kiteable };
+}
+// Damage we expect to take over one kill. Kiting avoids most melee hits but not all (other mobs, terrain,
+// mis-steps), so a kiteable fight still counts 1/kite_slack of the monster's damage.
+function fight_risk(f) {
+	return (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
+}
+function safe_enough(f, mtype) {
+	return !!f && fight_risk(f) <= character.max_hp * CFG.safety * (state.danger[mtype] || 1);
+}
+
 function fight_profile(mtype) {
-	const m = G.monsters[mtype];
 	if (!farmable_type(mtype)) return null;
-	const magical = m.damage_type === "magical";
-	const our_dps = mitigate(character.attack, (character.damage_type || G.classes[character.ctype].damage_type) === "magical" ? m.resistance : m.armor) * character.frequency;
-	if (our_dps <= 0) return null;
-	const ttk = m.hp / our_dps;
-	const their_dps = mitigate(m.attack, magical ? character.resistance : character.armor) * (m.frequency || 1);
-	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed >= (m.speed || 0);
-	if (!kiteable && their_dps * ttk > character.max_hp * CFG.safety * (state.danger[mtype] || 1)) return null;
-	return { ttk, xp: m.xp };
+	const f = fight_math(G.monsters[mtype]);
+	return safe_enough(f, mtype) ? { ttk: f.ttk, xp: f.xp } : null;
+}
+// Per-entity check with live stats: catches levelled-up "elite" mobs (a level 6 goo has 3.5x hp, 1.75x attack)
+// that the type-level estimate passes
+const live_cache = new Map(); // id -> { key, ok, ttk }
+function entity_profile(e) {
+	const key = `${e.level || 1}:${e.max_hp}:${e.attack}`;
+	const c = live_cache.get(e.id);
+	if (c && c.key === key) return c.ok ? c : null;
+	const def = G.monsters[e.mtype];
+	const f = def && fight_math({ ...def, ...pick(e, ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]),
+		hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
+	const ok = safe_enough(f, e.mtype);
+	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
+	live_cache.set(e.id, out);
+	if (live_cache.size > 500) live_cache.delete(live_cache.keys().next().value);
+	return ok ? out : null;
+}
+function pick(o, keys) {
+	const r = {};
+	for (const k of keys) if (o[k] !== undefined) r[k] = o[k];
+	return r;
 }
 
 function expected_respawn(mtype, pack) {
@@ -238,7 +298,7 @@ function pick_pack() {
 	const d = state.directive;
 	if (d && d.until > now && farmable_type(d.monster) && !state.safe[d.monster] && d.guide_safe) {
 		// The guide judged this route safe (its own estimate + observed fights); trust it
-		state.safe[d.monster] = { ttk: d.seconds || 5, xp: G.monsters[d.monster].xp };
+		state.safe[d.monster] = { ttk: d.seconds || 5, xp: G.monsters[d.monster].xp, trusted: true };
 	}
 	if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count };
@@ -384,6 +444,15 @@ function party_names() {
 	for (const k in get_party() || {}) n.add(k);
 	return n;
 }
+// Type must be in the safe set, and this particular entity must pass with its live stats. Guide-trusted types
+// (no fight math of our own) are accepted at level 1 only; an elite of one still gets the live check.
+function live_ok(e) {
+	const f = state.safe[e.mtype];
+	if (!f) return null;
+	if (f.trusted && !((e.level || 1) > 1)) return f;
+	const lf = entity_profile(e);
+	return lf ? { ttk: lf.ttk, xp: lf.xp } : null;
+}
 function choose_target(local_ok) {
 	const party = party_names();
 	// Self-defense always: things hitting us, then things hitting a party member (must still be real mobs)
@@ -398,13 +467,13 @@ function choose_target(local_ok) {
 	if (hitting) return hitting;
 	if (!local_ok) return null; // outside the pack area: don't get pulled into whatever is nearby
 	const cur = get_targeted_monster();
-	if (farmable_entity(cur) && valid(cur) && state.safe[cur.mtype] && (!cur.target || party.has(cur.target))) return cur;
+	if (farmable_entity(cur) && valid(cur) && live_ok(cur) && (!cur.target || party.has(cur.target))) return cur;
 	let best = null, best_v = 0;
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e)) continue;
 		if (e.target && !party.has(e.target)) continue;
-		const f = state.safe[e.mtype];
+		const f = live_ok(e);
 		if (!f) continue;
 		const walk_s = Math.max(0, distance(character, e) - character.range) / Math.max(character.speed, 1);
 		const v = e.xp / (f.ttk * (e.hp / e.max_hp) + walk_s + 0.2);
@@ -607,22 +676,57 @@ function T(p, ms = 10_000) {
 	const timeout = new Promise((_, rej) => (timer = setTimeout(() => rej({ reason: "timeout" }), ms)));
 	return Promise.race([Promise.resolve(p), timeout]).finally(() => clearTimeout(timer));
 }
-function sell_junk() {
-	if (errand_busy() || walking() || character.rip || character.esize > CFG.sell_when_free) return;
-	const junk = character.items.map((it, i) => (is_junk(it) ? i : -1)).filter((i) => i >= 0);
-	if (!junk.length) return; // nothing safe to sell; loot will stall until you clear bags
-	errand("sell", async () => {
-		if (!has_computer()) {
-			const shop = nearest_shop();
-			if (shop) await go(shop);
+// Bag space: sell junk first; if still short, deposit storables in the bank (v8 sold only junk, so a bag full
+// of materials stalled looting forever). With a computer, junk is sold as soon as a few pieces pile up.
+const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "misc", "throw",
+	"booster", "skill_item", "bank_key", "spawner", "placeholder", "computer"]); // stays in the bag
+function is_storable(item) {
+	if (!item || item.l || item.b || CFG.keep.includes(item.name) || state.protect.has(item.name)) return false;
+	if (item.name === CFG.hp_pot || item.name === CFG.mp_pot) return false;
+	const def = G.items[item.name];
+	return !!def && !BAG_TYPES.has(def.type);
+}
+const slots_where = (f) => character.items.map((it, i) => (f(it) ? i : -1)).filter((i) => i >= 0);
+let bags_warned = 0;
+function free_bags() {
+	if (errand_busy() || walking() || character.rip) return;
+	const junk = slots_where(is_junk);
+	const full = character.esize <= CFG.sell_when_free;
+	const tidy = has_computer() && junk.length >= CFG.sell_batch; // no walk needed: sell early
+	if (!full && !tidy) return;
+	const store = CFG.bank && full && character.esize + junk.length <= CFG.sell_when_free ? slots_where(is_storable) : [];
+	if (!junk.length && !store.length) {
+		if (full && Date.now() - bags_warned > 300_000) (bags_warned = Date.now()), game_log("Bags full and nothing safe to sell or bank; clear them by hand", "#E25C5C");
+		return;
+	}
+	errand("bags", async () => {
+		if (junk.length) {
+			if (!has_computer()) {
+				const shop = nearest_shop();
+				if (shop) await go(shop);
+			}
+			for (const i of junk) {
+				const it = character.items[i];
+				if (!is_junk(it)) continue; // slots can shift
+				await wait_budget(1, 40);
+				await T(sell(i, it.q || 1)).catch((e) => game_log("sell: " + (e.reason || e)));
+				await sleep_ms(150);
+			}
 		}
-		for (const i of junk) {
-			while (!can_spend(1, 40)) await sleep_ms(250);
-			const it = character.items[i];
-			if (!is_junk(it)) continue; // slots can shift
-			await T(sell(i, it.q || 1)).catch((e) => game_log("sell: " + (e.reason || e)));
+		if (!store.length || character.esize > CFG.sell_when_free + CFG.bank_extra) return;
+		await go({ map: "bank" });
+		if (!(await until(() => character.bank && Object.keys(character.bank).some((k) => k.startsWith("items")), 10_000)))
+			throw { reason: "bank_not_loaded" };
+		let n = 0;
+		for (let i = character.items.length - 1; i >= 0; i--) { // from the end, so earlier indices don't shift under us
+			if (!is_storable(character.items[i])) continue;
+			await wait_budget(1, 40);
+			const r = await T(bank_store(i)).catch((e) => e);
+			if (r?.reason === "bank_full") { game_log("Bank full", "#E25C5C"); break; }
+			if (!r?.failed) n++;
 			await sleep_ms(150);
 		}
+		game_log(`Banked ${n} stack${n === 1 ? "" : "s"}; ${character.esize} slots free`, "#58D685");
 	});
 }
 
@@ -1070,7 +1174,7 @@ function tick() {
 			wait = 250;
 		} else {
 			state.dead_handled = false;
-			if (character.esize <= CFG.sell_when_free) sell_junk();
+			free_bags();
 			if (CFG.gear && !errand_busy() && !walking() && Date.now() - state.last_gear > CFG.gear_interval_ms &&
 				character.hp > character.max_hp * 0.7 && !get_nearest_monster({ target: character.name })) {
 				state.last_gear = Date.now();

@@ -144,5 +144,34 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const r12 = await vm.runInContext(`run_craft({ recipe: "wcap", ready: true })`, ctx).catch((e) => e);
 	if (r12 && r12.reason) console.log("run_craft threw", r12);
 	assert(visited[0] === "mcollector", `quest craft goes to quest NPC (${visited})`);
+
+	// 13) fight model
+	vm.runInContext("pick_pack()", ctx);
+	assert(vm.runInContext("!!state.safe.goo", ctx), "level-1 goo is safe");
+	const elite = { id: "e1", type: "monster", mtype: "goo", level: 12, hp: 650, max_hp: 650, attack: 450, frequency: 0.8, speed: 15, xp: 1200 };
+	assert(!vm.runInContext("live_ok", ctx)(elite), "levelled goo with 450 attack rejected by live check");
+	const normal = { id: "n1", type: "monster", mtype: "goo", hp: 100, max_hp: 100, attack: 5, speed: 6, xp: 10 };
+	assert(!!vm.runInContext("live_ok", ctx)(normal), "normal goo accepted by live check");
+	ctx.G.monsters.fast = { xp: 10, hp: 100, attack: 2000, respawn: 10, range: 20, speed: 10, charge: 80, frequency: 1 };
+	assert(!vm.runInContext(`fight_math(G.monsters.fast)`, ctx).kiteable, "kite check uses charge speed (80 > our 50)");
+	ctx.G.monsters.onehp = { xp: 10, hp: 30, attack: 1, respawn: 10, "1hp": true, frequency: 1 };
+	const f1 = vm.runInContext(`fight_math(G.monsters.onehp)`, ctx);
+	assert(Math.abs(f1.ttk - 30) < 1e-6, `1hp mob: ttk = hp / hits per second (${f1.ttk})`);
+
+	// 14) full bags of materials: nothing to sell → bank them; keep potions, scrolls, protected items
+	ctx.G.items.gslime = { type: "material" }; ctx.G.items.beewings = { type: "material" };
+	ctx.G.items.scroll0 = { type: "uscroll" }; ctx.G.items.hpot1.type = "pot";
+	character.items = Array(42).fill(null).map((_, i) => ({ name: "gslime", q: 1 }));
+	character.items[0] = { name: "hpot1", q: 100 }; character.items[1] = { name: "scroll0", q: 3 }; character.items[2] = { name: "beewings", q: 5 };
+	const recount = () => (character.esize = character.items.filter((x) => !x).length);
+	recount();
+	const stored = [];
+	character.bank = { items0: [] };
+	ctx.bank_store = (i) => (stored.push(character.items[i].name), (character.items[i] = null), recount(), Promise.resolve({ success: true }));
+	ctx.smart_move = () => Promise.resolve();
+	vm.runInContext(`state.errand = null; smart_depth = 0; free_bags()`, ctx);
+	for (let i = 0; i < 400 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	const kept = character.items.filter(Boolean).map((x) => x.name).sort().join();
+	assert(stored.length === 39 && kept === "beewings,hpot1,scroll0", `banked materials, kept pots/scrolls/quest mats (${stored.length}, ${kept})`);
 	console.log("ALL PASS");
 })();
