@@ -9,6 +9,13 @@
 //  - run_retrieve: own until() poller (wait_for isn't a runner function); bank_packs read from parent if needed.
 //  - run_stat: all checks before unequip; finally{} always re-equips.
 //  - tick wait: next_skill.attack unset → NaN → 0ms busy loop; now floored at 50ms.
+//  - Game calls in errands go through T(): client deferreds never time out, so an unanswered call hung the errand.
+//  - Monster hunt: a turn-in is immediately followed by starting the next hunt (server does one per call).
+//  - Quest materials are protected from load, not only after the first guide read.
+//  - Restock buys what it can afford (v8 bought nothing if a full stack was unaffordable); skips the walk with a computer.
+// Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
+// can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
+// character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
 // v8: the Progression Guide (get_progression) is the driver. Every guide row that can be acted on
 //     is executed in the guide's own order (equip, buy, upgrade, compound, craft, stat, exchange,
 //     token, dismantle, retrieve, supplies, monster hunts); the guide's farm row decides where to
@@ -581,6 +588,14 @@ function nearest_shop() {
 	return search(character.map) || search("main");
 }
 const sleep_ms = (ms) => new Promise((r) => setTimeout(r, ms));
+// The client's deferreds (common_functions.js push_deferred) never time out: a lost or unanswered response
+// (disconnect, a server path that returns without replying) would hang an errand until errand_timeout_ms.
+// The real call may still land later; callers re-resolve slots by name/level so a late result is harmless.
+function T(p, ms = 10_000) {
+	let timer;
+	const timeout = new Promise((_, rej) => (timer = setTimeout(() => rej({ reason: "timeout" }), ms)));
+	return Promise.race([Promise.resolve(p), timeout]).finally(() => clearTimeout(timer));
+}
 function sell_junk() {
 	if (errand_busy() || walking() || character.rip || character.esize > CFG.sell_when_free) return;
 	const junk = character.items.map((it, i) => (is_junk(it) ? i : -1)).filter((i) => i >= 0);
@@ -594,13 +609,22 @@ function sell_junk() {
 			while (!can_spend(1, 40)) await sleep_ms(250);
 			const it = character.items[i];
 			if (!is_junk(it)) continue; // slots can shift
-			await sell(i, it.q || 1).catch((e) => game_log("sell: " + (e.reason || e)));
+			await T(sell(i, it.q || 1)).catch((e) => game_log("sell: " + (e.reason || e)));
 			await sleep_ms(150);
 		}
 	});
 }
 
 // ---------- Gear progression ----------
+// Materials for any quest recipe (Cole etc.) and their outputs (wcap/wgloves/wbreeches/... are +0 normal-grade
+// gear the junk seller would otherwise take). Built at load so they're safe before the first guide read
+// (v8 only filled state.protect inside gear_step, so an early full-bag sale could sell them).
+const QUEST_PROTECT = new Set();
+for (const id in G.craft || {}) if (G.craft[id].quest) {
+	for (const i of G.craft[id].items || []) QUEST_PROTECT.add(i[1]);
+	QUEST_PROTECT.add(G.craft[id].output?.name || id);
+}
+state.protect = new Set(QUEST_PROTECT);
 function collect_plan_names(node, out) {
 	if (!node) return;
 	if (node.name) out.add(node.name);
@@ -635,7 +659,7 @@ async function buy_from_npc(name, qty, npc) {
 		await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 	}
 	await wait_budget(1, 30);
-	return buy(name, qty);
+	return T(buy(name, qty));
 }
 async function ensure_scroll(scroll) {
 	let k = find_slot(scroll, 0);
@@ -655,11 +679,11 @@ async function run_upgrade(a) {
 	const k = find_slot(a.name, from);
 	if (k < 0) throw { reason: "input_missing" };
 	await wait_budget(1, 30);
-	const preview = await upgrade(k, find_slot(a.scroll, 0), null, true);
+	const preview = await T(upgrade(k, find_slot(a.scroll, 0), null, true));
 	if (!preview || !(preview.chance >= CFG.min_upgrade_chance))
 		throw { reason: "low_chance", chance: preview && preview.chance };
 	await wait_budget(1, 30);
-	const r = await upgrade(k, find_slot(a.scroll, 0));
+	const r = await T(upgrade(k, find_slot(a.scroll, 0)));
 	game_log(`upgrade ${a.name} +${from}→+${a.level} (${(preview.chance * 100).toFixed(1)}%): ${r && r.success ? "OK" : "FAILED"}`, r && r.success ? "#58D685" : "#E25C5C");
 	return r;
 }
@@ -671,11 +695,11 @@ async function run_compound(a) {
 	const ks = find_slots(a.name, from, 3);
 	if (!ks) throw { reason: "input_missing" };
 	await wait_budget(1, 30);
-	const preview = await compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0), null, true);
+	const preview = await T(compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0), null, true));
 	if (!preview || !(preview.chance >= CFG.min_compound_chance))
 		throw { reason: "low_chance", chance: preview && preview.chance };
 	await wait_budget(1, 30);
-	const r = await compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0));
+	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0)));
 	game_log(`compound ${a.name} +${from}→+${a.level} (${(preview.chance * 100).toFixed(1)}%): ${r && r.success ? "OK" : "FAILED"}`, r && r.success ? "#58D685" : "#E25C5C");
 	return r;
 }
@@ -692,7 +716,7 @@ async function run_craft(a) {
 		await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 	}
 	await wait_budget(1, 30);
-	const r = await auto_craft(a.recipe);
+	const r = await T(auto_craft(a.recipe));
 	game_log(`craft ${a.recipe} at ${G.npcs[a.npc]?.name || a.npc}: ${r && !r.failed ? "OK" : "FAILED"}`, "#58D685");
 	return r;
 }
@@ -714,12 +738,19 @@ async function go_npc(npc) {
 	await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 }
 async function run_hunt() {
-	// Daisy: same call starts a hunt or turns in a finished one (server requires being within 400px of her)
+	// Daisy (server "monsterhunt" handler): one call either turns in a finished hunt ({completed}) or starts a
+	// new one ({started}); never both. Within B.sell_dist of her, which a computer does not cover.
 	await go_npc("monsterhunter");
-	await wait_budget(1, 30);
-	const r = await interact("monsterhunt");
+	let r;
+	for (let i = 0; i < 2; i++) {
+		await wait_budget(1, 30);
+		r = await T(interact("monsterhunt"));
+		if (r?.completed) { game_log("Monster hunt turned in (+monstertoken)", "#67A464"); await sleep_ms(300); continue; } // start the next one now, not next visit
+		break;
+	}
 	const h = character.s.monsterhunt;
-	game_log(r?.completed ? "Monster hunt turned in (+monstertoken)" : r?.started ? `Monster hunt: ${h?.c ?? "?"}x ${h?.id ?? "?"}` : "Monster hunt: " + JSON.stringify(r), "#67A464");
+	if (r?.started) game_log(`Monster hunt: ${h?.c ?? "?"}x ${h?.id ?? "?"}`, "#67A464");
+	else if (!r?.completed) game_log("Monster hunt: " + JSON.stringify(r), "#67A464");
 	return r;
 }
 async function run_stat(a) {
@@ -743,7 +774,7 @@ async function run_stat(a) {
 	try {
 		if (worn) {
 			await wait_budget(1, 30);
-			await unequip(a.slot);
+			await T(unequip(a.slot));
 			unequipped = true;
 			if (!(await until(() => !character.slots[a.slot], 3000))) throw { reason: "unequip_failed" };
 		}
@@ -752,7 +783,7 @@ async function run_stat(a) {
 		if (k < 0) throw { reason: "input_missing" };
 		if (sk < 0) throw { reason: "scroll_missing" };
 		await wait_budget(1, 30);
-		const r = await upgrade(k, sk); // pscroll: 99.999% per server
+		const r = await T(upgrade(k, sk)); // pscroll: 99.999% per server
 		game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : JSON.stringify(r)}`, "#58D685");
 		return r;
 	} finally {
@@ -763,7 +794,7 @@ async function run_stat(a) {
 			if (back < 0) back = character.items.findIndex((i) => i && i.name === a.name);
 			if (back >= 0) {
 				await wait_budget(1, 30);
-				await Promise.resolve(equip(back, a.slot)).catch((e) => game_log("stat re-equip: " + (e?.reason || e), "#E25C5C"));
+				await T(equip(back, a.slot)).catch((e) => game_log("stat re-equip: " + (e?.reason || e), "#E25C5C"));
 			} else game_log(`stat: ${a.name} not in bags; ${a.slot} left empty`, "#E25C5C");
 		}
 	}
@@ -776,7 +807,7 @@ async function run_exchange(a) {
 	if (k < 0) throw { reason: "input_missing" };
 	if ((character.items[k].q || 1) < (a.quantity || 1)) throw { reason: "inputs_not_ready" };
 	await wait_budget(1, 30);
-	const r = await exchange(k);
+	const r = await T(exchange(k), 30_000); // exchange() polls until the roll finishes
 	game_log(`exchange ${a.name} → ${r?.reward ? JSON.stringify(r.reward) : "?"}`, "#58D685");
 	return r;
 }
@@ -785,7 +816,7 @@ async function run_token(a, want) {
 	await go_npc(a.npc);
 	await wait_budget(1, 30);
 	game_log(`token ${a.token} → ${want}`, "#58D685");
-	return exchange_buy(a.token, want);
+	return T(exchange_buy(a.token, want));
 }
 async function run_dismantle(a) {
 	if (!a.ready) throw { reason: "inputs_not_ready" };
@@ -795,7 +826,7 @@ async function run_dismantle(a) {
 	await go_npc(a.npc || "craftsman");
 	await wait_budget(1, 30);
 	game_log(`dismantle ${a.name}`, "#58D685");
-	return dismantle(k);
+	return T(dismantle(k));
 }
 async function run_retrieve(a) {
 	const t = a.target;
@@ -812,7 +843,7 @@ async function run_retrieve(a) {
 	if (n < 0) throw { reason: "not_in_bank" };
 	await wait_budget(1, 30);
 	game_log(`bank: retrieve ${a.name} from ${t.pack}`, "#58D685");
-	return bank_retrieve(t.pack, n);
+	return T(bank_retrieve(t.pack, n));
 }
 async function run_supplies(a) {
 	if (a.unlock) throw { reason: "locked_potions_user_choice" }; // the guide wants you to unlock potions you locked; that's yours to decide
@@ -827,7 +858,7 @@ async function run_row(row) {
 			if (k < 0) throw { reason: "input_missing" };
 			await wait_budget(1, 30);
 			game_log(`equip ${a.name} +${a.level || 0} → ${a.slot}`, "#58D685");
-			return equip(k, a.slot);
+			return T(equip(k, a.slot));
 		}
 		case "buy": {
 			if (a.kind === "purchase") throw { reason: "player_stand_skip" }; // buying from player stands needs trade_buy; not automated
@@ -861,19 +892,13 @@ async function gear_step() {
 	} catch (e) { game_log("progression: " + e); return; }
 	if (!prog || !prog.ready) return;
 
-	// Protect anything the advisor plans to use
-	const protect = new Set();
+	// Protect anything the advisor plans to use (on top of the static quest set)
+	const protect = new Set(QUEST_PROTECT);
 	for (const plan of prog.plans || []) collect_plan_names(plan.tree, protect);
 	for (const r of prog.rows || []) {
 		if (r.target?.name) protect.add(r.target.name);
 		if (r.action?.name) protect.add(r.action.name);
 		if (r.action?.scroll) protect.add(r.action.scroll);
-	}
-	// Materials for any quest recipe (Cole etc.) are always protected
-	// (and their outputs: wcap/wgloves/wbreeches/... are +0 normal-grade gear the junk seller would otherwise take)
-	for (const id in G.craft) if (G.craft[id].quest) {
-		for (const i of G.craft[id].items) protect.add(i[1]);
-		protect.add(G.craft[id].output?.name || id);
 	}
 	state.protect = protect;
 
@@ -940,10 +965,15 @@ function restock() {
 	if (quantity(CFG.hp_pot) >= CFG.pot_min && quantity(CFG.mp_pot) >= CFG.pot_min) return;
 	if (errand_busy() || walking() || character.rip) return; // allowed while recovering: we're in town anyway
 	errand("restock", async () => {
-		await go("potions");
+		if (!has_computer()) await go("potions"); // a computer buys from anywhere
+		// Potions are what gold_reserve exists for, so they may dip into it. Buys what's affordable instead of
+		// nothing (v8 skipped the purchase entirely when the full pot_buy stack cost more than current gold).
 		for (const p of [CFG.hp_pot, CFG.mp_pot]) {
-			const need = CFG.pot_buy - quantity(p);
-			if (need > 0 && character.gold >= G.items[p].g * need) await buy(p, need);
+			const n = Math.min(CFG.pot_buy - quantity(p), Math.floor(character.gold / (G.items[p].g || 1)));
+			if (n > 0) {
+				await wait_budget(1, 30);
+				await T(buy(p, n)).catch((e) => game_log(`restock ${p}: ` + (e?.reason || e)));
+			}
 		}
 	});
 }

@@ -9,7 +9,7 @@ const G = {
 	monsters: { goo: { xp: 10, hp: 100, attack: 5, respawn: 10, range: 20, speed: 10, armor: 0, resistance: 0 } },
 	maps: { main: { monsters: [{ type: "goo", count: 5, boundary: [100, 100, 400, 400] }], npcs: [] } },
 	items: { hpot1: { g: 20 }, mpot1: { g: 20 } }, skills: { attack: {}, use_town: {}, use_hp: {}, use_mp: {}, regen_hp: {}, regen_mp: {} },
-	classes: { ranger: { damage_type: "physical" } }, npcs: {}, craft: {}, levels: { 10: 1000 },
+	classes: { ranger: { damage_type: "physical" } }, npcs: {}, craft: { wcap: { quest: "mcollector", items: [[20, "beewings"]] } }, levels: { 10: 1000 },
 };
 const timers = [];
 const ctx = {
@@ -78,10 +78,39 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.quantity = (n) => (n === "cscroll" ? 5 : 100);
 	character.items[1] = { name: "cscroll", q: 5 };
 	character.items[2] = { name: "computer" };
-	ctx.setTimeout = (fn) => (fn(), 0); // make sleeps instant
+	ctx.setTimeout = (fn, ms) => (ms < 5000 && fn(), 0); // short sleeps instant; T() timeouts never fire
 	let err;
 	try { await vm.runInContext(`run_stat({ slot: "ring1", name: "ring1", scroll: "cscroll", quantity: 1 })`, ctx); } catch (e) { err = e; }
 	assert(err && err.reason === "server_error", "run_stat surfaces the upgrade failure");
 	assert(character.slots.ring1 && character.slots.ring1.name === "ring1", "ring re-equipped after failed stat step");
+
+	// 6) T(): a never-answered call rejects with timeout instead of hanging
+	let fired;
+	ctx.setTimeout = (fn, ms) => { if (ms >= 5000) fired = fn; else fn(); return 0; };
+	const pending = vm.runInContext(`T(new Promise(() => {}))`, ctx);
+	fired();
+	const r6 = await pending.catch((e) => e);
+	assert(r6 && r6.reason === "timeout", "T() times out unanswered game calls");
+
+	// 7) quest materials protected before any guide read
+	assert(vm.runInContext(`state.protect.has("beewings")`, ctx), "quest materials protected at load");
+
+	// 8) hunt: turn-in is followed by a start in the same visit
+	const replies = [{ completed: true }, { started: true }];
+	ctx.setTimeout = (fn, ms) => (ms < 5000 && fn(), 0);
+	ctx.find_npc = () => ({ map: "main", x: 0, y: 0 });
+	character.x = 0; character.y = 0;
+	let n = 0;
+	ctx.interact = () => (n++, Promise.resolve(replies.shift()));
+	const r8 = await vm.runInContext(`run_hunt()`, ctx);
+	assert(n === 2 && r8.started, "hunt turn-in chains into a new hunt");
+
+	// 9) restock buys what it can afford instead of nothing
+	const bought = [];
+	ctx.quantity = () => 0; character.gold = 1000; // 50 pots' worth at 20g
+	ctx.buy = (name, q) => (bought.push([name, q]), character.gold -= 20 * q, Promise.resolve());
+	vm.runInContext(`state.errand = null; smart_depth = 0; restock()`, ctx);
+	await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+	assert(bought.length && bought[0][1] === 50, `restock buys affordable amount (${JSON.stringify(bought)})`);
 	console.log("ALL PASS");
 })();
