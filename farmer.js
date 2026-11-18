@@ -1379,7 +1379,10 @@ function tick() {
 			state.dead_handled = false;
 			if (Date.now() - state.last_guide > CFG.guide_interval_ms) guide_refresh();
 			const attacked = !!get_nearest_monster({ target: character.name });
-			if (!errand_busy() && !walking() && !attacked && character.hp > character.max_hp * 0.7 && Date.now() - state.last_town > CFG.town_min_gap_ms) {
+			// Town needs a quiet moment, except when bags are nearly full (aggressive packs like bees rarely give one);
+			// we still kite and shoot back on the way
+			const critical = character.esize <= 3;
+			if (!errand_busy() && !walking() && (!attacked || critical) && character.hp > character.max_hp * 0.7 && Date.now() - state.last_town > CFG.town_min_gap_ms) {
 				const due = town_due();
 				if (due.hunt || due.craft || due.guide || due.sell || due.restock || due.bank) {
 					state.last_town = Date.now();
