@@ -205,5 +205,45 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items[11] = { name: "wcap" };
 	await vm.runInContext(`equip_if_empty("wcap")`, ctx);
 	assert(character.items[11], "occupied slot left alone");
+
+	// 16) quest farming: short on wings for the cap → directive to farm bees (from G.drops); craftable → no directive
+	ctx.G.monsters.bee = { xp: 50, hp: 200, attack: 5, respawn: 10, range: 20, speed: 10, charge: 20, frequency: 1 };
+	ctx.G.maps.main.monsters.push({ type: "bee", count: 6, boundary: [500, 500, 800, 800] });
+	ctx.G.drops = { monsters: { bee: [[0.01, "beewings"], [1 / 6000, "stinger"]] } };
+	ctx.G.craft = { wcap: { items: [[50, "beewings"], [3, "gslime"]], cost: 0, quest: "mcollector" } };
+	character.items = Array(42).fill(null);
+	character.items[0] = { name: "beewings", q: 20 }; character.items[1] = { name: "gslime", q: 3 };
+	character.slots = {};
+	const d16 = vm.runInContext("quest_directive()", ctx);
+	assert(d16 && d16.monster === "bee" && /beewings 20\/50/.test(d16.reason), `quest directive farms bees (${d16 && d16.reason})`);
+	vm.runInContext("refresh_directive(); pick_pack()", ctx);
+	assert(st().pack && st().pack.mtype === "bee", "pick_pack follows the quest directive");
+	character.items[0].q = 60;
+	assert(vm.runInContext("quest_directive()", ctx) === null, "no directive once inputs are complete (crafting takes over)");
+	vm.runInContext("CFG.quest_farm_max_h = 0.0001", ctx); character.items[0].q = 20;
+	assert(vm.runInContext("quest_directive()", ctx) === null, "recipe too slow to finish is skipped");
+	vm.runInContext("CFG.quest_farm_max_h = 3", ctx);
+
+	// 17) persistence round trip
+	const store = {};
+	ctx.set = (k, v) => ((store[k] = JSON.stringify(v)), true);
+	ctx.get = (k) => (k in store ? JSON.parse(store[k]) : null);
+	vm.runInContext(`state.measured["main:1,2,3,4"] = 12.5; state.danger.bee = 0.6; state.cooldown.x = Date.now() + 1e6; state.cooldown.old = 1; save_state();
+		state.measured = {}; state.danger = {}; state.cooldown = {}; load_state();`, ctx);
+	assert(vm.runInContext(`state.measured["main:1,2,3,4"] === 12.5 && state.danger.bee === 0.6 && state.cooldown.x > 0 && !("old" in state.cooldown)`, ctx),
+		"learned state survives reload; expired cooldowns dropped");
+
+	// 18) park: goes to town, then stays put
+	const moves18 = [];
+	ctx.smart_move = (d) => (moves18.push(d), Promise.resolve());
+	ctx.setTimeout = (fn, ms) => { timers.push({ fn, ms }); return timers.length; };
+	character.hp = character.max_hp; character.rip = false; character.c = {};
+	vm.runInContext("state.errand = null; smart_depth = 0; state.recovering = false; park()", ctx);
+	runTick();
+	for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+	runTick(); runTick();
+	assert(moves18.length === 1 && moves18[0] === "town", `parked: one trip to town (${JSON.stringify(moves18)})`);
+	vm.runInContext("resume()", ctx);
+	assert(!st().parked, "resume clears park");
 	console.log("ALL PASS");
 })();

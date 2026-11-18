@@ -22,6 +22,9 @@
 //    with a computer; if selling can't free space, materials/gems/quest items go to the bank.
 //  - v9.4: quest crafting (Cole/mcollector etc.) runs on its own, without the guide: any quest recipe whose inputs
 //    you hold is crafted at its NPC (walks there unless you carry a computer); crafted gear goes into empty slots.
+//  - v9.5: farms the drops the next quest recipe is missing (G.drops rates × estimated kills/s, capped at
+//    quest_farm_max_h); hunt/quest directives no longer need the guide (v8 never farmed a hunt target without it);
+//    learned state persists across reloads (set/get, saved every 60s and in on_destroy); park()/resume().
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -105,6 +108,10 @@ const CFG = {
 	quest_crafts: "materials",
 	quest_craft_max: 1,            // skip a recipe while you already hold this many of its output (bags + worn)
 	quest_craft_skip: [],          // recipe ids never to craft
+	quest_farm: true,              // farm the drops the next quest recipe is missing (bees for wings, ...)
+	quest_farm_max_h: 3,           // ...unless finishing it would take longer than this at our estimated rate
+	hunt_first: false,             // true: an active monster hunt outranks quest farming
+	park_key: null,                // e.g. "P": key that toggles park()/resume() (overrides that key's default binding)
 	auto_monster_hunt: true,       // start/turn in Daisy's hunts even when the guide's 3 rows don't show it, and farm the target if safe
 	gold_reserve: 50_000,          // never spend below this (potions, scrolls)
 	min_upgrade_chance: 0.80,      // server preview; a failed upgrade/compound destroys the item(s)
@@ -315,7 +322,7 @@ function pick_pack() {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			const directed = { mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason };
 			if (!state.pack || pack_key(state.pack) !== key) {
-				game_log(`→ ${d.monster} @ ${d.map} for advisor (${d.reason})`, "#67A464");
+				game_log(`→ ${d.monster} @ ${d.map} (${d.reason})`, "#67A464");
 				state.waypoints = make_waypoints(directed.boundary);
 				state.wp = 0;
 				end_session();
@@ -848,13 +855,91 @@ async function run_craft(a) {
 }
 function hunt_directive() {
 	const h = character.s.monsterhunt;
-	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id)) return false;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id)) return null;
 	const best = resolve_area(h.id);
-	if (!best) return false;
-	const changed = !state.directive || state.directive.monster !== h.id;
-	state.directive = { monster: h.id, map: best.map, boundary: best.boundary, count: best.count, reason: "monster_hunt", guide_safe: false, until: Date.now() + CFG.gear_interval_ms * 4 };
-	if (changed) state.last_pick = 0;
-	return true;
+	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
+}
+
+// ---------- Quest material farming ----------
+// Drop tables: G.drops.monsters[mtype] = [[rate, item, ...], ...] (design/drops.py). Fallback for Cole's
+// materials if the client's G has no drops.
+const DROP_FALLBACK = { beewings: [["bee", 0.01]], gslime: [["goo", 0.001]], spores: [["minimush", 1 / 60]],
+	crabclaw: [["crab", 0.001]], frogt: [["squigtoad", 1 / 400]], ascale: [["armadillo", 0.0008]], feather0: [["bigbird", 0.05]],
+	dstones: [["stoneworm", 1 / 300]], pleather: [["porcupine", 0.001]], bfur: [["arcticbee", 0.001]], cscale: [["croc", 0.0009]] };
+function drop_sources(item) {
+	const out = [], mons = G.drops?.monsters;
+	if (mons) for (const mt in mons) for (const d of mons[mt] || []) if (Array.isArray(d) && d[1] === item && typeof d[0] === "number") out.push([mt, d[0]]);
+	return out.length ? out : DROP_FALLBACK[item] || [];
+}
+// Best place to farm an item: max over safe monsters and their spawn areas of drop_rate × kills/s
+function best_source(item) {
+	let best = null;
+	for (const [mt, rate] of drop_sources(item)) {
+		const f = fight_profile(mt);
+		if (!f) continue;
+		for (const name in G.maps) {
+			const map = G.maps[name];
+			if (map.ignore || map.instance || map.pvp) continue;
+			for (const pack of map.monsters || []) {
+				if (pack.type !== mt) continue;
+				for (const area of pack_areas(name, pack)) {
+					const am = G.maps[area.map];
+					if (!am || am.ignore || am.instance || am.pvp) continue;
+					const m = state.measured[pack_key(area)];
+					const kps = m !== undefined ? m / Math.max(1, f.xp)
+						: Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
+					const ips = rate * kps;
+					if (!best || ips > best.ips) best = { monster: mt, ...area, ips };
+				}
+			}
+		}
+	}
+	return best;
+}
+const held = (name, level) => character.items.reduce((n, i) => n + (i && i.name === name && (i.level || 0) === (level || 0) ? i.q || 1 : 0), 0);
+// First wanted quest recipe that is short only on farmable drops, and the quickest of its missing materials.
+// Skips recipes that would take longer than quest_farm_max_h at our estimated rate.
+function quest_directive() {
+	if (!CFG.quest_farm || !CFG.quest_crafts) return null;
+	for (const id of quest_recipes()) {
+		const r = G.craft[id];
+		if (owned(r.output?.name || id) >= CFG.quest_craft_max || (state.gear_skip["qc:" + id] || 0) > Date.now()) continue;
+		if ((r.cost || 0) > character.gold - CFG.gold_reserve) continue;
+		const missing = r.items.filter(([q, n, l]) => held(n, l) < q);
+		if (!missing.length) continue; // craftable now; quest_crafts() handles it
+		if (missing.some(([, n, l]) => l || GEAR.has(G.items[n]?.type))) continue; // can't farm an upgraded item
+		let total_s = 0, pickm = null;
+		for (const [q, n, l] of missing) {
+			const src = best_source(n);
+			if (!src || !(src.ips > 0)) { total_s = Infinity; break; }
+			const secs = (q - held(n, l)) / src.ips;
+			total_s += secs;
+			if (!pickm || secs < pickm.secs) pickm = { ...src, secs, item: n, have: held(n, l), need: q };
+		}
+		if (!pickm || total_s > CFG.quest_farm_max_h * 3600) continue;
+		return { monster: pickm.monster, map: pickm.map, boundary: pickm.boundary, count: pickm.count, guide_safe: false,
+			reason: `${id}: ${pickm.item} ${pickm.have}/${pickm.need}, ~${Math.ceil(total_s / 60)} min` };
+	}
+	return null;
+}
+
+// Directive priority: guide farm row > quest materials > monster hunt (CFG.hunt_first swaps the last two).
+// Refreshed every guide visit whether or not the guide exists (v8 only set hunt directives inside the guide step,
+// so without get_progression the hunt target was never farmed).
+function refresh_directive() {
+	const now = Date.now();
+	const g = state.guide_farm && state.guide_farm.until > now ? state.guide_farm : null;
+	const order = CFG.hunt_first ? [hunt_directive, quest_directive] : [quest_directive, hunt_directive];
+	let d = g;
+	for (const f of order) if (!d) d = f();
+	if (d) {
+		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
+		state.directive = { ...d, until: now + CFG.gear_interval_ms * 4 };
+		if (changed) state.last_pick = 0;
+	} else if (state.directive) {
+		state.directive = null;
+		state.last_pick = 0;
+	}
 }
 async function go_npc(npc) {
 	if (has_computer() && npc !== "monsterhunter") return; // computer covers shop/upgrade/craft distance checks
@@ -1049,17 +1134,9 @@ async function gear_step() {
 	// a route without a usable boundary falls back to the monster's spawn data; no spawn at all → ignore the row
 	const area = route && G.monsters[route.monster] && resolve_area(route.monster, route.map, route.boundary, route.count);
 	if (route && !area) game_log(`guide: farm row for ${route.monster} has no usable area; ignoring it`, "gray");
-	if (area) {
-		const reason = (farm.reason?.id || "").replace("progression.reason.", "");
-		const changed = !state.directive || state.directive.monster !== route.monster || state.directive.map !== area.map;
-		state.directive = { monster: route.monster, ...area, reason, guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 };
-		if (changed) state.last_pick = 0; // re-pick on the next tick
-	} else if (hunt_directive()) {
-		// no guide farm row: work the active monster hunt
-	} else if (state.directive) {
-		state.directive = null;
-		state.last_pick = 0;
-	}
+	state.guide_farm = area ? { monster: route.monster, ...area, reason: "guide " + (farm.reason?.id || "").replace("progression.reason.", ""),
+		guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 } : null;
+	refresh_directive();
 
 	state.guide_rows = (prog.rows || []).map((r) => r.id);
 	// Guide order is the guide's own priority order (what the HUD shows top to bottom)
@@ -1157,13 +1234,13 @@ async function guide_visit() {
 	let did = 0;
 	try {
 		if (CFG.quest_crafts && !state.recovering) did += await quest_crafts();
-		if (!CFG.gear) return;
 		const h = character.s.monsterhunt;
 		if (CFG.auto_monster_hunt && character.ctype !== "merchant" && (!h || h.c === 0) && (state.gear_skip["hunt:auto"] || 0) < Date.now()) {
 			try { await run_hunt(); did++; }
 			catch (e) { state.gear_skip["hunt:auto"] = Date.now() + 300_000; game_log("hunt: " + (e?.reason || e?.response || e), "gray"); }
 		}
-		for (let i = 0; i < CFG.guide_steps_per_visit; i++) {
+		refresh_directive(); // quest/hunt directives even with no guide (gear_step refreshes again with the guide's farm row)
+		for (let i = 0; CFG.gear && i < CFG.guide_steps_per_visit; i++) {
 			if (character.rip || state.recovering || character.hp < character.max_hp * 0.5) break;
 			if (!(await gear_step())) break;
 			did++;
@@ -1221,6 +1298,52 @@ function recover() {
 	}
 }
 
+// ---------- Persistence ----------
+// What the bot has learned survives code reloads: measured xp/s per pack, the estimate realism factor,
+// per-mob danger multipliers from deaths, pack cooldowns and skipped guide/craft steps. Stored per character
+// with the runner's set()/get() (localStorage "cstore_" keys, so it's per browser/machine).
+const SAVE_KEY = "farmer_v9:" + character.name;
+function save_state() {
+	if (typeof set !== "function") return;
+	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
+		cooldown: state.cooldown, gear_skip: state.gear_skip });
+}
+function load_state() {
+	const d = typeof get === "function" ? get(SAVE_KEY) : null;
+	if (!d || d.v !== 1) return;
+	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
+	Object.assign(state.measured, d.measured || {});
+	if (d.realism > 0) state.realism = d.realism;
+	Object.assign(state.danger, d.danger || {});
+	Object.assign(state.cooldown, live(d.cooldown));
+	Object.assign(state.gear_skip, live(d.gear_skip));
+	game_log(`Loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.danger).length} danger notes`, "gray");
+}
+load_state();
+setInterval(save_state, 60_000);
+function on_destroy() { save_state(); } // runner calls this just before the code is stopped
+function forget() { state.measured = {}; state.danger = {}; state.cooldown = {}; state.gear_skip = {}; state.realism = 1; save_state(); game_log("Learned state cleared"); }
+
+// ---------- Park / resume ----------
+// park(): let the current errand finish, go to town and stand there (still shooting back if attacked).
+// resume(): carry on. Callable from the code console, or bind CFG.park_key.
+function park() { state.parked = true; state.park_home = false; game_log("Parking after the current errand", "#67A464"); }
+function resume() { state.parked = false; state.last_pick = 0; state.last_target_at = Date.now(); game_log("Resuming", "#67A464"); }
+function park_tick() {
+	if (!errand_busy() && !state.park_home) {
+		if (walking()) stop("smart"); // a pack trip, not an errand: drop it
+		state.park_home = errand("park", async () => { await go("town"); });
+	}
+	const t = choose_target(false); // only things attacking us
+	if (t && !character.c.town) {
+		if (get_targeted_monster() !== t) change_target(t);
+		if (!walking() && !errand_busy()) kite(t);
+		if (!class_skills(t) && can_attack(t)) fire("attack", t);
+	}
+	set_message(errand_busy() ? `Parking (${state.errand})` : "Parked");
+}
+if (CFG.park_key && typeof map_key === "function") map_key(CFG.park_key, "snippet", "state.parked ? resume() : park()");
+
 // ---------- Main loop ----------
 let next_respawn = 0;
 function tick() {
@@ -1241,6 +1364,7 @@ function tick() {
 				state.session = null; // don't let a death window count as a measurement
 				state.pack = null;
 			}
+			state.park_home = false;
 			state.errand = null; // in-flight errands die with us; their late finally can't clear a newer lock (token)
 			state.recovering = false;
 			// Server rejects respawn for B.rip_time (12s) after death with {ms: remaining}; wait exactly that long
@@ -1255,10 +1379,14 @@ function tick() {
 			loot_chests();
 			set_message(`Recovering ${((character.hp / character.max_hp) * 100).toFixed(0)}%`);
 			wait = 250;
+		} else if (state.parked) {
+			state.dead_handled = false;
+			park_tick();
+			wait = 300;
 		} else {
 			state.dead_handled = false;
 			free_bags();
-			if ((CFG.gear || CFG.quest_crafts) && !errand_busy() && !walking() && Date.now() - state.last_gear > CFG.gear_interval_ms &&
+			if (!errand_busy() && !walking() && Date.now() - state.last_gear > CFG.gear_interval_ms &&
 				character.hp > character.max_hp * 0.7 && !get_nearest_monster({ target: character.name })) {
 				state.last_gear = Date.now();
 				errand("guide", guide_visit);
