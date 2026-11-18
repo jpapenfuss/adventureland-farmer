@@ -173,5 +173,37 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	for (let i = 0; i < 400 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
 	const kept = character.items.filter(Boolean).map((x) => x.name).sort().join();
 	assert(stored.length === 39 && kept === "beewings,hpot1,scroll0", `banked materials, kept pots/scrolls/quest mats (${stored.length}, ${kept})`);
+
+	// 15) Cole: 50 beewings + 3 gslime → walks to mcollector and crafts wcap; once only (quest_craft_max 1)
+	ctx.G.craft = {
+		wcap: { items: [[50, "beewings"], [3, "gslime"]], cost: 0, quest: "mcollector" },
+		armorring: { items: [[1, "snakefang"], [1, "vitring", 2]], cost: 0, quest: "mcollector" },
+	};
+	ctx.G.items.wcap = { type: "helmet" }; ctx.G.items.vitring = { type: "ring" }; ctx.G.items.snakefang = { type: "material" };
+	character.items = Array(42).fill(null);
+	character.items[0] = { name: "beewings", q: 120 }; character.items[1] = { name: "gslime", q: 10 };
+	character.items[2] = { name: "snakefang", q: 1 }; character.items[3] = { name: "vitring", level: 2 };
+	character.esize = 38; character.gold = 1e6; character.slots = {};
+	const walked = [], crafted = [];
+	ctx.find_npc = (id) => (id === "mcollector" ? { map: "main", x: 81, y: -283 } : null);
+	ctx.smart_move = (d) => (walked.push(d), Promise.resolve());
+	ctx.auto_craft = (id) => {
+		crafted.push(id);
+		for (const [q, n] of ctx.G.craft[id].items) character.items.find((i) => i && i.name === n).q -= q;
+		character.items[10] = { name: id };
+		return Promise.resolve({ success: true });
+	};
+	const n15 = await vm.runInContext("quest_crafts()", ctx);
+	assert(n15 === 1 && crafted.join() === "wcap", `crafted wcap once, skipped gear-input armorring (${crafted})`);
+	assert(walked[0] && walked[0].x === 81 && walked[0].y === -253, "walked to Cole");
+	assert(character.items[0].q === 70, "50 beewings consumed");
+	// equip-if-empty: helmet slot exists and is empty → equipped
+	character.slots = { helmet: null }; character.items[10] = { name: "wcap" };
+	ctx.equip = (k, slot) => ((character.slots[slot] = character.items[k]), (character.items[k] = null), Promise.resolve());
+	await vm.runInContext(`equip_if_empty("wcap")`, ctx);
+	assert(character.slots.helmet && character.slots.helmet.name === "wcap", "crafted cap equipped into empty helmet slot");
+	character.items[11] = { name: "wcap" };
+	await vm.runInContext(`equip_if_empty("wcap")`, ctx);
+	assert(character.items[11], "occupied slot left alone");
 	console.log("ALL PASS");
 })();

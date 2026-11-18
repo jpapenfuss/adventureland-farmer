@@ -20,6 +20,8 @@
 //    lifesteal, self_healing, chase at charge speed); kiteable mobs still count 1/kite_slack of their damage;
 //    every target is re-checked with its live stats, so levelled-up elites are skipped. Bags: junk sells early
 //    with a computer; if selling can't free space, materials/gems/quest items go to the bank.
+//  - v9.4: quest crafting (Cole/mcollector etc.) runs on its own, without the guide: any quest recipe whose inputs
+//    you hold is crafted at its NPC (walks there unless you carry a computer); crafted gear goes into empty slots.
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -97,6 +99,12 @@ const CFG = {
 	gear: true,                    // guide driver on/off
 	gear_interval_ms: 15_000,      // how often to re-read the guide while farming
 	guide_steps_per_visit: 5,      // after an errand, keep executing guide steps (re-reading each time) up to this many
+	// Quest crafting (Cole = "mcollector": wcap/wgloves/wbreeches/wattire/wshoes/quiver/...; also the witch etc.).
+	// Runs on its own, without the guide. "materials" = only recipes whose inputs are all non-equipment
+	// (armorring/resistancering/lbelt eat upgraded rings/belts, so they're opt-in); "all"; or a list of recipe ids.
+	quest_crafts: "materials",
+	quest_craft_max: 1,            // skip a recipe while you already hold this many of its output (bags + worn)
+	quest_craft_skip: [],          // recipe ids never to craft
 	auto_monster_hunt: true,       // start/turn in Daisy's hunts even when the guide's 3 rows don't show it, and farm the target if safe
 	gold_reserve: 50_000,          // never spend below this (potions, scrolls)
 	min_upgrade_chance: 0.80,      // server preview; a failed upgrade/compound destroys the item(s)
@@ -1072,9 +1080,84 @@ async function gear_step() {
 	return true;
 }
 // One guide visit: run actionable steps back to back while the guide keeps offering them
+// ---------- Quest crafting ----------
+const owned = (name) =>
+	character.items.reduce((n, i) => n + (i && i.name === name ? i.q || 1 : 0), 0) +
+	Object.values(character.slots || {}).filter((i) => i && i.name === name).length;
+// auto_craft (client functions.js) needs ONE unlocked stack per input holding the full amount at the exact level
+function has_inputs(recipe) {
+	return recipe.items.every(([q, name, level]) =>
+		character.items.some((i) => i && i.name === name && (i.level || 0) === (level || 0) && !i.l && (i.q || 1) >= q));
+}
+function quest_recipes() {
+	const mode = CFG.quest_crafts;
+	if (!mode) return [];
+	const out = [];
+	for (const id in G.craft) {
+		const r = G.craft[id];
+		if (!r.quest || CFG.quest_craft_skip.includes(id)) continue;
+		if (Array.isArray(mode) ? !mode.includes(id) : mode === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type))) continue;
+		out.push(id);
+	}
+	if (Array.isArray(mode)) out.sort((a, b) => mode.indexOf(a) - mode.indexOf(b)); // list order = priority
+	return out;
+}
+function next_quest_craft() {
+	for (const id of quest_recipes()) {
+		const r = G.craft[id];
+		const output = r.output?.name || id;
+		if (owned(output) >= CFG.quest_craft_max || (state.gear_skip["qc:" + id] || 0) > Date.now()) continue;
+		if ((r.cost || 0) > character.gold - CFG.gold_reserve) continue;
+		if (has_inputs(r)) return id;
+	}
+	return null;
+}
+// Server (craft): quest recipes need you within sell_dist (400) of their quest NPC unless you carry a computer
+async function quest_crafts() {
+	let n = 0, id;
+	while ((id = next_quest_craft()) && n < 10) {
+		if (character.esize < 1) { game_log(`craft ${id}: no free slot`, "gray"); break; }
+		const r = G.craft[id];
+		if (!has_computer()) {
+			const loc = find_npc(r.quest);
+			if (!loc) { state.gear_skip["qc:" + id] = Date.now() + 600_000; break; }
+			if (character.map !== loc.map || Math.hypot(character.x - loc.x, character.y - loc.y) > 250)
+				await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
+		}
+		await wait_budget(1, 30);
+		const res = await T(auto_craft(id)).catch((e) => e);
+		const ok = res && !res.failed && !res.reason;
+		game_log(`craft ${id} at ${G.npcs[r.quest]?.name || r.quest}: ${ok ? "OK" : "FAILED " + (res?.reason || res?.response || "")}`, ok ? "#58D685" : "#E25C5C");
+		if (!ok) { state.gear_skip["qc:" + id] = Date.now() + 300_000; break; } // don't walk back every 15s for a failing recipe
+		n++;
+		await sleep_ms(400);
+		await equip_if_empty(r.output?.name || id);
+	}
+	return n;
+}
+// Puts a freshly crafted piece on only if its slot is empty (never replaces anything you or the guide chose)
+const SLOT_FOR = { helmet: ["helmet"], chest: ["chest"], pants: ["pants"], gloves: ["gloves"], shoes: ["shoes"],
+	cape: ["cape"], belt: ["belt"], amulet: ["amulet"], orb: ["orb"], ring: ["ring1", "ring2"], earring: ["earring1", "earring2"],
+	quiver: ["offhand"], shield: ["offhand"], source: ["offhand"], misc_offhand: ["offhand"] };
+async function equip_if_empty(name) {
+	const def = G.items[name];
+	const cls = def?.class;
+	if (!def || (cls && !cls.includes(character.ctype))) return; // class-restricted (e.g. quiver: ranger)
+	if (character.ctype === "merchant") return;
+	const slot = (SLOT_FOR[def.type] || []).find((sl) => sl in (character.slots || {}) && !character.slots[sl]);
+	const k = character.items.findIndex((i) => i && i.name === name);
+	if (!slot || k < 0) return;
+	if (slot === "offhand" && character.slots.mainhand && G.items[character.slots.mainhand.name]?.wtype &&
+		(G.classes[character.ctype]?.doublehand || {})[G.items[character.slots.mainhand.name].wtype]) return; // two-hander equipped
+	await wait_budget(5, 30);
+	await T(equip(k, slot)).then(() => game_log(`equipped ${name} → ${slot}`, "#58D685")).catch((e) => game_log(`equip ${name}: ` + (e?.reason || e), "gray"));
+}
+
 async function guide_visit() {
 	let did = 0;
 	try {
+		if (CFG.quest_crafts && !state.recovering) did += await quest_crafts();
+		if (!CFG.gear) return;
 		const h = character.s.monsterhunt;
 		if (CFG.auto_monster_hunt && character.ctype !== "merchant" && (!h || h.c === 0) && (state.gear_skip["hunt:auto"] || 0) < Date.now()) {
 			try { await run_hunt(); did++; }
@@ -1175,7 +1258,7 @@ function tick() {
 		} else {
 			state.dead_handled = false;
 			free_bags();
-			if (CFG.gear && !errand_busy() && !walking() && Date.now() - state.last_gear > CFG.gear_interval_ms &&
+			if ((CFG.gear || CFG.quest_crafts) && !errand_busy() && !walking() && Date.now() - state.last_gear > CFG.gear_interval_ms &&
 				character.hp > character.max_hp * 0.7 && !get_nearest_monster({ target: character.name })) {
 				state.last_gear = Date.now();
 				errand("guide", guide_visit);
