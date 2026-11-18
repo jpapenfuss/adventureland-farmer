@@ -1,0 +1,944 @@
+// =====================================================================
+// Guide-driven farmer for Adventure Land — v8
+// v8: the Progression Guide (get_progression) is the driver. Every guide row that can be acted on
+//     is executed in the guide's own order (equip, buy, upgrade, compound, craft, stat, exchange,
+//     token, dismantle, retrieve, supplies, monster hunts); the guide's farm row decides where to
+//     fight. The xp/s pack picker only runs when the guide has no farm row.
+// v7 notes kept below.
+// v7: follows the advisor's quest/material farm rows (e.g. the "working" lesson's
+//     "Bee · Mainland — save Bee Wings for Cole", or "Still needed: N <material>" for a plan),
+//     and executes craft rows at the right NPC (Cole = "mcollector" for wcap/wgloves/... recipes).
+//     Quest/plan materials are never sold.
+// v6: farmable-monster filter (training dummies "Target Automatron" are monsters with 0 attack,
+//     50k hp, respawn 0, unlisted — v5 treated them as free XP; puppies/kitties give -500 xp);
+//     no-progress blacklist for targets that don't lose HP (immune/invulnerable);
+//     opportunistic targeting only inside the chosen pack area (v5 fought every goo it saw,
+//     so it never left the starter zone); one stand-off distance shared by approach and kite
+//     so they can't push against each other.
+// v5: gear progression driven by the game's own advisor, get_progression() (js/progression/*).
+//     It projects your real stats for every candidate (class/level restrictions, set bonuses,
+//     weapon types), plans buy → upgrade/compound → equip chains, and keeps worn gear out of
+//     inputs. This script executes its equip/buy/upgrade/compound steps, gated by the server's
+//     own success-chance preview, a gold reserve, and the emit budget. Plan inputs are protected
+//     from auto-selling.
+// v4: measures real xp/s per pack and calibrates estimates against it; learns from deaths;
+//     supports multi-map "boundaries" packs; party-aware targeting; sells junk when bags fill.
+// v3: rate governance. Server (node/server.js) disconnects past 200 call-cost per rolling 4s;
+//     every emit costs 1, "move" costs 2.5, and server-side resends add more. v2 sent move()
+//     on every 10–120ms tick while approaching/kiting and re-fired skills before the server
+//     acked the cooldown. Now: one metered emit path, de-duplicated moves, in-flight skill
+//     guards, a 50ms tick floor, and a soft budget of 110/4s with per-action reserves.
+// Changes from v1:
+//  - Scores spawn packs by real throughput: min(our kill rate, pack.count / respawn time).
+//    Respawn values come from G.monsters[m].respawn (seconds); the server adds 0–0.9s, or
+//    scales it by 0.72–1.2x when the value is over 200. "grow" packs refill almost instantly.
+//  - Travels once. v1 re-issued smart_move every tick whenever no farm mob was in view,
+//    which is where the "Yes!" (smart_move's path-found text) spam came from.
+//  - Patrols a grid inside the pack boundary instead of standing at its centre.
+//  - Fights any safe monster in view, not just the chosen type.
+//  - Gives up on a pack (cooldown) if it sits idle too long, then picks again.
+//  - Loots chests on its own timer, independent of travel, calling parent.open_chest directly.
+// =====================================================================
+
+const CFG = {
+	safety: 0.35,            // max fraction of max_hp a mob may deal over one kill (non-kiteable mobs)
+	max_respawn: 120,        // ignore monsters whose respawn (s) exceeds this
+	min_count: 3,            // ignore packs smaller than this unless they "grow"
+	walk_overhead: 1.5,      // seconds of walking/aggro per kill (pack density varies)
+	idle_giveup_ms: 25_000,  // no target for this long, mid-patrol → pick another pack
+	pack_cooldown_ms: 600_000,
+	repick_ms: 120_000,      // re-evaluate as stats/level change
+	flee_hp: 0.25,
+	hp_pot: "hpot1", mp_pot: "mpot1", pot_min: 30, pot_buy: 200,
+	kite_margin: 25,
+	loot_range: 400,         // server drops the gold multiplier past 400px; we still loot, just prefer near
+	force_type: null,
+	switch_margin: 1.15,     // only change packs if the new one scores 15% better (travel isn't free)
+	measure_min_s: 90,       // seconds at a pack before its measured xp/s replaces the estimate
+	death_pack_cooldown_ms: 1_800_000,
+	// Selling (fires when free slots <= sell_when_free)
+	sell_when_free: 2,
+	sell: [],                // extra item names to always sell (e.g. materials you don't craft with: "beewings", "gslime")
+	auto_sell_gear: true,    // sell +0 normal-grade equipment with no title (.p) that isn't in keep
+	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"],
+	sell_max_value: 20_000,  // never auto-sell gear the NPC values above this
+	// Gear progression
+	gear: true,                    // guide driver on/off
+	gear_interval_ms: 15_000,      // how often to re-read the guide while farming
+	guide_steps_per_visit: 5,      // after an errand, keep executing guide steps (re-reading each time) up to this many
+	auto_monster_hunt: true,       // start/turn in Daisy's hunts even when the guide's 3 rows don't show it, and farm the target if safe
+	gold_reserve: 50_000,          // never spend below this (potions, scrolls)
+	min_upgrade_chance: 0.80,      // server preview; a failed upgrade/compound destroys the item(s)
+	min_compound_chance: 0.80,
+	gear_actions: ["equip", "buy", "upgrade", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
+	// Advisor farm rows to obey (reason ids, without the "progression.reason." prefix).
+	// material/try_material = a plan needs drops; bees = early lesson (XP + Bee Wings for Cole);
+	// hunt_farm = active monster hunt. Plain xp/level/gold suggestions are ignored: the
+	// script's measured xp/s picker beats the advisor's estimate.
+	follow_farm_reasons: null,    // null = obey every guide farm row; or a list like ["material","bees","hunt_farm"]
+};
+code_settings.show_smart_move_text = false;
+
+const RANGED = ["ranger", "mage", "priest"].includes(character.ctype);
+const state = {
+	pack: null,           // { mtype, map, boundary, count, score }
+	safe: {},             // mtype -> { per_kill_xp_rate } for every type we can fight
+	traveling: false,
+	waypoints: [], wp: 0,
+	last_target_at: Date.now(),
+	last_pick: 0,
+	cooldown: {},         // packKey -> until timestamp
+	measured: {},         // packKey -> measured xp/s (EMA)
+	realism: 1,           // EMA of measured/estimated across packs; scales unmeasured estimates
+	danger: {},           // mtype -> multiplier on CFG.safety, shrinks each time it kills us
+	session: null,        // { key, est, xp, start }
+	selling: false,
+	gearing: false,
+	last_gear: 0,
+	protect: new Set(),   // item names the advisor's plans need; never auto-sold
+	gear_skip: {},        // row id -> until timestamp (failed/declined steps)
+	bad_ids: {},          // entity id -> until timestamp (no HP progress)
+	prog: null,           // { id, hp, t } progress watch on current target
+	directive: null,      // { monster, map, boundary, count, reason, until } from an advisor farm row
+};
+const pack_key = (p) => `${p.map}:${p.boundary.join(",")}`;
+
+// ---------- Scoring ----------
+function mitigate(dmg, def) {
+	return typeof damage_multiplier === "function" ? dmg * damage_multiplier(def || 0) : dmg * Math.max(0.05, 1 - (def || 0) / 1000);
+}
+
+// Excludes everything that isn't a normal respawning XP mob: training dummies (unlist, attack 0,
+// respawn 0), pets/critters (cute; puppies & kitties are -500 xp), immune/passive/peaceful/stationary
+// specials, bosses, co-op/world events, and anything that never respawns.
+function farmable_type(mtype) {
+	const m = G.monsters[mtype];
+	return !!m && m.xp > 0 && m.hp > 0 && m.attack > 0 && m.respawn > 0 &&
+		!(m.special || m.cooperative || m.global || m.unlist || m.immune || m.passive || m.peaceful || m.stationary || m.cute);
+}
+function farmable_entity(e) {
+	return e && e.type === "monster" && e.visible && !e.dead && !e.npc && !e.immune && !e.peaceful &&
+		farmable_type(e.mtype) && !((state.bad_ids[e.id] || 0) > Date.now());
+}
+
+function fight_profile(mtype) {
+	const m = G.monsters[mtype];
+	if (!farmable_type(mtype)) return null;
+	const magical = m.damage_type === "magical";
+	const our_dps = mitigate(character.attack, (character.damage_type || G.classes[character.ctype].damage_type) === "magical" ? m.resistance : m.armor) * character.frequency;
+	if (our_dps <= 0) return null;
+	const ttk = m.hp / our_dps;
+	const their_dps = mitigate(m.attack, magical ? character.resistance : character.armor) * (m.frequency || 1);
+	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed >= (m.speed || 0);
+	if (!kiteable && their_dps * ttk > character.max_hp * CFG.safety * (state.danger[mtype] || 1)) return null;
+	return { ttk, xp: m.xp };
+}
+
+function expected_respawn(mtype, pack) {
+	if (pack.grow) return 0.1;
+	const r = G.monsters[mtype].respawn || 1;
+	return r > 200 ? r * 0.96 : r + 0.45;
+}
+
+function pack_areas(name, pack) {
+	// single-map packs use .boundary; roaming packs list [map,x1,y1,x2,y2] in .boundaries
+	if (pack.boundary) return [{ map: name, boundary: pack.boundary, count: pack.count }];
+	if (!pack.boundaries) return [];
+	return pack.boundaries.map((b) => ({ map: b[0], boundary: b.slice(1, 5), count: pack.count / pack.boundaries.length }));
+}
+
+function score_area(t, pack, area) {
+	const f = state.safe[t];
+	const key = pack_key(area);
+	const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+	return { est, score: state.measured[key] ?? est * state.realism };
+}
+
+function pick_pack() {
+	state.safe = {};
+	for (const t in G.monsters) {
+		const f = fight_profile(t);
+		if (f) state.safe[t] = f;
+	}
+	let best = null;
+	const now = Date.now();
+	const seen = new Set();
+	for (const name in G.maps) {
+		const map = G.maps[name];
+		if (map.ignore || map.instance || map.pvp || !map.monsters) continue;
+		for (const pack of map.monsters) {
+			const t = pack.type;
+			if (CFG.force_type && t !== CFG.force_type) continue;
+			if (!state.safe[t]) continue;
+			if (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count)) continue;
+			for (const area of pack_areas(name, pack)) {
+				const m = G.maps[area.map];
+				if (!m || m.ignore || m.instance || m.pvp) continue;
+				const key = pack_key(area);
+				if (seen.has(key) || (state.cooldown[key] || 0) > now) continue;
+				seen.add(key);
+				const p = { mtype: t, ...area, ...score_area(t, pack, area) };
+				if (!best || p.score > best.score) best = p;
+			}
+		}
+	}
+	state.last_pick = now;
+	// Advisor directive (quest/material farm) overrides the xp/s choice when we can safely fight it
+	const d = state.directive;
+	if (d && d.until > now && farmable_type(d.monster) && !state.safe[d.monster] && d.guide_safe) {
+		// The guide judged this route safe (its own estimate + observed fights); trust it
+		state.safe[d.monster] = { ttk: d.seconds || 5, xp: G.monsters[d.monster].xp };
+	}
+	if (d && d.until > now && state.safe[d.monster]) {
+		const area = { map: d.map, boundary: d.boundary, count: d.count };
+		const key = pack_key(area);
+		if (!((state.cooldown[key] || 0) > now)) {
+			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
+			const directed = { mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason };
+			if (!state.pack || pack_key(state.pack) !== key) {
+				game_log(`→ ${d.monster} @ ${d.map} for advisor (${d.reason})`, "#67A464");
+				state.waypoints = make_waypoints(directed.boundary);
+				state.wp = 0;
+				end_session();
+				state.last_target_at = now;
+			}
+			state.pack = directed;
+			return;
+		}
+	}
+	// Hysteresis: stay put unless the alternative is clearly better (current pack's score uses its measured rate)
+	const cur = state.pack;
+	const cur_ok = cur && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now);
+	if (cur_ok && best && pack_key(best) !== pack_key(cur)) {
+		const cur_score = state.measured[pack_key(cur)] ?? cur.score;
+		if (best.score < cur_score * CFG.switch_margin) best = cur;
+	}
+	if (best && (!cur || pack_key(best) !== pack_key(cur))) {
+		game_log(`→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${state.measured[pack_key(best)] ? " measured" : " est"})`);
+		state.waypoints = make_waypoints(best.boundary);
+		state.wp = 0;
+		end_session();
+		state.last_target_at = now;
+	}
+	state.pack = best;
+}
+
+// ---------- XP measurement ----------
+let xp_prev = { level: character.level, xp: character.xp };
+function xp_delta() {
+	// handles level-ups: remaining xp of the old level + xp into the new one
+	let d;
+	if (character.level > xp_prev.level) d = G.levels[xp_prev.level] - xp_prev.xp + character.xp;
+	else if (character.level < xp_prev.level) d = 0;
+	else d = character.xp - xp_prev.xp;
+	xp_prev = { level: character.level, xp: character.xp };
+	return Math.max(0, d);
+}
+function end_session() {
+	const s = state.session;
+	state.session = null;
+	if (!s) return;
+	const secs = (Date.now() - s.start) / 1000;
+	if (secs < CFG.measure_min_s) return;
+	const rate = s.xp / secs;
+	const prev = state.measured[s.key];
+	state.measured[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5;
+	if (s.est > 0) state.realism = state.realism * 0.7 + (rate / s.est) * 0.3;
+	game_log(`${s.key}: ${rate.toFixed(1)} xp/s measured over ${secs.toFixed(0)}s (est ${s.est.toFixed(1)}, realism ${state.realism.toFixed(2)})`);
+}
+setInterval(() => {
+	const d = xp_delta();
+	const p = state.pack;
+	if (!p || character.rip) return;
+	const here = character.map === p.map && in_boundary(p.boundary, 300);
+	if (!state.session && here && !state.traveling) state.session = { key: pack_key(p), est: p.est, xp: 0, start: Date.now() };
+	if (state.session) {
+		state.session.xp += d;
+		// roll the measurement periodically so the repick sees fresh numbers
+		if ((Date.now() - state.session.start) / 1000 > CFG.measure_min_s * 2) { end_session(); }
+	}
+}, 1000);
+
+function make_waypoints([x1, y1, x2, y2]) {
+	// 3x3 snake through the boundary, inset 15%, so the server streams us every part of the pack
+	const pts = [];
+	for (let r = 0; r < 3; r++) {
+		const cols = [0, 1, 2];
+		if (r % 2) cols.reverse();
+		for (const c of cols) pts.push({ x: x1 + (x2 - x1) * (0.15 + 0.35 * c), y: y1 + (y2 - y1) * (0.15 + 0.35 * r) });
+	}
+	return pts;
+}
+
+// ---------- Emit governor ----------
+// Meters every packet this client sends (including the game's own) in the same 4s window the server uses.
+const BUDGET = { window_ms: 4000, soft: 110 }; // server hard limit is 200; resends/skill costs eat the gap
+const EMIT_COST = { move: 2.5 };
+const sent = [];
+function meter_socket() {
+	const s = parent.socket;
+	if (!s || s.__xp_metered) return;
+	const orig = s.emit;
+	s.emit = function (ev, ...args) {
+		sent.push([Date.now(), EMIT_COST[ev] || 1]);
+		return orig.call(this, ev, ...args);
+	};
+	s.__xp_metered = true; // reconnects create a new socket; tick() re-wraps it
+}
+function spent() {
+	const cut = Date.now() - BUDGET.window_ms;
+	while (sent.length && sent[0][0] < cut) sent.shift();
+	let c = 0;
+	for (const x of sent) c += x[1];
+	return c;
+}
+// reserve = headroom kept for higher-priority actions (attack 0, skills 15, potions 10, moves 30, loot 40)
+const can_spend = (cost, reserve) => spent() + cost <= BUDGET.soft - reserve;
+
+// ---------- Guarded actions ----------
+const inflight = {};
+function fire(skill, target, extra) {
+	const key = G.skills[skill]?.share || skill;
+	if (inflight[key] || is_on_cooldown(skill)) return false;
+	if (!can_spend(1, skill === "attack" ? 0 : skill.startsWith("use_") || skill.startsWith("regen_") ? 10 : 15)) return false;
+	inflight[key] = true;
+	const release = () => setTimeout(() => (inflight[key] = false), 100); // covers cooldown update lag after ack
+	const fallback = setTimeout(() => (inflight[key] = false), 3000);   // lost ack
+	const p = skill === "attack" ? attack(target) : skill === "heal" ? heal(target) : use_skill(skill, target, extra);
+	Promise.resolve(p).catch(() => {}).finally(() => { clearTimeout(fallback); release(); });
+	return true;
+}
+
+let last_move = 0;
+function move_to(x, y, min_gap = 300) {
+	if (Date.now() - last_move < min_gap) return false;
+	// already heading there: don't resend
+	if (character.moving && Math.hypot(character.going_x - x, character.going_y - y) < 30) return false;
+	if (!can_spend(2.5, 30)) return false;
+	last_move = Date.now();
+	move(x, y);
+	return true;
+}
+
+// ---------- Targeting ----------
+function valid(e) {
+	return e && e.visible && !e.dead && parent.entities[e.id] === e;
+}
+function party_names() {
+	const n = new Set([character.name]);
+	for (const k in get_party() || {}) n.add(k);
+	return n;
+}
+function choose_target(local_ok) {
+	const party = party_names();
+	// Self-defense always: things hitting us, then things hitting a party member (must still be real mobs)
+	let hitting = null, hd = Infinity;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (e.type !== "monster" || !e.visible || e.dead || !e.target || !party.has(e.target)) continue;
+		if ((state.bad_ids[e.id] || 0) > Date.now()) continue;
+		const d = distance(character, e) - (e.target === character.name ? 10_000 : 0); // ours first
+		if (d < hd) (hd = d), (hitting = e);
+	}
+	if (hitting) return hitting;
+	if (!local_ok) return null; // outside the pack area: don't get pulled into whatever is nearby
+	const cur = get_targeted_monster();
+	if (farmable_entity(cur) && valid(cur) && state.safe[cur.mtype] && (!cur.target || party.has(cur.target))) return cur;
+	let best = null, best_v = 0;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (!farmable_entity(e)) continue;
+		if (e.target && !party.has(e.target)) continue;
+		const f = state.safe[e.mtype];
+		if (!f) continue;
+		const walk_s = Math.max(0, distance(character, e) - character.range) / Math.max(character.speed, 1);
+		const v = e.xp / (f.ttk * (e.hp / e.max_hp) + walk_s + 0.2);
+		if (v > best_v && can_move_to(e)) (best = e), (best_v = v);
+	}
+	return best;
+}
+
+// Blacklists a target that hasn't lost HP after 8s of us being in range (immune, healing, invulnerable, etc.)
+function watch_progress(t) {
+	const now = Date.now();
+	if (!is_in_range(t)) { if (state.prog && state.prog.id === t.id) state.prog.t = now; return false; }
+	if (!state.prog || state.prog.id !== t.id) { state.prog = { id: t.id, hp: t.hp, t: now }; return false; }
+	if (t.hp < state.prog.hp) { state.prog.hp = t.hp; state.prog.t = now; return false; }
+	if (now - state.prog.t > 8000) {
+		state.bad_ids[t.id] = now + 300_000;
+		game_log(`No damage on ${t.mtype} (${t.id}) in 8s; ignoring it for 5 min`, "gray");
+		state.prog = null;
+		change_target(null);
+		return true;
+	}
+	return false;
+}
+
+// ---------- Movement ----------
+async function travel(dest) {
+	if (state.traveling || Date.now() < (state.travel_block_until || 0)) return;
+	state.traveling = true;
+	try {
+		await smart_move(dest);
+	} catch (e) {
+		if (e && e.reason !== "interrupted") game_log("travel: " + (e.reason || JSON.stringify(e)));
+		state.travel_block_until = Date.now() + 5000; // a failing smart_move must not be retried every tick
+	}
+	state.traveling = false;
+	state.last_target_at = Date.now();
+}
+
+function in_boundary([x1, y1, x2, y2], pad = 150) {
+	return character.x > x1 - pad && character.x < x2 + pad && character.y > y1 - pad && character.y < y2 + pad;
+}
+
+function patrol() {
+	if (is_moving(character) || state.traveling) return;
+	if (distance(character, state.waypoints[state.wp]) < 30) state.wp = (state.wp + 1) % state.waypoints.length;
+	const next = state.waypoints[state.wp];
+	if (can_move_to(next.x, next.y)) move_to(next.x, next.y, 500);
+	else travel({ map: state.pack.map, x: next.x, y: next.y });
+}
+
+// One stand-off distance used by both kite and approach, so they converge instead of oscillating.
+function standoff(t) {
+	const keep = (G.monsters[t.mtype]?.range || t.range || 0) + CFG.kite_margin; // their reach + margin
+	const reach = character.range * 0.9;
+	const can_kite = RANGED && keep < reach - 10 && character.speed >= (t.speed || 0);
+	return { keep, reach, can_kite, want: can_kite ? (keep + reach) / 2 : character.range * 0.8 };
+}
+function point_at(t, dist, ang_off = 0) {
+	const ang = Math.atan2(character.y - t.y, character.x - t.x) + ang_off;
+	return { x: t.x + Math.cos(ang) * dist, y: t.y + Math.sin(ang) * dist };
+}
+function kite(t) {
+	const so = standoff(t);
+	if (!so.can_kite || t.target !== character.name) return false;
+	if (distance(character, t) >= so.keep) return false;
+	for (const off of [0, 0.52, -0.52, 1.05, -1.05, 1.57, -1.57]) {
+		const p = point_at(t, so.want, off);
+		if (can_move_to(p.x, p.y)) { move_to(p.x, p.y, 250); return true; }
+	}
+	return false;
+}
+function approach(t) {
+	const so = standoff(t);
+	const d = distance(character, t);
+	if (d <= so.reach) return; // in range: stay put (kite handles too-close)
+	const p = point_at(t, so.want);
+	if (can_move_to(p.x, p.y)) move_to(p.x, p.y, 400);
+	else move_to(t.x, t.y, 400); // blocked line: walk at it, can_move collision will stop us
+}
+
+// ---------- Class skills ----------
+function can_use(skill) {
+	const s = G.skills[skill];
+	return s && character.level >= (s.level || 0) && !is_on_cooldown(skill) && character.mp >= (s.mp || 0);
+}
+function class_skills(t) {
+	switch (character.ctype) {
+		case "ranger":
+			if (t.hp > character.attack * 3 && !t.s?.marked && can_use("huntersmark")) fire("huntersmark", t);
+			else if (can_use("supershot")) fire("supershot", t);
+			break;
+		case "priest":
+			if (character.hp < character.max_hp * 0.6) return fire("heal", character), true; // shares attack cooldown
+			if (!t.s?.cursed && can_use("curse")) fire("curse", t);
+			break;
+		case "warrior":
+			if (!character.s.warcry && can_use("warcry")) fire("warcry");
+			break;
+		case "mage":
+			if (character.mp < character.max_mp * 0.5 && can_use("energize")) fire("energize", character);
+			break;
+		case "rogue":
+			if (!character.s.rspeed && can_use("rspeed")) fire("rspeed", character);
+			break;
+	}
+	return false;
+}
+
+// ---------- Sustain / loot / restock ----------
+function sustain() {
+	if (character.rip) return;
+	const hp = character.hp / character.max_hp, mp = character.mp / character.max_mp;
+	if (hp < 0.55 && quantity(CFG.hp_pot)) return fire("use_hp");
+	if (mp < 0.35 && quantity(CFG.mp_pot)) return fire("use_mp");
+	if (mp < 0.9 && hp > 0.8) return fire("regen_mp");
+	if (hp < 0.9) return fire("regen_hp");
+}
+
+const chest_tries = {}; // id -> { n, t }
+function loot_chests() {
+	if (character.rip || character.esize === 0) return;
+	const now = Date.now();
+	let best = null, best_d = Infinity;
+	for (const id in parent.chests || {}) {
+		const tr = chest_tries[id];
+		if (tr && (tr.n >= 3 || now - tr.t < 3000)) continue; // 3 attempts max, 3s apart
+		const d = distance(character, parent.chests[id]);
+		if (d < best_d) (best = id), (best_d = d);
+	}
+	if (!best || !can_spend(1, 40)) return;
+	const tr = (chest_tries[best] = chest_tries[best] || { n: 0, t: 0 });
+	tr.n++; tr.t = now;
+	parent.open_chest(best); // one chest per call; runner's loot(id) routes via parent.parent in CODE mode
+}
+setInterval(() => { for (const id in chest_tries) if (!(id in (parent.chests || {}))) delete chest_tries[id]; }, 60_000);
+
+// ---------- Selling ----------
+const GEAR = new Set(["weapon", "shield", "helmet", "chest", "pants", "gloves", "shoes", "cape", "ring", "earring", "amulet", "belt", "orb", "source", "quiver", "misc_offhand"]);
+function is_junk(item) {
+	if (!item || item.l || item.b || CFG.keep.includes(item.name) || state.protect.has(item.name)) return false;
+	if (CFG.sell.includes(item.name)) return true;
+	const def = G.items[item.name];
+	if (!CFG.auto_sell_gear || !def || !GEAR.has(def.type)) return false;
+	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
+}
+function has_computer() {
+	return character.items.some((i) => i && (i.name === "computer" || i.name === "supercomputer"));
+}
+function nearest_shop() {
+	// shops = NPCs with an item list (same rule the game uses to build map.merchants)
+	const search = (mapname) => {
+		let best = null, bd = Infinity;
+		for (const npc of G.maps[mapname]?.npcs || []) {
+			if (!npc.position || !G.npcs[npc.id]?.items) continue;
+			const d = mapname === character.map ? Math.hypot(npc.position[0] - character.x, npc.position[1] - character.y) : 0;
+			if (d < bd) (bd = d), (best = { map: mapname, x: npc.position[0], y: npc.position[1] + 30 });
+		}
+		return best;
+	};
+	return search(character.map) || search("main");
+}
+const sleep_ms = (ms) => new Promise((r) => setTimeout(r, ms));
+async function sell_junk() {
+	if (state.selling || state.traveling || character.rip || character.esize > CFG.sell_when_free) return;
+	const junk = character.items.map((it, i) => (is_junk(it) ? i : -1)).filter((i) => i >= 0);
+	if (!junk.length) return; // nothing safe to sell; loot will stall until you clear bags
+	state.selling = state.traveling = true;
+	try {
+		if (!has_computer()) {
+			const shop = nearest_shop();
+			if (shop) await smart_move(shop);
+		}
+		for (const i of junk) {
+			while (!can_spend(1, 40)) await sleep_ms(250);
+			const it = character.items[i];
+			if (!is_junk(it)) continue; // slots can shift
+			await sell(i, it.q || 1).catch((e) => game_log("sell: " + (e.reason || e)));
+			await sleep_ms(150);
+		}
+	} catch (e) { game_log("sell_junk: " + (e.reason || e)); }
+	state.selling = state.traveling = false;
+}
+
+// ---------- Gear progression ----------
+function collect_plan_names(node, out) {
+	if (!node) return;
+	if (node.name) out.add(node.name);
+	for (const a of node.alternatives || []) {
+		if (a.name) out.add(a.name);
+		if (a.scroll) out.add(a.scroll);
+		for (const i of a.inputs || []) collect_plan_names(i, out);
+	}
+}
+function find_slot(name, level) {
+	return character.items.findIndex((i) => i && i.name === name && (i.level || 0) === (level || 0) && !i.l);
+}
+function find_slots(name, level, n) {
+	const out = [];
+	character.items.forEach((i, k) => { if (out.length < n && i && i.name === name && (i.level || 0) === level && !i.l) out.push(k); });
+	return out.length === n ? out : null;
+}
+async function wait_budget(cost, reserve) {
+	while (!can_spend(cost, reserve)) await sleep_ms(250);
+}
+function shop_for(name) {
+	for (const id in G.npcs) if (!G.npcs[id].ignore && (G.npcs[id].items || []).includes(name) && find_npc(id)) return id;
+	return null;
+}
+async function buy_from_npc(name, qty, npc) {
+	const cost = (G.items[name].g || 0) * qty;
+	if (G.items[name].cash || character.gold - cost < CFG.gold_reserve) throw { reason: "gold_reserve" };
+	npc = npc || shop_for(name);
+	if (!has_computer()) {
+		const loc = npc && find_npc(npc);
+		if (!loc) throw { reason: "no_shop", name };
+		await smart_move({ map: loc.map, x: loc.x, y: loc.y + 30 });
+	}
+	await wait_budget(1, 30);
+	return buy(name, qty);
+}
+async function ensure_scroll(scroll) {
+	let k = find_slot(scroll, 0);
+	if (k >= 0) return k;
+	await buy_from_npc(scroll, 1);
+	await sleep_ms(400);
+	k = find_slot(scroll, 0);
+	if (k < 0) throw { reason: "scroll_missing", scroll };
+	return k;
+}
+async function run_upgrade(a) {
+	// a: { name, level (target), scroll } — target level is a.level, so input is a.level-1
+	const from = a.level - 1;
+	if (!has_computer()) await smart_move("upgrade");
+	const scroll_k = await ensure_scroll(a.scroll);
+	if (!has_computer()) await smart_move("upgrade"); // buying the scroll may have walked us away
+	const k = find_slot(a.name, from);
+	if (k < 0) throw { reason: "input_missing" };
+	await wait_budget(1, 30);
+	const preview = await upgrade(k, find_slot(a.scroll, 0), null, true);
+	if (!preview || !(preview.chance >= CFG.min_upgrade_chance))
+		throw { reason: "low_chance", chance: preview && preview.chance };
+	await wait_budget(1, 30);
+	const r = await upgrade(k, find_slot(a.scroll, 0));
+	game_log(`upgrade ${a.name} +${from}→+${a.level} (${(preview.chance * 100).toFixed(1)}%): ${r && r.success ? "OK" : "FAILED"}`, r && r.success ? "#58D685" : "#E25C5C");
+	return r;
+}
+async function run_compound(a) {
+	const from = a.level - 1;
+	if (!has_computer()) await smart_move("compound");
+	await ensure_scroll(a.scroll);
+	if (!has_computer()) await smart_move("compound");
+	const ks = find_slots(a.name, from, 3);
+	if (!ks) throw { reason: "input_missing" };
+	await wait_budget(1, 30);
+	const preview = await compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0), null, true);
+	if (!preview || !(preview.chance >= CFG.min_compound_chance))
+		throw { reason: "low_chance", chance: preview && preview.chance };
+	await wait_budget(1, 30);
+	const r = await compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0));
+	game_log(`compound ${a.name} +${from}→+${a.level} (${(preview.chance * 100).toFixed(1)}%): ${r && r.success ? "OK" : "FAILED"}`, r && r.success ? "#58D685" : "#E25C5C");
+	return r;
+}
+async function run_craft(a) {
+	// a: { recipe, npc, fee, inputs, ready } — only act once the advisor says every input is owned
+	if (!a.ready) throw { reason: "inputs_not_ready" };
+	const recipe = G.craft[a.recipe];
+	if (!recipe) throw { reason: "recipe" };
+	if ((recipe.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
+	if (character.esize < 1) throw { reason: "no_space" };
+	if (!has_computer()) {
+		const loc = find_npc(a.npc || "craftsman");
+		if (!loc) throw { reason: "no_npc", npc: a.npc };
+		await smart_move({ map: loc.map, x: loc.x, y: loc.y + 30 });
+	}
+	await wait_budget(1, 30);
+	const r = await auto_craft(a.recipe);
+	game_log(`craft ${a.recipe} at ${G.npcs[a.npc]?.name || a.npc}: ${r && !r.failed ? "OK" : "FAILED"}`, "#58D685");
+	return r;
+}
+function hunt_directive() {
+	const h = character.s.monsterhunt;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id)) return false;
+	let best = null;
+	for (const name in G.maps) {
+		const map = G.maps[name];
+		if (map.ignore || map.instance || map.pvp) continue;
+		for (const pack of map.monsters || []) {
+			if (pack.type !== h.id) continue;
+			for (const area of pack_areas(name, pack)) if (!best || area.count > best.count) best = area;
+		}
+	}
+	if (!best) return false;
+	const changed = !state.directive || state.directive.monster !== h.id;
+	state.directive = { monster: h.id, map: best.map, boundary: best.boundary, count: best.count, reason: "monster_hunt", guide_safe: false, until: Date.now() + CFG.gear_interval_ms * 4 };
+	if (changed) state.last_pick = 0;
+	return true;
+}
+async function go_npc(npc) {
+	if (has_computer() && npc !== "monsterhunter") return; // computer covers shop/upgrade/craft distance checks
+	const loc = find_npc(npc);
+	if (!loc) throw { reason: "no_npc", npc };
+	if (character.map === loc.map && Math.hypot(character.x - loc.x, character.y - loc.y) < 150) return;
+	await smart_move({ map: loc.map, x: loc.x, y: loc.y + 30 });
+}
+async function run_hunt() {
+	// Daisy: same call starts a hunt or turns in a finished one (server requires being within 400px of her)
+	await go_npc("monsterhunter");
+	await wait_budget(1, 30);
+	const r = await interact("monsterhunt");
+	const h = character.s.monsterhunt;
+	game_log(r?.completed ? "Monster hunt turned in (+monstertoken)" : r?.started ? `Monster hunt: ${h?.c ?? "?"}x ${h?.id ?? "?"}` : "Monster hunt: " + JSON.stringify(r), "#67A464");
+	return r;
+}
+async function run_stat(a) {
+	// a: { slot, num, name, scroll, quantity } — worn items must be unequipped to be scrolled, then re-equipped
+	if (character.esize < 1) throw { reason: "no_space" };
+	let k;
+	if (a.slot && character.slots[a.slot]?.name === a.name) {
+		await wait_budget(1, 30);
+		await unequip(a.slot);
+		await sleep_ms(400);
+	}
+	k = character.items.findIndex((i) => i && i.name === a.name && !i.l && i.stat_type !== G.items[a.scroll]?.stat);
+	if (k < 0) throw { reason: "input_missing" };
+	const have = character.items.find((i) => i && i.name === a.scroll)?.q || 0;
+	if (have < a.quantity) {
+		const need = a.quantity - have;
+		if (G.items[a.scroll].g * need > character.gold - CFG.gold_reserve) { if (a.slot) await equip(k, a.slot); throw { reason: "gold_reserve" }; }
+		await buy_from_npc(a.scroll, need);
+		await sleep_ms(400);
+	}
+	if (!has_computer()) await smart_move("upgrade");
+	const sk = find_slot(a.scroll, 0);
+	k = character.items.findIndex((i) => i && i.name === a.name && !i.l && i.stat_type !== G.items[a.scroll]?.stat);
+	await wait_budget(1, 30);
+	const r = await upgrade(k, sk); // pscroll: 99.999% per server
+	await sleep_ms(400);
+	if (a.slot) {
+		const back = character.items.findIndex((i) => i && i.name === a.name && i.stat_type === G.items[a.scroll]?.stat);
+		if (back >= 0) await equip(back, a.slot);
+	}
+	game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : JSON.stringify(r)}`, "#58D685");
+	return r;
+}
+async function run_exchange(a) {
+	if (!a.ready) throw { reason: "inputs_not_ready" };
+	if (character.esize < 1) throw { reason: "no_space" };
+	await go_npc(a.npc || "exchange");
+	const k = find_slot(a.name, a.level || 0);
+	if (k < 0) throw { reason: "input_missing" };
+	if ((character.items[k].q || 1) < (a.quantity || 1)) throw { reason: "inputs_not_ready" };
+	await wait_budget(1, 30);
+	const r = await exchange(k);
+	game_log(`exchange ${a.name} → ${r?.reward ? JSON.stringify(r.reward) : "?"}`, "#58D685");
+	return r;
+}
+async function run_token(a, want) {
+	if (!a.ready) throw { reason: "inputs_not_ready" };
+	await go_npc(a.npc);
+	await wait_budget(1, 30);
+	game_log(`token ${a.token} → ${want}`, "#58D685");
+	return exchange_buy(a.token, want);
+}
+async function run_dismantle(a) {
+	if (!a.ready) throw { reason: "inputs_not_ready" };
+	if ((a.fee || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
+	const k = a.resources?.[0] && character.items[a.resources[0].num]?.name === a.name ? a.resources[0].num : find_slot(a.name, a.level || 0);
+	if (k < 0) throw { reason: "input_missing" };
+	await go_npc(a.npc || "craftsman");
+	await wait_budget(1, 30);
+	game_log(`dismantle ${a.name}`, "#58D685");
+	return dismantle(k);
+}
+async function run_retrieve(a) {
+	const t = a.target;
+	if (!t || !bank_packs[t.pack]) throw { reason: "bank_target" };
+	if (character.esize < 1) throw { reason: "no_space" };
+	const bank_map = bank_packs[t.pack][0];
+	if (character.map !== bank_map) await smart_move({ map: bank_map });
+	await wait_for(() => character.bank && character.bank[t.pack], 10_000);
+	// slot may have moved; find by name+level
+	const pack = character.bank[t.pack];
+	const n = pack[t.bankNum]?.name === a.name ? t.bankNum : pack.findIndex((i) => i && i.name === a.name && (i.level || 0) === (a.level || 0));
+	if (n < 0) throw { reason: "not_in_bank" };
+	await wait_budget(1, 30);
+	game_log(`bank: retrieve ${a.name} from ${t.pack}`, "#58D685");
+	return bank_retrieve(t.pack, n);
+}
+async function run_supplies(a) {
+	if (a.unlock) throw { reason: "locked_potions_user_choice" }; // the guide wants you to unlock potions you locked; that's yours to decide
+	return buy_from_npc(a.name, a.quantity, a.npc || "fancypots");
+}
+async function run_row(row) {
+	const a = row.action || {};
+	switch (row.kind) {
+		case "equip": {
+			// num can be stale; re-resolve by name+level
+			const k = a.num !== undefined && character.items[a.num]?.name === a.name ? a.num : find_slot(a.name, a.level);
+			if (k < 0) throw { reason: "input_missing" };
+			await wait_budget(1, 30);
+			game_log(`equip ${a.name} +${a.level || 0} → ${a.slot}`, "#58D685");
+			return equip(k, a.slot);
+		}
+		case "buy": {
+			if (a.kind === "purchase") throw { reason: "player_stand_skip" }; // buying from player stands needs trade_buy; not automated
+			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
+			game_log(`buy ${a.quantity || 1}x ${a.name} (${row.cost}g)`);
+			return buy_from_npc(a.name, a.quantity || 1, a.npc);
+		}
+		case "upgrade":
+			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
+			return run_upgrade(a);
+		case "compound":
+			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
+			return run_compound(a);
+		case "craft":
+			return run_craft(a);
+		case "stat": return run_stat(a);
+		case "exchange": return run_exchange(a);
+		case "token": return run_token(a, row.target?.name || row.request?.name || a.name);
+		case "dismantle": return run_dismantle(a);
+		case "retrieve": return run_retrieve(a);
+		case "supplies": return run_supplies(a);
+		case "hunt": return run_hunt();
+	}
+	throw { reason: "unsupported" };
+}
+async function gear_step() {
+	if (typeof get_progression !== "function") return;
+	let prog;
+	try {
+		prog = get_progression({ spendLimit: Math.max(0, character.gold - CFG.gold_reserve) });
+	} catch (e) { game_log("progression: " + e); return; }
+	if (!prog || !prog.ready) return;
+
+	// Protect anything the advisor plans to use
+	const protect = new Set();
+	for (const plan of prog.plans || []) collect_plan_names(plan.tree, protect);
+	for (const r of prog.rows || []) {
+		if (r.target?.name) protect.add(r.target.name);
+		if (r.action?.name) protect.add(r.action.name);
+		if (r.action?.scroll) protect.add(r.action.scroll);
+	}
+	// Materials for any quest recipe (Cole etc.) are always protected
+	// (and their outputs: wcap/wgloves/wbreeches/... are +0 normal-grade gear the junk seller would otherwise take)
+	for (const id in G.craft) if (G.craft[id].quest) {
+		for (const i of G.craft[id].items) protect.add(i[1]);
+		protect.add(G.craft[id].output?.name || id);
+	}
+	state.protect = protect;
+
+	// Farm directive from the advisor
+	const farm = (prog.rows || []).find((r) => {
+		if (r.kind !== "farm") return false;
+		const reason = (r.reason?.id || "").replace("progression.reason.", "");
+		return (!CFG.follow_farm_reasons || CFG.follow_farm_reasons.includes(reason)) && (r.action?.route || r.route);
+	});
+	if (farm) {
+		const route = farm.action?.route || farm.route;
+		const reason = (farm.reason?.id || "").replace("progression.reason.", "");
+		const changed = !state.directive || state.directive.monster !== route.monster || state.directive.map !== route.map;
+		state.directive = { monster: route.monster, map: route.map, boundary: route.boundary, count: route.count, reason, guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 };
+		if (changed) state.last_pick = 0; // re-pick on the next tick
+	} else if (hunt_directive()) {
+		// no guide farm row: work the active monster hunt
+	} else if (state.directive) {
+		state.directive = null;
+		state.last_pick = 0;
+	}
+
+	state.guide_rows = (prog.rows || []).map((r) => r.id);
+	// Guide order is the guide's own priority order (what the HUD shows top to bottom)
+	const now = Date.now();
+	const row = (prog.rows || []).find((r) => CFG.gear_actions.includes(r.kind) && (state.gear_skip[r.id] || 0) < now && r.affordable !== false);
+	if (!row) return false;
+
+	try {
+		await run_row(row);
+		await sleep_ms(500);
+	} catch (e) {
+		const why = e?.reason || e?.response || String(e);
+		// back off this step; chance-gated steps wait longer (grace/scroll grade may change)
+		state.gear_skip[row.id] = now + (why === "low_chance" ? 1_800_000 : 300_000);
+		game_log(`guide: skip ${row.id} (${why}${e?.chance !== undefined ? " " + (e.chance * 100).toFixed(1) + "%" : ""})`, "gray");
+		return false;
+	}
+	return true;
+}
+// One guide visit: run actionable steps back to back while the guide keeps offering them
+async function guide_visit() {
+	state.gearing = state.traveling = true;
+	let did = 0;
+	try {
+		const h = character.s.monsterhunt;
+		if (CFG.auto_monster_hunt && character.ctype !== "merchant" && (!h || h.c === 0) && (state.gear_skip["hunt:auto"] || 0) < Date.now()) {
+			try { await run_hunt(); did++; }
+			catch (e) { state.gear_skip["hunt:auto"] = Date.now() + 300_000; game_log("hunt: " + (e?.reason || e?.response || e), "gray"); }
+		}
+		for (let i = 0; i < CFG.guide_steps_per_visit; i++) {
+			if (character.rip || character.hp < character.max_hp * 0.5) break;
+			if (!(await gear_step())) break;
+			did++;
+		}
+	} catch (e) { game_log("guide: " + (e?.reason || e)); }
+	state.gearing = state.traveling = false;
+	if (did) state.pack = null; // stats/position changed: re-pick (guide farm row first) and travel back
+}
+
+async function restock() {
+	if (quantity(CFG.hp_pot) >= CFG.pot_min && quantity(CFG.mp_pot) >= CFG.pot_min) return;
+	if (state.traveling || state.selling || state.gearing || character.rip) return;
+	state.traveling = true;
+	try {
+		await smart_move("potions");
+		for (const p of [CFG.hp_pot, CFG.mp_pot]) {
+			const need = CFG.pot_buy - quantity(p);
+			if (need > 0 && character.gold >= G.items[p].g * need) await buy(p, need);
+		}
+	} catch (e) { game_log("restock: " + (e.reason || e)); }
+	state.traveling = false;
+}
+
+// ---------- Main loop ----------
+let last_respawn = 0;
+function tick() {
+	let wait = 200;
+	try {
+		meter_socket();
+		if (spent() > BUDGET.soft) {
+			wait = 500; // over budget: send nothing this tick
+		} else if (character.rip) {
+			if (!state.dead_handled) {
+				state.dead_handled = true;
+				const p = state.pack;
+				if (p) {
+					state.danger[p.mtype] = (state.danger[p.mtype] || 1) * 0.6; // tighter safety for this mob from now on
+					state.cooldown[pack_key(p)] = Date.now() + CFG.death_pack_cooldown_ms;
+					game_log(`Died at ${p.mtype}; safety for it now x${state.danger[p.mtype].toFixed(2)}`);
+				}
+				state.session = null; // don't let a death window count as a measurement
+				state.pack = null;
+			}
+			state.traveling = state.selling = state.gearing = false;
+			if (!character.c.respawn && Date.now() - last_respawn > 5000) (last_respawn = Date.now()), respawn();
+			wait = 1000;
+		} else if (character.hp < character.max_hp * CFG.flee_hp && !state.traveling) {
+			if (fire("use_town")) state.pack = null;
+		} else {
+			state.dead_handled = false;
+			if (character.esize <= CFG.sell_when_free && !state.selling) sell_junk();
+			if (CFG.gear && !state.gearing && !state.traveling && !state.selling && Date.now() - state.last_gear > CFG.gear_interval_ms &&
+				character.hp > character.max_hp * 0.7 && !get_nearest_monster({ target: character.name })) {
+				state.last_gear = Date.now();
+				guide_visit();
+			}
+			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
+			const pack = state.pack;
+			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
+			const t = choose_target(in_area || !pack);
+			if (t && !watch_progress(t)) {
+				state.last_target_at = Date.now();
+				if (get_targeted_monster() !== t) change_target(t);
+				// Never steer while an errand/travel owns movement; just shoot what's in range
+				if (!state.traveling && !kite(t)) approach(t);
+				if (!class_skills(t) && can_attack(t)) fire("attack", t);
+				wait = Math.min(Math.max(parent.next_skill.attack - Date.now(), 50), 200);
+			} else if (!pack) {
+				set_message("No viable pack");
+				wait = 5000;
+			} else if (!state.traveling) {
+				if (!in_area) {
+					const w = state.waypoints[state.wp];
+					travel({ map: pack.map, x: w.x, y: w.y });
+				} else if (Date.now() - state.last_target_at > CFG.idle_giveup_ms) {
+					game_log(`Idle at ${pack.mtype}; cooling down this pack`);
+					state.cooldown[pack_key(pack)] = Date.now() + CFG.pack_cooldown_ms;
+					pick_pack();
+				} else patrol();
+			}
+			loot_chests();
+			if (pack) {
+				const s = state.session, live = s && Date.now() - s.start > 10_000 ? (s.xp / ((Date.now() - s.start) / 1000)).toFixed(0) : "–";
+				set_message(`${pack.mtype} ${live}xp/s ${((character.xp / G.levels[character.level]) * 100).toFixed(1)}% | ${spent().toFixed(0)}/${BUDGET.soft}`);
+			}
+		}
+	} catch (e) { game_log("tick: " + e); }
+	setTimeout(tick, wait);
+}
+
+setInterval(() => { if (spent() <= BUDGET.soft) sustain(); }, 250);
+setInterval(restock, 30_000);
+tick();
