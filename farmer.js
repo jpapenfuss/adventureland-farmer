@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "10.5";
+const VERSION = "10.6";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -69,6 +69,8 @@ const CFG = {
 	guide_interval_ms: 15_000,
 	guide_steps_per_run: 5,
 	town_min_gap_ms: 20_000, // at least this long between town runs
+	town_hp: 0.7,            // start a town run only above this HP fraction...
+	town_hp_critical: 0.5,   // ...or this one when bags are nearly full (<= 3 free)
 	errand_timeout_ms: 300_000,
 	gold_reserve: 50_000,
 	min_upgrade_chance: 0.80,
@@ -1311,6 +1313,36 @@ function town_run(due) {
 	});
 }
 
+// Starts a town run when something is due. Blockers are recorded (report() shows them; the log says so every
+// 5 min): v10.5 silently required HP > 70% and no smart_move in flight, so a priest hovering at 60-70% HP or a
+// patrol that path-finds between waypoints could farm with a full bag for hours.
+let town_block_logged = 0;
+function town_check() {
+	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
+	const due = town_due();
+	const what = Object.keys(due).filter((k) => k !== "plan" && due[k]);
+	if (!what.length) return void (state.town_block = null);
+	const critical = character.esize <= 3;
+	const attacked = !!get_nearest_monster({ target: character.name });
+	const floor = critical ? CFG.town_hp_critical : CFG.town_hp;
+	const blockers = [];
+	if (errand_busy()) blockers.push(`errand ${state.errand}`);
+	if (attacked && !critical) blockers.push("under attack");
+	if (character.hp < character.max_hp * floor) blockers.push(`HP ${Math.round((character.hp / character.max_hp) * 100)}% < ${floor * 100}%`);
+	if (walking() && !errand_busy()) { stop("smart"); blockers.push("stopping a pack walk"); } // a patrol/pack trip yields to town
+	state.town_block = { what: what.join("+"), blockers, at: Date.now() };
+	if (blockers.length) {
+		if (critical && Date.now() - town_block_logged > 300_000) {
+			town_block_logged = Date.now();
+			game_log(`Town needed (${what.join("+")}, ${due.plan.free} free) but waiting: ${blockers.join(", ")}`, "#E2A05C");
+		}
+		return;
+	}
+	state.last_town = Date.now();
+	game_log(`Town: ${what.join("+")} (${due.plan.free} free)`, "gray");
+	town_run(due);
+}
+
 // =====================================================================
 // Recovery, death, parking
 // =====================================================================
@@ -1408,7 +1440,8 @@ function report() {
 	const h = character.s.monsterhunt;
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
-	L(`town due: ${Object.keys(due).filter((k) => k !== "plan" && due[k]).join(", ") || "nothing"} | errand: ${state.errand || "none"}`);
+	L(`town due: ${Object.keys(due).filter((k) => k !== "plan" && due[k]).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
+	if (state.town_block?.blockers.length) L(`town blocked (${Math.round((Date.now() - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	for (const r of state.guide?.rows || []) {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded (set before this version)"}` : r.affordable === false ? "unaffordable" : "next";
 		L(`guide ${r.id}: ${st}`);
@@ -1487,19 +1520,7 @@ function tick() {
 		} else {
 			state.dead_handled = false;
 			if (Date.now() - state.last_guide > CFG.guide_interval_ms) guide_refresh();
-			const attacked = !!get_nearest_monster({ target: character.name });
-			// Town needs a quiet moment, except when bags are nearly full (aggressive packs like bees rarely give one);
-			// we still kite and shoot back on the way
-			const critical = character.esize <= 3;
-			if (!errand_busy() && !walking() && (!attacked || critical) && character.hp > character.max_hp * 0.7 && Date.now() - state.last_town > CFG.town_min_gap_ms) {
-				const due = town_due();
-				if (due.hunt || due.craft || due.guide || due.sell || due.restock || due.bank) {
-					state.last_town = Date.now();
-					const what = Object.keys(due).filter((k) => k !== "plan" && due[k]).join("+");
-					game_log(`Town: ${what} (${due.plan.free} free)`, "gray");
-					town_run(due);
-				}
-			}
+			town_check();
 			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);

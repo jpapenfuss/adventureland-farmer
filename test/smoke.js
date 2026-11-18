@@ -480,5 +480,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	for (let i = 0; i < 3000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
 	assert(vm.runInContext("bank_is_full() && bag_class(character.items.find(Boolean) || { name: 'hpamulet' }) !== 'bank'", ctx), "bank full → junk classed for selling");
 	vm.runInContext("town_reason.bank = 'every bank pack you can use is full'", ctx);
+
+	// 27) full bag, priest at 65% HP, under attack, mid-patrol smart_move → patrol walk stopped, town run starts
+	vm.runInContext("state.bank_full_at = 0; state.gear_skip = {}; state.errand = null; state.last_town = 0; state.needs = new Map(); smart_depth = 0", ctx);
+	character.items = Array(42).fill(null).map(() => ({ name: "hpamulet" })); character.esize = 0;
+	character.hp = character.max_hp * 0.65; character.map = "main";
+	ctx.get_nearest_monster = (a) => (a && a.target ? { id: "bee" } : null);
+	let stops = 0;
+	ctx.stop = () => { stops++; return Promise.resolve(); };
+	ctx.smart_move = () => new Promise(() => {}); // a patrol path that hasn't finished
+	vm.runInContext("travel({ map: 'main', x: 1, y: 1 })", ctx);
+	assert(vm.runInContext("walking()", ctx), "patrol walk in flight");
+	vm.runInContext("town_check()", ctx);
+	assert(stops === 1 && vm.runInContext("state.town_block.blockers.join()", ctx) === "stopping a pack walk", "walk stopped; HP 65% and attackers don't block with a full bag");
+	vm.runInContext("smart_depth = 0", ctx); // the stopped walk settles
+	ctx.smart_move = (d) => { if (d && d.map) character.map = d.map; return Promise.resolve(); };
+	vm.runInContext("town_check()", ctx);
+	assert(vm.runInContext("state.errand", ctx) === "town", "town run started");
+	for (let i = 0; i < 3000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	ctx.get_nearest_monster = () => null; character.hp = character.max_hp;
 	console.log("ALL PASS");
 })();
