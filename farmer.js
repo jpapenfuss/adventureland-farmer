@@ -11,7 +11,7 @@
 //   5. Fight at the chosen pack: guide farm row > guide quest materials > monster hunt > own quest
 //      materials > best measured/estimated xp/s pack.
 //
-// Diagnostics: type report() or why_not("bee") in the CODE console.
+// Diagnostics: type report() or why_not("bee") in the CODE console; both open a copyable text box.
 //
 // Bag policy (the reason for the rewrite): every bag item is KEEP, SELL or BANK.
 //   KEEP: locked items, potions/scrolls/tools/computer, CFG.keep, items the guide's current steps use
@@ -71,11 +71,13 @@ const CFG = {
 	min_upgrade_chance: 0.80,
 	min_compound_chance: 0.80,
 	min_chance_rebuyable: 0.5, // items NPCs sell: failure only costs gold, accept the guide's odds down to this
+	min_chance_spare: 0.6,     // you hold another copy at that level or higher (bags/worn): a failure costs a spare
 	gear_actions: ["equip", "buy", "upgrade", "develop", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
 	follow_farm_reasons: null, // null = every guide farm row; or e.g. ["material","bees","hunt_farm"]
 	guide_farm_max_min: 360,   // a guide farm row naming no material: pause after this long in a row
 	// --- quests (Cole = "mcollector", witch, ...)
 	quest_crafts: "materials", // "materials" | "all" | [recipe ids in priority order]; guide quests always included
+	quest_npcs: ["mcollector"],  // own (non-guide) quests only from these NPCs (Cole); guide quests from anyone
 	quest_craft_max: 1,
 	quest_craft_skip: [],
 	quest_farm: true,
@@ -542,6 +544,17 @@ setInterval(() => { for (const id in chest_tries) if (!(id in (parent.chests || 
 // =====================================================================
 // NPCs, shopping, upgrades
 // =====================================================================
+// Class weapon/offhand rules (G.classes[ctype].mainhand/offhand list the allowed weapon types / offhand types):
+// a priest can't use a quiver or a bow even though the item itself carries no class tag
+function can_wear(name) {
+	const def = G.items[name], cls = G.classes[character.ctype] || {};
+	if (!def) return false;
+	if (def.class && !def.class.includes(character.ctype)) return false;
+	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand))
+		return !!((cls.mainhand || {})[def.wtype] || (cls.offhand || {})[def.wtype]);
+	if (["quiver", "source", "shield", "misc_offhand"].includes(def.type) && cls.offhand) return !!cls.offhand[def.type];
+	return true;
+}
 const has_computer = () => character.items.some((i) => i && (i.name === "computer" || i.name === "supercomputer"));
 function find_slot(name, level) {
 	return character.items.findIndex((i) => i && i.name === name && (i.level || 0) === (level || 0) && !i.l);
@@ -591,7 +604,19 @@ function input_slots(a, from, n) {
 	if (n === 1) { const k = find_slot(a.name, from); return k >= 0 ? [k] : null; }
 	return find_slots(a.name, from, n);
 }
-const chance_floor = (name, base) => (shop_for(name) && !G.items[name]?.cash ? Math.min(base, CFG.min_chance_rebuyable) : base);
+// Lower odds are accepted when a failure can't cost anything irreplaceable:
+//  - NPCs sell the item (failure costs gold): min_chance_rebuyable;
+//  - another copy at the same level or higher remains (bags or worn): min_chance_spare.
+function chance_floor(name, base, k, level) {
+	if (shop_for(name) && !G.items[name]?.cash) return Math.min(base, CFG.min_chance_rebuyable);
+	if (k !== undefined) {
+		const lv = level ?? (character.items[k]?.level || 0);
+		const spares = character.items.filter((i, n) => n !== k && i && i.name === name && (i.level || 0) >= lv).length +
+			Object.values(character.slots || {}).filter((i) => i && i.name === name && (i.level || 0) >= lv).length;
+		if (spares > 0) return Math.min(base, CFG.min_chance_spare);
+	}
+	return base;
+}
 // Develop: best spare (bags only) below the target, or a fresh +0 from an NPC
 function develop_pick(name, target) {
 	let k = -1;
@@ -623,7 +648,7 @@ async function run_upgrade(a, row) {
 	if (k < 0) throw { reason: "input_missing", want: `${a.name}+${from}` };
 	await wait_budget(1, 30);
 	const preview = await T(upgrade(k, find_slot(scroll, 0), null, true));
-	if (!preview || !(preview.chance >= chance_floor(a.name, CFG.min_upgrade_chance))) throw { reason: "low_chance", chance: preview?.chance };
+	if (!preview || !(preview.chance >= chance_floor(a.name, CFG.min_upgrade_chance, k, from))) throw { reason: "low_chance", chance: preview?.chance };
 	await wait_budget(1, 30);
 	const r = await T(upgrade(k, find_slot(scroll, 0)));
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? "#58D685" : "#E25C5C");
@@ -789,10 +814,11 @@ function quest_recipes() {
 	for (const id in G.craft) {
 		const r = G.craft[id];
 		if (!r.quest || CFG.quest_craft_skip.includes(id)) continue;
-		const cls = G.items[r.output?.name || id]?.class;
-		if (cls && !cls.includes(character.ctype)) continue;
+		const out = r.output?.name || id;
+		if (GEAR.has(G.items[out]?.type) && !can_wear(out)) continue; // e.g. quiver for a priest
 		if (is_guide_quest(id)) { guide.push(id); continue; }
-		if (Array.isArray(mode) ? !mode.includes(id) : mode === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type))) continue;
+		if (Array.isArray(mode) ? !mode.includes(id)
+			: !CFG.quest_npcs.includes(r.quest) || (mode === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type)))) continue;
 		own.push(id);
 	}
 	guide.sort((a, b) => state.guide_quests[a].first - state.guide_quests[b].first);
@@ -842,7 +868,7 @@ const SLOT_FOR = { helmet: ["helmet"], chest: ["chest"], pants: ["pants"], glove
 	quiver: ["offhand"], shield: ["offhand"], source: ["offhand"], misc_offhand: ["offhand"] };
 async function equip_if_empty(name) {
 	const def = G.items[name];
-	if (!def || (def.class && !def.class.includes(character.ctype)) || character.ctype === "merchant") return;
+	if (!def || !can_wear(name) || character.ctype === "merchant") return;
 	const slot = (SLOT_FOR[def.type] || []).find((sl) => sl in (character.slots || {}) && !character.slots[sl]);
 	const k = character.items.findIndex((i) => i && i.name === name);
 	if (!slot || k < 0) return;
@@ -1295,8 +1321,19 @@ function forget() { Object.assign(state, { measured: {}, danger: {}, cooldown: {
 // Diagnostics (call from the CODE console): report(), why_not("bee")
 // =====================================================================
 const mins = (t) => `${Math.max(0, Math.ceil((t - Date.now()) / 60_000))}m`;
+// The game's log can't be copied; report() also opens a selectable text box and tries the clipboard
+function share_text(title, lines) {
+	const text = lines.join("\n");
+	try { parent.navigator?.clipboard?.writeText(text).catch(() => {}); } catch (e) {}
+	const esc = (x) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+	if (typeof parent.show_modal === "function")
+		parent.show_modal(`<div style="color:#fff;margin-bottom:6px">${esc(title)} — select all and copy (Ctrl+A, Ctrl+C)</div>` +
+			`<textarea readonly style="width:100%;height:420px;background:#111;color:#cfe;font-size:13px" onclick="this.select()">${esc(text)}</textarea>`);
+	return text;
+}
 function report() {
-	const L = (s, c = "#9BD") => game_log(s, c);
+	const lines = [];
+	const L = (s, c = "#9BD") => { lines.push(s); game_log(s, c); };
 	const p = state.pack, d = state.directive;
 	L(`— report ${new Date().toLocaleTimeString()} —`, "#FFF");
 	L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
@@ -1321,21 +1358,26 @@ function report() {
 	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}, bank ${kept.bank || 0}, sell ${kept.sell || 0}${plan.fetch.length ? ` | to fetch: ${plan.fetch.join(", ")}` : ""}`);
 	for (const k of ["town:sell", "town:restock", "town:bank"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}`);
 	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
+	L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
+	return share_text("report()", lines);
 }
 function why_not(mtype) {
-	const L = (s) => game_log(s, "#9BD");
+	const lines = [];
+	const L = (s) => { lines.push(s); game_log(s, "#9BD"); };
+	const out = (r) => (share_text(`why_not("${mtype}")`, lines), r);
 	const m = G.monsters[mtype];
-	if (!m) return L(`${mtype}: no such monster`);
+	if (!m) return out(L(`${mtype}: no such monster`));
 	const flags = ["special", "cooperative", "global", "unlist", "immune", "passive", "peaceful", "stationary", "cute"].filter((f) => m[f]);
-	if (!farmable_type(mtype)) return L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`);
+	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
 	const f = fight_math(m);
-	if (!f) return L(`${mtype}: we can't out-damage its healing`);
+	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
 	const limit = character.max_hp * CFG.safety * (state.danger[mtype] || 1);
 	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
 		`${f.kiteable ? " (kiteable)" : ""}${state.danger[mtype] ? ` (died to it: x${state.danger[mtype].toFixed(2)})` : ""}`);
 	const areas = [];
 	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
 	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
+	return out();
 }
 
 // =====================================================================

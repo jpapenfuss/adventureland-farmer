@@ -393,5 +393,38 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	if (process.env.SHOW) console.log(out22);
 	assert(/fighting:/.test(out22) && /quest wcap/.test(out22) && /bags: \d+ free/.test(out22), "report() summarises pack, quests, bags");
 	assert(/squigtoad: .*UNSAFE|squigtoad: .*SAFE/.test(out22) && /nope: no such monster/.test(out22), "why_not() explains safety");
+
+	// 23) real-data shapes from the live report
+	character.ctype = "priest";
+	ctx.G.classes.priest = { damage_type: "magical", mainhand: { staff: {}, pmace: {} }, offhand: { shield: {}, source: {}, misc_offhand: {} } };
+	ctx.G.items.quiver = { type: "quiver" }; // no class tag in the real data
+	ctx.G.craft = {
+		quiver: { items: [[1, "ascale"], [200, "beewings"]], cost: 0, quest: "mcollector" },
+		wcap: { items: [[50, "beewings"], [3, "gslime"]], cost: 0, quest: "mcollector" },
+		snakeoil: { items: [[40, "dstones"], [9000, "rattail"]], cost: 0, quest: "witch" },
+	};
+	ctx.G.items.dstones = { type: "material" }; ctx.G.items.rattail = { type: "material" }; ctx.G.items.ascale = { type: "material" };
+	vm.runInContext(`state.guide_quests = { quiver: { first: 1, last: Date.now() } }; state.crafted = {}; state.gear_skip = {}`, ctx);
+	const q23 = vm.runInContext("quest_recipes()", ctx).join();
+	assert(q23 === "wcap", `priest: no quiver even as a guide quest; own quests only from Cole (${q23})`);
+	// slimestaff +3 → +4 at the guide's 70%: two spare +3s + a worn +3 → accepted; a lone copy → refused
+	ctx.G.items.slimestaff = { type: "weapon", wtype: "staff", g: 2000 }; ctx.G.npcs = {};
+	character.items = Array(42).fill(null);
+	character.items[2] = { name: "computer" }; character.items[5] = { name: "slimestaff", level: 3 }; character.items[6] = { name: "slimestaff", level: 3 };
+	character.items[9] = { name: "scroll1", q: 3 }; ctx.G.items.scroll1 = { type: "uscroll" };
+	character.slots = { mainhand: { name: "slimestaff", level: 3 } };
+	ups.length = 0;
+	ctx.upgrade = (k, sk, off, calc) => (ups.push([k, !!calc]), Promise.resolve(calc ? { chance: 0.7 } : { success: true }));
+	const slimerow = { id: "upgrade:mainhand:slimestaff:4:", kind: "upgrade", cost: 0, action: { kind: "upgrade", name: "slimestaff", level: 3, scroll: "scroll1", resources: [{ num: 5 }] }, request: { name: "slimestaff", level: 4 } };
+	await vm.runInContext("run_row", ctx)(slimerow);
+	assert(ups.length === 2 && ups[1][0] === 5, `spare copies → guide's 70% accepted (${JSON.stringify(ups)})`);
+	character.items[6] = null; character.slots = {}; ups.length = 0;
+	const e23 = await vm.runInContext("run_row", ctx)(slimerow).catch((e) => e);
+	assert(e23?.reason === "low_chance", "only copy → 70% refused");
+	// report is copyable
+	let modal = "";
+	ctx.parent.show_modal = (html) => (modal = html);
+	vm.runInContext("report()", ctx);
+	assert(/<textarea/.test(modal) && /quest wcap/.test(modal), "report() opens a selectable text box");
 	console.log("ALL PASS");
 })();
