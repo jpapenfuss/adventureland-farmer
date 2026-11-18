@@ -9,7 +9,7 @@ const G = {
 	monsters: { goo: { xp: 10, hp: 100, attack: 5, respawn: 10, range: 20, speed: 10, armor: 0, resistance: 0 } },
 	maps: { main: { monsters: [{ type: "goo", count: 5, boundary: [100, 100, 400, 400] }], npcs: [] } },
 	items: { hpot1: { g: 20 }, mpot1: { g: 20 } }, skills: { attack: {}, use_town: {}, use_hp: {}, use_mp: {}, regen_hp: {}, regen_mp: {} },
-	classes: { ranger: { damage_type: "physical" } }, npcs: {}, craft: { wcap: { quest: "mcollector", items: [[20, "beewings"]] } }, levels: { 10: 1000 },
+	classes: { ranger: { damage_type: "physical" } }, npcs: {}, craft: { wcap: { quest: "mcollector", items: [[20, "beewings"]] } }, quests: {}, levels: { 10: 1000 },
 };
 const timers = [];
 const ctx = {
@@ -112,5 +112,37 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext(`state.errand = null; smart_depth = 0; restock()`, ctx);
 	await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
 	assert(bought.length && bought[0][1] === 50, `restock buys affordable amount (${JSON.stringify(bought)})`);
+
+	// 10) governor honours the server-reported call cost
+	character.cc = 150;
+	assert(vm.runInContext("spent()", ctx) >= 150 && !vm.runInContext("can_spend(1, 0)", ctx), "spent() uses character.cc");
+	character.cc = 0;
+
+	// 11) far chests wait for loot_wait_ms, near ones open at once
+	const opened = [];
+	ctx.parent.open_chest = (id) => opened.push(id);
+	ctx.parent.chests = { far: { x: 1000, y: 0 } };
+	ctx.distance = (a, b) => Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0));
+	character.x = 0; character.y = 0; character.esize = 10;
+	vm.runInContext("loot_chests()", ctx);
+	assert(!opened.length, "far chest not opened immediately");
+	vm.runInContext("chest_tries.far.seen -= CFG.loot_wait_ms + 1", ctx);
+	vm.runInContext("loot_chests()", ctx);
+	assert(opened[0] === "far", "far chest opened after loot_wait_ms");
+	ctx.parent.chests = { near: { x: 100, y: 0 } };
+	vm.runInContext("loot_chests()", ctx);
+	assert(opened[1] === "near", "near chest opened at once");
+
+	// 12) quest craft walks to the quest NPC
+	const visited = [];
+	ctx.G.craft.wcap.cost = 0; ctx.G.npcs.mcollector = { name: "Cole" };
+	ctx.find_npc = (id) => (visited.push(id), { map: "main", x: 0, y: 0 });
+	ctx.smart_move = () => Promise.resolve();
+	ctx.auto_craft = () => Promise.resolve({ success: true });
+	character.items[2] = null; // drop the computer
+	character.gold = 1e6;
+	const r12 = await vm.runInContext(`run_craft({ recipe: "wcap", ready: true })`, ctx).catch((e) => e);
+	if (r12 && r12.reason) console.log("run_craft threw", r12);
+	assert(visited[0] === "mcollector", `quest craft goes to quest NPC (${visited})`);
 	console.log("ALL PASS");
 })();

@@ -13,6 +13,9 @@
 //  - Monster hunt: a turn-in is immediately followed by starting the next hunt (server does one per call).
 //  - Quest materials are protected from load, not only after the first guide read.
 //  - Restock buys what it can afford (v8 bought nothing if a full stack was unaffordable); skips the walk with a computer.
+//  - v9.2: governor takes max(own meter, server-reported character.cc) and real equip/unequip costs; chests far
+//    than 400px wait 45s (goldm drops to 1 past 400px); quest crafts/exchanges go to the quest NPC; respawn waits
+//    the server's rip_time instead of polling; use_town retries back off 1.5s (no cooldown, cant_escape >5 targets).
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -70,7 +73,8 @@ const CFG = {
 	errand_timeout_ms: 180_000, // an errand (sell/guide/restock) still running after this is assumed hung; its lock is released
 	hp_pot: "hpot1", mp_pot: "mpot1", pot_min: 30, pot_buy: 200,
 	kite_margin: 25,
-	loot_range: 400,         // server drops the gold multiplier past 400px; we still loot, just prefer near
+	loot_range: 400,         // server drops the gold multiplier past 400px from the chest
+	loot_wait_ms: 45_000,    // a chest farther than loot_range is opened anyway after this long (before it's lost)
 	force_type: null,
 	switch_margin: 1.15,     // only change packs if the new one scores 15% better (travel isn't free)
 	measure_min_s: 90,       // seconds at a pack before its measured xp/s replaces the estimate
@@ -320,7 +324,10 @@ function make_waypoints([x1, y1, x2, y2]) {
 // ---------- Emit governor ----------
 // Meters every packet this client sends (including the game's own) in the same 4s window the server uses.
 const BUDGET = { window_ms: 4000, soft: 110 }; // server hard limit is 200; resends/skill costs eat the gap
-const EMIT_COST = { move: 2.5 };
+// Server (node/server.js socket wrapper): every event costs 1 plus CC[event] (move 1.5, equip 3, unequip 6),
+// and each resulting "player" resend on our socket adds ~1-2 more. The server also reports its own running
+// total on every player update as character.cc, which includes costs we can't see (resends, chest/skill modifiers).
+const EMIT_COST = { move: 2.5, equip: 5, unequip: 8, equip_batch: 6 };
 const sent = [];
 function meter_socket() {
 	const s = parent.socket;
@@ -337,7 +344,8 @@ function spent() {
 	while (sent.length && sent[0][0] < cut) sent.shift();
 	let c = 0;
 	for (const x of sent) c += x[1];
-	return c;
+	// character.cc lags by one update; our own meter covers what we sent since. Take whichever is higher.
+	return Math.max(c, +character.cc || 0);
 }
 // reserve = headroom kept for higher-priority actions (attack 0, skills 15, potions 10, moves 30, loot 40)
 const can_spend = (cost, reserve) => spent() + cost <= BUDGET.soft - reserve;
@@ -546,17 +554,20 @@ function sustain() {
 
 const chest_tries = {}; // id -> { n, t }
 function loot_chests() {
+	// Server (open_chest): no distance requirement, but goldm drops to 1 when the opener is >400px away or the
+	// chest is >8 min old. Open near chests now; a far one only after loot_wait_ms (we usually walk past it).
 	if (character.rip || character.esize === 0) return;
 	const now = Date.now();
 	let best = null, best_d = Infinity;
 	for (const id in parent.chests || {}) {
-		const tr = chest_tries[id];
-		if (tr && (tr.n >= 3 || now - tr.t < 3000)) continue; // 3 attempts max, 3s apart
+		const tr = (chest_tries[id] = chest_tries[id] || { n: 0, t: 0, seen: now });
+		if (tr.n >= 3 || now - tr.t < 3000) continue; // 3 attempts max, 3s apart
 		const d = distance(character, parent.chests[id]);
+		if (d > CFG.loot_range && now - tr.seen < CFG.loot_wait_ms) continue;
 		if (d < best_d) (best = id), (best_d = d);
 	}
 	if (!best || !can_spend(1, 40)) return;
-	const tr = (chest_tries[best] = chest_tries[best] || { n: 0, t: 0 });
+	const tr = chest_tries[best];
 	tr.n++; tr.t = now;
 	parent.open_chest(best); // one chest per call; runner's loot(id) routes via parent.parent in CODE mode
 }
@@ -710,14 +721,17 @@ async function run_craft(a) {
 	if (!recipe) throw { reason: "recipe" };
 	if ((recipe.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
 	if (character.esize < 1) throw { reason: "no_space" };
+	// Server (craft): quest recipes must be made within sell_dist of their quest NPC (e.g. Cole), others at the
+	// craftsman; a computer bypasses both
+	const npc = a.npc || recipe.quest || "craftsman";
 	if (!has_computer()) {
-		const loc = find_npc(a.npc || "craftsman");
-		if (!loc) throw { reason: "no_npc", npc: a.npc };
+		const loc = find_npc(npc);
+		if (!loc) throw { reason: "no_npc", npc };
 		await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 	}
 	await wait_budget(1, 30);
 	const r = await T(auto_craft(a.recipe));
-	game_log(`craft ${a.recipe} at ${G.npcs[a.npc]?.name || a.npc}: ${r && !r.failed ? "OK" : "FAILED"}`, "#58D685");
+	game_log(`craft ${a.recipe} at ${G.npcs[npc]?.name || npc}: ${r && !r.failed ? "OK" : "FAILED"}`, r && !r.failed ? "#58D685" : "#E25C5C");
 	return r;
 }
 function hunt_directive() {
@@ -799,10 +813,21 @@ async function run_stat(a) {
 		}
 	}
 }
+// Server (exchange): quest items (G.items[x].quest, e.g. seashells) are turned in within sell_dist of
+// G.quests[quest]; everything else at Xyn (G.maps.main.exchange). A computer bypasses both.
+async function go_exchange(a) {
+	if (has_computer()) return;
+	if (a.npc) return go_npc(a.npc);
+	const quest = G.items[a.name]?.quest;
+	const q = quest && G.quests?.[quest];
+	if (q && q.map && Number.isFinite(q.x)) return go({ map: q.map, x: q.x, y: q.y + 30 });
+	if (quest && find_npc(quest)) return go_npc(quest);
+	return go_npc("exchange");
+}
 async function run_exchange(a) {
 	if (!a.ready) throw { reason: "inputs_not_ready" };
 	if (character.esize < 1) throw { reason: "no_space" };
-	await go_npc(a.npc || "exchange");
+	await go_exchange(a);
 	const k = find_slot(a.name, a.level || 0);
 	if (k < 0) throw { reason: "input_missing" };
 	if ((character.items[k].q || 1) < (a.quantity || 1)) throw { reason: "inputs_not_ready" };
@@ -988,9 +1013,11 @@ function recover() {
 	}
 	const threat = get_nearest_monster({ target: character.name });
 	const channeling = !!character.c.town;
-	if (!channeling && (!state.fled || (threat && character.hp < character.max_hp * CFG.flee_hp))) {
+	// use_town has no cooldown and fails with cant_escape while >5 monsters target us: retry at most every 1.5s
+	if (!channeling && Date.now() - (state.town_at || 0) > 1500 &&
+		(!state.fled || (threat && character.hp < character.max_hp * CFG.flee_hp))) {
 		if (walking() || is_moving(character)) stop("smart"), stop("move");
-		if (fire("use_town")) state.fled = true;
+		if (fire("use_town")) (state.fled = true), (state.town_at = Date.now());
 	}
 	if (!channeling && threat) {
 		const t = choose_target(false);
@@ -1008,7 +1035,7 @@ function recover() {
 }
 
 // ---------- Main loop ----------
-let last_respawn = 0;
+let next_respawn = 0;
 function tick() {
 	let wait = 200;
 	try {
@@ -1029,7 +1056,11 @@ function tick() {
 			}
 			state.errand = null; // in-flight errands die with us; their late finally can't clear a newer lock (token)
 			state.recovering = false;
-			if (!character.c.respawn && Date.now() - last_respawn > 5000) (last_respawn = Date.now()), respawn();
+			// Server rejects respawn for B.rip_time (12s) after death with {ms: remaining}; wait exactly that long
+			if (Date.now() >= next_respawn && can_spend(1, 10)) {
+				next_respawn = Date.now() + 5000;
+				Promise.resolve(respawn()).catch((e) => { if (e?.ms > 0) next_respawn = Date.now() + e.ms + 200; });
+			}
 			wait = 1000;
 		} else if (state.recovering || character.hp < character.max_hp * CFG.flee_hp) {
 			state.dead_handled = false;
