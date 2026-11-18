@@ -11,6 +11,8 @@
 //   5. Fight at the chosen pack: guide farm row > guide quest materials > monster hunt > own quest
 //      materials > best measured/estimated xp/s pack.
 //
+// Diagnostics: type report() or why_not("bee") in the CODE console.
+//
 // Bag policy (the reason for the rewrite): every bag item is KEEP, SELL or BANK.
 //   KEEP: locked items, potions/scrolls/tools/computer, CFG.keep, items the guide's current steps use
 //         (rows + each plan's chosen .next path, not every alternative), inputs of open quest recipes.
@@ -160,7 +162,8 @@ function errand(name, fn) {
 	return true;
 }
 const skipped = (key) => (state.gear_skip[key] || 0) > Date.now();
-const skip = (key, ms) => (state.gear_skip[key] = Date.now() + ms);
+const skip_why = {}; // key -> last reason (shown by report())
+const skip = (key, ms, reason) => { if (reason) skip_why[key] = reason; return (state.gear_skip[key] = Date.now() + ms); };
 
 // =====================================================================
 // Monster data & the fight model
@@ -1023,7 +1026,14 @@ function guide_refresh() {
 	refresh_directive();
 	return prog;
 }
-const next_guide_row = (prog) => CFG.gear && (prog?.rows || []).find((r) => CFG.gear_actions.includes(r.kind) && !skipped(r.id) && r.affordable !== false);
+const unsupported_seen = new Set();
+const next_guide_row = (prog) => {
+	for (const r of prog?.rows || []) if (r.kind !== "farm" && !CFG.gear_actions.includes(r.kind) && !unsupported_seen.has(r.kind)) {
+		unsupported_seen.add(r.kind);
+		game_log(`guide: rows of kind "${r.kind}" aren't automated (e.g. ${r.id})`, "gray");
+	}
+	return CFG.gear && (prog?.rows || []).find((r) => CFG.gear_actions.includes(r.kind) && !skipped(r.id) && r.affordable !== false);
+};
 
 // Guide row executors
 async function run_craft(a) {
@@ -1165,7 +1175,7 @@ async function guide_step() {
 		await sleep_ms(500);
 		return true;
 	} catch (e) {
-		skip(row.id, e?.reason === "low_chance" ? 1_800_000 : 300_000);
+		skip(row.id, e?.reason === "low_chance" ? 1_800_000 : 300_000, why(e) + (e?.chance !== undefined ? ` ${(e.chance * 100).toFixed(0)}%` : "") + (e?.want ? ` ${e.want}` : ""));
 		game_log(`guide: skip ${row.id} (${why(e)}${e?.chance !== undefined ? " " + (e.chance * 100).toFixed(0) + "%" : ""}${e?.want ? " " + e.want : ""})`, "gray");
 		return false;
 	}
@@ -1282,6 +1292,53 @@ function on_destroy() { save_state(); }
 function forget() { Object.assign(state, { measured: {}, danger: {}, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
 // =====================================================================
+// Diagnostics (call from the CODE console): report(), why_not("bee")
+// =====================================================================
+const mins = (t) => `${Math.max(0, Math.ceil((t - Date.now()) / 60_000))}m`;
+function report() {
+	const L = (s, c = "#9BD") => game_log(s, c);
+	const p = state.pack, d = state.directive;
+	L(`— report ${new Date().toLocaleTimeString()} —`, "#FFF");
+	L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
+	if (d) L(`directive: ${d.monster} — ${d.reason}${state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
+	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
+	const h = character.s.monsterhunt;
+	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	const due = town_due();
+	L(`town due: ${Object.keys(due).filter((k) => k !== "plan" && due[k]).join(", ") || "nothing"} | errand: ${state.errand || "none"}`);
+	for (const r of state.guide?.rows || []) {
+		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "?"}` : r.affordable === false ? "unaffordable" : "next";
+		L(`guide ${r.id}: ${st}`);
+	}
+	for (const id of quest_recipes()) {
+		const r = G.craft[id];
+		const inputs = r.items.map(([q, n, l]) => `${n}${l ? "+" + l : ""} ${held(n, l)}${state.bank_seen[n] ? `(+${state.bank_seen[n]} bank)` : ""}/${q}`).join(", ");
+		const st = !recipe_wanted(id) ? "done" : skipped("qc:" + id) ? `paused ${mins(state.gear_skip["qc:" + id])}` : has_inputs(r) ? "READY to craft" : "collecting";
+		L(`quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`);
+	}
+	const plan = bag_plan(), kept = {};
+	character.items.forEach((i) => { if (i) kept[bag_class(i)] = (kept[bag_class(i)] || 0) + 1; });
+	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}, bank ${kept.bank || 0}, sell ${kept.sell || 0}${plan.fetch.length ? ` | to fetch: ${plan.fetch.join(", ")}` : ""}`);
+	for (const k of ["town:sell", "town:restock", "town:bank"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}`);
+	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
+}
+function why_not(mtype) {
+	const L = (s) => game_log(s, "#9BD");
+	const m = G.monsters[mtype];
+	if (!m) return L(`${mtype}: no such monster`);
+	const flags = ["special", "cooperative", "global", "unlist", "immune", "passive", "peaceful", "stationary", "cute"].filter((f) => m[f]);
+	if (!farmable_type(mtype)) return L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`);
+	const f = fight_math(m);
+	if (!f) return L(`${mtype}: we can't out-damage its healing`);
+	const limit = character.max_hp * CFG.safety * (state.danger[mtype] || 1);
+	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
+		`${f.kiteable ? " (kiteable)" : ""}${state.danger[mtype] ? ` (died to it: x${state.danger[mtype].toFixed(2)})` : ""}`);
+	const areas = [];
+	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
+	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
+}
+
+// =====================================================================
 // Main loop
 // =====================================================================
 let next_respawn = 0;
@@ -1356,7 +1413,8 @@ function tick() {
 			loot_chests();
 			if (pack) {
 				const s = state.session, live = s && Date.now() - s.start > 10_000 ? (s.xp / ((Date.now() - s.start) / 1000)).toFixed(0) : "–";
-				set_message(`${errand_busy() ? state.errand + " | " : ""}${pack.mtype} ${live}xp/s | ${character.esize} free | ${spent().toFixed(0)}/${BUDGET.soft}`);
+				const src = pack.directive ? pack.directive.split(/[ :(]/)[0] : "xp";
+				set_message(`${errand_busy() ? state.errand + " | " : ""}${pack.mtype} (${src}) ${live}xp/s | ${character.esize} free`);
 			}
 		}
 	} catch (e) { game_log("tick: " + e); }

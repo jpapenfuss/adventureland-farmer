@@ -385,5 +385,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.buy = (n, q) => { buys.push(n); character.items[4] = { name: n, level: 0 }; return Promise.resolve({ success: true }); };
 	await vm.runInContext("run_row", ctx)(fixture.rows[0]);
 	assert(buys.join() === "staff" && ups.length === 2 && ups[1][0] === 4, `buys a staff and develops it (${buys}; ${JSON.stringify(ups)})`);
+
+	// 22) diagnostics run without throwing and say something useful
+	const logs0 = log.length;
+	vm.runInContext("report(); why_not('squigtoad'); why_not('goo'); why_not('nope')", ctx);
+	const out22 = log.slice(logs0).join("\n");
+	if (process.env.SHOW) console.log(out22);
+	assert(/fighting:/.test(out22) && /quest wcap/.test(out22) && /bags: \d+ free/.test(out22), "report() summarises pack, quests, bags");
+	assert(/squigtoad: .*UNSAFE|squigtoad: .*SAFE/.test(out22) && /nope: no such monster/.test(out22), "why_not() explains safety");
 	console.log("ALL PASS");
 })();
