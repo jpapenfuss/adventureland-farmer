@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "10.7";
+const VERSION = "10.8";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -1259,8 +1259,19 @@ async function run_row(row) {
 	throw { reason: "unsupported" };
 }
 // One guide step: re-read, run the top actionable row; failures back off (low odds 30 min, else 5 min)
-async function guide_step() {
-	const row = next_guide_row(guide_refresh());
+// A row we can do without walking anywhere from here: equips, retrieves from the bank floor we're standing on,
+// and NPC steps a computer covers. Those don't count toward guide_steps_per_run, so a bank visit keeps going
+// while the guide keeps asking for items from the bank (v10.7 left after each retrieve+equip and came back).
+const bank_floors = () => new Set(Object.values(bank_packs_list()).map((p) => p[0]));
+const on_bank_floor = () => bank_floors().has(character.map);
+function row_is_local(row) {
+	const a = row.action || {};
+	if (row.kind === "equip") return true;
+	if (row.kind === "retrieve") return bank_packs_list()[a.target?.pack]?.[0] === character.map;
+	return has_computer() && ["buy", "upgrade", "develop", "compound", "craft", "exchange", "supplies"].includes(row.kind) && !G.craft[a.recipe]?.quest;
+}
+async function guide_step(row) {
+	row = row || next_guide_row(guide_refresh());
 	if (!row) return false;
 	try {
 		await run_row(row);
@@ -1308,18 +1319,32 @@ function town_run(due) {
 		let did = 0;
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
-		if (due.guide) for (let i = 0; i < CFG.guide_steps_per_run; i++) {
+		// Guide steps: keep going while the next row is local (no walking); rows that walk count toward the cap;
+		// a failed row is paused and we move on to the next one instead of ending the run
+		if (due.guide) for (let i = 0, far = 0, fails = 0; i < 60; i++) {
 			if (character.rip || state.recovering || character.hp < character.max_hp * 0.5) break;
-			if (!(await step("guide", guide_step))) break;
-			did++;
+			const row = next_guide_row(guide_refresh());
+			if (!row) break;
+			const local = row_is_local(row);
+			if (!local && far >= CFG.guide_steps_per_run) break;
+			if (!local) far++;
+			if (await step("guide", () => guide_step(row))) did++;
+			else if (++fails >= 5) break;
 		}
 		guide_refresh(); // needs may have changed (crafted, upgraded) before deciding what to bank
+		// Still in the bank after the guide's retrieves: store/fetch now, before walking anywhere else
+		let banked = false;
+		if (CFG.bank && on_bank_floor() && !skipped("town:bank")) {
+			const here = bag_plan();
+			if (here.bank.length || here.fetch.length) { did += await bag_step("bank", () => task_bank(here.fetch)); banked = true; }
+		}
 		const plan = bag_plan();
 		const short = plan.free < CFG.bag_min_free;
 		if (due.sell || (short && plan.sell.length && !skipped("town:sell"))) did += await bag_step("sell", task_sell);
 		if (due.restock) did += await bag_step("restock", task_restock);
 		const after = bag_plan();
-		if (CFG.bank && !skipped("town:bank") && ((after.free < CFG.bag_min_free && after.bank.length) || after.fetch.length))
+		// standing in the bank anyway (guide retrieves): store what's bankable now, short on space or not
+		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < CFG.bag_min_free || on_bank_floor()) && after.bank.length || after.fetch.length))
 			did += await bag_step("bank", () => task_bank(after.fetch));
 		state.last_pick = 0; // re-evaluate where to fight
 		return did;

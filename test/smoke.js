@@ -517,5 +517,40 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	fire28();
 	const r28 = await w28;
 	assert(r28?.reason === "walk_timeout" && stopped28 === 1 && vm.runInContext("!walking()", ctx), "endless walk cancelled, walking() cleared");
+
+	// 29) new character: guide asks for 6 bank items one at a time (retrieve → equip → next retrieve…).
+	//     One bank trip, all 6 done in one town run, leftovers stored before leaving.
+	ctx.setTimeout = (fn, ms) => (ms < 60000 && setImmediate(fn), 0);
+	const gear29 = ["helmet", "coat", "pants", "gloves", "shoes", "amulet"];
+	for (const n of gear29) ctx.G.items[n] = { type: n === "coat" ? "chest" : n, g: 100 };
+	ctx.G.items.junk29 = { type: "material" };
+	ctx.parent.bank_packs = { items0: ["bank", 0, 0], items1: ["bank", 0, 0] };
+	character.bank = { items0: gear29.map((n) => ({ name: n })), items1: [] };
+	character.items = Array(42).fill(null); character.items[0] = { name: "junk29", q: 5 }; character.esize = 41;
+	character.slots = {}; character.map = "main"; character.hp = character.max_hp;
+	const walks29 = [];
+	ctx.smart_move = (d) => { walks29.push(typeof d === "string" ? d : d.map); character.map = typeof d === "string" ? "main" : d.map || character.map; return Promise.resolve(); };
+	ctx.bank_retrieve = (pack, n) => {
+		const it = character.bank[pack][n]; character.bank[pack][n] = null;
+		const k = character.items.findIndex((x) => !x); character.items[k] = it; character.esize--;
+		return Promise.resolve({ success: true });
+	};
+	ctx.bank_store = (k) => { character.items[k] = null; character.esize++; return Promise.resolve({ success: true }); };
+	ctx.equip = (k, slot) => { character.slots[slot] = character.items[k]; character.items[k] = null; character.esize++; return Promise.resolve({ success: true }); };
+	ctx.get_progression = () => {
+		const next = gear29.find((n) => !character.slots[n]);
+		if (!next) return { ready: true, rows: [], plans: [] };
+		const k = character.items.findIndex((i) => i && i.name === next);
+		if (k >= 0) return { ready: true, plans: [], rows: [{ id: "equip:" + next, kind: "equip", action: { name: next, level: 0, slot: next, num: k } }] };
+		const n = character.bank.items0.findIndex((i) => i && i.name === next);
+		return { ready: true, plans: [], rows: [{ id: "retrieve:" + next, kind: "retrieve", action: { name: next, level: 0, target: { pack: "items0", bankNum: n } } }] };
+	};
+	vm.runInContext("state.errand = null; smart_depth = 0; state.gear_skip = {}; state.last_town = 0; state.bank_full_at = 0", ctx);
+	vm.runInContext("guide_refresh(); town_check()", ctx);
+	for (let i = 0; i < 5000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	const worn29 = gear29.filter((n) => character.slots[n]).length;
+	assert(worn29 === 6 && walks29.filter((m) => m === "bank").length === 1, `all 6 items retrieved+equipped in one bank visit (worn ${worn29}, walks ${JSON.stringify(walks29)})`);
+	assert(!character.items.some((i) => i && i.name === "junk29") && walks29.indexOf("potions") > walks29.indexOf("bank"), `unneeded material stored before leaving the bank (${JSON.stringify(walks29)})`);
+	ctx.get_progression = undefined;
 	console.log("ALL PASS");
 })();
