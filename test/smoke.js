@@ -426,5 +426,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.show_modal = (html) => (modal = html);
 	vm.runInContext("report()", ctx);
 	assert(/<textarea/.test(modal) && /quest wcap/.test(modal), "report() opens a selectable text box");
+
+	// 24) pause reasons survive reload; old reasonless guide-row pauses are cleared once
+	vm.runInContext(`skip("upgrade:mainhand:slimestaff:4:", 600000, "low_chance 70%"); save_state(); state.gear_skip = {}; load_state()`, ctx);
+	assert(vm.runInContext(`skip_why["upgrade:mainhand:slimestaff:4:"] === "low_chance 70%" && skipped("upgrade:mainhand:slimestaff:4:")`, ctx), "pause reason persisted");
+	const k24 = Object.keys(store)[0], old = JSON.parse(store[k24]); delete old.skip_why; store[k24] = JSON.stringify(old);
+	vm.runInContext(`state.gear_skip = {}; load_state()`, ctx);
+	assert(vm.runInContext(`!skipped("upgrade:mainhand:slimestaff:4:")`, ctx), "pre-v10.3 upgrade pause cleared on load");
 	console.log("ALL PASS");
 })();

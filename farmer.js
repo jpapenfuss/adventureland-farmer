@@ -1292,7 +1292,8 @@ function save_state() {
 	if (typeof set !== "function") return;
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
-		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog });
+		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog,
+		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
@@ -1307,6 +1308,9 @@ function load_state() {
 	Object.assign(state.bank_seen, d.bank_seen || {});
 	Object.assign(state.guide_ignore, live(d.guide_ignore));
 	Object.assign(state.guide_quests, d.guide_quests || {});
+	Object.assign(skip_why, d.skip_why || {});
+	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
+	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	const off = now - (d.at || now);
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
@@ -1344,7 +1348,7 @@ function report() {
 	const due = town_due();
 	L(`town due: ${Object.keys(due).filter((k) => k !== "plan" && due[k]).join(", ") || "nothing"} | errand: ${state.errand || "none"}`);
 	for (const r of state.guide?.rows || []) {
-		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "?"}` : r.affordable === false ? "unaffordable" : "next";
+		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded (set before this version)"}` : r.affordable === false ? "unaffordable" : "next";
 		L(`guide ${r.id}: ${st}`);
 	}
 	for (const id of quest_recipes()) {
