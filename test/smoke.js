@@ -471,8 +471,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		where.push(character.map); character.items[k] = null; character.esize++;
 		return Promise.resolve({ success: true });
 	};
+	const walks26 = [];
+	ctx.smart_move = (d) => { walks26.push(d && d.map); if (d && d.map) character.map = d.map; return Promise.resolve(); };
+	character.bank = { items0: [], items1: [] }; // bank_b never unlocked (no items8)
 	await vm.runInContext("task_bank([])", ctx);
-	assert(where.length === 42 && where.every((m) => m === "bank_b"), `overflowed to bank_b (${where.length})`);
+	assert(!walks26.includes("bank_b") && where.length === 0 && vm.runInContext("bank_is_full()", ctx), "locked bank_b: never walked to, bank marked full");
+	vm.runInContext("state.bank_full_at = 0", ctx); character.map = "main";
+	character.bank = { items0: [], items1: [], items8: [] }; // unlocked with a bkey
+	await vm.runInContext("task_bank([])", ctx);
+	assert(where.length === 42 && where.every((m) => m === "bank_b"), `unlocked bank_b: overflowed there (${where.length})`);
 	character.items = Array(42).fill(null).map(() => ({ name: "hpamulet" })); character.esize = 0; character.map = "main";
 	ctx.bank_store = () => Promise.reject({ reason: "bank_full" });
 	ctx.item_value = () => 4200;
@@ -499,5 +506,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("state.errand", ctx) === "town", "town run started");
 	for (let i = 0; i < 3000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
 	ctx.get_nearest_monster = () => null; character.hp = character.max_hp;
+
+	// 28) a walk that never arrives (locked door loop) is cancelled at walk_timeout_ms
+	let fire28 = null, stopped28 = 0;
+	ctx.setTimeout = (fn, ms) => { if (ms >= 60000) fire28 = fn; else setImmediate(fn); return 0; };
+	ctx.stop = () => { stopped28++; return Promise.resolve(); };
+	ctx.smart_move = () => new Promise(() => {});
+	vm.runInContext("smart_depth = 0", ctx);
+	const w28 = vm.runInContext("go({ map: 'bank_b' })", ctx).catch((e) => e);
+	fire28();
+	const r28 = await w28;
+	assert(r28?.reason === "walk_timeout" && stopped28 === 1 && vm.runInContext("!walking()", ctx), "endless walk cancelled, walking() cleared");
 	console.log("ALL PASS");
 })();

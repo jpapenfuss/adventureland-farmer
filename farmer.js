@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "10.6";
+const VERSION = "10.7";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -69,6 +69,7 @@ const CFG = {
 	guide_interval_ms: 15_000,
 	guide_steps_per_run: 5,
 	town_min_gap_ms: 20_000, // at least this long between town runs
+	walk_timeout_ms: 120_000, // a smart_move that hasn't arrived by then is cancelled (locked doors, unreachable spots)
 	town_hp: 0.7,            // start a town run only above this HP fraction...
 	town_hp_critical: 0.5,   // ...or this one when bags are nearly full (<= 3 free)
 	errand_timeout_ms: 300_000,
@@ -149,10 +150,18 @@ function spent() {
 const can_spend = (cost, reserve) => spent() + cost <= BUDGET.soft - reserve;
 async function wait_budget(cost, reserve) { while (!can_spend(cost, reserve)) await sleep_ms(250); }
 
+// Every walk has a deadline: the game's pathfinder retries a locked door ("The door is locked!" → "Lost the path"
+// → "Path found!") forever, which hung v10.5's bank errand in front of the locked bank_b door.
 let smart_depth = 0;
-async function go(dest) {
+async function go(dest, ms = CFG.walk_timeout_ms) {
 	smart_depth++;
-	try { return await smart_move(dest); } finally { smart_depth--; }
+	let timer;
+	try {
+		return await Promise.race([smart_move(dest), new Promise((_, rej) => (timer = setTimeout(() => {
+			try { stop("smart"); } catch (e) {}
+			rej({ reason: "walk_timeout", dest: typeof dest === "string" ? dest : dest.map });
+		}, ms)))]);
+	} finally { clearTimeout(timer); smart_depth--; }
 }
 const walking = () => smart_depth > 0;
 const errand_busy = () => !!state.errand && Date.now() - state.errand_at < CFG.errand_timeout_ms;
@@ -762,9 +771,11 @@ async function task_bank(fetch_names) {
 	try { if (character.map !== "bank") await go({ map: "bank" }); } catch (e) { town_reason.bank = "can't reach the bank: " + why(e); throw e; }
 	if (!(await floor_loaded("bank"))) { town_reason.bank = "bank didn't load"; throw { reason: "bank_not_loaded" }; }
 	let { stored, full } = await store_here();
-	// main floor full → the other floors (bank_b: items8 is free to use)
+	// main floor full → other floors you've unlocked. bank_b/bank_u sit behind doors the server keeps locked until a
+	// bkey/ukey is used; an unlocked floor's packs show up in character.bank (items8 for bank_b, items24 for bank_u).
 	const packs = bank_packs_list();
-	if (full) for (const floor of [...new Set(Object.values(packs).map((p) => p[0]))].filter((f) => f !== "bank")) {
+	const unlocked_floors = [...new Set(Object.keys(character.bank || {}).filter((k) => packs[k]).map((k) => packs[k][0]))];
+	if (full) for (const floor of unlocked_floors.filter((f) => f !== "bank")) {
 		if (!slots_where((i) => bag_class(i) === "bank").length) break;
 		try { await go({ map: floor }); } catch (e) { game_log(`bank: can't reach ${floor}: ${why(e)}`, "gray"); continue; }
 		if (!(await floor_loaded(floor))) continue;
@@ -776,7 +787,9 @@ async function task_bank(fetch_names) {
 	if (full) {
 		state.bank_full_at = Date.now();
 		town_reason.bank = "every bank pack you can use is full";
-		game_log("Bank full on every floor: selling plain +0 junk until there's room (unlock more packs or clear the bank)", "#E25C5C");
+		const has_key = character.items.some((i) => i && (i.name === "bkey" || i.name === "ukey"));
+		game_log(`Bank full (floors: ${unlocked_floors.join(", ")}): selling plain +0 junk until there's room.` +
+			(has_key ? " You hold a bank key: use it in the bank to unlock another floor." : " A Bank Key (bkey) unlocks the bank_b floor."), "#E25C5C");
 	} else if (!stored && store.length) town_reason.bank = "store calls failed (see gray bank: lines)";
 	// pull back what bags need, from packs on whichever floor we're on
 	let got = 0;
