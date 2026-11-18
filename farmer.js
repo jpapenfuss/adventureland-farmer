@@ -1,5 +1,14 @@
 // =====================================================================
-// Guide-driven farmer for Adventure Land — v8
+// Guide-driven farmer for Adventure Land — v9
+// v9 (fixes):
+//  - Flee: cancels any smart_move first (v8 never fled while traveling), then holds until recover_hp/recover_mp
+//    instead of walking back at 26% HP; fights back only against attackers; no use_town spam in town.
+//  - Split the single "traveling" flag into walking() (smart_move in flight → no steering) and an errand lock
+//    (sell/guide/restock → no pack travel, kiting still allowed). Errand lock has a timeout and a token.
+//  - Guide farm rows / hunt targets without a usable boundary fall back to spawn data (v8 crashed every tick).
+//  - run_retrieve: own until() poller (wait_for isn't a runner function); bank_packs read from parent if needed.
+//  - run_stat: all checks before unequip; finally{} always re-equips.
+//  - tick wait: next_skill.attack unset → NaN → 0ms busy loop; now floored at 50ms.
 // v8: the Progression Guide (get_progression) is the driver. Every guide row that can be acted on
 //     is executed in the guide's own order (equip, buy, upgrade, compound, craft, stat, exchange,
 //     token, dismantle, retrieve, supplies, monster hunts); the guide's farm row decides where to
@@ -49,6 +58,9 @@ const CFG = {
 	pack_cooldown_ms: 600_000,
 	repick_ms: 120_000,      // re-evaluate as stats/level change
 	flee_hp: 0.25,
+	recover_hp: 0.85,        // after fleeing, stay put (town) until HP and MP are back to these fractions
+	recover_mp: 0.4,
+	errand_timeout_ms: 180_000, // an errand (sell/guide/restock) still running after this is assumed hung; its lock is released
 	hp_pot: "hpot1", mp_pot: "mpot1", pot_min: 30, pot_buy: 200,
 	kite_margin: 25,
 	loot_range: 400,         // server drops the gold multiplier past 400px; we still loot, just prefer near
@@ -83,7 +95,11 @@ const RANGED = ["ranger", "mage", "priest"].includes(character.ctype);
 const state = {
 	pack: null,           // { mtype, map, boundary, count, score }
 	safe: {},             // mtype -> { per_kill_xp_rate } for every type we can fight
-	traveling: false,
+	errand: null,         // name of the running errand (sell/guide/restock); owns NPC visits, blocks pack travel
+	errand_at: 0,
+	errand_token: null,
+	recovering: false,    // fled at low HP; no farming until recover_hp/recover_mp
+	fled: false,          // use_town sent for this recovery
 	waypoints: [], wp: 0,
 	last_target_at: Date.now(),
 	last_pick: 0,
@@ -92,8 +108,6 @@ const state = {
 	realism: 1,           // EMA of measured/estimated across packs; scales unmeasured estimates
 	danger: {},           // mtype -> multiplier on CFG.safety, shrinks each time it kills us
 	session: null,        // { key, est, xp, start }
-	selling: false,
-	gearing: false,
 	last_gear: 0,
 	protect: new Set(),   // item names the advisor's plans need; never auto-sold
 	gear_skip: {},        // row id -> until timestamp (failed/declined steps)
@@ -102,6 +116,10 @@ const state = {
 	directive: null,      // { monster, map, boundary, count, reason, until } from an advisor farm row
 };
 const pack_key = (p) => `${p.map}:${p.boundary.join(",")}`;
+// [x1,y1,x2,y2] with finite numbers and positive area; anything else would crash pack_key/in_boundary every tick
+function valid_boundary(b) {
+	return Array.isArray(b) && b.length >= 4 && b.slice(0, 4).every(Number.isFinite) && b[2] > b[0] && b[3] > b[1];
+}
 
 // ---------- Scoring ----------
 function mitigate(dmg, def) {
@@ -142,9 +160,31 @@ function expected_respawn(mtype, pack) {
 
 function pack_areas(name, pack) {
 	// single-map packs use .boundary; roaming packs list [map,x1,y1,x2,y2] in .boundaries
-	if (pack.boundary) return [{ map: name, boundary: pack.boundary, count: pack.count }];
-	if (!pack.boundaries) return [];
-	return pack.boundaries.map((b) => ({ map: b[0], boundary: b.slice(1, 5), count: pack.count / pack.boundaries.length }));
+	let areas = [];
+	if (pack.boundary) areas = [{ map: name, boundary: pack.boundary, count: pack.count }];
+	else if (pack.boundaries) areas = pack.boundaries.map((b) => ({ map: b[0], boundary: b.slice(1, 5), count: pack.count / pack.boundaries.length }));
+	return areas.filter((a) => valid_boundary(a.boundary));
+}
+
+// Area for a directive. Uses the given boundary if it is usable; otherwise falls back to spawn data,
+// preferring the requested map, then the densest area anywhere. null if the monster has no reachable spawn.
+function resolve_area(monster, map, boundary, count) {
+	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1 };
+	let best = null;
+	for (const name in G.maps) {
+		const m = G.maps[name];
+		if (m.ignore || m.instance || m.pvp) continue;
+		for (const pack of m.monsters || []) {
+			if (pack.type !== monster) continue;
+			for (const area of pack_areas(name, pack)) {
+				const am = G.maps[area.map];
+				if (!am || am.ignore || am.instance || am.pvp) continue;
+				const rank = (area.map === map ? 1e6 : 0) + area.count;
+				if (!best || rank > best.rank) best = { ...area, rank };
+			}
+		}
+	}
+	return best && { map: best.map, boundary: best.boundary, count: best.count };
 }
 
 function score_area(t, pack, area) {
@@ -251,7 +291,7 @@ setInterval(() => {
 	const p = state.pack;
 	if (!p || character.rip) return;
 	const here = character.map === p.map && in_boundary(p.boundary, 300);
-	if (!state.session && here && !state.traveling) state.session = { key: pack_key(p), est: p.est, xp: 0, start: Date.now() };
+	if (!state.session && here && !walking() && !state.recovering) state.session = { key: pack_key(p), est: p.est, xp: 0, start: Date.now() };
 	if (state.session) {
 		state.session.xp += d;
 		// roll the measurement periodically so the repick sees fresh numbers
@@ -374,17 +414,46 @@ function watch_progress(t) {
 	return false;
 }
 
-// ---------- Movement ----------
+// ---------- Movement / errands ----------
+// Two separate locks (v8 had one "traveling" flag held for an entire errand, which froze kiting and
+// approach even while standing at an NPC):
+//  - walking(): a smart_move is in flight; nothing else may steer.
+//  - errand_busy(): a sell/guide/restock errand owns NPC visits; pack travel waits, defensive kiting doesn't.
+let smart_depth = 0;
+async function go(dest) {
+	smart_depth++;
+	try { return await smart_move(dest); } finally { smart_depth--; }
+}
+const walking = () => smart_depth > 0;
+const errand_busy = () => !!state.errand && Date.now() - state.errand_at < CFG.errand_timeout_ms;
+function errand(name, fn) {
+	if (errand_busy()) return false;
+	const token = {};
+	Object.assign(state, { errand: name, errand_at: Date.now(), errand_token: token });
+	Promise.resolve()
+		.then(fn)
+		.catch((e) => game_log(`${name}: ` + (e?.reason || e?.response || e)))
+		.finally(() => {
+			if (state.errand_token !== token) return; // a hung errand that timed out can't clear a newer one's lock
+			state.errand = null;
+			state.last_target_at = Date.now(); // time spent at NPCs isn't "idle at the pack"
+		});
+	return true;
+}
+const until = async (cond, ms) => {
+	const end = Date.now() + ms;
+	while (!cond()) { if (Date.now() > end) return false; await sleep_ms(200); }
+	return true;
+};
+
 async function travel(dest) {
-	if (state.traveling || Date.now() < (state.travel_block_until || 0)) return;
-	state.traveling = true;
+	if (walking() || Date.now() < (state.travel_block_until || 0)) return;
 	try {
-		await smart_move(dest);
+		await go(dest);
 	} catch (e) {
 		if (e && e.reason !== "interrupted") game_log("travel: " + (e.reason || JSON.stringify(e)));
 		state.travel_block_until = Date.now() + 5000; // a failing smart_move must not be retried every tick
 	}
-	state.traveling = false;
 	state.last_target_at = Date.now();
 }
 
@@ -393,7 +462,7 @@ function in_boundary([x1, y1, x2, y2], pad = 150) {
 }
 
 function patrol() {
-	if (is_moving(character) || state.traveling) return;
+	if (is_moving(character) || walking()) return;
 	if (distance(character, state.waypoints[state.wp]) < 30) state.wp = (state.wp + 1) % state.waypoints.length;
 	const next = state.waypoints[state.wp];
 	if (can_move_to(next.x, next.y)) move_to(next.x, next.y, 500);
@@ -512,15 +581,14 @@ function nearest_shop() {
 	return search(character.map) || search("main");
 }
 const sleep_ms = (ms) => new Promise((r) => setTimeout(r, ms));
-async function sell_junk() {
-	if (state.selling || state.traveling || character.rip || character.esize > CFG.sell_when_free) return;
+function sell_junk() {
+	if (errand_busy() || walking() || character.rip || character.esize > CFG.sell_when_free) return;
 	const junk = character.items.map((it, i) => (is_junk(it) ? i : -1)).filter((i) => i >= 0);
 	if (!junk.length) return; // nothing safe to sell; loot will stall until you clear bags
-	state.selling = state.traveling = true;
-	try {
+	errand("sell", async () => {
 		if (!has_computer()) {
 			const shop = nearest_shop();
-			if (shop) await smart_move(shop);
+			if (shop) await go(shop);
 		}
 		for (const i of junk) {
 			while (!can_spend(1, 40)) await sleep_ms(250);
@@ -529,8 +597,7 @@ async function sell_junk() {
 			await sell(i, it.q || 1).catch((e) => game_log("sell: " + (e.reason || e)));
 			await sleep_ms(150);
 		}
-	} catch (e) { game_log("sell_junk: " + (e.reason || e)); }
-	state.selling = state.traveling = false;
+	});
 }
 
 // ---------- Gear progression ----------
@@ -565,7 +632,7 @@ async function buy_from_npc(name, qty, npc) {
 	if (!has_computer()) {
 		const loc = npc && find_npc(npc);
 		if (!loc) throw { reason: "no_shop", name };
-		await smart_move({ map: loc.map, x: loc.x, y: loc.y + 30 });
+		await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 	}
 	await wait_budget(1, 30);
 	return buy(name, qty);
@@ -582,9 +649,9 @@ async function ensure_scroll(scroll) {
 async function run_upgrade(a) {
 	// a: { name, level (target), scroll } — target level is a.level, so input is a.level-1
 	const from = a.level - 1;
-	if (!has_computer()) await smart_move("upgrade");
-	const scroll_k = await ensure_scroll(a.scroll);
-	if (!has_computer()) await smart_move("upgrade"); // buying the scroll may have walked us away
+	if (!has_computer()) await go("upgrade");
+	await ensure_scroll(a.scroll);
+	if (!has_computer()) await go("upgrade"); // buying the scroll may have walked us away
 	const k = find_slot(a.name, from);
 	if (k < 0) throw { reason: "input_missing" };
 	await wait_budget(1, 30);
@@ -598,9 +665,9 @@ async function run_upgrade(a) {
 }
 async function run_compound(a) {
 	const from = a.level - 1;
-	if (!has_computer()) await smart_move("compound");
+	if (!has_computer()) await go("compound");
 	await ensure_scroll(a.scroll);
-	if (!has_computer()) await smart_move("compound");
+	if (!has_computer()) await go("compound");
 	const ks = find_slots(a.name, from, 3);
 	if (!ks) throw { reason: "input_missing" };
 	await wait_budget(1, 30);
@@ -622,7 +689,7 @@ async function run_craft(a) {
 	if (!has_computer()) {
 		const loc = find_npc(a.npc || "craftsman");
 		if (!loc) throw { reason: "no_npc", npc: a.npc };
-		await smart_move({ map: loc.map, x: loc.x, y: loc.y + 30 });
+		await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 	}
 	await wait_budget(1, 30);
 	const r = await auto_craft(a.recipe);
@@ -632,15 +699,7 @@ async function run_craft(a) {
 function hunt_directive() {
 	const h = character.s.monsterhunt;
 	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id)) return false;
-	let best = null;
-	for (const name in G.maps) {
-		const map = G.maps[name];
-		if (map.ignore || map.instance || map.pvp) continue;
-		for (const pack of map.monsters || []) {
-			if (pack.type !== h.id) continue;
-			for (const area of pack_areas(name, pack)) if (!best || area.count > best.count) best = area;
-		}
-	}
+	const best = resolve_area(h.id);
 	if (!best) return false;
 	const changed = !state.directive || state.directive.monster !== h.id;
 	state.directive = { monster: h.id, map: best.map, boundary: best.boundary, count: best.count, reason: "monster_hunt", guide_safe: false, until: Date.now() + CFG.gear_interval_ms * 4 };
@@ -652,7 +711,7 @@ async function go_npc(npc) {
 	const loc = find_npc(npc);
 	if (!loc) throw { reason: "no_npc", npc };
 	if (character.map === loc.map && Math.hypot(character.x - loc.x, character.y - loc.y) < 150) return;
-	await smart_move({ map: loc.map, x: loc.x, y: loc.y + 30 });
+	await go({ map: loc.map, x: loc.x, y: loc.y + 30 });
 }
 async function run_hunt() {
 	// Daisy: same call starts a hunt or turns in a finished one (server requires being within 400px of her)
@@ -665,34 +724,49 @@ async function run_hunt() {
 }
 async function run_stat(a) {
 	// a: { slot, num, name, scroll, quantity } — worn items must be unequipped to be scrolled, then re-equipped
+	// Every precondition is checked before the item is unequipped, and the finally block always tries to put
+	// it back, so a failed step can't leave the slot empty (v8 could, on input_missing or a failed purchase).
 	if (character.esize < 1) throw { reason: "no_space" };
-	let k;
-	if (a.slot && character.slots[a.slot]?.name === a.name) {
-		await wait_budget(1, 30);
-		await unequip(a.slot);
-		await sleep_ms(400);
-	}
-	k = character.items.findIndex((i) => i && i.name === a.name && !i.l && i.stat_type !== G.items[a.scroll]?.stat);
-	if (k < 0) throw { reason: "input_missing" };
-	const have = character.items.find((i) => i && i.name === a.scroll)?.q || 0;
-	if (have < a.quantity) {
-		const need = a.quantity - have;
-		if (G.items[a.scroll].g * need > character.gold - CFG.gold_reserve) { if (a.slot) await equip(k, a.slot); throw { reason: "gold_reserve" }; }
+	const stat = G.items[a.scroll]?.stat;
+	const want_q = a.quantity || 1;
+	const raw = (i) => i && i.name === a.name && !i.l && i.stat_type !== stat;
+	const worn = !!a.slot && raw(character.slots[a.slot]);
+	if (!worn && character.items.findIndex(raw) < 0) throw { reason: "input_missing" };
+	const need = want_q - quantity(a.scroll);
+	if (need > 0) {
+		if ((G.items[a.scroll].g || 0) * need > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
 		await buy_from_npc(a.scroll, need);
-		await sleep_ms(400);
+		if (!(await until(() => quantity(a.scroll) >= want_q, 3000))) throw { reason: "scroll_missing" };
 	}
-	if (!has_computer()) await smart_move("upgrade");
-	const sk = find_slot(a.scroll, 0);
-	k = character.items.findIndex((i) => i && i.name === a.name && !i.l && i.stat_type !== G.items[a.scroll]?.stat);
-	await wait_budget(1, 30);
-	const r = await upgrade(k, sk); // pscroll: 99.999% per server
-	await sleep_ms(400);
-	if (a.slot) {
-		const back = character.items.findIndex((i) => i && i.name === a.name && i.stat_type === G.items[a.scroll]?.stat);
-		if (back >= 0) await equip(back, a.slot);
+	if (!has_computer()) await go("upgrade");
+	let unequipped = false;
+	try {
+		if (worn) {
+			await wait_budget(1, 30);
+			await unequip(a.slot);
+			unequipped = true;
+			if (!(await until(() => !character.slots[a.slot], 3000))) throw { reason: "unequip_failed" };
+		}
+		const k = character.items.findIndex(raw);
+		const sk = find_slot(a.scroll, 0);
+		if (k < 0) throw { reason: "input_missing" };
+		if (sk < 0) throw { reason: "scroll_missing" };
+		await wait_budget(1, 30);
+		const r = await upgrade(k, sk); // pscroll: 99.999% per server
+		game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : JSON.stringify(r)}`, "#58D685");
+		return r;
+	} finally {
+		if (unequipped && !character.slots[a.slot]) {
+			await sleep_ms(300);
+			// prefer the freshly scrolled copy; fall back to any copy (the scroll failed or the item moved)
+			let back = character.items.findIndex((i) => i && i.name === a.name && i.stat_type === stat);
+			if (back < 0) back = character.items.findIndex((i) => i && i.name === a.name);
+			if (back >= 0) {
+				await wait_budget(1, 30);
+				await Promise.resolve(equip(back, a.slot)).catch((e) => game_log("stat re-equip: " + (e?.reason || e), "#E25C5C"));
+			} else game_log(`stat: ${a.name} not in bags; ${a.slot} left empty`, "#E25C5C");
+		}
 	}
-	game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : JSON.stringify(r)}`, "#58D685");
-	return r;
 }
 async function run_exchange(a) {
 	if (!a.ready) throw { reason: "inputs_not_ready" };
@@ -725,11 +799,13 @@ async function run_dismantle(a) {
 }
 async function run_retrieve(a) {
 	const t = a.target;
-	if (!t || !bank_packs[t.pack]) throw { reason: "bank_target" };
+	// bank_packs lives on the game window; the code iframe may not have it as a global
+	const packs = (typeof bank_packs !== "undefined" && bank_packs) || parent.bank_packs || {};
+	if (!t || !packs[t.pack]) throw { reason: "bank_target" };
 	if (character.esize < 1) throw { reason: "no_space" };
-	const bank_map = bank_packs[t.pack][0];
-	if (character.map !== bank_map) await smart_move({ map: bank_map });
-	await wait_for(() => character.bank && character.bank[t.pack], 10_000);
+	const bank_map = packs[t.pack][0];
+	if (character.map !== bank_map) await go({ map: bank_map });
+	if (!(await until(() => character.bank && character.bank[t.pack], 10_000))) throw { reason: "bank_not_loaded" };
 	// slot may have moved; find by name+level
 	const pack = character.bank[t.pack];
 	const n = pack[t.bankNum]?.name === a.name ? t.bankNum : pack.findIndex((i) => i && i.name === a.name && (i.level || 0) === (a.level || 0));
@@ -807,11 +883,14 @@ async function gear_step() {
 		const reason = (r.reason?.id || "").replace("progression.reason.", "");
 		return (!CFG.follow_farm_reasons || CFG.follow_farm_reasons.includes(reason)) && (r.action?.route || r.route);
 	});
-	if (farm) {
-		const route = farm.action?.route || farm.route;
+	const route = farm && (farm.action?.route || farm.route);
+	// a route without a usable boundary falls back to the monster's spawn data; no spawn at all → ignore the row
+	const area = route && G.monsters[route.monster] && resolve_area(route.monster, route.map, route.boundary, route.count);
+	if (route && !area) game_log(`guide: farm row for ${route.monster} has no usable area; ignoring it`, "gray");
+	if (area) {
 		const reason = (farm.reason?.id || "").replace("progression.reason.", "");
-		const changed = !state.directive || state.directive.monster !== route.monster || state.directive.map !== route.map;
-		state.directive = { monster: route.monster, map: route.map, boundary: route.boundary, count: route.count, reason, guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 };
+		const changed = !state.directive || state.directive.monster !== route.monster || state.directive.map !== area.map;
+		state.directive = { monster: route.monster, ...area, reason, guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 };
 		if (changed) state.last_pick = 0; // re-pick on the next tick
 	} else if (hunt_directive()) {
 		// no guide farm row: work the active monster hunt
@@ -840,7 +919,6 @@ async function gear_step() {
 }
 // One guide visit: run actionable steps back to back while the guide keeps offering them
 async function guide_visit() {
-	state.gearing = state.traveling = true;
 	let did = 0;
 	try {
 		const h = character.s.monsterhunt;
@@ -849,27 +927,54 @@ async function guide_visit() {
 			catch (e) { state.gear_skip["hunt:auto"] = Date.now() + 300_000; game_log("hunt: " + (e?.reason || e?.response || e), "gray"); }
 		}
 		for (let i = 0; i < CFG.guide_steps_per_visit; i++) {
-			if (character.rip || character.hp < character.max_hp * 0.5) break;
+			if (character.rip || state.recovering || character.hp < character.max_hp * 0.5) break;
 			if (!(await gear_step())) break;
 			did++;
 		}
-	} catch (e) { game_log("guide: " + (e?.reason || e)); }
-	state.gearing = state.traveling = false;
-	if (did) state.pack = null; // stats/position changed: re-pick (guide farm row first) and travel back
+	} finally {
+		if (did) state.pack = null; // stats/position changed: re-pick (guide farm row first) and travel back
+	}
 }
 
-async function restock() {
+function restock() {
 	if (quantity(CFG.hp_pot) >= CFG.pot_min && quantity(CFG.mp_pot) >= CFG.pot_min) return;
-	if (state.traveling || state.selling || state.gearing || character.rip) return;
-	state.traveling = true;
-	try {
-		await smart_move("potions");
+	if (errand_busy() || walking() || character.rip) return; // allowed while recovering: we're in town anyway
+	errand("restock", async () => {
+		await go("potions");
 		for (const p of [CFG.hp_pot, CFG.mp_pot]) {
 			const need = CFG.pot_buy - quantity(p);
 			if (need > 0 && character.gold >= G.items[p].g * need) await buy(p, need);
 		}
-	} catch (e) { game_log("restock: " + (e.reason || e)); }
-	state.traveling = false;
+	});
+}
+
+// Low HP: teleport out (cancelling any smart_move, which would otherwise block the channel — v8 never fled
+// while traveling), then hold until recover_hp/recover_mp instead of walking back at 26% HP.
+// Fights back only against things already hitting us; re-channels if something follows.
+function recover() {
+	if (!state.recovering) {
+		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
+		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, "#E25C5C");
+	}
+	const threat = get_nearest_monster({ target: character.name });
+	const channeling = !!character.c.town;
+	if (!channeling && (!state.fled || (threat && character.hp < character.max_hp * CFG.flee_hp))) {
+		if (walking() || is_moving(character)) stop("smart"), stop("move");
+		if (fire("use_town")) state.fled = true;
+	}
+	if (!channeling && threat) {
+		const t = choose_target(false);
+		if (t) {
+			if (get_targeted_monster() !== t) change_target(t);
+			if (!walking()) kite(t);
+			if (!class_skills(t) && can_attack(t)) fire("attack", t);
+		}
+	}
+	if (character.hp >= character.max_hp * CFG.recover_hp && character.mp >= character.max_mp * CFG.recover_mp && !threat) {
+		state.recovering = false;
+		state.last_target_at = Date.now();
+		game_log("Recovered; resuming", "#58D685");
+	}
 }
 
 // ---------- Main loop ----------
@@ -892,18 +997,23 @@ function tick() {
 				state.session = null; // don't let a death window count as a measurement
 				state.pack = null;
 			}
-			state.traveling = state.selling = state.gearing = false;
+			state.errand = null; // in-flight errands die with us; their late finally can't clear a newer lock (token)
+			state.recovering = false;
 			if (!character.c.respawn && Date.now() - last_respawn > 5000) (last_respawn = Date.now()), respawn();
 			wait = 1000;
-		} else if (character.hp < character.max_hp * CFG.flee_hp && !state.traveling) {
-			if (fire("use_town")) state.pack = null;
+		} else if (state.recovering || character.hp < character.max_hp * CFG.flee_hp) {
+			state.dead_handled = false;
+			recover();
+			loot_chests();
+			set_message(`Recovering ${((character.hp / character.max_hp) * 100).toFixed(0)}%`);
+			wait = 250;
 		} else {
 			state.dead_handled = false;
-			if (character.esize <= CFG.sell_when_free && !state.selling) sell_junk();
-			if (CFG.gear && !state.gearing && !state.traveling && !state.selling && Date.now() - state.last_gear > CFG.gear_interval_ms &&
+			if (character.esize <= CFG.sell_when_free) sell_junk();
+			if (CFG.gear && !errand_busy() && !walking() && Date.now() - state.last_gear > CFG.gear_interval_ms &&
 				character.hp > character.max_hp * 0.7 && !get_nearest_monster({ target: character.name })) {
 				state.last_gear = Date.now();
-				guide_visit();
+				errand("guide", guide_visit);
 			}
 			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
 			const pack = state.pack;
@@ -912,16 +1022,20 @@ function tick() {
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
 				if (get_targeted_monster() !== t) change_target(t);
-				// Never steer while an errand/travel owns movement; just shoot what's in range
-				if (!state.traveling && !kite(t)) approach(t);
+				// Never steer during a smart_move. During an errand only kite (defensive): approaching could
+				// walk us out of NPC range mid-errand.
+				if (!walking() && !kite(t) && !errand_busy()) approach(t);
 				if (!class_skills(t) && can_attack(t)) fire("attack", t);
-				wait = Math.min(Math.max(parent.next_skill.attack - Date.now(), 50), 200);
+				// next_skill.attack is unset until the first attack; v8 got NaN here → setTimeout(tick, NaN) = 0ms busy loop
+				const next_atk = +(parent.next_skill?.attack || 0);
+				wait = Math.min(Math.max(next_atk - Date.now(), 50), 200);
 			} else if (!pack) {
 				set_message("No viable pack");
 				wait = 5000;
-			} else if (!state.traveling) {
+			} else if (!walking() && !errand_busy()) {
 				if (!in_area) {
-					const w = state.waypoints[state.wp];
+					if (!state.waypoints.length) state.waypoints = make_waypoints(pack.boundary), (state.wp = 0);
+					const w = state.waypoints[state.wp % state.waypoints.length];
 					travel({ map: pack.map, x: w.x, y: w.y });
 				} else if (Date.now() - state.last_target_at > CFG.idle_giveup_ms) {
 					game_log(`Idle at ${pack.mtype}; cooling down this pack`);
