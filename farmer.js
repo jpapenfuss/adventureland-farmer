@@ -31,6 +31,10 @@
 //  - v9.7: guide quests first: any quest recipe the guide's rows/plans name is worked to completion, ahead of hunts,
 //    with no time or xp limits; guide farm rows run until done (paused only on a real stall, then retried);
 //    guide quests, craft history and stall timers persist across reloads (offline time not counted).
+//  - v9.8 (from a live get_progression dump): guide upgrade/compound rows use action.level = INPUT level (v8 looked
+//    for one level lower, so every guide upgrade was skipped); NPC-sold items accept the guide's odds down to
+//    min_chance_rebuyable; guide quests come from craft rows, plan .next paths, "bees"/material farm rows and set
+//    goals (not plan long-shots); farm-row materials read from title/reason args; class-restricted outputs skipped.
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -127,6 +131,7 @@ const CFG = {
 	gold_reserve: 50_000,          // never spend below this (potions, scrolls)
 	min_upgrade_chance: 0.80,      // server preview; a failed upgrade/compound destroys the item(s)
 	min_compound_chance: 0.80,
+	min_chance_rebuyable: 0.5,     // floor for items NPCs sell (failure only costs gold); the guide plans for retries
 	gear_actions: ["equip", "buy", "upgrade", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
 	// Advisor farm rows to obey (reason ids, without the "progression.reason." prefix).
 	// material/try_material = a plan needs drops; bees = early lesson (XP + Bee Wings for Cole);
@@ -819,33 +824,54 @@ async function ensure_scroll(scroll) {
 	if (k < 0) throw { reason: "scroll_missing", scroll };
 	return k;
 }
-async function run_upgrade(a) {
-	// a: { name, level (target), scroll } — target level is a.level, so input is a.level-1
-	const from = a.level - 1;
+// Guide upgrade/compound rows (seen live): action = { kind, name, level: INPUT level, scroll, chance, resources:
+// [{num}] }, row.request = { name, level: TARGET level }. E.g. upgrade:mainhand:staff:5 → action.level 4.
+// (v8 treated action.level as the target and looked for a +3, so every guide upgrade was skipped.)
+function input_level(a, row) {
+	if (row?.request?.name === a.name && Number.isFinite(row.request.level)) return row.request.level - 1;
+	return a.level || 0;
+}
+function input_slots(a, from, n) {
+	const hinted = (a.resources || []).map((r) => r.num).filter((k) => {
+		const i = character.items[k];
+		return i && i.name === a.name && (i.level || 0) === from && !i.l;
+	});
+	if (hinted.length >= n) return hinted.slice(0, n);
+	return n === 1 ? (find_slot(a.name, from) >= 0 ? [find_slot(a.name, from)] : null) : find_slots(a.name, from, n);
+}
+// A failed upgrade/compound destroys the input. If NPCs sell it (a staff, a base ring), failure only costs gold,
+// so the guide's own odds are accepted down to min_chance_rebuyable; anything else needs min_upgrade_chance.
+function chance_floor(name, base) {
+	return shop_for(name) && !G.items[name]?.cash ? Math.min(base, CFG.min_chance_rebuyable) : base;
+}
+async function run_upgrade(a, row) {
+	const from = input_level(a, row), to = from + 1;
 	if (!has_computer()) await go("upgrade");
 	await ensure_scroll(a.scroll);
 	if (!has_computer()) await go("upgrade"); // buying the scroll may have walked us away
-	const k = find_slot(a.name, from);
-	if (k < 0) throw { reason: "input_missing" };
+	const ks = input_slots(a, from, 1);
+	if (!ks) throw { reason: "input_missing", want: `${a.name}+${from}` };
+	const k = ks[0];
 	await wait_budget(1, 30);
 	const preview = await T(upgrade(k, find_slot(a.scroll, 0), null, true));
-	if (!preview || !(preview.chance >= CFG.min_upgrade_chance))
+	const floor = chance_floor(a.name, CFG.min_upgrade_chance);
+	if (!preview || !(preview.chance >= floor))
 		throw { reason: "low_chance", chance: preview && preview.chance };
 	await wait_budget(1, 30);
 	const r = await T(upgrade(k, find_slot(a.scroll, 0)));
-	game_log(`upgrade ${a.name} +${from}→+${a.level} (${(preview.chance * 100).toFixed(1)}%): ${r && r.success ? "OK" : "FAILED"}`, r && r.success ? "#58D685" : "#E25C5C");
+	game_log(`upgrade ${a.name} +${from}→+${to} (${(preview.chance * 100).toFixed(1)}%): ${r && r.success ? "OK" : "FAILED"}`, r && r.success ? "#58D685" : "#E25C5C");
 	return r;
 }
-async function run_compound(a) {
-	const from = a.level - 1;
+async function run_compound(a, row) {
+	const from = input_level(a, row);
 	if (!has_computer()) await go("compound");
 	await ensure_scroll(a.scroll);
 	if (!has_computer()) await go("compound");
-	const ks = find_slots(a.name, from, 3);
-	if (!ks) throw { reason: "input_missing" };
+	const ks = input_slots(a, from, 3);
+	if (!ks) throw { reason: "input_missing", want: `3x ${a.name}+${from}` };
 	await wait_budget(1, 30);
 	const preview = await T(compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0), null, true));
-	if (!preview || !(preview.chance >= CFG.min_compound_chance))
+	if (!preview || !(preview.chance >= chance_floor(a.name, CFG.min_compound_chance)))
 		throw { reason: "low_chance", chance: preview && preview.chance };
 	await wait_budget(1, 30);
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(a.scroll, 0)));
@@ -1149,10 +1175,10 @@ async function run_row(row) {
 		}
 		case "upgrade":
 			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
-			return run_upgrade(a);
+			return run_upgrade(a, row);
 		case "compound":
 			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
-			return run_compound(a);
+			return run_compound(a, row);
 		case "craft":
 			return run_craft(a);
 		case "stat": return run_stat(a);
@@ -1183,14 +1209,15 @@ async function gear_step() {
 	}
 	state.protect = protect;
 
-	// Quest recipes the guide is working toward: a row or plan names the recipe or its output
-	// (e.g. the "working" lesson → wcap, a plan whose tree contains wgloves). Remembered across reloads and
-	// for guide_quest_keep_h after the guide stops listing it (its HUD shows only a few rows at a time).
-	const named = new Set(protect);
-	for (const r of prog.rows || []) if (r.action?.recipe) named.add(r.action.recipe);
-	for (const id in G.craft) {
+	// Quest recipes the guide is working toward, from what the guide actually emits (checked against a live dump):
+	//  - a craft row, or a craft node on a plan's chosen path (node.next), whose recipe is a quest recipe;
+	//  - a row/request/target naming a quest recipe's output;
+	//  - a farm row for drops a quest needs (reason "bees" = save Bee Wings for Cole → every Cole recipe that
+	//    uses a drop of that monster; reason material/try_material likewise);
+	//  - a "set" goal (e.g. wanderers) → the quest recipes that make that set's pieces.
+	// Plan alternatives are NOT used: trees list every long shot (glitch boxes, event drops), only .next is chosen.
+	for (const id of guide_quest_ids(prog)) {
 		const r = G.craft[id];
-		if (!r.quest || !(named.has(id) || named.has(r.output?.name || id))) continue;
 		const g = (state.guide_quests[id] = state.guide_quests[id] || { first: Date.now() });
 		if (!g.last) game_log(`guide quest: ${id} (${G.npcs[r.quest]?.name || r.quest})`, "#67A464");
 		g.last = Date.now();
@@ -1207,7 +1234,8 @@ async function gear_step() {
 	const area = route && G.monsters[route.monster] && resolve_area(route.monster, route.map, route.boundary, route.count);
 	if (route && !area) game_log(`guide: farm row for ${route.monster} has no usable area; ignoring it`, "gray");
 	// the material this row is farming, when the row says (used for stall detection instead of a time cap)
-	const mat = [farm?.target?.name, farm?.action?.item, farm?.action?.name, route?.item, route?.drop].find((n) => n && G.items[n]);
+	const mat = [farm?.title?.args?.item, farm?.reason?.args?.item, farm?.target?.name, farm?.action?.item, farm?.action?.name, route?.item, route?.drop]
+		.map(item_id).find(Boolean);
 	state.guide_farm = area ? { monster: route.monster, ...area, reason: "guide " + (farm.reason?.id || "").replace("progression.reason.", "") + (mat ? ` (${mat} ${held(mat)})` : ""),
 		item: mat, guide_safe: route.safe !== false, seconds: route.seconds, until: Date.now() + CFG.gear_interval_ms * 4 } : null;
 	refresh_directive();
@@ -1225,11 +1253,54 @@ async function gear_step() {
 		const why = e?.reason || e?.response || String(e);
 		// back off this step; chance-gated steps wait longer (grace/scroll grade may change)
 		state.gear_skip[row.id] = now + (why === "low_chance" ? 1_800_000 : 300_000);
-		game_log(`guide: skip ${row.id} (${why}${e?.chance !== undefined ? " " + (e.chance * 100).toFixed(1) + "%" : ""})`, "gray");
+		game_log(`guide: skip ${row.id} (${why}${e?.chance !== undefined ? " " + (e.chance * 100).toFixed(1) + "%" : ""}${e?.want ? " " + e.want : ""})`, "gray");
 		return false;
 	}
 	return true;
 }
+// Guide text args carry display names ("Bee Wings"); map back to an item id
+let item_by_name = null;
+function item_id(n) {
+	if (!n) return null;
+	if (G.items[n]) return n;
+	if (!item_by_name) { item_by_name = {}; for (const id in G.items) if (G.items[id].name) item_by_name[G.items[id].name] = id; }
+	return item_by_name[n] || null;
+}
+function guide_quest_ids(prog) {
+	const quest = (id) => G.craft[id]?.quest ? id : null;
+	const by_output = {};
+	for (const id in G.craft) if (G.craft[id].quest) by_output[G.craft[id].output?.name || id] = id;
+	const out = new Set();
+	const add = (id) => id && out.add(id);
+	const chosen = (node, depth = 0) => {
+		if (!node || depth > 12) return;
+		const nx = node.next;
+		if (nx) {
+			if (nx.kind === "craft") add(quest(nx.recipe) || by_output[nx.name]);
+			for (const i of nx.inputs || []) chosen(i, depth + 1);
+		}
+		for (const alt of node.alternatives || []) if (alt.kind === "develop" || alt === nx) for (const i of alt.inputs || []) chosen(i, depth + 1);
+	};
+	for (const plan of prog.plans || []) chosen(plan.tree);
+	const drops_of = (mt) => new Set((G.drops?.monsters?.[mt] || []).filter((d) => Array.isArray(d) && typeof d[0] === "number").map((d) => d[1])
+		.concat(Object.keys(DROP_FALLBACK).filter((it) => DROP_FALLBACK[it].some(([m]) => m === mt))));
+	for (const r of prog.rows || []) {
+		if (r.kind === "craft" || r.action?.kind === "craft") add(quest(r.action?.recipe) || by_output[r.action?.name]);
+		for (const n of [r.request?.name, r.target?.name, r.action?.name]) add(by_output[n]);
+		const reason = (r.reason?.id || "").replace("progression.reason.", "");
+		const mt = (r.action?.route || r.route)?.monster;
+		if (r.kind === "farm" && mt && ["bees", "material", "try_material"].includes(reason)) {
+			const drops = drops_of(mt);
+			for (const id in G.craft) if (G.craft[id].quest && G.craft[id].items.some(([, n]) => drops.has(n))) add(id);
+		}
+	}
+	if (prog.goal?.kind === "set" && prog.goal.name) {
+		const pieces = new Set(G.sets?.[prog.goal.name]?.items || Object.keys(G.items).filter((n) => G.items[n].set === prog.goal.name));
+		for (const id in G.craft) if (G.craft[id].quest && pieces.has(G.craft[id].output?.name || id)) add(id);
+	}
+	return out;
+}
+
 // One guide visit: run actionable steps back to back while the guide keeps offering them
 // ---------- Quest crafting ----------
 const owned = (name) =>
@@ -1265,6 +1336,8 @@ function quest_recipes() {
 	for (const id in G.craft) {
 		const r = G.craft[id];
 		if (!r.quest || CFG.quest_craft_skip.includes(id)) continue;
+		const cls = G.items[r.output?.name || id]?.class;
+		if (cls && !cls.includes(character.ctype)) continue; // e.g. quiver is ranger-only
 		if (is_guide_quest(id)) { guide.push(id); continue; }
 		if (Array.isArray(mode) ? !mode.includes(id) : mode === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type))) continue;
 		own.push(id);

@@ -1,0 +1,21 @@
+{
+  "ready": true,
+  "goal": { "kind": "stat", "metric": "heal", "target": 1000 },
+  "rows": [
+    { "id": "upgrade:mainhand:staff:5:", "kind": "upgrade", "cost": 1000, "resources": [{ "num": 7, "quantity": 1 }],
+      "action": { "kind": "upgrade", "name": "staff", "level": 4, "scroll": "scroll0", "cost": 1000, "chance": 0.7, "resources": [{ "num": 7, "quantity": 1 }] },
+      "request": { "name": "staff", "level": 5, "quantity": 1 }, "target": { "slot": "mainhand", "name": "staff", "level": 5 }, "affordable": true },
+    { "id": "farm:main:15:0:bees", "kind": "farm",
+      "title": { "id": "progression.action.farm", "args": { "monster": "Bee", "map": "Mainland", "item": "", "quantity": 0 } },
+      "reason": { "id": "progression.reason.bees", "args": { "monster": "Bee", "map": "Mainland", "item": "", "quantity": 0 } },
+      "action": { "kind": "farm", "route": { "map": "main", "monster": "bee", "count": 4, "boundary": [424, 1014, 668, 1104], "safe": true, "seconds": 2.67 } },
+      "route": { "map": "main", "monster": "bee", "count": 4, "boundary": [424, 1014, 668, 1104], "safe": true, "seconds": 2.67 }, "affordable": true }
+  ],
+  "plans": [
+    { "tree": { "name": "froststaff", "level": 5, "alternatives": [ { "kind": "develop", "inputs": [
+      { "name": "froststaff", "level": 0, "alternatives": [
+        { "kind": "craft", "recipe": "froststaff", "name": "froststaff", "npc": "craftsman", "inputs": [] },
+        { "kind": "exchange", "name": "glitch", "inputs": [ { "name": "witchparcel", "alternatives": [ { "kind": "craft", "recipe": "witchparcel", "npc": "witch", "inputs": [] } ] } ] } ],
+        "next": { "kind": "farm", "name": "essenceoffrost", "monster": "arcticbee" } } ] } ] } }
+  ]
+}

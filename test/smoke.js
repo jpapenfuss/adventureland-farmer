@@ -295,5 +295,38 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(moves18.length === 1 && moves18[0] === "town", `parked: one trip to town (${JSON.stringify(moves18)})`);
 	vm.runInContext("resume()", ctx);
 	assert(!st().parked, "resume clears park");
+
+	// 19) real guide rows (trimmed from a live get_progression dump)
+	const fixture = JSON.parse(require("fs").readFileSync(require("path").join(__dirname, "fixtures", "progression_rows.json"), "utf8"));
+	character.ctype = "priest";
+	ctx.G.items.staff = { type: "weapon", g: 1000 }; ctx.G.items.scroll0 = { type: "uscroll", g: 1000 };
+	ctx.G.items.quiver = { type: "quiver", class: ["ranger"] }; ctx.G.items.wgloves = { type: "gloves" }; ctx.G.items.wcap = { type: "helmet" };
+	ctx.G.items.witchparcel = { type: "misc" };
+	ctx.G.craft = {
+		wcap: { items: [[50, "beewings"], [3, "gslime"]], cost: 0, quest: "mcollector" },
+		wgloves: { items: [[60, "beewings"], [20, "spores"]], cost: 0, quest: "mcollector" },
+		quiver: { items: [[1, "ascale"], [200, "beewings"]], cost: 0, quest: "mcollector" },
+		wbreeches: { items: [[10, "crabclaw"], [100, "spores"]], cost: 0, quest: "mcollector" },
+		witchparcel: { items: [[5, "verdantspore"]], cost: 10000, quest: "witch" },
+	};
+	ctx.G.npcs = { basics: { items: ["staff", "scroll0"] }, mcollector: { name: "Cole" } };
+	const ids = [...vm.runInContext("guide_quest_ids", ctx)(fixture)].sort().join();
+	assert(ids === "quiver,wcap,wgloves", `bees row → Cole recipes using bee wings; plan long-shots ignored (${ids})`);
+	vm.runInContext("state.guide_quests = {}", ctx);
+	vm.runInContext("guide_quest_ids", ctx)(fixture).forEach((id) => vm.runInContext(`state.guide_quests.${id} = { first: Date.now(), last: Date.now() }`, ctx));
+	assert(!vm.runInContext("quest_recipes()", ctx).includes("quiver"), "ranger-only quiver not crafted by a priest");
+	// upgrade row: action.level is the INPUT level; guide's 70% accepted for an NPC-sold staff
+	character.items = Array(42).fill(null);
+	character.items[7] = { name: "staff", level: 4 }; character.items[8] = { name: "scroll0", q: 5 };
+	character.items[2] = { name: "computer" }; character.gold = 1e6;
+	ctx.find_npc = (id) => (id === "basics" ? { map: "main", x: 0, y: 0 } : null);
+	const ups = [];
+	ctx.upgrade = (k, sk, off, calc) => (ups.push([k, sk, !!calc]), Promise.resolve(calc ? { chance: 0.7 } : { success: true }));
+	await vm.runInContext("run_row", ctx)(fixture.rows[0]);
+	assert(ups.length === 2 && ups[0][0] === 7 && !ups[1][2], `upgrades the +4 staff in slot 7 at 70% (${JSON.stringify(ups)})`);
+	// a non-rebuyable item at 70% is still refused
+	ctx.G.npcs.basics.items = ["scroll0"]; ups.length = 0;
+	const e19 = await vm.runInContext("run_row", ctx)(fixture.rows[0]).catch((e) => e);
+	assert(e19 && e19.reason === "low_chance" && ups.length === 1, "non-rebuyable item at 70% refused");
 	console.log("ALL PASS");
 })();
