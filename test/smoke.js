@@ -433,5 +433,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const k24 = Object.keys(store)[0], old = JSON.parse(store[k24]); delete old.skip_why; store[k24] = JSON.stringify(old);
 	vm.runInContext(`state.gear_skip = {}; load_state()`, ctx);
 	assert(vm.runInContext(`!skipped("upgrade:mainhand:slimestaff:4:")`, ctx), "pre-v10.3 upgrade pause cleared on load");
+
+	// 25) the live failure: equipment lesson plans helmet/shoes +7 → bag full of helmets & shoes, all "needed"
+	ctx.G.items.helmet = { type: "helmet", upgrade: {} }; ctx.G.items.shoes = { type: "shoes", upgrade: {} };
+	ctx.G.items.ascale = { type: "material", s: 9999 };
+	ctx.get_progression = () => ({ ready: true, rows: [], plans: [
+		{ tree: { name: "helmet", level: 7, next: { kind: "upgrade", name: "helmet", level: 3, scroll: "scroll0" }, alternatives: [] } },
+		{ tree: { name: "shoes", level: 7, next: { kind: "upgrade", name: "shoes", level: 3, scroll: "scroll0" }, alternatives: [] } } ] });
+	character.items = Array(42).fill(null).map((_, i) => (i % 2 ? { name: "helmet", level: i % 5 } : { name: "shoes", level: i % 4 }));
+	character.items[0] = { name: "ascale", q: 3 }; character.items[1] = { name: "hpot1", q: 50 };
+	character.esize = 0;
+	vm.runInContext("guide_refresh()", ctx);
+	const p25 = vm.runInContext("bag_plan()", ctx);
+	const keptNames = vm.runInContext("[...needed_slots()].map((k) => character.items[k].name + '+' + (character.items[k].level || 0)).sort().join()", ctx);
+	assert(p25.bank.length === 37 && keptNames === "helmet+4,helmet+4,shoes+2,shoes+2", `keeps 2 best of each planned item, banks the other 36 + unneeded ascale (${p25.bank.length}; ${keptNames})`);
+	assert(vm.runInContext("town_due().bank", ctx), "bank trip due with a full bag");
+	// chests are still tried with a full bag (gold-only chests succeed)
+	const opened25 = [];
+	ctx.parent.open_chest = (id) => opened25.push(id);
+	ctx.parent.chests = { c1: { x: 0, y: 0 } };
+	vm.runInContext("loot_chests()", ctx);
+	assert(opened25.join() === "c1", "chest opened with 0 free slots");
+	ctx.get_progression = undefined; ctx.parent.chests = {};
 	console.log("ALL PASS");
 })();

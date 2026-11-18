@@ -60,6 +60,8 @@ const CFG = {
 	sell_max_value: 20_000,  // never sell gear the NPC values above this
 	sell_batch: 4,           // with a computer: sell as soon as this many junk items pile up
 	bank: true,              // store everything else in the bank
+	need_copies_upgrade: 2,  // copies of an item the guide is upgrading kept in bags (the one in work + a spare)
+	need_copies_compound: 4, // copies of a compoundable item the guide is working on (3 per compound + 1)
 	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"],
 	// --- town / guide
 	gear: true,              // execute Progression Guide steps
@@ -104,7 +106,7 @@ const state = {
 	errand: null, errand_at: 0, errand_token: null, last_town: 0,
 	recovering: false, fled: false, parked: false, park_home: false,
 	directive: null, guide: null, guide_farm: null, last_guide: 0,
-	needs: new Set(),          // item names to keep in bags (guide steps + open quests)
+	needs: new Map(),          // item name -> copies to keep in bags (guide steps + open quests)
 	gear_skip: {}, crafted: {}, bank_seen: {}, guide_ignore: {}, guide_quests: {}, qprog: null, gprog: null,
 };
 
@@ -524,12 +526,14 @@ function sustain() {
 }
 const chest_tries = {};
 function loot_chests() {
-	if (character.rip || character.esize === 0) return;
+	// A full bag still opens chests: gold-only chests succeed, item chests fail with loot_no_space (v10 skipped
+	// every chest at 0 free slots, leaving the gold on the ground for hours)
+	if (character.rip) return;
 	const now = Date.now();
 	let best = null, best_d = Infinity;
 	for (const id in parent.chests || {}) {
 		const tr = (chest_tries[id] = chest_tries[id] || { n: 0, t: 0, seen: now });
-		if (tr.n >= 3 || now - tr.t < 3000) continue;
+		if (tr.n >= (character.esize === 0 ? 1 : 3) || now - tr.t < 3000) continue;
 		const d = distance(character, parent.chests[id]);
 		if (d > CFG.loot_range && now - tr.seen < CFG.loot_wait_ms) continue;
 		if (d < best_d) (best = id), (best_d = d);
@@ -675,25 +679,26 @@ async function run_compound(a, row) {
 // Bags: keep / sell / bank
 // =====================================================================
 function is_junk(item) {
-	if (!item || item.l || item.b || CFG.keep.includes(item.name) || state.needs.has(item.name)) return false;
+	if (!item || item.l || item.b || CFG.keep.includes(item.name) || needed_slots().has(character.items.indexOf(item))) return false;
 	if (CFG.sell.includes(item.name)) return true;
 	const def = G.items[item.name];
 	if (!CFG.auto_sell_gear || !def || !GEAR.has(def.type)) return false;
 	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
 }
-function bag_class(item) {
+function bag_class(item, needed = needed_slots()) {
 	if (!item) return "empty";
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
-		item.name === CFG.hp_pot || item.name === CFG.mp_pot || state.needs.has(item.name)) return "keep";
+		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item))) return "keep";
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
 const slots_where = (f) => character.items.map((it, i) => (f(it) ? i : -1)).filter((i) => i >= 0);
 function bag_plan() {
-	const sell = slots_where((i) => bag_class(i) === "sell"), bank = slots_where((i) => bag_class(i) === "bank");
+	const needed = needed_slots();
+	const sell = slots_where((i) => bag_class(i, needed) === "sell"), bank = slots_where((i) => bag_class(i, needed) === "bank");
 	// items the bank holds that bags need (quest inputs, guide step inputs)
-	const fetch = [...state.needs].filter((n) => (state.bank_seen[n] || 0) > 0 && held(n) === 0 && !BAG_TYPES.has(G.items[n]?.type));
+	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held(n) === 0 && !BAG_TYPES.has(G.items[n]?.type));
 	return { sell, bank, fetch, free: character.esize };
 }
 function nearest_shop() {
@@ -1007,19 +1012,39 @@ function guide_quest_ids(prog) {
 	}
 	return out;
 }
-// Item names bags must hold: what the guide's current steps touch + inputs of open quest recipes
+// What bags must hold: name -> copies. The guide's steps touch a few copies at a time (one item to upgrade plus a
+// spare, three to compound), so only that many of the best copies stay; the rest is banked. v10 kept EVERY copy of
+// any name the guide mentioned — the equipment lesson plans helmet/coat/pants/gloves/shoes +7, so every dropped
+// helmet and pair of shoes was "needed", nothing was bankable, and the bag sat full for hours.
+// Stackable items (materials, scrolls) are one slot no matter how many, so they're kept whole.
 function compute_needs(prog) {
-	const needs = new Set();
-	const add = (n) => n && G.items[n] && needs.add(n);
+	const needs = new Map();
+	const add = (n, k) => {
+		const def = n && G.items[n];
+		if (!def) return;
+		k = k || (def.compound ? CFG.need_copies_compound : CFG.need_copies_upgrade);
+		needs.set(n, Math.max(needs.get(n) || 0, k));
+	};
 	for (const r of prog?.rows || []) {
 		const a = r.action || {};
 		add(a.name); add(a.scroll); add(r.request?.name);
-		for (const i of a.inputs || []) add(i.name);
+		for (const i of a.inputs || []) add(i.name, i.quantity);
 		for (const res of a.resources || []) add(character.items[res.num]?.name);
 	}
-	for (const plan of prog?.plans || []) chosen_path(plan.tree, (n) => { if (n.next || n.kind) { add(n.next?.name); add(n.next?.scroll); } });
-	for (const id of quest_recipes()) if (recipe_wanted(id)) for (const [, n] of G.craft[id].items) if (!GEAR.has(G.items[n]?.type)) add(n);
+	for (const plan of prog?.plans || []) chosen_path(plan.tree, (n) => { add(n.next?.name); add(n.next?.scroll); });
+	for (const id of quest_recipes()) if (recipe_wanted(id)) for (const [q, n] of G.craft[id].items) add(n, q);
 	return needs;
+}
+// Bag slots holding needed copies: per needed name, the best `count` copies by level (all stacks of stackables)
+function needed_slots() {
+	const keep = new Set(), by = {};
+	character.items.forEach((i, k) => { if (i && state.needs.has(i.name)) (by[i.name] = by[i.name] || []).push(k); });
+	for (const n in by) {
+		if (G.items[n]?.s) { by[n].forEach((k) => keep.add(k)); continue; }
+		by[n].sort((a, b) => (character.items[b].level || 0) - (character.items[a].level || 0))
+			.slice(0, state.needs.get(n)).forEach((k) => keep.add(k));
+	}
+	return keep;
 }
 function read_guide() {
 	if (typeof get_progression !== "function") return null;
@@ -1210,9 +1235,14 @@ async function guide_step() {
 // =====================================================================
 // Town run: one errand doing everything due, in walking order
 // =====================================================================
+let bags_warned = 0;
 function town_due() {
 	const plan = bag_plan();
 	const short = plan.free < CFG.bag_min_free;
+	if (plan.free === 0 && !plan.sell.length && !plan.bank.length && Date.now() - bags_warned > 600_000) {
+		bags_warned = Date.now();
+		game_log("Bags full and everything in them is marked keep — run report() to see why", "#E25C5C");
+	}
 	return {
 		hunt: hunt_due(),
 		craft: !!next_quest_craft(),
