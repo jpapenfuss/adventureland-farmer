@@ -35,6 +35,9 @@
 //    for one level lower, so every guide upgrade was skipped); NPC-sold items accept the guide's odds down to
 //    min_chance_rebuyable; guide quests come from craft rows, plan .next paths, "bees"/material farm rows and set
 //    goals (not plan long-shots); farm-row materials read from title/reason args; class-restricted outputs skipped.
+//  - v9.9: targets the pack's own monster first (hunt/quest kills), others only if none in view and they die within
+//    max_ttk_s (it was chasing 70s squigtoads past the squigs it was sent for); guide "develop" steps: upgrade the
+//    best spare copy one level at a time, buying a +0 from an NPC if none is owned.
 // Verified against kaansoral/adventureland source: stop("smart"), interact("monsterhunt"), bank_packs global,
 // can_move_to(entity), upgrade/compound preview → {chance}. Server: attacking, moving or equipping clears
 // character.c (cancels the town channel); use_town fails with cant_escape while >5 monsters target you.
@@ -92,7 +95,8 @@ const CFG = {
 	errand_timeout_ms: 180_000, // an errand (sell/guide/restock) still running after this is assumed hung; its lock is released
 	hp_pot: "hpot1", mp_pot: "mpot1", pot_min: 30, pot_buy: 200,
 	kite_margin: 25,
-	kite_slack: 4,           // a kiteable mob's damage counts 1/kite_slack toward safety (kiting isn't perfect)
+	kite_slack: 4,
+	max_ttk_s: 20,           // monsters other than the pack's type: skip if a kill would take longer than this           // a kiteable mob's damage counts 1/kite_slack toward safety (kiting isn't perfect)
 	loot_range: 400,         // server drops the gold multiplier past 400px from the chest
 	loot_wait_ms: 45_000,    // a chest farther than loot_range is opened anyway after this long (before it's lost)
 	force_type: null,
@@ -132,7 +136,7 @@ const CFG = {
 	min_upgrade_chance: 0.80,      // server preview; a failed upgrade/compound destroys the item(s)
 	min_compound_chance: 0.80,
 	min_chance_rebuyable: 0.5,     // floor for items NPCs sell (failure only costs gold); the guide plans for retries
-	gear_actions: ["equip", "buy", "upgrade", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
+	gear_actions: ["equip", "buy", "upgrade", "develop", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
 	// Advisor farm rows to obey (reason ids, without the "progression.reason." prefix).
 	// material/try_material = a plan needs drops; bees = early lesson (XP + Bee Wings for Cole);
 	// hunt_farm = active monster hunt. Plain xp/level/gold suggestions are ignored: the
@@ -505,18 +509,25 @@ function choose_target(local_ok) {
 	}
 	if (hitting) return hitting;
 	if (!local_ok) return null; // outside the pack area: don't get pulled into whatever is nearby
+	// The pack's own monster comes first: a hunt/quest/guide directive needs THOSE kills, and the pack was chosen
+	// for that type. v9.8 ranked everything in view by xp per second of fighting, so at the squig pack it walked
+	// past squigs (600 xp, ~7s) to a squigtoad (32000 xp, 9600 hp, ~70s) and the hunt never advanced.
+	// Other monsters are fought only when none of the pack's type is in view, and only if they die within
+	// max_ttk_s (a long fight blocks the pack's respawns and any hunt progress).
+	const want = state.pack?.mtype;
+	const usable = (e) => farmable_entity(e) && valid(e) && (!e.target || party.has(e.target)) && live_ok(e);
 	const cur = get_targeted_monster();
-	if (farmable_entity(cur) && valid(cur) && live_ok(cur) && (!cur.target || party.has(cur.target))) return cur;
-	let best = null, best_v = 0;
+	let best = null, best_v = 0, best_tier = 2;
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
-		if (!farmable_entity(e)) continue;
-		if (e.target && !party.has(e.target)) continue;
+		if (!usable(e)) continue;
 		const f = live_ok(e);
-		if (!f) continue;
+		const tier = e.mtype === want ? 0 : 1;
+		if (tier === 1 && f.ttk * (e.hp / e.max_hp) > CFG.max_ttk_s) continue;
+		if (tier > best_tier) continue;
 		const walk_s = Math.max(0, distance(character, e) - character.range) / Math.max(character.speed, 1);
-		const v = e.xp / (f.ttk * (e.hp / e.max_hp) + walk_s + 0.2);
-		if (v > best_v && can_move_to(e)) (best = e), (best_v = v);
+		const v = (e.xp || f.xp || 1) / (f.ttk * (e.hp / e.max_hp) + walk_s + 0.2) * (e === cur ? 1.5 : 1); // finish what we started
+		if ((tier < best_tier || v > best_v) && can_move_to(e)) (best = e), (best_v = v), (best_tier = tier);
 	}
 	return best;
 }
@@ -844,14 +855,39 @@ function input_slots(a, from, n) {
 function chance_floor(name, base) {
 	return shop_for(name) && !G.items[name]?.cash ? Math.min(base, CFG.min_chance_rebuyable) : base;
 }
+// "Develop" (guide: "Develop a spare Staff to +4"): the exact input level isn't owned yet, so take the best spare
+// copy below the target (bags only, never worn gear) and upgrade it one level; buy a +0 if there's none and NPCs
+// sell it. One level per guide step; the guide re-plans after each result.
+function develop_pick(name, target) {
+	let k = -1;
+	character.items.forEach((i, n) => { if (i && i.name === name && !i.l && (i.level || 0) < target && (k < 0 || i.level > (character.items[k].level || 0))) k = n; });
+	return k;
+}
+const upgrade_scroll = (name, level) => "scroll" + Math.max(0, item_grade({ name, level }));
 async function run_upgrade(a, row) {
-	const from = input_level(a, row), to = from + 1;
+	let from = input_level(a, row), scroll = a.scroll;
+	const target = row?.request?.name === a.name && row.request.level ? row.request.level : from + 1;
+	let ks = input_slots(a, from, 1);
+	if (!ks) {
+		let k = develop_pick(a.name, target);
+		if (k < 0 && shop_for(a.name)) {
+			await buy_from_npc(a.name, 1);
+			await until(() => develop_pick(a.name, target) >= 0, 3000);
+			k = develop_pick(a.name, target);
+		}
+		if (k < 0) throw { reason: "input_missing", want: `${a.name} below +${target}` };
+		from = character.items[k].level || 0;
+		scroll = upgrade_scroll(a.name, from);
+		ks = [k];
+		game_log(`develop ${a.name}: +${from} → +${from + 1} (toward +${target})`, "#67A464");
+	}
+	const to = from + 1;
 	if (!has_computer()) await go("upgrade");
-	await ensure_scroll(a.scroll);
+	await ensure_scroll(scroll);
 	if (!has_computer()) await go("upgrade"); // buying the scroll may have walked us away
-	const ks = input_slots(a, from, 1);
-	if (!ks) throw { reason: "input_missing", want: `${a.name}+${from}` };
-	const k = ks[0];
+	const k = character.items[ks[0]]?.name === a.name ? ks[0] : develop_pick(a.name, to);
+	if (k < 0) throw { reason: "input_missing", want: `${a.name}+${from}` };
+	a = { ...a, scroll };
 	await wait_budget(1, 30);
 	const preview = await T(upgrade(k, find_slot(a.scroll, 0), null, true));
 	const floor = chance_floor(a.name, CFG.min_upgrade_chance);
@@ -1174,8 +1210,15 @@ async function run_row(row) {
 			return buy_from_npc(a.name, a.quantity || 1, a.npc);
 		}
 		case "upgrade":
+		case "develop": {
 			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
-			return run_upgrade(a, row);
+			// develop rows: the item and target may live on request/target rather than action
+			const name = a.name || row.request?.name || row.target?.name;
+			if (!name || !G.items[name]) throw { reason: "unsupported", want: JSON.stringify(row.action || {}).slice(0, 80) };
+			const aa = { ...a, name, scroll: a.scroll || upgrade_scroll(name, a.level || 0) };
+			if (row.kind === "develop" && !(row.request?.level > 0) && row.target?.level) row = { ...row, request: { name, level: row.target.level } };
+			return G.items[name].compound ? run_compound(aa, row) : run_upgrade(aa, row);
+		}
 		case "compound":
 			if ((row.cost || 0) > character.gold - CFG.gold_reserve) throw { reason: "gold_reserve" };
 			return run_compound(a, row);

@@ -328,5 +328,36 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.npcs.basics.items = ["scroll0"]; ups.length = 0;
 	const e19 = await vm.runInContext("run_row", ctx)(fixture.rows[0]).catch((e) => e);
 	assert(e19 && e19.reason === "low_chance" && ups.length === 1, "non-rebuyable item at 70% refused");
+
+	// 20) targeting: at the squig pack, squigs beat a squigtoad even though the toad's xp/s looks better
+	ctx.G.monsters.squig = { xp: 600, hp: 1000, attack: 7, respawn: 12, range: 15, speed: 10, frequency: 0.5 };
+	ctx.G.monsters.squigtoad = { xp: 32000, hp: 9600, attack: 24, respawn: 120, range: 20, speed: 16, frequency: 0.6 };
+	Object.assign(character, { attack: 183, frequency: 0.75, range: 183, speed: 49, max_hp: 2503, hp: 2503, armor: 57, resistance: 138, damage_type: "magical", x: 0, y: 0 });
+	ctx.distance = (a, b) => Math.hypot((a.x || 0) - (b.x || 0), (a.y || 0) - (b.y || 0));
+	ctx.get_targeted_monster = () => null;
+	ctx.parent.entities = {
+		toad: { id: "toad", type: "monster", mtype: "squigtoad", visible: true, hp: 9600, max_hp: 9600, xp: 32000, attack: 24, x: 50, y: 0 },
+		sq: { id: "sq", type: "monster", mtype: "squig", visible: true, hp: 1000, max_hp: 1000, xp: 600, attack: 7, x: 300, y: 0 },
+	};
+	vm.runInContext(`state.safe = { squig: fight_profile("squig"), squigtoad: fight_profile("squigtoad") }; state.pack = { mtype: "squig", map: "main", boundary: [-1353,126,-998,718] }`, ctx);
+	assert(vm.runInContext("choose_target(true)", ctx)?.id === "sq", "squig (pack type) chosen over a closer squigtoad");
+	delete ctx.parent.entities.sq;
+	assert(vm.runInContext("choose_target(true)", ctx) === null, "no squig in view: 70s squigtoad still skipped (max_ttk_s)");
+	ctx.parent.entities = {};
+
+	// 21) develop: guide wants staff +5 from a +4 we don't have; we own a spare +0 → upgrade +0→+1 with scroll0
+	character.items = Array(42).fill(null);
+	character.items[3] = { name: "staff", level: 0 }; character.items[2] = { name: "computer" }; character.items[9] = { name: "scroll0", q: 5 };
+	ctx.G.npcs.basics = { items: ["staff", "scroll0"] };
+	ups.length = 0;
+	ctx.upgrade = (k, sk, off, calc) => (ups.push([k, sk, !!calc]), Promise.resolve(calc ? { chance: 0.98 } : { success: true }));
+	await vm.runInContext("run_row", ctx)(fixture.rows[0]);
+	assert(ups.length === 2 && ups[1][0] === 3 && ups[1][1] === 9, `develops the spare +0 staff (${JSON.stringify(ups)})`);
+	// no staff at all → buys one, then upgrades it
+	character.items[3] = null; ups.length = 0;
+	const buys = [];
+	ctx.buy = (n, q) => { buys.push(n); character.items[4] = { name: n, level: 0 }; return Promise.resolve({ success: true }); };
+	await vm.runInContext("run_row", ctx)(fixture.rows[0]);
+	assert(buys.join() === "staff" && ups.length === 2 && ups[1][0] === 4, `buys a staff and develops it (${buys}; ${JSON.stringify(ups)})`);
 	console.log("ALL PASS");
 })();
