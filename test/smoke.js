@@ -8,7 +8,7 @@ const character = { name: "me", ctype: "ranger", level: 10, xp: 0, hp: 1000, max
 const G = {
 	monsters: { goo: { xp: 10, hp: 100, attack: 5, respawn: 10, range: 20, speed: 10, armor: 0, resistance: 0 } },
 	maps: { main: { monsters: [{ type: "goo", count: 5, boundary: [100, 100, 400, 400] }], npcs: [] } },
-	items: { hpot1: { g: 20 }, mpot1: { g: 20 } }, skills: { attack: {}, use_town: {}, use_hp: {}, use_mp: {}, regen_hp: {}, regen_mp: {} },
+	items: { hpot1: { g: 20 }, mpot1: { g: 20 }, beewings: { type: "material" }, gslime: { type: "material" } }, skills: { attack: {}, use_town: {}, use_hp: {}, use_mp: {}, regen_hp: {}, regen_mp: {} },
 	classes: { ranger: { damage_type: "physical" } }, npcs: {}, craft: { wcap: { quest: "mcollector", items: [[20, "beewings"]] } }, quests: {}, levels: { 10: 1000 },
 };
 const timers = [];
@@ -93,7 +93,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(r6 && r6.reason === "timeout", "T() times out unanswered game calls");
 
 	// 7) quest materials protected before any guide read
-	assert(vm.runInContext(`state.protect.has("beewings")`, ctx), "quest materials protected at load");
+	vm.runInContext("guide_refresh()", ctx);
+	assert(vm.runInContext(`state.needs.has("beewings")`, ctx), "open quest recipe inputs are kept in bags (needs)");
 
 	// 8) hunt: turn-in is followed by a start in the same visit
 	const replies = [{ completed: true }, { started: true }];
@@ -109,8 +110,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const bought = [];
 	ctx.quantity = () => 0; character.gold = 1000; // 50 pots' worth at 20g
 	ctx.buy = (name, q) => (bought.push([name, q]), character.gold -= 20 * q, Promise.resolve());
-	vm.runInContext(`state.errand = null; smart_depth = 0; restock()`, ctx);
-	await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+	await vm.runInContext(`state.errand = null; smart_depth = 0; task_restock()`, ctx);
 	assert(bought.length && bought[0][1] === 50, `restock buys affordable amount (${JSON.stringify(bought)})`);
 
 	// 10) governor honours the server-reported call cost
@@ -144,6 +144,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const r12 = await vm.runInContext(`run_craft({ recipe: "wcap", ready: true })`, ctx).catch((e) => e);
 	if (r12 && r12.reason) console.log("run_craft threw", r12);
 	assert(visited[0] === "mcollector", `quest craft goes to quest NPC (${visited})`);
+	assert(vm.runInContext("state.crafted.wcap === 1", ctx), "guide craft row counted in craft history");
 
 	// 13) fight model
 	vm.runInContext("pick_pack()", ctx);
@@ -158,22 +159,48 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const f1 = vm.runInContext(`fight_math(G.monsters.onehp)`, ctx);
 	assert(Math.abs(f1.ttk - 30) < 1e-6, `1hp mob: ttk = hp / hits per second (${f1.ttk})`);
 
-	// 14) full bags of materials: nothing to sell → bank them; keep potions, scrolls, protected items
-	ctx.G.items.gslime = { type: "material" }; ctx.G.items.beewings = { type: "material" };
-	ctx.G.items.scroll0 = { type: "uscroll" }; ctx.G.items.hpot1.type = "pot";
-	character.items = Array(42).fill(null).map((_, i) => ({ name: "gslime", q: 1 }));
-	character.items[0] = { name: "hpot1", q: 100 }; character.items[1] = { name: "scroll0", q: 3 }; character.items[2] = { name: "beewings", q: 5 };
+	// 14) bag policy: spare gear and unneeded materials go to the bank at < bag_min_free free slots;
+	//     potions, scrolls and open-quest materials stay; locked items stay
+	ctx.G.items.gslime = { type: "material" }; ctx.G.items.beewings = { type: "material" }; ctx.G.items.seashell = { type: "material" };
+	ctx.G.items.hpamulet = { type: "amulet", g: 7000 }; ctx.G.items.scroll0 = { type: "uscroll" }; ctx.G.items.hpot1.type = "pot";
+	vm.runInContext("state.crafted = {}; state.gear_skip = {}; state.bank_seen = {}", ctx);
+	ctx.G.craft.wcap.items = [[50, "beewings"], [3, "gslime"]];
+	ctx.auto_craft = () => Promise.reject({ reason: "distance" }); // craft fails → recipe shelved but still wanted
+	character.items = Array(42).fill(null);
+	for (let i = 5; i < 38; i++) character.items[i] = i % 2 ? { name: "hpamulet" } : { name: "seashell", q: i };
+	character.items[0] = { name: "hpot1", q: 100 }; character.items[1] = { name: "scroll0", q: 3 };
+	character.items[2] = { name: "beewings", q: 171 }; character.items[3] = { name: "gslime", q: 23 }; character.items[4] = { name: "hpamulet", l: "l" };
 	const recount = () => (character.esize = character.items.filter((x) => !x).length);
-	recount();
+	recount(); // 4 free
 	const stored = [];
 	character.bank = { items0: [] };
 	ctx.bank_store = (i) => (stored.push(character.items[i].name), (character.items[i] = null), recount(), Promise.resolve({ success: true }));
 	ctx.smart_move = () => Promise.resolve();
-	vm.runInContext(`state.errand = null; smart_depth = 0; free_bags()`, ctx);
-	for (let i = 0; i < 400 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
-	const kept = character.items.filter(Boolean).map((x) => x.name).sort().join();
-	assert(stored.length === 39 && kept === "beewings,hpot1,scroll0", `banked materials, kept pots/scrolls/quest mats (${stored.length}, ${kept})`);
+	vm.runInContext("guide_refresh()", ctx);
+	const due14 = vm.runInContext("town_due()", ctx);
+	assert(due14.bank && !due14.sell && due14.craft, `town run due for the bank, nothing sold by default (${JSON.stringify({ bank: due14.bank, sell: due14.sell })})`);
+	vm.runInContext(`state.errand = null; smart_depth = 0; town_run(town_due())`, ctx);
+	for (let i = 0; i < 2000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	const kept = character.items.filter(Boolean).map((x) => x.name + (x.l ? "(locked)" : "")).sort().join();
+	assert(stored.length === 33 && kept === "beewings,gslime,hpamulet(locked),hpot1,scroll0", `banked spares, kept pots/scrolls/quest mats/locked (${stored.length}: ${kept})`);
+	// banked quest material comes back out on a bank visit
+	vm.runInContext(`state.bank_seen = { frogt: 5 }`, ctx);
+	ctx.G.items.frogt = { type: "material" };
+	ctx.G.craft.wshoes = { items: [[5, "frogt"], [500, "beewings"]], cost: 0, quest: "mcollector" };
+	vm.runInContext("guide_refresh()", ctx);
+	assert(vm.runInContext("bag_plan().fetch.join()", ctx) === "frogt", "banked quest material is fetched back");
+	delete ctx.G.craft.wshoes;
+	// bank that stores nothing (full) → bank paused 15 min instead of a trip every 20s
+	vm.runInContext(`state.bank_seen = {}`, ctx);
+	{ let free = 0; for (let i = 0; i < 42; i++) if (!character.items[i] && ++free > 4) character.items[i] = { name: "seashell", q: 1 }; }
+	recount();
+	ctx.bank_store = () => Promise.resolve({ failed: true, reason: "bank_full" });
+	vm.runInContext(`state.errand = null; state.gear_skip = {}; town_run(town_due())`, ctx);
+	for (let i = 0; i < 2000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	assert(vm.runInContext(`skipped("town:bank") && !town_due().bank`, ctx), "full bank → bank trips paused");
+	vm.runInContext(`state.gear_skip = {}`, ctx);
 
+	vm.runInContext("state.gear_skip = {}; state.crafted = {}", ctx);
 	// 15) Cole: 50 beewings + 3 gslime → walks to mcollector and crafts wcap; once only (quest_craft_max 1)
 	ctx.G.craft = {
 		wcap: { items: [[50, "beewings"], [3, "gslime"]], cost: 0, quest: "mcollector" },
@@ -193,7 +220,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items[10] = { name: id };
 		return Promise.resolve({ success: true });
 	};
-	assert(vm.runInContext("state.crafted.wcap === 1", ctx), "guide craft row counted in craft history");
 	vm.runInContext("state.crafted = {}", ctx);
 	const n15 = await vm.runInContext("quest_crafts()", ctx);
 	assert(n15 === 1 && crafted.join() === "wcap", `crafted wcap once, skipped gear-input armorring (${crafted})`);
@@ -261,7 +287,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// guide quests: recorded from guide rows, first in line, and not subject to the xp floor / time cap
 	ctx.get_progression = () => ({ ready: true, plans: [], rows: [{ id: "r1", kind: "farm", reason: { id: "progression.reason.bees" }, target: { name: "wcap" } }] });
 	vm.runInContext("state.guide_quests = {}; state.crafted = {}", ctx);
-	await vm.runInContext("gear_step()", ctx);
+	vm.runInContext("guide_refresh()", ctx);
 	assert(vm.runInContext(`is_guide_quest("wcap")`, ctx), "guide row naming wcap marks it a guide quest");
 	vm.runInContext("state.best_score = 1e6; CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
 	const g16 = vm.runInContext("quest_directive(true)", ctx);
