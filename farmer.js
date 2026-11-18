@@ -1,5 +1,5 @@
 // =====================================================================
-// Adventure Land farmer — v10 (rewrite)
+// Adventure Land farmer — v10.5 (see VERSION; report() prints it)
 //
 // What it does, in priority order every tick:
 //   1. Dead → respawn (waits the server's rip_time).
@@ -30,6 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
+const VERSION = "10.5";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -682,7 +683,7 @@ function is_junk(item) {
 	if (!item || item.l || item.b || CFG.keep.includes(item.name) || needed_slots().has(character.items.indexOf(item))) return false;
 	if (CFG.sell.includes(item.name)) return true;
 	const def = G.items[item.name];
-	if (!CFG.auto_sell_gear || !def || !GEAR.has(def.type)) return false;
+	if (!(CFG.auto_sell_gear || bank_is_full()) || !def || !GEAR.has(def.type)) return false; // bank full: selling is the only way to make room
 	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
 }
 function bag_class(item, needed = needed_slots()) {
@@ -736,22 +737,47 @@ function remember_bank() {
 	state.bank_seen = seen;
 }
 setInterval(remember_bank, 2000);
-async function task_bank(fetch_names) {
-	const store = slots_where((i) => bag_class(i) === "bank");
-	if (!store.length && !fetch_names.length) return 0;
-	if (character.map !== "bank") await go({ map: "bank" });
-	if (!(await until(() => character.bank && Object.keys(character.bank).some((k) => k.startsWith("items")), 10_000))) throw { reason: "bank_not_loaded" };
-	let stored = 0, got = 0;
+const town_reason = {}; // task -> why it achieved nothing (shown by report())
+const bank_is_full = () => Date.now() - (state.bank_full_at || 0) < 6 * 3600_000;
+// Store bankable items into packs on the current floor; stops at the first bank_full
+async function store_here() {
+	let stored = 0, full = false;
 	for (let k = character.items.length - 1; k >= 0; k--) {
 		if (bag_class(character.items[k]) !== "bank") continue;
 		await wait_budget(1, 40);
 		const r = await T(bank_store(k)).catch((e) => e);
-		if (r?.reason === "bank_full") { game_log("Bank full (on this floor); keeping the rest", "#E25C5C"); break; }
+		if (r?.reason === "bank_full") { full = true; break; }
 		if (!r?.failed && !r?.reason) stored++;
+		else game_log(`bank: ${character.items[k]?.name}: ${why(r)}`, "gray");
 		await sleep_ms(150);
 	}
-	// pull back what bags need (quest materials, guide inputs), from packs on this floor
+	return { stored, full };
+}
+const floor_loaded = (map) => until(() => character.map === map && character.bank && Object.keys(character.bank).some((k) => k.startsWith("items")), 10_000);
+async function task_bank(fetch_names) {
+	const store = slots_where((i) => bag_class(i) === "bank");
+	if (!store.length && !fetch_names.length) return (town_reason.bank = "nothing to store or fetch"), 0;
+	try { if (character.map !== "bank") await go({ map: "bank" }); } catch (e) { town_reason.bank = "can't reach the bank: " + why(e); throw e; }
+	if (!(await floor_loaded("bank"))) { town_reason.bank = "bank didn't load"; throw { reason: "bank_not_loaded" }; }
+	let { stored, full } = await store_here();
+	// main floor full → the other floors (bank_b: items8 is free to use)
 	const packs = bank_packs_list();
+	if (full) for (const floor of [...new Set(Object.values(packs).map((p) => p[0]))].filter((f) => f !== "bank")) {
+		if (!slots_where((i) => bag_class(i) === "bank").length) break;
+		try { await go({ map: floor }); } catch (e) { game_log(`bank: can't reach ${floor}: ${why(e)}`, "gray"); continue; }
+		if (!(await floor_loaded(floor))) continue;
+		const r = await store_here();
+		stored += r.stored;
+		full = r.full;
+		if (!full) break;
+	}
+	if (full) {
+		state.bank_full_at = Date.now();
+		town_reason.bank = "every bank pack you can use is full";
+		game_log("Bank full on every floor: selling plain +0 junk until there's room (unlock more packs or clear the bank)", "#E25C5C");
+	} else if (!stored && store.length) town_reason.bank = "store calls failed (see gray bank: lines)";
+	// pull back what bags need, from packs on whichever floor we're on
+	let got = 0;
 	for (const name of fetch_names) {
 		if (character.esize < 2) break;
 		for (const p in character.bank) {
@@ -1255,10 +1281,15 @@ function town_due() {
 }
 function town_run(due) {
 	return errand("town", async () => {
-		const step = async (label, fn) => { try { return await fn(); } catch (e) { game_log(`${label}: ${why(e)}`, "gray"); } };
+		const step = async (label, fn) => { try { return await fn(); } catch (e) { town_reason[label] = town_reason[label] || why(e); game_log(`${label}: ${why(e)}`, "gray"); } };
 		// a bag/potion task that achieves nothing (bank full, item on another bank floor, no gold) pauses 15 min,
 		// so an unfixable condition can't send us to town every town_min_gap_ms
-		const bag_step = async (key, fn) => { const n = (await step(key, fn)) || 0; if (!n) skip("town:" + key, 900_000); return n; };
+		const bag_step = async (key, fn) => {
+			delete town_reason[key];
+			const n = (await step(key, fn)) || 0;
+			if (!n) skip("town:" + key, 900_000, town_reason[key] || "achieved nothing");
+			return n;
+		};
 		let did = 0;
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
@@ -1322,7 +1353,7 @@ function save_state() {
 	if (typeof set !== "function") return;
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
-		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog,
+		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -1339,12 +1370,13 @@ function load_state() {
 	Object.assign(state.guide_ignore, live(d.guide_ignore));
 	Object.assign(state.guide_quests, d.guide_quests || {});
 	Object.assign(skip_why, d.skip_why || {});
+	if (d.bank_full_at) state.bank_full_at = d.bank_full_at;
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	const off = now - (d.at || now);
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
-	game_log(`Loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, "gray");
+	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, "gray");
 }
 load_state();
 setInterval(save_state, 60_000);
@@ -1369,7 +1401,7 @@ function report() {
 	const lines = [];
 	const L = (s, c = "#9BD") => { lines.push(s); game_log(s, c); };
 	const p = state.pack, d = state.directive;
-	L(`— report ${new Date().toLocaleTimeString()} —`, "#FFF");
+	L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, "#FFF");
 	L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
 	if (d) L(`directive: ${d.monster} — ${d.reason}${state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
@@ -1390,7 +1422,8 @@ function report() {
 	const plan = bag_plan(), kept = {};
 	character.items.forEach((i) => { if (i) kept[bag_class(i)] = (kept[bag_class(i)] || 0) + 1; });
 	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}, bank ${kept.bank || 0}, sell ${kept.sell || 0}${plan.fetch.length ? ` | to fetch: ${plan.fetch.join(", ")}` : ""}`);
-	for (const k of ["town:sell", "town:restock", "town:bank"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}`);
+	for (const k of ["town:sell", "town:restock", "town:bank"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
+	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
 	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
 	L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
 	return share_text("report()", lines);

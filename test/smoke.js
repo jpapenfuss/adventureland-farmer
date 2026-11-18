@@ -175,7 +175,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const stored = [];
 	character.bank = { items0: [] };
 	ctx.bank_store = (i) => (stored.push(character.items[i].name), (character.items[i] = null), recount(), Promise.resolve({ success: true }));
-	ctx.smart_move = () => Promise.resolve();
+	ctx.smart_move = (d) => { if (d && d.map) character.map = d.map; return Promise.resolve(); };
 	vm.runInContext("guide_refresh()", ctx);
 	const due14 = vm.runInContext("town_due()", ctx);
 	assert(due14.bank && !due14.sell && due14.craft, `town run due for the bank, nothing sold by default (${JSON.stringify({ bank: due14.bank, sell: due14.sell })})`);
@@ -434,6 +434,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext(`state.gear_skip = {}; load_state()`, ctx);
 	assert(vm.runInContext(`!skipped("upgrade:mainhand:slimestaff:4:")`, ctx), "pre-v10.3 upgrade pause cleared on load");
 
+	vm.runInContext("state.bank_full_at = 0", ctx);
 	// 25) the live failure: equipment lesson plans helmet/shoes +7 → bag full of helmets & shoes, all "needed"
 	ctx.G.items.helmet = { type: "helmet", upgrade: {} }; ctx.G.items.shoes = { type: "shoes", upgrade: {} };
 	ctx.G.items.ascale = { type: "material", s: 9999 };
@@ -455,5 +456,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("loot_chests()", ctx);
 	assert(opened25.join() === "c1", "chest opened with 0 free slots");
 	ctx.get_progression = undefined; ctx.parent.chests = {};
+
+	ctx.setTimeout = (fn, ms) => (ms < 5000 && setImmediate(fn), 0);
+	// 26) main bank floor full → overflow to bank_b; every floor full → junk sold, reason recorded
+	vm.runInContext("state.bank_full_at = 0; state.gear_skip = {}; state.needs = new Map(); state.errand = null; smart_depth = 0", ctx);
+	ctx.parent.bank_packs = { items0: ["bank", 0, 0], items1: ["bank", 0, 0], items8: ["bank_b", 0, 0] };
+	ctx.smart_move = (d) => { if (d && d.map) character.map = d.map; return Promise.resolve(); };
+	ctx.G.items.hpamulet = { type: "amulet", g: 7000 };
+	character.items = Array(42).fill(null).map(() => ({ name: "hpamulet" }));
+	character.esize = 0; character.map = "main";
+	const where = [];
+	ctx.bank_store = (k) => {
+		if (character.map === "bank") return Promise.reject({ reason: "bank_full" });
+		where.push(character.map); character.items[k] = null; character.esize++;
+		return Promise.resolve({ success: true });
+	};
+	await vm.runInContext("task_bank([])", ctx);
+	assert(where.length === 42 && where.every((m) => m === "bank_b"), `overflowed to bank_b (${where.length})`);
+	character.items = Array(42).fill(null).map(() => ({ name: "hpamulet" })); character.esize = 0; character.map = "main";
+	ctx.bank_store = () => Promise.reject({ reason: "bank_full" });
+	ctx.item_value = () => 4200;
+	vm.runInContext("state.errand = null; town_run(town_due())", ctx);
+	for (let i = 0; i < 3000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	assert(vm.runInContext("bank_is_full() && bag_class(character.items.find(Boolean) || { name: 'hpamulet' }) !== 'bank'", ctx), "bank full → junk classed for selling");
+	vm.runInContext("town_reason.bank = 'every bank pack you can use is full'", ctx);
 	console.log("ALL PASS");
 })();
