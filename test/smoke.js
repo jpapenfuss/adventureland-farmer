@@ -674,5 +674,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
 	vm.runInContext("follower_tick()", ctx);
 	assert(atk36.includes("w") || atk36.includes("b"), `follower solos while the leader is dead (${atk36})`);
+
+	// 37) turns: Torlis has its own guide farm row; Aspernari wants spores (minimush). Leader alternates.
+	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 41, map: "main", x: 0, y: 0, hp: 900, max_hp: 900, attack: 60, frequency: 1, range: 30, armor: 60, resistance: 30, damage_type: "physical" });
+	ctx.G.monsters.minimush = { xp: 100, hp: 300, attack: 8, respawn: 10, range: 20, speed: 10, frequency: 1 };
+	ctx.G.maps.main.monsters.push({ type: "minimush", count: 8, boundary: [200, 200, 400, 400] });
+	vm.runInContext(`state.turn = null; state.guide_ignore = {}; state.gprog = null;
+		state.guide_farm = { monster: "goo", map: "main", boundary: [-100,-100,100,100], count: 5, reason: "guide hunt_farm", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+		want: { monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, reason: "guide quest wgloves: spores 0/20", guide_safe: false } } });
+	vm.runInContext("refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'goo' && state.turn.who === 'me'", ctx), "first turn: leader's own goal");
+	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.for_partner && /Aspernari: guide quest wgloves/.test(state.directive.reason)", ctx),
+		`second turn: partner's goal (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	// a goal worked for the partner isn't re-shared as our own want
+	let sent37;
+	ctx.send_cm = (to, m) => ((sent37 = m), Promise.resolve());
+	vm.runInContext("heartbeat()", ctx);
+	assert(sent37 && sent37.want === null, "partner's goal not echoed back as our want");
+	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive(); heartbeat()", ctx);
+	assert(sent37.want && sent37.want.monster === "goo", "own goal shared as want on our own turn");
 	console.log("ALL PASS");
 })();

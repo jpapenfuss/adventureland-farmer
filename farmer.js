@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.5";
+const VERSION = "11.6";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -105,7 +105,8 @@ const CFG = {
 		heal_bonus: 2.5,       // leader's safety allowance × this while a priest partner is near
 		wait_radius: 300,      // a follower whose leader is dead solo-grinds safe monsters within this many px
 		beat_ms: 2000,         // status message interval
-		sync_factor: 2,        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
+		sync_factor: 2,
+		turn_min: 15,          // leader alternates this many minutes between its own goal and its partner's        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
 	},
 };
 code_settings.show_smart_move_text = false;
@@ -991,7 +992,15 @@ function partner_hunt_directive() {
 	const p = partner(), h = p?.hunt;
 	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || is_follower() || !fight_profile(h.id)) return null;
 	const best = resolve_area(h.id);
-	return best && { monster: h.id, ...best, reason: `${p.name}'s monster hunt ${h.c} left`, guide_safe: false };
+	return best && { monster: h.id, ...best, reason: `${p.name}'s monster hunt ${h.c} left`, guide_safe: false, for_partner: true };
+}
+// The partner's own top farming goal, if the pair can fight it
+function partner_want() {
+	const p = partner(), w = p?.want;
+	if (!w || is_follower() || !G.monsters[w.monster]) return null;
+	if (!fight_profile(w.monster) && !(w.guide_safe && farmable_type(w.monster))) return null;
+	const area = resolve_area(w.monster, w.map, w.boundary, w.count);
+	return area && { monster: w.monster, ...area, reason: `${p.name}: ${w.reason}`, guide_safe: false, for_partner: true };
 }
 const hunt_due = () => {
 	const h = character.s.monsterhunt;
@@ -1029,8 +1038,18 @@ function refresh_directive() {
 		}
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
-	let d = g;
-	for (const f of CFG.hunt_first ? [hunt_directive, partner_hunt_directive, gq, oq] : [gq, hunt_directive, partner_hunt_directive, oq]) if (!d) d = f();
+	let mine = g;
+	for (const f of CFG.hunt_first ? [hunt_directive, gq, oq] : [gq, hunt_directive, oq]) if (!mine) mine = f();
+	// Taking turns: a follower never picks where to fight, and the leader's guide always has a farm row, so the
+	// follower's own goals (its guide row, quest materials, hunt) never got worked. The leader alternates
+	// turn_min-minute turns between its own goal and the partner's (shared in the heartbeat as `want`).
+	let d = mine;
+	const pw = partner_want() || partner_hunt_directive();
+	if (pw && !mine) d = pw;
+	else if (pw) {
+		if (!state.turn || now > state.turn.end) state.turn = { who: state.turn?.who === "me" ? "partner" : "me", end: now + CFG.party.turn_min * 60_000 };
+		if (state.turn.who === "partner") d = pw;
+	}
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
@@ -1520,6 +1539,8 @@ function report() {
 	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${partner().name})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
+	if (state.turn && !is_follower() && partner()?.want)
+		L(`turn: ${state.turn.who === "me" ? character.name : partner().name}'s goal for ${mins(state.turn.end)} | ${partner().name} wants ${partner().want.monster} (${partner().want.reason})`);
 	const ph = partner()?.hunt;
 	if (ph) L(`${partner().name}'s hunt: ${ph.c}x ${ph.id} left${is_follower() ? "" : fight_profile(ph.id) ? " (we can farm it)" : " (not safe for us)"}`);
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
@@ -1613,7 +1634,11 @@ function heartbeat() {
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
 		rpiercing: character.rpiercing || 0, range: character.range,
-		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null };
+		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
+		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
+		want: state.directive && !state.directive.for_partner
+			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
+				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };
 	Promise.resolve(send_cm(others(), msg)).catch(() => {});
 }
 if (typeof character.on === "function") character.on("cm", (m) => {
