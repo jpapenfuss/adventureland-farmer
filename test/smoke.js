@@ -273,6 +273,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(!vm.runInContext(`recipe_open("wcap")`, ctx), "banked output counts as owned");
 	vm.runInContext(`state.bank_seen = {}`, ctx);
 	// guide farm row: kept while its material count rises; paused when it stalls; unnamed rows use the long cap
+	// (quests and hunts outrank the guide row now: switch them off so the row is the only goal)
+	const hunt_save = character.s.monsterhunt; delete character.s.monsterhunt;
+	vm.runInContext(`CFG.quest_farm = false; state.goals_cache = null`, ctx);
 	vm.runInContext(`state.guide_farm = { monster: "goo", map: "main", boundary: [100,100,400,400], count: 5, item: "gslime", reason: "guide material", until: Date.now() + 1e6 };
 		state.directive = null; state.gprog = null; refresh_directive();`, ctx);
 	assert(vm.runInContext(`state.directive.monster === "goo"`, ctx), "guide farm row followed");
@@ -286,6 +289,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext(`!state.guide_ignore["goo:main"]`, ctx), "row without a material isn't paused at the stall window");
 	vm.runInContext(`state.gprog.t -= CFG.guide_farm_max_min * 60000; refresh_directive()`, ctx);
 	assert(vm.runInContext(`state.guide_ignore["goo:main"] > Date.now()`, ctx), "...but is at guide_farm_max_min");
+	// priorities: an own monster hunt outranks the guide row
+	vm.runInContext(`state.guide_ignore = {}; state.gprog = null; state.guide_farm.until = Date.now() + 1e6`, ctx);
+	character.s.monsterhunt = { id: "goo", c: 5 };
+	const fp_save = ctx.fight_profile;
+	vm.runInContext(`state.guide_farm.monster = "bee"; state.directive = null; refresh_directive()`, ctx);
+	assert(vm.runInContext(`state.directive && /monster hunt/.test(state.directive.reason)`, ctx), `hunt outranks the guide row (${vm.runInContext("JSON.stringify(state.directive && state.directive.reason)", ctx)})`);
+	delete character.s.monsterhunt;
+	// outlevelled guide row skipped
+	vm.runInContext(`state.guide_farm.monster = "goo"; state.best_score = 1e9; state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
+	assert(vm.runInContext(`!state.directive && !goals_list().some((g) => /guide/.test(g.reason))`, ctx), "outlevelled guide farm row skipped (not shared either)");
+	vm.runInContext(`state.best_score = 0`, ctx);
+	if (hunt_save) character.s.monsterhunt = hunt_save;
+	vm.runInContext(`CFG.quest_farm = true; state.goals_cache = null`, ctx);
 	vm.runInContext(`state.guide_farm = null; state.guide_ignore = {}; state.gprog = null`, ctx);
 
 	const store = {};

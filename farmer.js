@@ -14,7 +14,8 @@
 //   6. Otherwise fight at the chosen pack.
 //
 // Where to fight (solo or party leader):
-//   guide farm row > guide-quest materials > own monster hunt > own-quest materials > best xp/s pack.
+//   own monster hunt > own-quest materials > guide-quest materials > guide farm row (skipped when outlevelled) >
+//   best xp/s pack (CFG.goal_w).
 //   In a party the leader merges every member's weighted goal list: a monster on 2+ lists whose goals finish within
 //   mutual_max_h wins (more members and quicker first); with no overlap, members take turn_min-minute turns.
 //   Safety (fight_math) follows the server's damage formula on live monster stats; nearby members' damage and a
@@ -44,7 +45,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "12.2";
+const VERSION = "12.3";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -102,7 +103,13 @@ const CFG = {
 	gear_actions: ["equip", "buy", "upgrade", "develop", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
 	                           // guide row kinds the bot executes; other kinds are logged once and left to you
 	follow_farm_reasons: null, // null = every guide farm row; or e.g. ["material","bees","hunt_farm"]
-	guide_farm_max_min: 360,   // a guide farm row naming no material: pause it after 6h in a row (no way to see progress)
+	guide_farm_max_min: 90,    // a guide farm row naming no material: pause it after 90 min in a row (no way to see
+	                           //   progress; longer than quest_stall_min so a row with a material gets checked first)
+	guide_farm_min_xp: 0.25,   // skip the guide's farm row while its pack gives < 25% of the best pack's xp/s (outlevelled:
+	                           //   e.g. the low-level "bees" row the guide keeps showing a level-50 party)
+	// Goal priorities, used solo (highest first) and by a party leader merging everyone's goals (summed per monster).
+	// Guide goals rank lowest: the guide is a newbie path and its rows can repeat forever.
+	goal_w: { hunt: 4, quest: 3, guide_quest: 2, guide_farm: 1 },
 	// --- quests (Cole = "mcollector", witch, ...) ----------------------------------------------------------------------
 	quest_crafts: "materials", // own quests: "materials" (recipes made only of materials) | "all" | [recipe ids by priority].
 	                           //   Recipes the guide asks for are always included.
@@ -117,7 +124,6 @@ const CFG = {
 	guide_quest_keep_h: 24,    // keep working a guide quest for 24h after the guide last listed it (its HUD shows
 	                           //   only a few rows at a time, so a quest can scroll out of view and back)
 	auto_monster_hunt: true,   // take and turn in Daisy's monster hunts, and farm the hunt target when safe
-	hunt_first: false,         // true: our monster hunt outranks quest-material farming (the guide's own row still wins)
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
 	party: {
@@ -1205,25 +1211,24 @@ function kills_per_s(mt) {
 	});
 	return best;
 }
-// Every monster worth farming for this character, weighted by how much it matters: guide farm row 4, monster hunt 3,
-// a drop for a missing guide-quest material 2, for an own-quest material 1. eta_h = estimated hours to finish at our
+// Every monster worth farming for this character, weighted by CFG.goal_w (monster hunt, own-quest material,
+// guide-quest material, guide farm row). eta_h = estimated hours to finish at our
 // kill rate. Shared with the partner in the heartbeat; recomputed at most every 10s (it scans every map).
 function goals_list() {
 	const out = [], now = Date.now();
 	if (state.goals_cache && now - state.goals_cache.at < 10_000) return state.goals_cache.list;
-	const g = state.guide_farm;
-	if (g && g.until > now && !((state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now))
-		out.push({ monster: g.monster, w: 4, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
+	const W = CFG.goal_w, g = live_guide_farm();
+	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
 	const h = character.s.monsterhunt;
 	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
-	if (CFG.auto_monster_hunt && h?.c > 0) out.push({ monster: h.id, w: 3, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
+	if (CFG.auto_monster_hunt && h?.c > 0) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
 	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
 		if (!recipe_open(id)) continue;
 		for (const [q, n, l] of G.craft[id].items) {
 			const have = owned_in_bags_or_bank(n, l);
 			if (l || GEAR.has(G.items[n]?.type) || have >= q) continue;
 			for (const [mt, rate] of drop_sources(n)) if (farmable_type(mt))
-				out.push({ monster: mt, w: is_guide_quest(id) ? 2 : 1, reason: `${id}: ${n} ${have}/${q}`, eta_h: eta(q - have, rate, mt) });
+				out.push({ monster: mt, w: is_guide_quest(id) ? W.guide_quest : W.quest, reason: `${id}: ${n} ${have}/${q}`, eta_h: eta(q - have, rate, mt) });
 		}
 	}
 	state.goals_cache = { at: now, list: out };
@@ -1237,8 +1242,8 @@ function pick_shared(mine) {
 	const now = Date.now(), me = character.name;
 	const members = [{ name: me, goals: goals_list() }, ...partners().map((p) => {
 		const goals = [...(p.goals || [])];
-		if (p.hunt?.c > 0) goals.push({ monster: p.hunt.id, w: 3, reason: `monster hunt ${p.hunt.c} left` }); // older versions
-		if (p.want && !p.goals) goals.push({ ...p.want, w: 4 });                                             // send only these
+		if (p.hunt?.c > 0) goals.push({ monster: p.hunt.id, w: CFG.goal_w.hunt, reason: `monster hunt ${p.hunt.c} left` }); // older versions
+		if (p.want && !p.goals) goals.push({ ...p.want, w: CFG.goal_w.guide_farm });                                             // send only these
 		return { name: p.name, goals };
 	})];
 	const by = new Map(); // monster -> { w: {member: weight}, eta: {member: hours}, src, why, too_slow }
@@ -1306,17 +1311,25 @@ async function run_hunt() {
 	if (r?.started) game_log(`Monster hunt: ${h?.c ?? "?"}x ${h?.id ?? "?"}`, C.info);
 	return r;
 }
-// Decide the farm directive: guide farm row > guide quests > hunt > own quests (hunt_first: hunt before quests).
+// The guide's farm row if it's current, not paused and not outlevelled (guide_farm_min_xp; a row we can't measure,
+// e.g. a monster we can't fight but the guide calls safe, is kept)
+function live_guide_farm() {
+	const g = state.guide_farm, now = Date.now();
+	if (!g || !(g.until > now) || (state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now) return null;
+	const f = fight_profile(g.monster), gxp = f ? kills_per_s(g.monster) * f.xp : null;
+	if (gxp !== null && state.best_score > 0 && gxp < CFG.guide_farm_min_xp * state.best_score) return null;
+	return g;
+}
+// Decide the farm directive: hunt > own quests > guide quests > guide farm row (CFG.goal_w order).
 // A guide farm row pauses (quest_shelve_h) when its material stops rising for quest_stall_min, or after
 // guide_farm_max_min if it names no material. A party leader then merges both members' goals (pick_shared).
 // The directive lasts 4 guide intervals (60s) unless refreshed, so a stale one expires on its own.
 function refresh_directive() {
 	const now = Date.now();
-	let g = state.guide_farm && state.guide_farm.until > now ? state.guide_farm : null;
+	let g = live_guide_farm();
 	if (g) {
 		const gk = `${g.monster}:${g.map}`, have = g.item ? held(g.item) : 0;
-		if ((state.guide_ignore[gk] || 0) > now) g = null;
-		else if (!state.gprog || state.gprog.key !== gk || have > state.gprog.have) state.gprog = { key: gk, have, t: now };
+		if (!state.gprog || state.gprog.key !== gk || have > state.gprog.have) state.gprog = { key: gk, have, t: now };
 		else {
 			const limit = (g.item ? CFG.quest_stall_min : CFG.guide_farm_max_min) * 60_000;
 			if (now - state.gprog.t > limit) {
@@ -1328,8 +1341,8 @@ function refresh_directive() {
 		}
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
-	let mine = g;
-	for (const f of CFG.hunt_first ? [hunt_directive, gq, oq] : [gq, hunt_directive, oq]) if (!mine) mine = f();
+	let mine = null;
+	for (const f of [hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
