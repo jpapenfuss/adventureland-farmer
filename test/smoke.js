@@ -599,5 +599,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const duo = vm.runInContext("!!fight_profile('tough31')", ctx);
 	assert(!solo && duo, `unsafe solo, safe with the priest near (solo ${solo}, duo ${duo})`);
 	assert(vm.runInContext("!leader_waiting()", ctx), "leader stops waiting once the priest is back");
+
+	// 32) leader works the follower's monster hunt (kills credit every party member)
+	ctx.G.monsters.tortoise = { xp: 300, hp: 600, attack: 8, respawn: 10, range: 20, speed: 8, frequency: 1 };
+	ctx.G.maps.main.monsters.push({ type: "tortoise", count: 6, boundary: [-1353, 720, -896, 1516] });
+	vm.runInContext("state.guide_farm = null; state.directive = null; state.guide_quests = {}; state.crafted = { wcap: 1 }", ctx);
+	character.s = {};
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null,
+		attack: 180, frequency: 0.75, damage_type: "magical", hunt: { id: "tortoise", c: 20 } } });
+	vm.runInContext("refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari's monster hunt/.test(state.directive.reason)", ctx),
+		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 	console.log("ALL PASS");
 })();

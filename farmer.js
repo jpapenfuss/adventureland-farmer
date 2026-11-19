@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.0";
+const VERSION = "11.1";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -984,6 +984,14 @@ function hunt_directive() {
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
 }
+// The server credits a monster-hunt kill to every party member (monster_hunt_logic runs per member), so the leader
+// can work its partner's hunt too — a follower never picks where to fight, so its hunts otherwise just expire.
+function partner_hunt_directive() {
+	const p = partner(), h = p?.hunt;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || is_follower() || !fight_profile(h.id)) return null;
+	const best = resolve_area(h.id);
+	return best && { monster: h.id, ...best, reason: `${p.name}'s monster hunt ${h.c} left`, guide_safe: false };
+}
 const hunt_due = () => {
 	const h = character.s.monsterhunt;
 	return CFG.auto_monster_hunt && character.ctype !== "merchant" && (!h || h.c === 0) && !skipped("hunt:auto");
@@ -1021,7 +1029,7 @@ function refresh_directive() {
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
 	let d = g;
-	for (const f of CFG.hunt_first ? [hunt_directive, gq, oq] : [gq, hunt_directive, oq]) if (!d) d = f();
+	for (const f of CFG.hunt_first ? [hunt_directive, partner_hunt_directive, gq, oq] : [gq, hunt_directive, partner_hunt_directive, oq]) if (!d) d = f();
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
@@ -1500,9 +1508,11 @@ function report() {
 			` | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"}${leader_waiting() ? " | waiting for partner" : ""}`
 			: `party: no message from ${others().join(", ")} in 10s (not running the script, or offline) → solo`);
 	}
-	if (d) L(`directive: ${d.monster} — ${d.reason}${state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
+	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${partner().name})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
+	const ph = partner()?.hunt;
+	if (ph) L(`${partner().name}'s hunt: ${ph.c}x ${ph.id} left${is_follower() ? "" : fight_profile(ph.id) ? " (we can farm it)" : " (not safe for us)"}`);
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	L(`town due: ${Object.keys(due).filter((k) => k !== "plan" && due[k]).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
@@ -1581,7 +1591,8 @@ function heartbeat() {
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive } : null,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
-		rpiercing: character.rpiercing || 0, range: character.range };
+		rpiercing: character.rpiercing || 0, range: character.range,
+		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null };
 	Promise.resolve(send_cm(others(), msg)).catch(() => {});
 }
 if (typeof character.on === "function") character.on("cm", (m) => {
