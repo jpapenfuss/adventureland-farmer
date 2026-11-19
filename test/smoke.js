@@ -5,6 +5,8 @@ const log = [], calls = [];
 const character = { name: "me", ctype: "ranger", level: 10, xp: 0, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500,
 	x: 0, y: 0, map: "main", attack: 100, frequency: 1, armor: 50, resistance: 50, range: 120, speed: 50,
 	items: Array(42).fill(null), slots: {}, s: {}, c: {}, esize: 40, gold: 1e6, rip: false };
+const handlers = {};
+character.on = (ev, f) => (handlers[ev] = f);
 const G = {
 	monsters: { goo: { xp: 10, hp: 100, attack: 5, respawn: 10, range: 20, speed: 10, armor: 0, resistance: 0 } },
 	maps: { main: { monsters: [{ type: "goo", count: 5, boundary: [100, 100, 400, 400] }], npcs: [] } },
@@ -552,5 +554,50 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(worn29 === 6 && walks29.filter((m) => m === "bank").length === 1, `all 6 items retrieved+equipped in one bank visit (worn ${worn29}, walks ${JSON.stringify(walks29)})`);
 	assert(!character.items.some((i) => i && i.name === "junk29") && walks29.indexOf("potions") > walks29.indexOf("bank"), `unneeded material stored before leaving the bank (${JSON.stringify(walks29)})`);
 	ctx.get_progression = undefined;
+
+	// 30) party: Aspernari (priest 56) + Torlis (paladin 5) → Torlis leads; Aspernari assists and heals
+	ctx.setTimeout = (fn, ms) => (ms < 60000 && setImmediate(fn), 0);
+	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 56, map: "main", x: 0, y: 0, hp: 2500, max_hp: 2500, range: 180, rip: false });
+	ctx.G.skills.heal = { share: "attack" }; ctx.G.skills.partyheal = {}; ctx.G.skills.curse = {};
+	ctx.is_on_cooldown = () => false; ctx.can_attack = () => true;
+	const fired30 = [];
+	ctx.use_skill = (s, tg) => (fired30.push([s, tg && (tg.name || tg.id)]), Promise.resolve());
+	ctx.attack = (tg) => (fired30.push(["attack", tg.id]), Promise.resolve());
+	ctx.heal = (tg) => (fired30.push(["heal", tg.name || tg.id]), Promise.resolve());
+	vm.runInContext("state.partner = null; state.errand = null; smart_depth = 0", ctx);
+	handlers.cm({ name: "Torlis", message: { k: "hb", level: 5, ctype: "paladin", map: "main", x: 50, y: 0, hp: 300, max_hp: 300, target: "m1",
+		pack: { mtype: "goo", map: "main", boundary: [-100, -100, 100, 100] }, errand: null, attack: 20, frequency: 1, damage_type: "physical" } });
+	assert(vm.runInContext("leader_name() === 'Torlis' && is_follower()", ctx), "lowest level leads; priest follows");
+	ctx.parent.entities = {
+		m1: { id: "m1", type: "monster", mtype: "goo", visible: true, hp: 80, max_hp: 100, x: 60, y: 0, target: "Torlis" },
+		Torlis: { id: "Torlis", name: "Torlis", type: "character", visible: true, hp: 290, max_hp: 300, x: 50, y: 0 },
+	};
+	ctx.get_targeted_monster = () => null; ctx.change_target = () => {};
+	vm.runInContext("follower_tick()", ctx);
+	assert(fired30.some(([s, id]) => s === "attack" && id === "m1"), `follower attacks the leader's target (${JSON.stringify(fired30)})`);
+	fired30.length = 0;
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); // previous attack's in-flight guard clears
+	ctx.parent.entities.Torlis.hp = 100; // leader at 33%
+	vm.runInContext("follower_tick()", ctx);
+	assert(fired30.length === 1 && fired30[0][0] === "heal" && fired30[0][1] === "Torlis", `priest heals the hurt leader instead of attacking (${JSON.stringify(fired30)})`);
+	// invites: members accepted, strangers ignored
+	const acc = [];
+	ctx.accept_party_invite = (n) => acc.push(n);
+	vm.runInContext("on_party_invite('Torlis'); on_party_invite('Stranger')", ctx);
+	assert(acc.join() === "Torlis", "accepts party invites from members only");
+
+	// 31) leader side: Torlis waits (defends only) while Aspernari is in town
+	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 5, hp: 300, max_hp: 300, attack: 20, frequency: 1, range: 25, armor: 20, resistance: 10, damage_type: "physical" });
+	ctx.G.classes.paladin = { damage_type: "physical" };
+	vm.runInContext("state.partner = null; state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
+	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower() && leader_waiting()", ctx), "leader holds while the priest is in town");
+	// safety: a mob too strong for a level-5 paladin alone is fine with the level-56 priest beside it
+	ctx.G.monsters.tough31 = { xp: 500, hp: 1000, attack: 15, respawn: 10, range: 20, speed: 10, frequency: 1, resistance: 0, armor: 0 };
+	const solo = vm.runInContext("!!fight_profile('tough31')", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical" } });
+	const duo = vm.runInContext("!!fight_profile('tough31')", ctx);
+	assert(!solo && duo, `unsafe solo, safe with the priest near (solo ${solo}, duo ${duo})`);
+	assert(vm.runInContext("!leader_waiting()", ctx), "leader stops waiting once the priest is back");
 	console.log("ALL PASS");
 })();

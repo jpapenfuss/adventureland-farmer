@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "10.8";
+const VERSION = "11.0";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -95,6 +95,17 @@ const CFG = {
 	auto_monster_hunt: true,
 	hunt_first: false,
 	park_key: null,
+	// --- party (the same script runs on every member)
+	party: {
+		members: ["Aspernari", "Torlis"], // [] = solo
+		leader: null,          // null = the lowest-level member online leads (picks packs, others assist)
+		follow: 90,            // followers stay within this many px of the leader
+		follow_far: 500,       // farther (or another map) → path-find to the leader
+		heal_at: 0.75,         // priests heal any member below this HP fraction
+		heal_bonus: 2.5,       // leader's safety allowance × this while a priest partner is near
+		wait_max_ms: 180_000,  // leader holds position at most this long while a partner is away
+		beat_ms: 2000,         // status message interval
+	},
 };
 code_settings.show_smart_move_text = false;
 
@@ -219,7 +230,12 @@ function fight_math(m) {
 	const their_dps = their_hit * (m.frequency || 1);
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0);
-	const our_dps = hit * land * character.frequency - heal_dps;
+	let our_dps = hit * land * character.frequency - heal_dps;
+	const P = partner_near();
+	if (P && P.attack && P.frequency) { // the partner shoots the same target
+		const pm = P.damage_type === "magical";
+		our_dps += P.attack * dm(((pm ? m.resistance : m.armor) || 0) - ((pm ? P.rpiercing : P.apiercing) || 0)) * (pm ? 1 : 1 - pct(m.evasion)) * P.frequency;
+	}
 	if (!(our_dps > 0)) return null;
 	const ttk = (m.hp || m.max_hp) / our_dps;
 	const self_dps = (our_magic ? character.attack * character.frequency * pct(m.reflection) : 0) +
@@ -229,7 +245,8 @@ function fight_math(m) {
 	return { ttk, xp: m.xp, their_dps, self_dps, kiteable };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= character.max_hp * CFG.safety * (state.danger[mtype] || 1);
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= character.max_hp * CFG.safety * (state.danger[mtype] || 1) *
+	(partner_near()?.ctype === "priest" ? CFG.party.heal_bonus : 1);
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
 	const f = fight_math(G.monsters[mtype]);
@@ -507,8 +524,12 @@ function class_skills(t) {
 			else if (can_use("supershot")) fire("supershot", t);
 			break;
 		case "priest":
-			if (character.hp < character.max_hp * 0.6) return fire("heal", character), true;
+			if (party_heal()) return true; // heal shares the attack cooldown
 			if (!t.s?.cursed && can_use("curse")) fire("curse", t);
+			break;
+		case "paladin":
+			if (character.hp < character.max_hp * 0.5 && can_use("selfheal")) fire("selfheal");
+			else if (t.hp > character.attack * 2 && can_use("smash")) fire("smash", t);
 			break;
 		case "warrior":
 			if (!character.s.warcry && can_use("warcry")) fire("warcry");
@@ -1473,6 +1494,12 @@ function report() {
 	const p = state.pack, d = state.directive;
 	L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, "#FFF");
 	L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
+	if (in_party_cfg()) {
+		const P = partner();
+		L(P ? `party: ${P.name} (${P.ctype} ${P.level}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""} | leader ${leader_name()}` +
+			` | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"}${leader_waiting() ? " | waiting for partner" : ""}`
+			: `party: no message from ${others().join(", ")} in 10s (not running the script, or offline) → solo`);
+	}
 	if (d) L(`directive: ${d.monster} — ${d.reason}${state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
@@ -1519,6 +1546,110 @@ function why_not(mtype) {
 }
 
 // =====================================================================
+// Party: the lowest-level member leads (packs, directives); others follow, assist its target, priests heal.
+// Members talk with send_cm every beat_ms (free when both run in one browser: localStorage; else a small call cost).
+// =====================================================================
+const in_party_cfg = () => (CFG.party.members || []).includes(character.name) && CFG.party.members.length > 1;
+const others = () => (CFG.party.members || []).filter((n) => n !== character.name);
+function partner() {
+	const p = state.partner;
+	return p && Date.now() - p.t < 10_000 && !p.rip ? p : null;
+}
+function partner_pos(p) {
+	const e = parent.entities?.[p.name];
+	return e && character.map === p.map ? { map: p.map, x: e.x, y: e.y } : { map: p.map, x: p.x, y: p.y };
+}
+function partner_near(maxd = 400) {
+	const p = partner();
+	if (!p || p.map !== character.map) return null;
+	const pos = partner_pos(p);
+	return Math.hypot(pos.x - character.x, pos.y - character.y) <= maxd ? p : null;
+}
+function leader_name() {
+	if (!in_party_cfg()) return character.name;
+	if (CFG.party.leader) return CFG.party.leader;
+	const p = partner();
+	if (!p) return character.name;
+	return p.level < character.level || (p.level === character.level && p.name < character.name) ? p.name : character.name;
+}
+const is_follower = () => in_party_cfg() && !!partner() && leader_name() !== character.name;
+function heartbeat() {
+	if (!in_party_cfg() || typeof send_cm !== "function") return;
+	const t = get_targeted_monster(), p = state.pack;
+	const msg = { k: "hb", v: VERSION, level: character.level, ctype: character.ctype, map: character.map,
+		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
+		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive } : null,
+		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
+		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
+		rpiercing: character.rpiercing || 0, range: character.range };
+	Promise.resolve(send_cm(others(), msg)).catch(() => {});
+}
+if (typeof character.on === "function") character.on("cm", (m) => {
+	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;
+	const first = !state.partner;
+	state.partner = { ...m.message, name: m.name, t: Date.now() };
+	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, "#67A464");
+});
+setInterval(() => { if (spent() < BUDGET.soft - 30) heartbeat(); }, CFG.party.beat_ms);
+// Party membership: the leader invites, members accept each other's invites/requests
+function on_party_invite(name) { if ((CFG.party.members || []).includes(name)) accept_party_invite(name); }
+function on_party_request(name) { if ((CFG.party.members || []).includes(name)) accept_party_request(name); }
+setInterval(() => {
+	const p = partner();
+	if (!p || !in_party_cfg() || character.rip) return;
+	const party = get_party() || {};
+	if (party[p.name]) return;
+	if (leader_name() === character.name) Promise.resolve(send_party_invite(p.name)).catch(() => {});
+	else if (!Object.keys(party).length) Promise.resolve(send_party_request(p.name)).catch(() => {});
+}, 10_000);
+
+// Priests heal whoever in the party is lowest (partyheal when two or more are hurt)
+function party_heal() {
+	if (character.ctype !== "priest") return false;
+	const members = [character];
+	for (const n of others()) { const e = parent.entities?.[n]; if (e && !e.rip && valid(e)) members.push(e); }
+	const low = members.filter((m) => m.hp < m.max_hp * CFG.party.heal_at).sort((a, b) => a.hp / a.max_hp - b.hp / b.max_hp);
+	if (!low.length) return false;
+	if (low.length >= 2 && can_use("partyheal")) return fire("partyheal"), true;
+	const m = low[0];
+	if (m !== character && distance(character, m) > character.range) { if (!walking()) move_to(m.x, m.y, 300); return false; }
+	return !is_on_cooldown("heal") && fire("heal", m);
+}
+// Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
+function follower_tick() {
+	const L = partner();
+	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}` } : null;
+	state.last_target_at = Date.now();
+	if (party_heal()) return;
+	let t = L.target && parent.entities[L.target];
+	if (!(t && valid(t) && t.type === "monster")) t = choose_target(false);
+	if (t) {
+		if (get_targeted_monster() !== t) change_target(t);
+		if (!walking()) kite(t);
+		if (!class_skills(t) && can_attack(t)) fire("attack", t);
+	}
+	if (walking() || errand_busy()) return;
+	const pos = partner_pos(L);
+	const d = pos.map === character.map ? Math.hypot(pos.x - character.x, pos.y - character.y) : Infinity;
+	if (d > CFG.party.follow_far) travel(pos);
+	else if (d > CFG.party.follow && !(t && t.target === character.name)) {
+		const ang = Math.atan2(character.y - pos.y, character.x - pos.x);
+		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
+		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);
+	}
+}
+// Leader: hold position (defend only) while a partner is in town or catching up, up to wait_max_ms
+function leader_waiting() {
+	const p = partner();
+	if (!p || is_follower() || !state.pack) return (state.wait_since = 0), false;
+	const pos = partner_pos(p);
+	const away = p.errand || p.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far;
+	if (!away) return (state.wait_since = 0), false;
+	state.wait_since = state.wait_since || Date.now();
+	return Date.now() - state.wait_since < CFG.party.wait_max_ms;
+}
+
+// =====================================================================
 // Main loop
 // =====================================================================
 let next_respawn = 0;
@@ -1559,10 +1690,20 @@ function tick() {
 			state.dead_handled = false;
 			if (Date.now() - state.last_guide > CFG.guide_interval_ms) guide_refresh();
 			town_check();
+			if (is_follower()) {
+				follower_tick();
+				loot_chests();
+				const L = partner();
+				set_message(`${errand_busy() ? state.errand + " | " : ""}with ${L.name}${L.pack ? " @ " + L.pack.mtype : ""} | ${character.esize} free`);
+				setTimeout(tick, 150);
+				return;
+			}
 			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
-			const t = choose_target(in_area || !pack);
+			const waiting = leader_waiting();
+			if (waiting) state.last_target_at = Date.now(); // not idle: waiting for the partner
+			const t = choose_target((in_area || !pack) && !waiting);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
 				fight(t, true);
@@ -1570,6 +1711,8 @@ function tick() {
 			} else if (!pack) {
 				set_message("No viable pack");
 				wait = 5000;
+			} else if (waiting) {
+				set_message(`waiting for ${partner().name}${partner().errand ? " (" + partner().errand + ")" : ""}`);
 			} else if (!walking() && !errand_busy()) {
 				if (!in_area) {
 					if (!state.waypoints.length) state.waypoints = make_waypoints(pack.boundary);
