@@ -7,7 +7,7 @@
 //   2. HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at recover_hp/recover_mp.
 //   3. park() was called → finish the current errand, stand in town until resume().
 //   4. Town run, when something is due: Daisy (hunt) → quest crafts (Cole etc.) → Progression Guide steps →
-//      sell → potions → bank. Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
+//      compound spares → sell → potions → bank (→ compound sets the bank visit completed). Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
 //      and attackers are ignored. While another party member is in town, thresholds relax (sync_factor) to share the trip.
 //   5. Party follower → stay with the leader, close in on and hit its target (within wait_radius of the leader),
 //      heal (priests), energize the lowest-mana member (mages); if the leader is dead, solo-grind
@@ -36,6 +36,9 @@
 //   wear the best bag upgrade, else hand a bag spare to a nearby member it's an upgrade for (send_item). The bank is
 //   account-wide: upgrades seen there are fetched on the next bank visit, so a piece one member banks reaches another.
 //   Slots the guide equipped are left to it for gear_guide_respect_h; gear a member would wear is never auto-sold.
+//   Compounding (CFG.compound_auto): three spare copies of a compoundable item at one level (bags + bank; never
+//   worn, locked, titled, guide-needed or a member's upgrade) are compounded on town runs up to +compound_max_level,
+//   when the server's preview clears compound_min_chance. Bank copies are fetched to complete a set.
 //
 // Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
 //
@@ -52,7 +55,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "13.0";
+const VERSION = "13.1";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -105,6 +108,13 @@ const CFG = {
 		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
 		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, xp: 0.6, luck: 0.15, gold: 0.15 },
 	gear_tank: ["paladin", "warrior"],
+	// Own compounding (rings, earrings, amulets, belts, orbs...): three spare copies at one level → one a level higher.
+	// Spares = bags + bank, never worn, locked, titled, guide-needed, or wanted by a member as an upgrade.
+	compound_auto: true,
+	compound_max_level: 3,     // stop at +3 results (scroll cost rises and odds fall fast after that)
+	compound_min_chance: 0.75, // the server's preview must say >= 75% (failure destroys all three)...
+	compound_min_chance_rebuyable: 0.6, // ...or >= 60% when an NPC sells the item (failure only costs gold)
+	compound_per_run: 6,       // compounds per town run at most
 	gear_tank_mult: 2,
 	// --- town / Progression Guide ------------------------------------------------------------------------------------
 	gear: true,                // execute Progression Guide steps (upgrade, equip, craft, ...); false = only read it
@@ -1020,7 +1030,7 @@ async function run_upgrade(a, row) {
 }
 // One compound step: three copies at level `from` + a compound scroll (cscroll0/1/2 by grade) → one at from+1.
 // Failure destroys all three, hence the same success gate as upgrades.
-async function run_compound(a, row) {
+async function run_compound(a, row, floor) {
 	const from = input_level(a, row);
 	const scroll = a.scroll || "cscroll" + Math.max(0, item_grade({ name: a.name, level: from }));
 	if (!input_slots(a, from, 3)) throw { reason: "input_missing", want: `3x ${a.name}+${from}` }; // before walking anywhere
@@ -1031,11 +1041,73 @@ async function run_compound(a, row) {
 	if (!ks) throw { reason: "input_missing", want: `3x ${a.name}+${from}` };
 	await wait_budget(1, RESERVE.errand);
 	const preview = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0), null, true));
-	if (!preview || !(preview.chance >= chance_floor(a.name, CFG.min_compound_chance))) throw { reason: "low_chance", chance: preview?.chance };
+	if (!preview || !(preview.chance >= (floor ?? chance_floor(a.name, CFG.min_compound_chance)))) throw { reason: "low_chance", chance: preview?.chance };
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)));
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	return r;
+}
+
+// Own compounding (CFG.compound_auto). A group = one item name at one level with >= 3 spare copies across bags and
+// bank. Bank copies are fetched on the next bank visit (bag_plan) and kept in the bags until compounded.
+const compound_key = (name, level) => `cmp:${name}:${level}`;
+function compound_spare(it, k, needed) {
+	const def = it && G.items[it.name];
+	return !!def?.compound && !it.l && !it.b && !it.p && !needed.has(k) && (it.level || 0) < CFG.compound_max_level &&
+		!CFG.keep.includes(it.name) && !gear_wanted_by(it);
+}
+let cmp_cache = null; // { key, at, list }: keyed by bags + bank snapshot + pauses; bag_class asks once per item
+function compound_groups(needed) {
+	if (!CFG.compound_auto) return [];
+	const key = character.items.map((i) => (i ? `${i.name}${i.level || 0}${i.l ? "l" : ""}` : "")).join() + "|" +
+		(state.bank_gear || []).length + "|" + Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k)).join();
+	if (cmp_cache && cmp_cache.key === key && Date.now() - cmp_cache.at < 2000) return cmp_cache.list;
+	needed = needed || needed_slots();
+	const by = {};
+	const add = (it, where, k) => {
+		const key = compound_key(it.name, it.level || 0);
+		const g = (by[key] = by[key] || { name: it.name, level: it.level || 0, key, bags: [], bank: 0 });
+		if (where === "bags") g.bags.push(k); else g.bank++;
+	};
+	character.items.forEach((it, k) => { if (compound_spare(it, k, needed)) add(it, "bags", k); });
+	for (const it of state.bank_gear || []) if (compound_spare(it, -1, needed)) add(it, "bank");
+	const list = Object.values(by).filter((g) => g.bags.length + g.bank >= 3 && !skipped(g.key))
+		.sort((a, b) => a.level - b.level || a.name.localeCompare(b.name)); // cheapest scrolls / best odds first
+	cmp_cache = { key, at: Date.now(), list };
+	return list;
+}
+// Bank copies to fetch so a group reaches 3 in the bags (task_bank entries; one attempt per copy per 2h)
+function compound_fetches(groups) {
+	const out = [];
+	for (const g of groups) for (let i = 0; i < Math.min(g.bank, 3 - Math.min(3, g.bags.length)); i++)
+		out.push({ name: g.name, level: g.level, key: `${g.key}:${i}` });
+	return out;
+}
+// Bag slots held for a group: the copies that, with the bank's, make up complete sets of three
+function compound_slots(needed) {
+	const keep = new Set();
+	for (const g of compound_groups()) g.bags.slice(0, Math.floor((g.bags.length + g.bank) / 3) * 3).forEach((k) => keep.add(k));
+	return keep;
+}
+// Compound every complete group in the bags (up to compound_per_run). A failed preview pauses that group 6h; a
+// result that's a member's upgrade is picked up by equip_upgrades/share_gear.
+async function task_compound() {
+	let n = 0;
+	for (let guard = 0; guard < CFG.compound_per_run * 2 && n < CFG.compound_per_run; guard++) {
+		const g = compound_groups().find((x) => x.bags.length >= 3);
+		if (!g) break;
+		const floor = shop_for(g.name) && !G.items[g.name]?.cash ? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
+		try {
+			// resources: the exact spare slots, so run_compound never grabs a guide-needed copy of the same item
+			const r = await run_compound({ name: g.name, level: g.level, resources: g.bags.map((num) => ({ num })) }, null, floor);
+			n++;
+			if (!r?.success) skip(g.key, 600_000, "last compound failed"); // a breather, then retry with the next copies
+		} catch (e) {
+			skip(g.key, 6 * 3600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`);
+			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
+		}
+	}
+	return n;
 }
 
 // =====================================================================
@@ -1052,8 +1124,9 @@ function is_junk(item) {
 	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
 }
 // KEEP / SELL / BANK for one bag item (see the header). `needed` = slots holding copies the guide/quests need.
-function bag_class(item, needed = needed_slots()) {
+function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (!item) return "empty";
+	if ((held_cmp || compound_slots(needed)).has(character.items.indexOf(item))) return "keep"; // waiting to be compounded
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
@@ -1066,14 +1139,16 @@ const slots_where = (f) => character.items.map((it, i) => (f(it) ? i : -1)).filt
 // What a bank/sell visit would do now: slots to sell, slots to bank, item names to fetch from the bank, free slots
 function bag_plan() {
 	const needed = needed_slots();
-	const sell = slots_where((i) => bag_class(i, needed) === "sell"), bank = slots_where((i) => bag_class(i, needed) === "bank");
+	const cmp = compound_slots(needed);
+	const sell = slots_where((i) => bag_class(i, needed, cmp) === "sell"), bank = slots_where((i) => bag_class(i, needed, cmp) === "bank");
 	// Fetch a needed item only when no copy at any level is in the bags or worn, and at most one attempt per item
 	// name every 2 hours (persisted), whatever happens to the fetched copy. Counting only +0 copies, or not counting
 	// worn ones, lets a fetched copy look missing again — the bot then fetches/banks in a loop.
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
 	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
-	for (const u of bank_upgrades()) if (Date.now() - (state.fetch_try[u.key] || 0) > 2 * 3600_000) fetch.push(u);
+	for (const u of [...bank_upgrades(), ...compound_fetches(compound_groups())])
+		if (Date.now() - (state.fetch_try[u.key] || 0) > 2 * 3600_000) fetch.push(u);
 	return { sell, bank, fetch, free: character.esize };
 }
 // Nearest NPC with a shop on this map (any shop buys anything), else one on main
@@ -1833,7 +1908,7 @@ async function guide_step(row) {
 let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated at most every 10 min)
 // The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed — never derive "what's due" from
 // its truthy keys: the numeric fields would make a town run permanently due.
-const TOWN_TASKS = ["hunt", "craft", "guide", "sell", "restock", "bank"];
+const TOWN_TASKS = ["hunt", "craft", "guide", "compound", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
 // restock potions below pot_min × sync_factor
@@ -1851,6 +1926,7 @@ function town_due(relaxed = false) {
 	return {
 		hunt: hunt_due(),
 		craft: !!next_quest_craft(),
+		compound: compound_groups().some((g) => g.bags.length >= 3),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch)),
 		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
@@ -1886,6 +1962,7 @@ function town_run(due) {
 			else if (++fails >= 5) break;
 		}
 		guide_refresh(); // needs may have changed (crafted, upgraded) before deciding what to bank
+		if (due.compound || compound_groups().some((g) => g.bags.length >= 3)) did += (await step("compound", task_compound)) || 0;
 		// Still in the bank after the guide's retrieves: store/fetch now, before walking anywhere else
 		let banked = false;
 		if (CFG.bank && on_bank_floor() && !skipped("town:bank")) {
@@ -1900,6 +1977,8 @@ function town_run(due) {
 		// standing in the bank anyway (guide retrieves): store what's bankable now, short on space or not
 		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < (due.min_free || CFG.bag_min_free) || on_bank_floor()) && after.bank.length || after.fetch.length))
 			did += await bag_step("bank", () => task_bank(after.fetch));
+		// the bank visit may have fetched the missing copies of a group: compound now, while still in town
+		if (compound_groups().some((g) => g.bags.length >= 3)) did += (await step("compound", task_compound)) || 0;
 		state.last_pick = 0; // re-evaluate where to fight
 		return did;
 	});
@@ -2071,6 +2150,11 @@ function report() {
 		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
 		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
 		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""} | bank upgrades: ${bank_upgrades().map((u) => u.name + "+" + u.level).join(", ") || "none"} | for party: ${held_for.join(", ") || "none"}`);
+	}
+	if (CFG.compound_auto) {
+		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
+		L(`compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
+			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""));
 	}
 	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);

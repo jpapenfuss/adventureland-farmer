@@ -978,5 +978,43 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("class_skills({ hp: 1, s: {} })", ctx);
 	assert(JSON.stringify(used) === '[["energize","Aspernari"]]', `energize goes to the low-mana priest (${JSON.stringify(used)})`);
 	delete ctx.parent.entities.Aspernari; ctx.distance = dist_save; ctx.move = move_save;
+	// 48) own compounding: 3 spare rings in the bags → compound; a 4th copy in the bank → fetched; worn/locked excluded
+	ctx.G.items.ringx = { type: "ring", compound: { attack: 1 }, attack: 2 };
+	ctx.G.items.cscroll0 = { type: "cscroll", g: 1000 };
+	ctx.G.items.computer = { type: "computer" };
+	Object.assign(character, { name: "Torlis", ...tor, rip: false });
+	character.slots = { ring1: { name: "ringx", level: 0 }, ring2: { name: "ringx", level: 0 } }; // wears two already: spares aren't upgrades
+	character.items = Array(42).fill(null);
+	character.items[0] = { name: "computer" }; character.items[1] = { name: "cscroll0", q: 5 };
+	character.items[2] = { name: "ringx", level: 0 }; character.items[3] = { name: "ringx", level: 0 };
+	character.items[4] = { name: "ringx", level: 0, l: "l" }; // locked: never compounded
+	vm.runInContext("state.needs = new Map(); state.bank_gear = [{ name: 'ringx', level: 0 }]; state.fetch_try = {}; state.gear_skip = {}; state.partners = {}; cmp_cache = null", ctx);
+	const g48 = vm.runInContext("JSON.stringify(compound_groups())", ctx);
+	assert(/"bags":\[2,3\],"bank":1/.test(g48), `group counts 2 bag spares + 1 bank copy, not the locked one (${g48})`);
+	const fx48 = vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx);
+	assert(/cmp:ringx:0:0/.test(fx48), `missing copy fetched from the bank (${fx48})`);
+	assert(vm.runInContext("bag_class(character.items[2])", ctx) === "keep", "group copies stay in the bags (not banked)");
+	assert(!vm.runInContext("town_due().compound", ctx), "not due until 3 copies are in the bags");
+	character.items[5] = { name: "ringx", level: 0 }; // the fetched copy arrives
+	vm.runInContext("cmp_cache = null", ctx);
+	assert(vm.runInContext("town_due().compound", ctx), "due with 3 spares in the bags");
+	const cmp = [];
+	ctx.compound = (a, b, c, sc, off, preview) => {
+		if (preview) return Promise.resolve({ chance: 0.9 });
+		cmp.push([a, b, c]);
+		character.items[a] = { name: "ringx", level: 1 }; character.items[b] = null; character.items[c] = null;
+		return Promise.resolve({ success: true });
+	};
+	vm.runInContext("state.bank_gear = []", ctx);
+	const n48 = await vm.runInContext("task_compound()", ctx);
+	assert(n48 === 1 && JSON.stringify(cmp) === "[[2,3,5]]" && character.items[4].l, `compounded the three spares, left the locked ring (${JSON.stringify(cmp)})`);
+	// low odds: paused 6h, nothing destroyed
+	character.items[6] = { name: "ringx", level: 1 }; character.items[7] = { name: "ringx", level: 1 };
+	ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.5 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
+	vm.runInContext("cmp_cache = null", ctx);
+	await vm.runInContext("task_compound()", ctx);
+	assert(!cmp.includes("REAL") && vm.runInContext("skipped('cmp:ringx:1')", ctx), "low preview chance: group paused, no compound");
+	character.slots = {}; character.items = Array(42).fill(null);
+	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);
 	console.log("ALL PASS");
 })();
