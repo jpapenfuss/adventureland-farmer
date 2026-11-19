@@ -9,7 +9,8 @@
 //   4. Town run, when something is due: Daisy (hunt) → quest crafts (Cole etc.) → Progression Guide steps →
 //      sell → potions → bank. Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
 //      and attackers are ignored. While another party member is in town, thresholds relax (sync_factor) to share the trip.
-//   5. Party follower → stay with the leader, shoot its target, heal (priests); if the leader is dead, solo-grind
+//   5. Party follower → stay with the leader, close in on and hit its target (within wait_radius of the leader),
+//      heal (priests), energize the lowest-mana member (mages); if the leader is dead, solo-grind
 //      safe mobs nearby (wait_radius).
 //   6. Otherwise fight at the chosen pack.
 //
@@ -31,6 +32,11 @@
 //   send_cm every beat_ms, invite each other without splitting an existing party, and balance gold (CFG.party.gold:
 //   the richest sends 15% to the poorest when the poorest has < 10% of its gold, at most once per 3h party-wide).
 //
+// Gear (CFG.gear_auto): items are scored by class-weighted stats (CFG.gear_w; tanks weigh defence double). Every 5s
+//   wear the best bag upgrade, else hand a bag spare to a nearby member it's an upgrade for (send_item). The bank is
+//   account-wide: upgrades seen there are fetched on the next bank visit, so a piece one member banks reaches another.
+//   Slots the guide equipped are left to it for gear_guide_respect_h; gear a member would wear is never auto-sold.
+//
 // Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
@@ -41,11 +47,12 @@
 //   - client promises never time out → every game call goes through T(); every walk through go() (walk_timeout_ms).
 //   - monster-hunt kills and XP are credited to every party member; XP is split by damage dealt.
 //   - bank_b / bank_u floors stay locked until a bkey / ukey is used; send_gold needs same map, < 400px, not in bank.
+//   - send_item: same map, < 400px. Two-handed weapons (G.classes[].doublehand) need the offhand empty.
 //   - Progression Guide rows: upgrade action.level = INPUT level, request.level = target; farm rows carry
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "12.3";
+const VERSION = "13.0";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -86,6 +93,19 @@ const CFG = {
 	need_copies_upgrade: 2,    // copies of an item the guide is upgrading kept in bags (the one in work + a spare)
 	need_copies_compound: 4,   // copies of a compoundable item the guide is working on (3 per compound + 1)
 	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"], // never sold or banked
+	// --- own gear (scored by stats, independent of the guide) ---------------------------------------------------------
+	gear_auto: true,           // equip bag/bank items that score higher than what's worn; hand spares to party members
+	gear_min_gain: 3,          // an item must beat the worn one by this many points...
+	gear_margin: 0.05,         // ...and by 5% (avoids swapping for noise)
+	gear_guide_respect_h: 12,  // after the guide equips a slot, leave that slot to the guide this long
+	gear_share_range: 300,     // px; hand a spare to a party member this close (server limit: same map, 400px)
+	// Points per unit of each stat. main_stat = the class's own (str/dex/int: each point is ~1 attack and some HP/MP);
+	// the other two main stats count off_stat. Defensive stats count × tank_mult for tank classes.
+	gear_w: { attack: 1, main_stat: 1.2, off_stat: 0.2, vit: 1, for: 0.6, hp: 0.05, mp: 0.02, armor: 0.3, resistance: 0.3,
+		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
+		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, xp: 0.6, luck: 0.15, gold: 0.15 },
+	gear_tank: ["paladin", "warrior"],
+	gear_tank_mult: 2,
 	// --- town / Progression Guide ------------------------------------------------------------------------------------
 	gear: true,                // execute Progression Guide steps (upgrade, equip, craft, ...); false = only read it
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
@@ -202,6 +222,9 @@ const state = {
 	fetch_try: {},           // item -> last fetch attempt; at most one per 2h (saved)
 	bank_seen: {},           // item -> quantity at the last bank visit (bank contents are only visible inside) (saved)
 	guide_ignore: {},        // "monster:map" -> until: paused guide farm rows (saved)
+	bank_gear: [],           // gear seen in the bank at the last visit: [{ name, level, p, stat_type }] (saved, max 400)
+	guide_equip: {},         // slot -> when the guide last equipped it (gear_guide_respect_h) (saved)
+	gear_sent: {},           // "name:level>member" -> when we last tried to hand it over (retry after 10 min)
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
 	qprog: null, gprog: null, // stall watch for quest materials / guide farm rows: { key, have, t } (saved)
 	partners: {},            // party member name -> its last heartbeat + t (when received)
@@ -672,9 +695,17 @@ function class_skills(t) {
 		case "warrior":
 			if (!character.s.warcry && can_use("warcry")) fire("warcry");
 			break;
-		case "mage":
-			if (character.mp < character.max_mp * 0.5 && can_use("energize")) fire("energize", character);
+		case "mage": {
+			if (!can_use("energize")) break;
+			// the party member lowest on mana (below 40%) within range, else ourselves below 50%. A priest's heals run
+			// on mana, so in a party this mostly keeps the healer going.
+			const range = G.skills.energize?.range || 320;
+			const low = others().map((n) => parent.entities?.[n]).filter((e) => e && !e.rip && valid(e) && e.max_mp &&
+				e.mp < e.max_mp * 0.4 && distance(character, e) < range).sort((a, b) => a.mp / a.max_mp - b.mp / b.max_mp)[0];
+			if (low && character.mp > character.max_mp * 0.3) fire("energize", low);
+			else if (character.mp < character.max_mp * 0.5) fire("energize", character);
 			break;
+		}
 		case "rogue":
 			if (!character.s.rspeed && can_use("rspeed")) fire("rspeed", character);
 			break;
@@ -736,6 +767,145 @@ function can_wear(name) {
 	if (["quiver", "source", "shield", "misc_offhand"].includes(def.type) && cls.offhand) return !!cls.offhand[def.type];
 	return true;
 }
+// =====================================================================
+// Own gear: score items by class-weighted stats (CFG.gear_w), wear upgrades from the bags or the account-wide bank,
+// and hand spares to party members who'd wear them. Worn scores travel in the heartbeat, so every member can judge
+// an item for any other (same formula, same version).
+// =====================================================================
+const GEAR_SLOTS = ["mainhand", "offhand", "helmet", "chest", "pants", "shoes", "gloves", "amulet", "belt", "cape", "orb",
+	"ring1", "ring2", "earring1", "earring2"];
+const SLOT_OF = { helmet: ["helmet"], chest: ["chest"], pants: ["pants"], shoes: ["shoes"], gloves: ["gloves"], amulet: ["amulet"],
+	belt: ["belt"], cape: ["cape"], orb: ["orb"], ring: ["ring1", "ring2"], earring: ["earring1", "earring2"] };
+const OFFHAND_TYPES = new Set(["shield", "quiver", "source", "misc_offhand"]);
+const DEF_STATS = new Set(["armor", "resistance", "hp", "vit", "evasion", "avoidance", "reflection", "for"]);
+const MAIN_STATS = ["str", "dex", "int"];
+// Item stats at its level: the game's own calculator when the runner exposes it, else base + per-level increments
+function item_props(item, ctype) {
+	const f = typeof calculate_item_properties === "function" ? calculate_item_properties
+		: typeof parent !== "undefined" && typeof parent.calculate_item_properties === "function" ? parent.calculate_item_properties : null;
+	if (f) try { return f(item, { class: ctype }); } catch (e) {}
+	const def = G.items[item.name] || {}, out = {}, lv = item.level || 0, inc = def.upgrade || def.compound || {};
+	for (const k in CFG.gear_w) if (typeof def[k] === "number") out[k] = def[k];
+	for (const k of MAIN_STATS) if (typeof def[k] === "number") out[k] = def[k];
+	for (const k in inc) if (typeof inc[k] === "number") out[k] = (out[k] || 0) + inc[k] * lv;
+	return out;
+}
+function gear_score(item, ctype = character.ctype) {
+	if (!item || !G.items[item.name]) return 0;
+	const p = item_props(item, ctype), W = CFG.gear_w, main = G.classes[ctype]?.main_stat, tank = CFG.gear_tank.includes(ctype);
+	let s = 0;
+	for (const k in p) {
+		if (!p[k] || typeof p[k] !== "number") continue;
+		let w = MAIN_STATS.includes(k) ? (k === main ? W.main_stat : W.off_stat) : W[k];
+		if (!w) continue;
+		if (tank && DEF_STATS.has(k)) w *= CFG.gear_tank_mult;
+		s += p[k] * w;
+	}
+	return Math.round(s * 10) / 10;
+}
+// What a member (us, or a partner from its heartbeat) wears: slot -> score; slots the guide owns right now count as
+// unbeatable (1e9); dh = mainhand is two-handed, off = offhand occupied
+let my_gear_cache = null; // { at, key, g }: bag_plan judges every bag item against it, so memo it for 1s
+function my_gear() {
+	const now = Date.now(), sl = character.slots || {};
+	const owned = (s) => now - (state.guide_equip[s] || 0) < CFG.gear_guide_respect_h * 3600_000;
+	const key = GEAR_SLOTS.map((s) => (sl[s] ? sl[s].name + (sl[s].level || 0) : "") + (owned(s) ? "!" : "")).join();
+	if (my_gear_cache && now - my_gear_cache.at < 1000 && my_gear_cache.key === key) return my_gear_cache.g;
+	const w = {};
+	for (const s of GEAR_SLOTS) w[s] = owned(s) ? 1e9 : gear_score(sl[s]);
+	const mh = sl.mainhand && G.items[sl.mainhand.name];
+	const g = { w, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), off: !!sl.offhand };
+	my_gear_cache = { at: now, key, g };
+	return g;
+}
+// Slots an item could go in for a class (main-hand weapons only; two-handers only with the offhand free)
+function slots_for(name, ctype, g) {
+	const def = G.items[name], cls = G.classes[ctype] || {};
+	if (!def || !GEAR.has(def.type) || (def.class && !def.class.includes(ctype))) return [];
+	if (def.type === "weapon") {
+		if (cls.mainhand?.[def.wtype]) return ["mainhand"];
+		return cls.doublehand?.[def.wtype] && (!g.off || g.dh) ? ["mainhand"] : [];
+	}
+	if (OFFHAND_TYPES.has(def.type)) return cls.offhand?.[def.type] && !g.dh ? ["offhand"] : [];
+	return SLOT_OF[def.type] || [];
+}
+// Best slot for an item and how much it beats what's there; null unless it clears gear_min_gain and gear_margin
+function gear_gain(item, ctype, g) {
+	if (!item || !g?.w) return null;
+	const score = gear_score(item, ctype);
+	let best = null;
+	for (const s of slots_for(item.name, ctype, g)) {
+		const cur = g.w[s] ?? 0, gain = score - cur;
+		if (gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin && (!best || gain > best.gain)) best = { slot: s, gain, score };
+	}
+	return best;
+}
+// Members that could use an item more than what they wear (us first); version-matched partners only
+function gear_takers() {
+	const out = [{ name: character.name, ctype: character.ctype, g: my_gear() }];
+	for (const p of partners()) if (p.gear && p.v === VERSION) out.push({ name: p.name, ctype: p.ctype, g: p.gear, esize: p.esize, p });
+	return out;
+}
+const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m) => gear_gain(item, m.ctype, m.g));
+// Gear in the bank that beats what we wear: one per slot (the best), as task_bank fetch entries
+function bank_upgrades() {
+	if (!CFG.gear_auto || !CFG.bank) return [];
+	const g = my_gear(), by = {};
+	for (const it of state.bank_gear || []) {
+		const r = gear_gain(it, character.ctype, g);
+		if (r && (!by[r.slot] || r.gain > by[r.slot].gain)) by[r.slot] = { name: it.name, level: it.level, key: `gear:${it.name}:${it.level}`, gain: r.gain };
+	}
+	// rings/earrings: the two slots may pick the same bank piece; fetching it twice is harmless (the second fails)
+	return Object.values(by);
+}
+// Wear the best upgrade in the bags (one equip per call; the replaced piece drops into the bags and is judged again)
+let gear_busy = false;
+async function equip_upgrades() {
+	if (!CFG.gear_auto || gear_busy || character.rip || errand_busy()) return false;
+	const needed = needed_slots(), g = my_gear();
+	let best = null;
+	character.items.forEach((it, k) => {
+		if (!it || needed.has(k)) return; // the guide is working on that copy (upgrade/compound input)
+		const r = gear_gain(it, character.ctype, g);
+		if (r && (!best || r.gain > best.gain)) best = { ...r, k, it };
+	});
+	if (!best || !can_spend(EMIT_COST.equip, RESERVE.errand)) return false;
+	gear_busy = true;
+	try {
+		await T(equip(best.k, best.slot));
+		game_log(`gear: ${best.it.name}+${best.it.level || 0} → ${best.slot} (+${best.gain.toFixed(0)} pts)`, C.ok);
+		return true;
+	} catch (e) { game_log(`gear: equip ${best.it.name}: ${why(e)}`, C.dim); return false; } finally { gear_busy = false; }
+}
+// Hand a bag spare to a nearby member it's an upgrade for (one item per call). Items that are upgrades for us stay;
+// locked/bound items and copies the guide needs are never sent.
+async function share_gear() {
+	if (!CFG.gear_auto || !in_party_cfg() || gear_busy || character.rip || typeof send_item !== "function") return false;
+	const near = new Set(partners_near(CFG.gear_share_range).map((p) => p.name));
+	const takers = gear_takers().slice(1).filter((m) => near.has(m.name) && (m.esize ?? 1) > 0), now = Date.now();
+	if (!takers.length) return false;
+	const needed = needed_slots(), mine = my_gear();
+	for (let k = 0; k < character.items.length; k++) {
+		const it = character.items[k];
+		if (!it || it.l || it.b || needed.has(k) || !GEAR.has(G.items[it.name]?.type) || gear_gain(it, character.ctype, mine)) continue;
+		let to = null;
+		for (const m of takers) {
+			const r = gear_gain(it, m.ctype, m.g);
+			if (r && (!to || r.gain > to.gain)) to = { ...r, m };
+		}
+		const key = `${it.name}:${it.level || 0}>${to?.m.name}`;
+		if (!to || now - (state.gear_sent[key] || 0) < 600_000 || !can_spend(1, RESERVE.errand)) continue;
+		state.gear_sent[key] = now;
+		gear_busy = true;
+		try {
+			await T(send_item(to.m.name, k, 1));
+			game_log(`gear: gave ${it.name}+${it.level || 0} to ${to.m.name} for its ${to.slot} (+${to.gain.toFixed(0)} pts)`, C.ok);
+			return true;
+		} catch (e) { game_log(`gear: giving ${it.name} to ${to.m.name}: ${why(e)}`, C.dim); } finally { gear_busy = false; }
+	}
+	return false;
+}
+setInterval(() => { equip_upgrades().then((did) => did || share_gear()).catch(() => {}); }, 5_000);
 // A computer (or supercomputer) in the bags lets shop/upgrade/compound/craft/exchange work from anywhere
 const has_computer = () => character.items.some((i) => i && (i.name === "computer" || i.name === "supercomputer"));
 // First unlocked bag slot holding name at exactly this upgrade level (-1 if none); find_slots: n of them or null
@@ -878,6 +1048,7 @@ function is_junk(item) {
 	if (CFG.sell.includes(item.name)) return true;
 	const def = G.items[item.name];
 	if (!(CFG.auto_sell_gear || bank_is_full()) || !def || !GEAR.has(def.type)) return false; // bank full: selling is the only way to make room
+	if (gear_wanted_by(item)) return false; // an upgrade for us or a party member
 	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
 }
 // KEEP / SELL / BANK for one bag item (see the header). `needed` = slots holding copies the guide/quests need.
@@ -902,6 +1073,7 @@ function bag_plan() {
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
 	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
+	for (const u of bank_upgrades()) if (Date.now() - (state.fetch_try[u.key] || 0) > 2 * 3600_000) fetch.push(u);
 	return { sell, bank, fetch, free: character.esize };
 }
 // Nearest NPC with a shop on this map (any shop buys anything), else one on main
@@ -938,8 +1110,13 @@ const bank_packs_list = () => (typeof bank_packs !== "undefined" && bank_packs) 
 function remember_bank() {
 	if (!character.bank) return;
 	const seen = {};
-	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i) seen[i.name] = (seen[i.name] || 0) + (i.q || 1);
+	const gear = [];
+	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i) {
+		seen[i.name] = (seen[i.name] || 0) + (i.q || 1);
+		if (GEAR.has(G.items[i.name]?.type) && gear.length < 400) gear.push({ name: i.name, level: i.level || 0, p: i.p, stat_type: i.stat_type });
+	}
 	state.bank_seen = seen;
+	state.bank_gear = gear;
 }
 setInterval(remember_bank, 2000);
 const town_reason = {}; // task -> why it achieved nothing (shown by report())
@@ -990,13 +1167,15 @@ async function task_bank(fetch_names) {
 	} else if (!stored && store.length) town_reason.bank = "store calls failed (see gray bank: lines)";
 	// pull back what bags need, from packs on whichever floor we're on
 	let got = 0;
-	for (const name of fetch_names) {
+	for (const want of fetch_names) {
 		if (character.esize < 2) break; // keep a slot free for loot
-		state.fetch_try[name] = Date.now();
+		// a name (any copy), or { name, level, key } for one exact gear piece (bank_upgrades)
+		const name = want.name || want, lv = want.level;
+		state.fetch_try[want.key || name] = Date.now();
 		let found = false;
 		for (const p in character.bank) {
 			if (!p.startsWith("items") || (packs[p] && packs[p][0] !== character.map)) continue;
-			const n = (character.bank[p] || []).findIndex((i) => i && i.name === name);
+			const n = (character.bank[p] || []).findIndex((i) => i && i.name === name && (lv === undefined || (i.level || 0) === lv));
 			if (n < 0) continue;
 			await wait_budget(1, RESERVE.bulk);
 			found = true;
@@ -1556,6 +1735,7 @@ async function run_row(row) {
 			if (k < 0) throw { reason: "input_missing" };
 			await wait_budget(EMIT_COST.equip, RESERVE.errand);
 			game_log(`equip ${a.name} +${a.level || 0} → ${a.slot}`, C.ok);
+			if (a.slot) state.guide_equip[a.slot] = Date.now();
 			return T(equip(k, a.slot));
 		}
 		case "buy":
@@ -1819,6 +1999,7 @@ function save_state() {
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
+		bank_gear: state.bank_gear, guide_equip: state.guide_equip,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -1839,6 +2020,8 @@ function load_state() {
 	Object.assign(state.fetched, d.fetched || {});
 	Object.assign(state.fetch_try, d.fetch_try || {});
 	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
+	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
+	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	const off = now - (d.at || now);
@@ -1882,6 +2065,12 @@ function report() {
 			L(fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, v${P.v || "?"}${P.v !== VERSION ? " ≠ ours: update it" : ""}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""}`
 				: `  ${n}: no message in 10s (not running the script, or offline)`);
 		}
+	}
+	if (CFG.gear_auto) {
+		const g = my_gear(), total = Object.values(g.w).filter((v) => v < 1e9).reduce((a, b) => a + b, 0);
+		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
+		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
+		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""} | bank upgrades: ${bank_upgrades().map((u) => u.name + "+" + u.level).join(", ") || "none"} | for party: ${held_for.join(", ") || "none"}`);
 	}
 	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
@@ -1998,6 +2187,8 @@ function heartbeat() {
 		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
 		party: Object.keys(get_party() || {}), // who we're in a game party with (invites use it)
+		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
+		mp: character.mp, max_mp: character.max_mp,
 		want: state.directive && !state.directive.for_partner
 			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
 				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };
@@ -2114,16 +2305,20 @@ function follower_tick() {
 	if (party_heal()) return;
 	let t = L.target && parent.entities[L.target];
 	if (!(t && valid(t) && t.type === "monster")) t = choose_target(false);
+	const pos = partner_pos(L);
+	let engaging = false;
 	if (t) {
 		if (get_targeted_monster() !== t) change_target(t);
-		if (!walking()) kite(t);
+		// close in on targets out of reach (melee always needs this) as long as they're within wait_radius of the
+		// leader; kiting (ranged, when the target is on us) takes precedence
+		if (!walking() && !errand_busy() && !kite(t) && distance(character, t) > standoff(t).reach &&
+			pos.map === character.map && Math.hypot(t.x - pos.x, t.y - pos.y) <= CFG.party.wait_radius) { approach(t); engaging = true; }
 		if (!class_skills(t) && can_attack(t)) fire("attack", t);
 	}
-	if (walking() || errand_busy()) return;
-	const pos = partner_pos(L);
+	if (engaging || walking() || errand_busy()) return;
 	const d = pos.map === character.map ? Math.hypot(pos.x - character.x, pos.y - character.y) : Infinity;
 	if (d > CFG.party.follow_far) travel(pos);
-	else if (d > CFG.party.follow && !(t && t.target === character.name)) {
+	else if (d > CFG.party.follow && !(t && t.target === character.name && distance(character, t) <= standoff(t).reach)) {
 		const ang = Math.atan2(character.y - pos.y, character.x - pos.x);
 		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
 		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);

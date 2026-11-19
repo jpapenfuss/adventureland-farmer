@@ -912,5 +912,71 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.turn.end = Date.now() - 1", ctx);
 	}
 	assert(seq.join() === "Sanala:m1,Aspernari:m2,Torlis:m3,Sanala:m1", `turns rotate through all three (${seq})`);
+	// 45) melee follower walks to the leader's target (it used to wait for targets to come to it)
+	const V = vm.runInContext("VERSION", ctx);
+	ctx.G.classes.paladin = ctx.G.classes.paladin || { damage_type: "physical" };
+	Object.assign(character, { name: "Torlis", ...tor, range: 25, map: "main", x: 0, y: 0, rip: false, moving: false });
+	vm.runInContext("state.partners = {}; state.errand = null", ctx);
+	hb("Sanala", { ...san, x: 40, y: 0, target: "m45" }); hb("Aspernari", { ...asp, x: 40, y: 10 });
+	ctx.parent.entities.m45 = { id: "m45", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x: 200, y: 0, target: "Sanala" };
+	const dist_save = ctx.distance, move_save = ctx.move, moved = [];
+	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	ctx.move = (x, y) => moved.push([Math.round(x), Math.round(y)]);
+	ctx.can_attack = () => false;
+	vm.runInContext("last_move = 0", ctx);
+	vm.runInContext("is_follower() && follower_tick()", ctx);
+	assert(moved.length && moved[0][0] > 100, `melee follower closes in on the leader's target (${JSON.stringify(moved)})`);
+	// ...but not after a target far from the leader
+	moved.length = 0;
+	ctx.parent.entities.m45.x = 900;
+	vm.runInContext("last_move = 0; follower_tick()", ctx);
+	assert(!moved.some(([x]) => x > 400), `doesn't chase targets beyond wait_radius of the leader (${JSON.stringify(moved)})`);
+	delete ctx.parent.entities.m45; ctx.can_attack = () => true;
+
+	// 46) gear: equip a better helmet from the bags; hand a spare to a partner; fetch an upgrade from the bank
+	ctx.G.items.helm1 = { type: "helmet", armor: 10, upgrade: { armor: 2 } };
+	ctx.G.items.helm2 = { type: "helmet", armor: 30 };
+	ctx.G.items.helm3 = { type: "helmet", armor: 80 };
+	const eq = [];
+	ctx.equip = (k, slot) => (eq.push([character.items[k].name, slot]), Promise.resolve());
+	character.items = Array(42).fill(null); character.items[5] = { name: "helm2", level: 0 };
+	character.slots = { helmet: { name: "helm1", level: 0 } };
+	vm.runInContext("state.needs = new Map(); state.guide_equip = {}", ctx);
+	await vm.runInContext("equip_upgrades()", ctx);
+	assert(JSON.stringify(eq) === '[["helm2","helmet"]]', `better bag helmet equipped (${JSON.stringify(eq)})`);
+	vm.runInContext("state.guide_equip.helmet = Date.now()", ctx); eq.length = 0;
+	await vm.runInContext("equip_upgrades()", ctx);
+	assert(!eq.length, "a slot the guide just equipped is left alone");
+	vm.runInContext("state.guide_equip = {}", ctx);
+	// hand-me-down: Aspernari wears helm3, so helm2 is a spare; Torlis wears helm1 → gets helm2
+	Object.assign(character, { name: "Aspernari", ...asp, x: 0, y: 0 });
+	character.slots = { helmet: { name: "helm3", level: 0 } };
+	ctx.G.classes.priest = ctx.G.classes.priest || { damage_type: "magical" };
+	const sent = [];
+	ctx.send_item = (to, k) => (sent.push([to, character.items[k].name]), Promise.resolve());
+	hb("Torlis", { ...tor, x: 40, y: 0, v: V, esize: 10, gear: { w: { helmet: vm.runInContext("gear_score({ name: 'helm1', level: 0 }, 'paladin')", ctx) }, dh: false, off: false } });
+	hb("Sanala", { ...san, x: 40, y: 0, v: V, esize: 10, gear: { w: { helmet: 1e9 }, dh: false, off: false } });
+	await vm.runInContext("share_gear()", ctx);
+	assert(JSON.stringify(sent) === '[["Torlis","helm2"]]', `spare helmet handed to Torlis (${JSON.stringify(sent)})`);
+	sent.length = 0;
+	await vm.runInContext("share_gear()", ctx);
+	assert(!sent.length, "a failed/finished hand-over isn't retried within 10 min");
+	// bank: an upgrade seen in the (shared) bank becomes a fetch entry for that exact piece
+	Object.assign(character, { name: "Torlis", ...tor });
+	character.slots = { helmet: { name: "helm1", level: 0 } }; character.items = Array(42).fill(null);
+	vm.runInContext("state.bank_gear = [{ name: 'helm3', level: 0 }, { name: 'helm1', level: 0 }]; state.fetch_try = {}", ctx);
+	const fx = vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx);
+	assert(/"name":"helm3"/.test(fx) && !/"helm1"/.test(fx), `bank upgrade queued for fetching (${fx})`);
+	vm.runInContext("state.bank_gear = []", ctx); character.slots = {};
+
+	// 47) mage energizes the party member lowest on mana
+	ctx.G.skills.energize = { range: 320 };
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", mp: 800, max_mp: 1000, x: 0, y: 0 });
+	ctx.parent.entities.Aspernari = { id: "Aspernari", name: "Aspernari", type: "character", visible: true, mp: 100, max_mp: 1000, hp: 1, max_hp: 1, x: 50, y: 0 };
+	const used = [];
+	ctx.use_skill = (s, tg) => (used.push([s, tg && tg.name]), Promise.resolve());
+	vm.runInContext("class_skills({ hp: 1, s: {} })", ctx);
+	assert(JSON.stringify(used) === '[["energize","Aspernari"]]', `energize goes to the low-mana priest (${JSON.stringify(used)})`);
+	delete ctx.parent.entities.Aspernari; ctx.distance = dist_save; ctx.move = move_save;
 	console.log("ALL PASS");
 })();
