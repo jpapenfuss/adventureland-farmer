@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.6";
+const VERSION = "11.7";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -994,6 +994,59 @@ function partner_hunt_directive() {
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `${p.name}'s monster hunt ${h.c} left`, guide_safe: false, for_partner: true };
 }
+// Every monster worth farming for this character, weighted: guide farm row 4, monster hunt 3, a drop for a missing
+// guide-quest material 2, for an own-quest material 1. Shared with the partner in the heartbeat.
+function goals_list() {
+	const out = [], now = Date.now();
+	const g = state.guide_farm;
+	if (g && g.until > now && !((state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now))
+		out.push({ monster: g.monster, w: 4, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
+	const h = character.s.monsterhunt;
+	if (CFG.auto_monster_hunt && h?.c > 0) out.push({ monster: h.id, w: 3, reason: `monster hunt ${h.c} left` });
+	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
+		if (!recipe_open(id)) continue;
+		for (const [q, n, l] of G.craft[id].items) {
+			if (l || GEAR.has(G.items[n]?.type) || owned_in_bags_or_bank(n, l) >= q) continue;
+			for (const [mt] of drop_sources(n)) if (farmable_type(mt))
+				out.push({ monster: mt, w: is_guide_quest(id) ? 2 : 1, reason: `${id}: ${n} ${owned_in_bags_or_bank(n, l)}/${q}` });
+		}
+	}
+	return out;
+}
+// Leader: mutual goals first (a monster on both lists; highest combined weight), else take turns between our top
+// goal and the partner's. Only monsters the pair can fight are considered.
+function pick_shared(mine) {
+	const P = partner(), now = Date.now();
+	const by = new Map();
+	const add = (g, who) => {
+		const e = by.get(g.monster) || { monster: g.monster, me: 0, them: 0, src: null, why: [] };
+		e[who] = Math.max(e[who], g.w);
+		if (!e.src && valid_boundary(g.boundary)) e.src = g;
+		e.why.push(`${who === "me" ? character.name : P.name}: ${g.reason}`);
+		by.set(g.monster, e);
+	};
+	goals_list().forEach((g) => add(g, "me"));
+	(P.goals || []).forEach((g) => add(g, "them"));
+	// older partner versions send only want/hunt
+	if (P.hunt?.c > 0) add({ monster: P.hunt.id, w: 3, reason: `monster hunt ${P.hunt.c} left` }, "them");
+	if (P.want) add({ ...P.want, w: 4 }, "them");
+	const ok = (e) => G.monsters[e.monster] && (fight_profile(e.monster) || (e.src?.guide_safe && farmable_type(e.monster)));
+	const to_dir = (e, label) => {
+		const area = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster);
+		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.me, mutual: e.me > 0 && e.them > 0 };
+	};
+	const cands = [...by.values()].filter(ok);
+	const mutual = cands.filter((e) => e.me && e.them).sort((a, b) => b.me + b.them - (a.me + a.them));
+	state.shared = { mutual: mutual.map((e) => `${e.monster} (${e.why.join("; ")})`), at: now };
+	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
+	// nothing in common: alternate turns
+	const theirs = cands.filter((e) => e.them).sort((a, b) => b.them - a.them)[0];
+	if (!theirs) return mine;
+	const theirs_dir = to_dir(theirs, `${P.name}: ${theirs.why.find((w) => w.startsWith(P.name + ":"))?.slice(P.name.length + 2) || theirs.monster}`);
+	if (!mine) return theirs_dir;
+	if (!state.turn || now > state.turn.end) state.turn = { who: state.turn?.who === "me" ? "partner" : "me", end: now + CFG.party.turn_min * 60_000 };
+	return state.turn.who === "partner" ? theirs_dir : mine;
+}
 // The partner's own top farming goal, if the pair can fight it
 function partner_want() {
 	const p = partner(), w = p?.want;
@@ -1044,12 +1097,7 @@ function refresh_directive() {
 	// follower's own goals (its guide row, quest materials, hunt) never got worked. The leader alternates
 	// turn_min-minute turns between its own goal and the partner's (shared in the heartbeat as `want`).
 	let d = mine;
-	const pw = partner_want() || partner_hunt_directive();
-	if (pw && !mine) d = pw;
-	else if (pw) {
-		if (!state.turn || now > state.turn.end) state.turn = { who: state.turn?.who === "me" ? "partner" : "me", end: now + CFG.party.turn_min * 60_000 };
-		if (state.turn.who === "partner") d = pw;
-	}
+	if (partner() && in_party_cfg() && !is_follower()) d = pick_shared(mine) || mine;
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
@@ -1539,8 +1587,11 @@ function report() {
 	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${partner().name})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
-	if (state.turn && !is_follower() && partner()?.want)
-		L(`turn: ${state.turn.who === "me" ? character.name : partner().name}'s goal for ${mins(state.turn.end)} | ${partner().name} wants ${partner().want.monster} (${partner().want.reason})`);
+	if (!is_follower() && partner()) {
+		if (state.shared?.mutual.length) L(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
+		else if (state.turn) L(`no mutual goal; turn: ${state.turn.who === "me" ? character.name : partner().name}'s for ${mins(state.turn.end)}`);
+	}
+	if (is_follower()) L(`my goals (shared with ${partner_any().name}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
 	const ph = partner()?.hunt;
 	if (ph) L(`${partner().name}'s hunt: ${ph.c}x ${ph.id} left${is_follower() ? "" : fight_profile(ph.id) ? " (we can farm it)" : " (not safe for us)"}`);
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
@@ -1636,6 +1687,7 @@ function heartbeat() {
 		rpiercing: character.rpiercing || 0, range: character.range,
 		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
 		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
+		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
 		want: state.directive && !state.directive.for_partner
 			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
 				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };

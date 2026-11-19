@@ -610,7 +610,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null,
 		attack: 180, frequency: 0.75, damage_type: "magical", hunt: { id: "tortoise", c: 20 } } });
 	vm.runInContext("refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari's monster hunt/.test(state.directive.reason)", ctx),
+	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari: monster hunt/.test(state.directive.reason)", ctx),
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 
 	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
@@ -695,5 +695,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(sent37 && sent37.want === null, "partner's goal not echoed back as our want");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive(); heartbeat()", ctx);
 	assert(sent37.want && sent37.want.monster === "goo", "own goal shared as want on our own turn");
+
+	// 38) mutual goals win: Torlis's guide row is goo; Aspernari's goals include tortoise (hunt) and minimush (quest).
+	//     Torlis also needs a minimush drop → minimush is mutual and beats both lists' top items.
+	ctx.G.items.spores = { type: "material" }; ctx.G.items.mushcap = { type: "material" };
+	ctx.G.drops = { monsters: { minimush: [[1 / 60, "spores"], [0.01, "mushcap"]] } };
+	ctx.G.craft = { mushhat: { items: [[5, "mushcap"]], cost: 0, quest: "mcollector" } };
+	ctx.G.items.mushhat = { type: "helmet" };
+	vm.runInContext(`state.turn = null; state.crafted = {}; state.gear_skip = {}; state.guide_ignore = {}; state.bank_seen = {};
+		state.guide_farm = { monster: "goo", map: "main", boundary: [-100,-100,100,100], count: 5, reason: "guide hunt_farm", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
+	character.items = Array(42).fill(null); character.s = {};
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
+	vm.runInContext("refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.mutual", ctx), `mutual goal (minimush) chosen (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	// no overlap → turns between the two tops
+	ctx.G.craft = {};
+	vm.runInContext("state.turn = null; refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'goo' && !state.directive.mutual", ctx), "no overlap: our own goal on our turn");
+	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'tortoise'", ctx), "no overlap: partner's top goal on its turn");
 	console.log("ALL PASS");
 })();
