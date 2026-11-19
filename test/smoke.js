@@ -10,7 +10,7 @@ character.on = (ev, f) => (handlers[ev] = f);
 const G = {
 	monsters: { goo: { xp: 10, hp: 100, attack: 5, respawn: 10, range: 20, speed: 10, armor: 0, resistance: 0 } },
 	maps: { main: { monsters: [{ type: "goo", count: 5, boundary: [100, 100, 400, 400] }], npcs: [] } },
-	items: { hpot1: { g: 20 }, mpot1: { g: 20 }, beewings: { type: "material" }, gslime: { type: "material" } }, skills: { attack: {}, use_town: {}, use_hp: {}, use_mp: {}, regen_hp: {}, regen_mp: {} },
+	items: { hpot1: { g: 20, type: "pot", gives: [["hp", 400]] }, mpot1: { g: 20, type: "pot", gives: [["mp", 500]] }, hpot0: { g: 5, type: "pot", gives: [["hp", 200]] }, mpot0: { g: 5, type: "pot", gives: [["mp", 300]] }, beewings: { type: "material" }, gslime: { type: "material" } }, skills: { attack: {}, use_town: {}, use_hp: {}, use_mp: {}, regen_hp: {}, regen_mp: {} },
 	classes: { ranger: { damage_type: "physical" } }, npcs: {}, craft: { wcap: { quest: "mcollector", items: [[20, "beewings"]] } }, quests: {}, levels: { 10: 1000 },
 };
 const timers = [];
@@ -111,9 +111,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 9) restock buys what it can afford instead of nothing
 	const bought = [];
 	ctx.quantity = () => 0; character.gold = 1000; // 50 pots' worth at 20g
-	ctx.buy = (name, q) => (bought.push([name, q]), character.gold -= 20 * q, Promise.resolve());
+	ctx.buy = (name, q) => (bought.push([name, q]), character.gold -= ctx.G.items[name].g * q, Promise.resolve());
 	await vm.runInContext(`state.errand = null; smart_depth = 0; task_restock()`, ctx);
-	assert(bought.length && bought[0][1] === 50, `restock buys affordable amount (${JSON.stringify(bought)})`);
+	// 1000g can't refill 200 hpot1 (4000g) → cheap tier: hp gets half (500g → 100 hpot0), mp the rest (100 mpot0)
+	assert(JSON.stringify(bought) === '[["hpot0",100],["mpot0",100]]', `poor: restock falls back to cheap potions (${JSON.stringify(bought)})`);
+	bought.length = 0; character.gold = 100000;
+	await vm.runInContext(`state.errand = null; smart_depth = 0; task_restock()`, ctx);
+	assert(JSON.stringify(bought) === '[["hpot1",200],["mpot1",200]]', `rich: restock buys the configured potions (${JSON.stringify(bought)})`);
+	character.gold = 1000;
 
 	// 10) governor honours the server-reported call cost
 	character.cc = 150;
@@ -639,7 +644,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 
 	// 35) regression: nothing due → no town run (v11.2 counted numeric fields as due tasks)
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.guide = null; state.needs = new Map()", ctx);
-	character.items = Array(42).fill(null); character.esize = 42; character.s = { monsterhunt: { id: "goo", c: 5 } };
+	character.items = [{ name: "hpot1", q: 100 }, { name: "mpot1", q: 100 }, ...Array(40).fill(null)]; character.esize = 42; character.s = { monsterhunt: { id: "goo", c: 5 } };
 	ctx.quantity = () => 100; ctx.get_nearest_monster = () => null; character.hp = character.max_hp; character.rip = false;
 	vm.runInContext("state.partners = {}", ctx);
 	const due35 = vm.runInContext("town_due()", ctx);
@@ -810,10 +815,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.send_party_invite = (n) => (inv.push([character.name, n]), Promise.resolve());
 	ctx.get_party = () => ({ Aspernari: {}, Torlis: {} });
 	hb("Torlis", { ...tor, party: ["Aspernari", "Torlis"] }); hb("Sanala", { ...san, party: [] });
-	// run the 10s membership check by hand
-	vm.runInContext(`(() => { const mine = Object.keys(get_party() || {}); const missing = partners().filter((p) => !mine.includes(p.name));
-		if (in_member_party() && mine.filter((n) => members_cfg().includes(n)).sort()[0] === character.name) missing.forEach((p) => send_party_invite(p.name)); })()`, ctx);
+	vm.runInContext("party_invite_tick()", ctx);
 	assert(JSON.stringify(inv) === '[["Aspernari","Sanala"]]', `Aspernari invites Sanala (${JSON.stringify(inv)})`);
+	// Aspernari partied with Torlis but NOT running the script (no heartbeat) → Torlis must invite instead
+	inv.length = 0;
+	Object.assign(character, { name: "Torlis", ...tor });
+	vm.runInContext("delete state.partners.Aspernari", ctx);
+	hb("Sanala", { ...san, party: [] });
+	vm.runInContext("party_invite_tick()", ctx);
+	assert(JSON.stringify(inv) === '[["Torlis","Sanala"]]', `idle Aspernari: Torlis invites Sanala (${JSON.stringify(inv)})`);
+	Object.assign(character, { name: "Aspernari", ...asp });
+	hb("Torlis", { ...tor, party: ["Aspernari", "Torlis"] });
 	const acc44 = [];
 	ctx.accept_party_invite = (n) => acc44.push([character.name, n]);
 	vm.runInContext("on_party_invite('Sanala')", ctx); // Aspernari is partied with Torlis: must not leave

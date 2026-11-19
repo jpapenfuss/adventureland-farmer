@@ -44,7 +44,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "12.0";
+const VERSION = "12.1";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -681,11 +681,17 @@ function fight(t, steer = true) {
 	else if (!steer && !walking()) kite(t);
 	if (!class_skills(t) && can_attack(t)) fire("attack", t);
 }
+// Potions of any tier: the game's use_hp/use_mp drink the last bag item that gives hp/mp, whatever its name
+const pot_count = (kind) => character.items.reduce((n, i) => {
+	const d = i && G.items[i.name];
+	return n + (d && d.type === "pot" && (d.gives || []).some(([k, v]) => k === kind && v > 0) ? i.q || 1 : 0);
+}, 0);
+// Drink below 55% HP / 35% MP; otherwise use the free (slow) regen when topped up enough elsewhere
 function sustain() {
 	if (character.rip) return;
 	const hp = character.hp / character.max_hp, mp = character.mp / character.max_mp;
-	if (hp < 0.55 && quantity(CFG.hp_pot)) return fire("use_hp");
-	if (mp < 0.35 && quantity(CFG.mp_pot)) return fire("use_mp");
+	if (hp < 0.55 && pot_count("hp")) return fire("use_hp");
+	if (mp < 0.35 && pot_count("mp")) return fire("use_mp");
 	if (mp < 0.9 && hp > 0.8) return fire("regen_mp");
 	if (hp < 0.9) return fire("regen_hp");
 }
@@ -999,14 +1005,21 @@ async function task_bank(fetch_names) {
 	game_log(`Bank: stored ${stored}, retrieved ${got}; ${character.esize} slots free`, C.ok);
 	return stored + got;
 }
-// Buy potions back up to pot_buy when either drops below pot_min (as many as gold allows; may dip into gold_reserve)
+// Buy potions back up to pot_buy when either kind drops below pot_min. Each kind gets half the gold: the configured
+// potion if that half covers the full refill, else the cheap tier (hpot0/mpot0, 20g instead of 100g) — so a new,
+// poor character still gets potions. May dip into gold_reserve (potions are what it's for).
+const CHEAP_POT = { hp: "hpot0", mp: "mpot0" };
 async function task_restock(pot_min = CFG.pot_min) {
-	if (quantity(CFG.hp_pot) >= pot_min && quantity(CFG.mp_pot) >= pot_min) return 0;
+	if (pot_count("hp") >= pot_min && pot_count("mp") >= pot_min) return 0;
 	if (!has_computer()) await go("potions");
 	let n = 0;
-	for (const p of [CFG.hp_pot, CFG.mp_pot]) {
-		const q = Math.min(CFG.pot_buy - quantity(p), Math.floor(character.gold / (G.items[p].g || 1)));
-		if (q <= 0) continue;
+	for (const [kind, best] of [["hp", CFG.hp_pot], ["mp", CFG.mp_pot]]) {
+		const want = CFG.pot_buy - pot_count(kind);
+		if (want <= 0) continue;
+		const budget = character.gold / (kind === "hp" ? 2 : 1); // hp first takes up to half; mp gets what's left
+		const p = budget >= want * (G.items[best].g || 1) ? best : CHEAP_POT[kind];
+		const q = Math.min(want, Math.floor(budget / (G.items[p].g || 1)));
+		if (q <= 0) { town_reason.restock = `can't afford ${kind} potions (${character.gold} gold)`; continue; }
 		await wait_budget(1, RESERVE.errand);
 		await T(buy(p, q)).then(() => n++).catch((e) => game_log(`restock ${p}: ${why(e)}`));
 	}
@@ -1647,7 +1660,7 @@ function town_due(relaxed = false) {
 		craft: !!next_quest_craft(),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch)),
-		restock: !skipped("town:restock") && (quantity(CFG.hp_pot) < pot_min || quantity(CFG.mp_pot) < pot_min),
+		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
 		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) || plan.fetch.length > 0),
 		plan, min_free, pot_min, relaxed,
 	};
@@ -1993,19 +2006,23 @@ const members_cfg = () => CFG.party.members || [];
 const in_member_party = () => Object.keys(get_party() || {}).some((n) => n !== character.name && members_cfg().includes(n));
 function on_party_invite(name) { if (members_cfg().includes(name) && !in_member_party()) accept_party_invite(name); }
 function on_party_request(name) { if (members_cfg().includes(name)) accept_party_request(name); }
-setInterval(() => {
+// Every 10s: get scripted members into one game party (who invites is picked so exactly one member does)
+function party_invite_tick() {
 	if (!in_party_cfg() || character.rip) return;
 	const mine = Object.keys(get_party() || {});
 	const missing = partners().filter((p) => !mine.includes(p.name));
 	if (!missing.length) return;
 	const invite = (p) => Promise.resolve(send_party_invite(p.name)).catch(() => {});
 	if (in_member_party()) {
-		if (mine.filter((n) => members_cfg().includes(n)).sort()[0] === character.name) missing.forEach(invite);
+		// the inviter must be running the script: an idle member (no heartbeat) would leave everyone else waiting
+		const scripted = mine.filter((n) => n === character.name || (members_cfg().includes(n) && fresh(state.partners[n])));
+		if (scripted.sort()[0] === character.name) missing.forEach(invite);
 	} else {
 		const someone_partied = partners_any().some((p) => (p.party || []).some((n) => n !== p.name && members_cfg().includes(n)));
 		if (!someone_partied && leader_name() === character.name) missing.forEach(invite);
 	}
-}, 10_000); // every 10s until everyone online is in
+}
+setInterval(party_invite_tick, 10_000); // every 10s until everyone online is in
 
 // Gold balance (see CFG.party.gold): only the richest member acts, toward the poorest. The every_h window is one
 // party-wide clock (max of all members' last-transfer times, persisted), so a reload anywhere can't reset it.
