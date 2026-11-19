@@ -44,7 +44,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "12.1";
+const VERSION = "12.2";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1866,7 +1866,7 @@ function report() {
 		L(`party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"} | near: ${near.join(", ") || "nobody (solo safety)"}`);
 		for (const n of others()) {
 			const P = state.partners[n];
-			L(fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""}`
+			L(fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, v${P.v || "?"}${P.v !== VERSION ? " ≠ ours: update it" : ""}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""}`
 				: `  ${n}: no message in 10s (not running the script, or offline)`);
 		}
 	}
@@ -1996,30 +1996,53 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
 	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one party-wide clock
 	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, C.info);
+	if (first && m.message.v !== VERSION) game_log(`party: ${m.name} runs v${m.message.v || "?"}, we run v${VERSION} - load the same version on every character`, C.warn);
 });
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) heartbeat(); }, CFG.party.beat_ms);
-// Game party membership. Accepting an invite makes the server pull you out of your current party, so:
+// Game party membership. Accepting an invite (or having your join request accepted) makes the server pull you out of
+// your current party, so:
 //  - a member already partied with another configured member never accepts (that would split the party);
-//  - members partied together invite the missing ones (only the alphabetically first of them, to avoid duplicates);
+//  - every member partied with another member invites the missing ones (duplicates are harmless: the server answers
+//    "already_in_party"), and the missing member also asks to join (request) - so no single member, possibly idle or on
+//    an old script version that doesn't know the newcomer, can block it;
 //  - only when no configured member is partied with another does the leader start a party by inviting everyone.
 const members_cfg = () => CFG.party.members || [];
 const in_member_party = () => Object.keys(get_party() || {}).some((n) => n !== character.name && members_cfg().includes(n));
-function on_party_invite(name) { if (members_cfg().includes(name) && !in_member_party()) accept_party_invite(name); }
-function on_party_request(name) { if (members_cfg().includes(name)) accept_party_request(name); }
-// Every 10s: get scripted members into one game party (who invites is picked so exactly one member does)
+const party_said = {}; // log key -> last time, so the 10s tick logs each fact at most once a minute
+function party_log(key, msg) {
+	if (Date.now() - (party_said[key] || 0) < 60_000) return;
+	party_said[key] = Date.now();
+	game_log(msg, C.info);
+}
+function on_party_invite(name) {
+	if (!members_cfg().includes(name)) return;
+	if (in_member_party()) return party_log("ignore:" + name, `party: ignoring ${name}'s invite (already partied with a member)`);
+	party_log("accept:" + name, `party: accepting ${name}'s invite`);
+	accept_party_invite(name);
+}
+function on_party_request(name) {
+	if (!members_cfg().includes(name)) return;
+	party_log("raccept:" + name, `party: letting ${name} join`);
+	accept_party_request(name);
+}
 function party_invite_tick() {
 	if (!in_party_cfg() || character.rip) return;
 	const mine = Object.keys(get_party() || {});
 	const missing = partners().filter((p) => !mine.includes(p.name));
 	if (!missing.length) return;
-	const invite = (p) => Promise.resolve(send_party_invite(p.name)).catch(() => {});
+	const call = (fn, name, key, msg) => { party_log(key, msg); Promise.resolve(fn(name)).catch(() => {}); };
+	const partied = (p) => (p.party || []).some((n) => n !== p.name && members_cfg().includes(n));
 	if (in_member_party()) {
-		// the inviter must be running the script: an idle member (no heartbeat) would leave everyone else waiting
-		const scripted = mine.filter((n) => n === character.name || (members_cfg().includes(n) && fresh(state.partners[n])));
-		if (scripted.sort()[0] === character.name) missing.forEach(invite);
-	} else {
-		const someone_partied = partners_any().some((p) => (p.party || []).some((n) => n !== p.name && members_cfg().includes(n)));
-		if (!someone_partied && leader_name() === character.name) missing.forEach(invite);
+		for (const p of missing) if (!partied(p)) call(send_party_invite, p.name, "inv:" + p.name, `party: inviting ${p.name}`);
+		return;
+	}
+	const hosts = partners().filter(partied);
+	if (hosts.length) {
+		// ask one host per tick, rotating, in case one runs an old version that ignores us
+		const h = hosts.sort((a, b) => (a.name < b.name ? -1 : 1))[Math.floor(Date.now() / 10_000) % hosts.length];
+		call(send_party_request, h.name, "req:" + h.name, `party: asking to join ${h.name}'s party`);
+	} else if (leader_name() === character.name) {
+		for (const p of missing) call(send_party_invite, p.name, "inv:" + p.name, `party: inviting ${p.name}`);
 	}
 }
 setInterval(party_invite_tick, 10_000); // every 10s until everyone online is in

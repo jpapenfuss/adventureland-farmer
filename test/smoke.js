@@ -826,6 +826,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(JSON.stringify(inv) === '[["Torlis","Sanala"]]', `idle Aspernari: Torlis invites Sanala (${JSON.stringify(inv)})`);
 	Object.assign(character, { name: "Aspernari", ...asp });
 	hb("Torlis", { ...tor, party: ["Aspernari", "Torlis"] });
+	// Aspernari heard (e.g. an old version that doesn't know Sanala) AND partied with Torlis → Torlis still invites
+	inv.length = 0;
+	Object.assign(character, { name: "Torlis", ...tor });
+	hb("Aspernari", { ...asp, party: ["Aspernari", "Torlis"], v: "11.9" }); hb("Sanala", { ...san, party: [] });
+	vm.runInContext("party_invite_tick()", ctx);
+	assert(JSON.stringify(inv) === '[["Torlis","Sanala"]]', `every partied member invites; nobody can block (${JSON.stringify(inv)})`);
+	// unpartied Sanala asks to join the members' party
+	const reqs = [];
+	ctx.send_party_request = (n) => (reqs.push(n), Promise.resolve());
+	ctx.get_party = () => ({});
+	Object.assign(character, { name: "Sanala", ...san });
+	hb("Torlis", { ...tor, party: ["Aspernari", "Torlis"] }); hb("Aspernari", { ...asp, party: ["Aspernari", "Torlis"] });
+	vm.runInContext("party_invite_tick()", ctx);
+	assert(reqs.length === 1 && ["Aspernari", "Torlis"].includes(reqs[0]) && !inv.some(([w]) => w === "Sanala"), `unpartied member requests to join (${reqs})`);
+	ctx.get_party = () => ({ Aspernari: {}, Torlis: {} });
+	Object.assign(character, { name: "Aspernari", ...asp });
+	hb("Torlis", { ...tor, party: ["Aspernari", "Torlis"] }); hb("Sanala", { ...san, party: [] });
 	const acc44 = [];
 	ctx.accept_party_invite = (n) => acc44.push([character.name, n]);
 	vm.runInContext("on_party_invite('Sanala')", ctx); // Aspernari is partied with Torlis: must not leave
