@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.2";
+const VERSION = "11.3";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -1318,6 +1318,10 @@ async function guide_step(row) {
 // Town run: one errand doing everything due, in walking order
 // =====================================================================
 let bags_warned = 0;
+// The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed; v11.2 derived "what's due" from
+// every truthy key, so the numeric min_free/pot_min made a town run due every 20s (empty trips, walking back alone).
+const TOWN_TASKS = ["hunt", "craft", "guide", "sell", "restock", "bank"];
+const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
 // restock potions below pot_min × sync_factor
 function town_due(relaxed = false) {
@@ -1392,7 +1396,7 @@ let town_block_logged = 0;
 function town_check() {
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
 	const due = town_due(partner()?.errand === "town"); // partner in town → share the trip
-	const what = Object.keys(due).filter((k) => k !== "plan" && due[k]);
+	const what = due_tasks(due);
 	if (!what.length) return void (state.town_block = null);
 	const critical = character.esize <= 3;
 	const attacked = !!get_nearest_monster({ target: character.name });
@@ -1520,7 +1524,7 @@ function report() {
 	if (ph) L(`${partner().name}'s hunt: ${ph.c}x ${ph.id} left${is_follower() ? "" : fight_profile(ph.id) ? " (we can farm it)" : " (not safe for us)"}`);
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
-	L(`town due: ${Object.keys(due).filter((k) => k !== "plan" && due[k]).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
+	L(`town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
 	if (state.town_block?.blockers.length) L(`town blocked (${Math.round((Date.now() - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	for (const r of state.guide?.rows || []) {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded (set before this version)"}` : r.affordable === false ? "unaffordable" : "next";

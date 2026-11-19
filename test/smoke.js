@@ -634,5 +634,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 0, max_hp: 2500, rip: true, errand: null } });
 	vm.runInContext("state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
 	assert(vm.runInContext("leader_waiting() && state.last_pick === 0", ctx), "leader holds and re-judges the pack when the priest dies");
+
+	// 35) regression: nothing due → no town run (v11.2 counted numeric fields as due tasks)
+	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.guide = null; state.needs = new Map()", ctx);
+	character.items = Array(42).fill(null); character.esize = 42; character.s = { monsterhunt: { id: "goo", c: 5 } };
+	ctx.quantity = () => 100; ctx.get_nearest_monster = () => null; character.hp = character.max_hp; character.rip = false;
+	vm.runInContext("state.partner = null", ctx);
+	const due35 = vm.runInContext("town_due()", ctx);
+	vm.runInContext("town_check()", ctx);
+	assert(vm.runInContext("due_tasks(town_due()).length === 0 && !state.errand && state.last_town === 0", ctx), `no town run when nothing is due (${JSON.stringify(vm.runInContext("due_tasks(town_due())", ctx))})`);
 	console.log("ALL PASS");
 })();
