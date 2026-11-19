@@ -589,16 +589,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 31) leader side: Torlis waits (defends only) while Aspernari is in town
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 5, hp: 300, max_hp: 300, attack: 20, frequency: 1, range: 25, armor: 20, resistance: 10, damage_type: "physical" });
 	ctx.G.classes.paladin = { damage_type: "physical" };
-	vm.runInContext("state.partner = null; state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
+	vm.runInContext("state.partner = null; state.duo_near = undefined; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
-	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower() && leader_waiting()", ctx), "leader holds while the priest is in town");
+	vm.runInContext("duo_check(); state.last_pick = 1", ctx);
+	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower() && state.duo_near === false", ctx), "leader farms solo (no waiting) while the priest is in town");
 	// safety: a mob too strong for a level-5 paladin alone is fine with the level-56 priest beside it
 	ctx.G.monsters.tough31 = { xp: 500, hp: 1000, attack: 15, respawn: 10, range: 20, speed: 10, frequency: 1, resistance: 0, armor: 0 };
 	const solo = vm.runInContext("!!fight_profile('tough31')", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical" } });
 	const duo = vm.runInContext("!!fight_profile('tough31')", ctx);
 	assert(!solo && duo, `unsafe solo, safe with the priest near (solo ${solo}, duo ${duo})`);
-	assert(vm.runInContext("!leader_waiting()", ctx), "leader stops waiting once the priest is back");
+	vm.runInContext("duo_check()", ctx);
+	assert(vm.runInContext("state.duo_near === true && state.last_pick === 0", ctx), "priest back → pack re-judged as a pair");
 
 	// 32) leader works the follower's monster hunt (kills credit every party member)
 	ctx.G.monsters.tortoise = { xp: 300, hp: 600, attack: 8, respawn: 10, range: 20, speed: 8, frequency: 1 };
@@ -632,8 +634,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("is_follower()", ctx) && !walk34.length, "follower holds while the leader is dead");
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 38 });
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 0, max_hp: 2500, rip: true, errand: null } });
-	vm.runInContext("state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
-	assert(vm.runInContext("leader_waiting() && state.last_pick === 0", ctx), "leader holds and re-judges the pack when the priest dies");
+	vm.runInContext("state.duo_near = true; state.last_pick = 1; duo_check()", ctx);
+	assert(vm.runInContext("state.duo_near === false && state.last_pick === 0", ctx), "priest dies → leader re-judges its pack solo (no waiting)");
 
 	// 35) regression: nothing due → no town run (v11.2 counted numeric fields as due tasks)
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.guide = null; state.needs = new Map()", ctx);
@@ -651,7 +653,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.monsters.brute36 = { xp: 2000, hp: 9000, attack: 120, respawn: 5, range: 20, speed: 10, frequency: 1 };
 	ctx.get_targeted_monster = () => null; ctx.change_target = () => {}; ctx.is_in_range = () => false; ctx.can_move_to = () => true;
 	ctx.get_nearest_monster = () => null;
-	vm.runInContext("state.hold = null; state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }; state.errand = null; smart_depth = 0", ctx);
+	vm.runInContext("state.hold = null; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }; state.errand = null; smart_depth = 0", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
 	ctx.parent.entities = {
 		b: { id: "b", type: "monster", mtype: "brute36", visible: true, hp: 9000, max_hp: 9000, x: 60, y: 0 },
@@ -662,9 +664,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.attack = (tg) => (atk36.push(tg.id), Promise.resolve());
 	ctx.can_attack = () => true;
 	vm.runInContext("for (const k in inflight) inflight[k] = false", ctx);
-	assert(vm.runInContext("leader_waiting()", ctx), "Torlis is waiting for Aspernari");
+	assert(vm.runInContext("!fight_profile('brute36') && !!fight_profile('weak36')", ctx), "with the priest away, the leader judges mobs on solo stats");
 	vm.runInContext("hold_grind()", ctx);
-	assert(atk36.join() === "w", `solos the safe mob within the radius, not the brute or the far one (${atk36})`);
+	assert(atk36.join() === "w", `solo grind picks the safe mob within the radius, not the brute or the far one (${atk36})`);
 	// dead leader: the follower grinds solo too
 	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 57, attack: 180, frequency: 0.75, range: 180, damage_type: "magical", hp: 2500, max_hp: 2500 });
 	handlers.cm({ name: "Torlis", message: { k: "hb", level: 40, ctype: "paladin", map: "main", x: 0, y: 0, hp: 0, max_hp: 900, rip: true, errand: null } });
