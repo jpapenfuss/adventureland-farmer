@@ -8,17 +8,17 @@
 //   3. park() was called → finish the current errand, stand in town until resume().
 //   4. Town run, when something is due: Daisy (hunt) → quest crafts (Cole etc.) → Progression Guide steps →
 //      sell → potions → bank. Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
-//      and attackers are ignored. While the party partner is in town, thresholds relax (sync_factor) to share the trip.
+//      and attackers are ignored. While another party member is in town, thresholds relax (sync_factor) to share the trip.
 //   5. Party follower → stay with the leader, shoot its target, heal (priests); if the leader is dead, solo-grind
 //      safe mobs nearby (wait_radius).
 //   6. Otherwise fight at the chosen pack.
 //
 // Where to fight (solo or party leader):
 //   guide farm row > guide-quest materials > own monster hunt > own-quest materials > best xp/s pack.
-//   In a party the leader merges both members' weighted goal lists: a monster on both lists that both can finish
-//   within mutual_max_h wins; with no overlap it alternates turn_min-minute turns between the two top goals.
-//   Safety (fight_math) follows the server's damage formula on live monster stats; a nearby partner's damage and a
-//   priest's heals count only while that partner is near.
+//   In a party the leader merges every member's weighted goal list: a monster on 2+ lists whose goals finish within
+//   mutual_max_h wins (more members and quicker first); with no overlap, members take turn_min-minute turns.
+//   Safety (fight_math) follows the server's damage formula on live monster stats; nearby members' damage and a
+//   nearby priest's heals count only while they're near.
 //
 // Bags — every item is KEEP, SELL or BANK; acted on when free slots drop below bag_min_free:
 //   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, the copies the guide's current steps use, materials of
@@ -26,8 +26,9 @@
 //   SELL: CFG.sell names; +0 plain gear only if auto_sell_gear, or while every usable bank pack is full.
 //   BANK: everything else. Needed items in the bank are fetched back (once per item per 2h).
 //
-// Party (CFG.party): the lowest-level member leads; members talk via send_cm every beat_ms, auto-invite each other,
-//   and balance gold (CFG.party.gold: richer sends 15% when the poorer has < 10%, at most once per 3h).
+// Party (CFG.party, any number of members): the lowest-level member leads, the others follow it; members talk via
+//   send_cm every beat_ms, invite each other without splitting an existing party, and balance gold (CFG.party.gold:
+//   the richest sends 15% to the poorest when the poorest has < 10% of its gold, at most once per 3h party-wide).
 //
 // Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
 //
@@ -43,7 +44,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.13";
+const VERSION = "12.0";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -120,8 +121,8 @@ const CFG = {
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
 	party: {
-		members: ["Aspernari", "Torlis"], // character names; [] = always solo
-		leader: null,          // null = the lowest-level member online leads (picks packs, others assist)
+		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9); [] = solo
+		leader: null,          // null = the lowest-level member online leads (picks packs, others assist); or a name
 		follow: 90,            // px; followers stay within this of the leader (close enough to heal, not in its way)
 		follow_far: 500,       // px; farther than this (or another map) → path-find to the leader instead of stepping
 		heal_at: 0.75,         // priests heal any member below 75% HP
@@ -197,6 +198,7 @@ const state = {
 	guide_ignore: {},        // "monster:map" -> until: paused guide farm rows (saved)
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
 	qprog: null, gprog: null, // stall watch for quest materials / guide farm rows: { key, have, t } (saved)
+	partners: {},            // party member name -> its last heartbeat + t (when received)
 };
 
 // =====================================================================
@@ -325,8 +327,7 @@ function fight_math(m) {
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0); // heal per s
 	let our_dps = hit * land * character.frequency - heal_dps;
-	const P = partner_near();
-	if (P && P.attack && P.frequency) { // the partner shoots the same target
+	for (const P of partners_near()) if (P.attack && P.frequency) { // every nearby member shoots the same target
 		const pm = P.damage_type === "magical";
 		our_dps += P.attack * dm(((pm ? m.resistance : m.armor) || 0) - ((pm ? P.rpiercing : P.apiercing) || 0)) * (pm ? 1 : 1 - pct(m.evasion)) * P.frequency;
 	}
@@ -341,7 +342,7 @@ function fight_math(m) {
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
 const safe_enough = (f, mtype) => !!f && fight_risk(f) <= character.max_hp * CFG.safety * (state.danger[mtype] || 1) *
-	(partner_near()?.ctype === "priest" ? CFG.party.heal_bonus : 1);
+	(partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
 	const f = fight_math(G.monsters[mtype]);
@@ -1172,8 +1173,9 @@ function hunt_directive() {
 // The server credits a monster-hunt kill to every party member (monster_hunt_logic runs per member), so the leader
 // can work its partner's hunt too — a follower never picks where to fight, so its hunts otherwise just expire.
 function partner_hunt_directive() {
-	const p = partner(), h = p?.hunt;
-	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || is_follower() || !fight_profile(h.id)) return null;
+	if (!CFG.auto_monster_hunt || is_follower()) return null;
+	const p = partners().find((m) => m.hunt?.c > 0 && fight_profile(m.hunt.id)), h = p?.hunt;
+	if (!h) return null;
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `${p.name}'s monster hunt ${h.c} left`, guide_safe: false, for_partner: true };
 }
@@ -1214,51 +1216,57 @@ function goals_list() {
 	state.goals_cache = { at: now, list: out };
 	return out;
 }
-// Leader: mutual goals first (a monster on both lists; highest combined weight), else take turns between our top
-// goal and the partner's. Only monsters the pair can fight are considered.
+// Leader: merge every online member's goal list. Mutual goals first: a monster on the lists of 2+ members, each with a
+// goal there finishing within mutual_max_h; ranked by combined weight ÷ (1 + the slowest of those goals' hours), so
+// goals shared by more members and quicker ones win. With nothing in common, members take turn_min-minute turns
+// (us, then the others in name order) with their top goal. Only monsters the group can fight are considered.
 function pick_shared(mine) {
-	const P = partner(), now = Date.now();
-	const by = new Map();
-	const add = (g, who) => {
-		const e = by.get(g.monster) || { monster: g.monster, me: 0, them: 0, me_eta: Infinity, them_eta: Infinity, src: null, why: [] };
-		const eh = g.eta_h ?? 0; // guide rows and older partners: no estimate → treat as feasible
-		// a goal that would take longer than mutual_max_h can't make its monster "mutual" (it's listed as too slow)
-		if (eh > CFG.party.mutual_max_h) { (e.too_slow = e.too_slow || []).push(`${who === "me" ? character.name : P.name}: ${g.reason} ~${Math.round(eh)}h`); by.set(g.monster, e); return; }
-		e[who] = Math.max(e[who], g.w);
-		e[who + "_eta"] = Math.min(e[who + "_eta"], eh);
-		if (!e.src && valid_boundary(g.boundary)) e.src = g;
-		e.why.push(`${who === "me" ? character.name : P.name}: ${g.reason}${g.eta_h ? ` ~${g.eta_h}h` : ""}`);
+	const now = Date.now(), me = character.name;
+	const members = [{ name: me, goals: goals_list() }, ...partners().map((p) => {
+		const goals = [...(p.goals || [])];
+		if (p.hunt?.c > 0) goals.push({ monster: p.hunt.id, w: 3, reason: `monster hunt ${p.hunt.c} left` }); // older versions
+		if (p.want && !p.goals) goals.push({ ...p.want, w: 4 });                                             // send only these
+		return { name: p.name, goals };
+	})];
+	const by = new Map(); // monster -> { w: {member: weight}, eta: {member: hours}, src, why, too_slow }
+	for (const m of members) for (const g of m.goals) {
+		const e = by.get(g.monster) || { monster: g.monster, w: {}, eta: {}, src: null, why: [], too_slow: [] };
 		by.set(g.monster, e);
-	};
-	goals_list().forEach((g) => add(g, "me"));
-	(P.goals || []).forEach((g) => add(g, "them"));
-	// older partner versions send only want/hunt
-	if (P.hunt?.c > 0) add({ monster: P.hunt.id, w: 3, reason: `monster hunt ${P.hunt.c} left` }, "them");
-	if (P.want) add({ ...P.want, w: 4 }, "them");
+		const eh = g.eta_h ?? 0; // guide rows and older members: no estimate → treat as feasible
+		if (eh > CFG.party.mutual_max_h) { e.too_slow.push(`${m.name}: ${g.reason} ~${Math.round(eh)}h`); continue; }
+		e.w[m.name] = Math.max(e.w[m.name] || 0, g.w);
+		e.eta[m.name] = Math.min(e.eta[m.name] ?? Infinity, eh);
+		if (!e.src && valid_boundary(g.boundary)) e.src = g;
+		e.why.push(`${m.name}: ${g.reason}${g.eta_h ? ` ~${g.eta_h}h` : ""}`);
+	}
 	const ok = (e) => G.monsters[e.monster] && (fight_profile(e.monster) || (e.src?.guide_safe && farmable_type(e.monster)));
+	const names = (e) => Object.keys(e.w);
+	const hours = (e) => Math.max(...names(e).map((n) => e.eta[n]));
+	const weight = (e) => names(e).reduce((t, n) => t + e.w[n], 0);
 	const to_dir = (e, label) => {
 		const area = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster);
-		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.me, mutual: e.me > 0 && e.them > 0 };
+		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.w[me], mutual: names(e).length > 1 };
 	};
-	const cands = [...by.values()].filter((e) => (e.me || e.them) && ok(e));
-	// mutual: both sides have a goal there that finishes within mutual_max_h; quicker goals rank higher
-	const rank = (e) => (e.me + e.them) / (1 + Math.max(e.me_eta, e.them_eta)); // combined weight, discounted by the
-	// slower side's hours: a 1h mutual goal ranks ~3x a 5h one of the same weight
-	const mutual = cands.filter((e) => e.me && e.them).sort((a, b) => rank(b) - rank(a));
-	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${Math.max(e.me_eta, e.them_eta).toFixed(1)}h (${e.why.join("; ")})`),
-		too_slow: [...by.values()].flatMap((e) => (e.too_slow || []).map((w) => `${e.monster}: ${w}`)), at: now };
+	const cands = [...by.values()].filter((e) => names(e).length && ok(e));
+	const mutual = cands.filter((e) => names(e).length >= 2).sort((a, b) => weight(b) / (1 + hours(b)) - weight(a) / (1 + hours(a)));
+	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${hours(e).toFixed(1)}h (${e.why.join("; ")})`),
+		too_slow: [...by.values()].flatMap((e) => e.too_slow.map((w) => `${e.monster}: ${w}`)), at: now };
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
-	// nothing in common: alternate turns
-	const theirs = cands.filter((e) => e.them).sort((a, b) => b.them - a.them)[0];
-	if (!theirs) return mine;
-	const theirs_dir = to_dir(theirs, `${P.name}: ${theirs.why.find((w) => w.startsWith(P.name + ":"))?.slice(P.name.length + 2) || theirs.monster}`);
-	if (!mine) return theirs_dir;
-	if (!state.turn || now > state.turn.end) state.turn = { who: state.turn?.who === "me" ? "partner" : "me", end: now + CFG.party.turn_min * 60_000 };
-	return state.turn.who === "partner" ? theirs_dir : mine;
+	// nothing in common: turns, rotating through members that have a goal the group can fight
+	const top = (n) => cands.filter((e) => e.w[n]).sort((a, b) => b.w[n] - a.w[n])[0];
+	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine : top(n)));
+	if (!order.length) return mine;
+	if (!state.turn || now > state.turn.end || !order.includes(state.turn.who)) {
+		const i = state.turn ? order.indexOf(state.turn.who) : -1;
+		state.turn = { who: order[(i + 1) % order.length], end: now + CFG.party.turn_min * 60_000 };
+	}
+	if (state.turn.who === me) return mine;
+	const t = top(state.turn.who);
+	return to_dir(t, `${state.turn.who}: ${t.why.find((w) => w.startsWith(state.turn.who + ":"))?.slice(state.turn.who.length + 2) || t.monster}`);
 }
 // The partner's own top farming goal, if the pair can fight it (partners on older versions only send this, not goals)
 function partner_want() {
-	const p = partner(), w = p?.want;
+	const p = partners().find((m) => m.want), w = p?.want;
 	if (!w || is_follower() || !G.monsters[w.monster]) return null;
 	if (!fight_profile(w.monster) && !(w.guide_safe && farmable_type(w.monster))) return null;
 	const area = resolve_area(w.monster, w.map, w.boundary, w.count);
@@ -1312,7 +1320,7 @@ function refresh_directive() {
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
-	if (partner() && in_party_cfg() && !is_follower()) d = pick_shared(mine) || mine;
+	if (partners().length && in_party_cfg() && !is_follower()) d = pick_shared(mine) || mine;
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
@@ -1698,7 +1706,8 @@ let town_block_logged = 0; // last "town needed but waiting" log (at most every 
 function town_check() {
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
 	if (skipped("town:loop") && character.esize > 3) return;
-	const due = town_due(partner()?.errand === "town"); // partner in town → share the trip
+	const in_town = partners().filter((p) => p.errand === "town").map((p) => p.name);
+	const due = town_due(in_town.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
 	if (!what.length) return void (state.town_block = null);
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
@@ -1728,7 +1737,7 @@ function town_check() {
 	}
 	state.town_runs.push(Date.now());
 	state.last_town = Date.now();
-	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + partner().name : ""})`, C.dim);
+	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + in_town.join(", ") : ""})`, C.dim);
 	town_run(due);
 }
 
@@ -1840,26 +1849,30 @@ function report() {
 	L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, C.title);
 	L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
 	if (in_party_cfg()) {
-		const P = partner();
-		L(P ? `party: ${P.name} (${P.ctype} ${P.level}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""} | leader ${leader_name()}` +
-			` | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"} | ${partner_near() ? "fighting as a pair" : "partner away: solo safety"}`
-			: `party: no message from ${others().join(", ")} in 10s (not running the script, or offline) → solo`);
+		const near = partners_near().map((p) => p.name);
+		L(`party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"} | near: ${near.join(", ") || "nobody (solo safety)"}`);
+		for (const n of others()) {
+			const P = state.partners[n];
+			L(fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""}`
+				: `  ${n}: no message in 10s (not running the script, or offline)`);
+		}
 	}
-	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${partner().name})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
+	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
-	if (partner() && CFG.party.gold?.enabled && Number.isFinite(partner().gold)) {
+	const golds = partners().filter((p) => Number.isFinite(p.gold));
+	if (golds.length && CFG.party.gold?.enabled) {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
-		L(`gold: us ${character.gold.toLocaleString()} / ${partner().name} ${partner().gold.toLocaleString()} | last transfer ${state.gold_xfer_at ? Math.round((Date.now() - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > Date.now() ? `, next allowed in ${mins(next)}` : ""}`);
+		L(`gold: us ${character.gold.toLocaleString()} / ${golds.map((p) => `${p.name} ${p.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((Date.now() - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > Date.now() ? `, next allowed in ${mins(next)}` : ""}`);
 	}
-	if (!is_follower() && partner()) {
+	if (!is_follower() && partners().length) {
 		if (state.shared?.mutual.length) L(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
+		else if (state.turn) L(`no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}`);
 		if (state.shared?.too_slow.length) L(`too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
-		else if (state.turn) L(`no mutual goal; turn: ${state.turn.who === "me" ? character.name : partner().name}'s for ${mins(state.turn.end)}`);
 	}
-	if (is_follower()) L(`my goals (shared with ${partner_any().name}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
-	const ph = partner()?.hunt;
-	if (ph) L(`${partner().name}'s hunt: ${ph.c}x ${ph.id} left${is_follower() ? "" : fight_profile(ph.id) ? " (we can farm it)" : " (not safe for us)"}`);
+	if (is_follower()) L(`my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
+	for (const P of partners()) if (P.hunt?.c > 0)
+		L(`${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left${is_follower() ? "" : fight_profile(P.hunt.id) ? " (we can farm it)" : " (not safe for us)"}`);
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	L(`town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
@@ -1904,50 +1917,45 @@ function why_not(mtype) {
 }
 
 // =====================================================================
-// Party: the lowest-level member leads (packs, directives); others follow, assist its target, priests heal.
-// Members talk with send_cm every beat_ms (free when both run in one browser: localStorage; else a small call cost).
+// Party: the lowest-level member leads (packs, directives); the others follow it, assist its target, priests heal.
+// Members talk with send_cm every beat_ms (free when they run in one browser: localStorage; else a small call cost).
 // =====================================================================
 // Is this character configured into a party of 2+? / the other configured members
 const in_party_cfg = () => (CFG.party.members || []).includes(character.name) && CFG.party.members.length > 1;
 const others = () => (CFG.party.members || []).filter((n) => n !== character.name);
-// partner_any: heard from in the last 10s (5 missed heartbeats → treat as offline), dead or alive; partner: alive
-function partner_any() {
-	const p = state.partner;
-	return p && Date.now() - p.t < 10_000 ? p : null;
-}
-function partner() {
-	const p = partner_any();
-	return p && !p.rip ? p : null;
-}
-// Partner position: live from its entity when it's in view on our map, else from its last heartbeat
+// Party members are known only through their heartbeats (state.partners: name -> last message + t).
+// "Fresh" = heard from in the last 10s (5 missed heartbeats → treat as offline).
+const fresh = (p) => !!p && Date.now() - p.t < 10_000;
+const partners_any = () => others().map((n) => state.partners[n]).filter(fresh);   // online, dead or alive
+const partners = () => partners_any().filter((p) => !p.rip);                        // online and alive
+// Position: live from its entity when it's in view on our map, else from its last heartbeat
 function partner_pos(p) {
 	const e = parent.entities?.[p.name];
 	return e && character.map === p.map ? { map: p.map, x: e.x, y: e.y } : { map: p.map, x: p.x, y: p.y };
 }
-// The partner if alive, on our map and within maxd px (400 ≈ in view and in heal range); its damage and heals only
-// count in the fight model while this is true
-function partner_near(maxd = 400) {
-	const p = partner();
-	if (!p || p.map !== character.map) return null;
-	const pos = partner_pos(p);
-	return Math.hypot(pos.x - character.x, pos.y - character.y) <= maxd ? p : null;
+// Alive members on our map within maxd px (400 ≈ in view and in heal range). Only these count in the fight model.
+function partners_near(maxd = 400) {
+	return partners().filter((p) => {
+		if (p.map !== character.map) return false;
+		const pos = partner_pos(p);
+		return Math.hypot(pos.x - character.x, pos.y - character.y) <= maxd;
+	});
 }
-// Leader: CFG.party.leader if set, else the lower level (ties: alphabetical name, so both members agree)
+const partner_near = (maxd) => partners_near(maxd)[0] || null; // any one (kept for older call sites/tests)
+const partner = () => partners()[0] || null;
+const partner_any = () => partners_any()[0] || null;
+// Leader: CFG.party.leader if set (and online), else the lowest level online (dead members count: a dead leader is
+// still the leader, so followers hold position instead of wandering off). Ties: alphabetical, so all agree.
 function leader_name() {
 	if (!in_party_cfg()) return character.name;
-	if (CFG.party.leader) return CFG.party.leader;
-	const p = partner();
-	if (!p) return character.name;
-	return p.level < character.level || (p.level === character.level && p.name < character.name) ? p.name : character.name;
+	const all = [{ name: character.name, level: character.level }, ...partners_any()];
+	if (CFG.party.leader && all.some((m) => m.name === CFG.party.leader)) return CFG.party.leader;
+	all.sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1));
+	return all[0].name;
 }
-// A dead leader is still the leader: the follower holds position instead of wandering off solo
-function leader_name_any() {
-	const p = partner_any();
-	if (!in_party_cfg() || !p) return character.name;
-	if (CFG.party.leader) return CFG.party.leader;
-	return p.level < character.level || (p.level === character.level && p.name < character.name) ? p.name : character.name;
-}
-const is_follower = () => in_party_cfg() && !!partner_any() && leader_name_any() !== character.name;
+const leader_name_any = leader_name;
+const leader_hb = () => state.partners[leader_name()];
+const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_name() !== character.name;
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
 function heartbeat() {
@@ -1963,6 +1971,7 @@ function heartbeat() {
 		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
 		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
+		party: Object.keys(get_party() || {}), // who we're in a game party with (invites use it)
 		want: state.directive && !state.directive.for_partner
 			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
 				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };
@@ -1970,34 +1979,46 @@ function heartbeat() {
 }
 if (typeof character.on === "function") character.on("cm", (m) => {
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;
-	const first = !state.partner;
-	state.partner = { ...m.message, name: m.name, t: Date.now() };
-	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one shared clock
+	const first = !fresh(state.partners[m.name]);
+	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
+	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one party-wide clock
 	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, C.info);
 });
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) heartbeat(); }, CFG.party.beat_ms);
-// Party membership: the leader invites, members accept each other's invites/requests
-function on_party_invite(name) { if ((CFG.party.members || []).includes(name)) accept_party_invite(name); }
-function on_party_request(name) { if ((CFG.party.members || []).includes(name)) accept_party_request(name); }
+// Game party membership. Accepting an invite makes the server pull you out of your current party, so:
+//  - a member already partied with another configured member never accepts (that would split the party);
+//  - members partied together invite the missing ones (only the alphabetically first of them, to avoid duplicates);
+//  - only when no configured member is partied with another does the leader start a party by inviting everyone.
+const members_cfg = () => CFG.party.members || [];
+const in_member_party = () => Object.keys(get_party() || {}).some((n) => n !== character.name && members_cfg().includes(n));
+function on_party_invite(name) { if (members_cfg().includes(name) && !in_member_party()) accept_party_invite(name); }
+function on_party_request(name) { if (members_cfg().includes(name)) accept_party_request(name); }
 setInterval(() => {
-	const p = partner();
-	if (!p || !in_party_cfg() || character.rip) return;
-	const party = get_party() || {};
-	if (party[p.name]) return;
-	if (leader_name() === character.name) Promise.resolve(send_party_invite(p.name)).catch(() => {});
-	else if (!Object.keys(party).length) Promise.resolve(send_party_request(p.name)).catch(() => {});
-}, 10_000);
+	if (!in_party_cfg() || character.rip) return;
+	const mine = Object.keys(get_party() || {});
+	const missing = partners().filter((p) => !mine.includes(p.name));
+	if (!missing.length) return;
+	const invite = (p) => Promise.resolve(send_party_invite(p.name)).catch(() => {});
+	if (in_member_party()) {
+		if (mine.filter((n) => members_cfg().includes(n)).sort()[0] === character.name) missing.forEach(invite);
+	} else {
+		const someone_partied = partners_any().some((p) => (p.party || []).some((n) => n !== p.name && members_cfg().includes(n)));
+		if (!someone_partied && leader_name() === character.name) missing.forEach(invite);
+	}
+}, 10_000); // every 10s until everyone online is in
 
-// Gold balance between party members (see CFG.party.gold). Only the richer member acts; the 3-hour window is one
-// shared clock (max of both members' last-transfer times, persisted), so a reload on either side can't reset it.
+// Gold balance (see CFG.party.gold): only the richest member acts, toward the poorest. The every_h window is one
+// party-wide clock (max of all members' last-transfer times, persisted), so a reload anywhere can't reset it.
 // send_gold needs both on the same map within 400px and the sender not in the bank.
 let gold_inflight = false;
 function gold_balance() {
-	const G_ = CFG.party.gold, p = partner();
-	if (!G_?.enabled || !p || !in_party_cfg() || gold_inflight || character.rip || typeof send_gold !== "function") return null;
-	if (!Number.isFinite(p.gold)) return null;                       // partner on an older version
+	const G_ = CFG.party.gold;
+	if (!G_?.enabled || !in_party_cfg() || gold_inflight || character.rip || typeof send_gold !== "function") return null;
+	const known = partners().filter((m) => Number.isFinite(m.gold)); // members on older versions don't report gold
+	if (!known.length || known.some((m) => m.gold > character.gold)) return null; // not the richest: someone else acts
+	const p = known.sort((a, b) => a.gold - b.gold)[0];              // the poorest
 	const rich = character.gold, poor = p.gold;
-	if (rich <= poor || rich < G_.min_rich || poor >= rich * G_.min_ratio) return null;
+	if (rich < G_.min_rich || poor >= rich * G_.min_ratio) return null;
 	if (Date.now() - (state.gold_xfer_at || 0) < G_.every_h * 3600_000) return null;
 	if (Date.now() < (state.gold_retry_at || 0)) return null;
 	const pos = partner_pos(p);
@@ -2032,7 +2053,7 @@ function party_heal() {
 }
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
 function follower_tick() {
-	const L = partner_any();
+	const L = leader_hb();
 	if (L.rip) return void hold_grind(); // leader dead: grind what we can solo here until it walks back
 	state.hold = null;
 	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}` } : null;
@@ -2093,14 +2114,17 @@ function hold_grind() {
 // the partner returns. Waiting in place gains nothing: the follower always knows where the leader is.
 function duo_check() {
 	if (!in_party_cfg() || is_follower()) return;
-	const near = !!partner_near();
+	const near = partners_near().map((p) => p.name).sort().join(",");
 	if (near === state.duo_near) return;
 	const was = state.duo_near;
 	state.duo_near = near;
 	live_cache.clear();
 	state.last_pick = 0;
-	const p = partner_any();
-	if (was !== undefined && p) game_log(near ? `${p.name} is back: picking packs as a pair` : `${p.name} ${p.rip ? "died" : p.errand ? "is in " + p.errand : "is away"}: farming solo (re-checking the pack)`, C.info);
+	if (was === undefined) return;
+	const gone = (was ? was.split(",") : []).filter((n) => !near.split(",").includes(n));
+	const back = (near ? near.split(",") : []).filter((n) => !(was ? was.split(",") : []).includes(n));
+	const why_gone = (n) => { const p = state.partners[n]; return p?.rip ? "died" : p?.errand ? "in " + p.errand : "away"; };
+	game_log(`party near: ${near || "nobody"}${back.length ? ` (+${back.join(", ")})` : ""}${gone.length ? ` (−${gone.map((n) => n + " " + why_gone(n)).join(", ")})` : ""}: re-checking the pack`, C.info);
 }
 
 // =====================================================================
@@ -2151,7 +2175,7 @@ function tick() {
 			if (is_follower()) {
 				follower_tick();
 				loot_chests();
-				const L = partner_any();
+				const L = leader_hb();
 				set_message(`${errand_busy() ? state.errand + " | " : ""}${L.rip ? "waiting for " + L.name + " (dead)" : "with " + L.name + (L.pack ? " @ " + L.pack.mtype : "")} | ${character.esize} free`);
 				setTimeout(tick, 150);
 				return;

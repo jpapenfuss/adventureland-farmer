@@ -564,7 +564,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.use_skill = (s, tg) => (fired30.push([s, tg && (tg.name || tg.id)]), Promise.resolve());
 	ctx.attack = (tg) => (fired30.push(["attack", tg.id]), Promise.resolve());
 	ctx.heal = (tg) => (fired30.push(["heal", tg.name || tg.id]), Promise.resolve());
-	vm.runInContext("state.partner = null; state.errand = null; smart_depth = 0", ctx);
+	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0", ctx);
 	handlers.cm({ name: "Torlis", message: { k: "hb", level: 5, ctype: "paladin", map: "main", x: 50, y: 0, hp: 300, max_hp: 300, target: "m1",
 		pack: { mtype: "goo", map: "main", boundary: [-100, -100, 100, 100] }, errand: null, attack: 20, frequency: 1, damage_type: "physical" } });
 	assert(vm.runInContext("leader_name() === 'Torlis' && is_follower()", ctx), "lowest level leads; priest follows");
@@ -589,10 +589,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 31) leader side: Torlis waits (defends only) while Aspernari is in town
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 5, hp: 300, max_hp: 300, attack: 20, frequency: 1, range: 25, armor: 20, resistance: 10, damage_type: "physical" });
 	ctx.G.classes.paladin = { damage_type: "physical" };
-	vm.runInContext("state.partner = null; state.duo_near = undefined; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
+	vm.runInContext("state.partners = {}; state.duo_near = undefined; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
 	vm.runInContext("duo_check(); state.last_pick = 1", ctx);
-	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower() && state.duo_near === false", ctx), "leader farms solo (no waiting) while the priest is in town");
+	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower() && state.duo_near === ''", ctx), "leader farms solo (no waiting) while the priest is in town");
 	// safety: a mob too strong for a level-5 paladin alone is fine with the level-56 priest beside it
 	ctx.G.monsters.tough31 = { xp: 500, hp: 1000, attack: 15, respawn: 10, range: 20, speed: 10, frequency: 1, resistance: 0, armor: 0 };
 	const solo = vm.runInContext("!!fight_profile('tough31')", ctx);
@@ -600,7 +600,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const duo = vm.runInContext("!!fight_profile('tough31')", ctx);
 	assert(!solo && duo, `unsafe solo, safe with the priest near (solo ${solo}, duo ${duo})`);
 	vm.runInContext("duo_check()", ctx);
-	assert(vm.runInContext("state.duo_near === true && state.last_pick === 0", ctx), "priest back → pack re-judged as a pair");
+	assert(vm.runInContext("state.duo_near === 'Aspernari' && state.last_pick === 0", ctx), "priest back → pack re-judged as a pair");
 
 	// 32) leader works the follower's monster hunt (kills credit every party member)
 	ctx.G.monsters.tortoise = { xp: 300, hp: 600, attack: 8, respawn: 10, range: 20, speed: 8, frequency: 1 };
@@ -634,14 +634,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("is_follower()", ctx) && !walk34.length, "follower holds while the leader is dead");
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 38 });
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 0, max_hp: 2500, rip: true, errand: null } });
-	vm.runInContext("state.duo_near = true; state.last_pick = 1; duo_check()", ctx);
-	assert(vm.runInContext("state.duo_near === false && state.last_pick === 0", ctx), "priest dies → leader re-judges its pack solo (no waiting)");
+	vm.runInContext("state.duo_near = 'Aspernari'; state.last_pick = 1; duo_check()", ctx);
+	assert(vm.runInContext("state.duo_near === '' && state.last_pick === 0", ctx), "priest dies → leader re-judges its pack solo (no waiting)");
 
 	// 35) regression: nothing due → no town run (v11.2 counted numeric fields as due tasks)
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.guide = null; state.needs = new Map()", ctx);
 	character.items = Array(42).fill(null); character.esize = 42; character.s = { monsterhunt: { id: "goo", c: 5 } };
 	ctx.quantity = () => 100; ctx.get_nearest_monster = () => null; character.hp = character.max_hp; character.rip = false;
-	vm.runInContext("state.partner = null", ctx);
+	vm.runInContext("state.partners = {}", ctx);
 	const due35 = vm.runInContext("town_due()", ctx);
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("due_tasks(town_due()).length === 0 && !state.errand && state.last_town === 0", ctx), `no town run when nothing is due (${JSON.stringify(vm.runInContext("due_tasks(town_due())", ctx))})`);
@@ -684,7 +684,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 		want: { monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, reason: "guide quest wgloves: spores 0/20", guide_safe: false } } });
 	vm.runInContext("refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive.monster === 'goo' && state.turn.who === 'me'", ctx), "first turn: leader's own goal");
+	assert(vm.runInContext("state.directive.monster === 'goo' && state.turn.who === 'Torlis'", ctx), "first turn: leader's own goal");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.for_partner && /Aspernari: guide quest wgloves/.test(state.directive.reason)", ctx),
 		`second turn: partner's goal (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
@@ -794,5 +794,78 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.gold = 13191492;
 	hbT({ map: "halloween" });
 	assert(vm.runInContext("gold_balance()", ctx) === "not together" && sends.length === 1, "waits until both are together");
+
+	// 44) three members: Aspernari (priest 57), Torlis (paladin 41), Sanala (mage 1)
+	ctx.setTimeout = (fn, ms) => (ms < 60000 && setImmediate(fn), 0);
+	const hb = (name, extra) => handlers.cm({ name, message: { k: "hb", map: "main", x: 40, y: 0, errand: null, rip: false, ...extra } });
+	const asp = { level: 57, ctype: "priest", hp: 2500, max_hp: 2500, attack: 180, frequency: 0.75, damage_type: "magical", gold: 13000000 };
+	const tor = { level: 41, ctype: "paladin", hp: 900, max_hp: 900, attack: 60, frequency: 1, damage_type: "physical", gold: 2300000 };
+	const san = { level: 1, ctype: "mage", hp: 150, max_hp: 150, attack: 15, frequency: 0.8, damage_type: "magical", gold: 0 };
+	vm.runInContext("state.partners = {}; state.turn = null; state.duo_near = undefined", ctx);
+	Object.assign(character, { name: "Aspernari", ...asp, map: "main", x: 0, y: 0, rip: false, gold: asp.gold });
+	hb("Torlis", tor); hb("Sanala", san);
+	assert(vm.runInContext("leader_name() === 'Sanala' && is_follower() && leader_hb().name === 'Sanala'", ctx), "lowest level (Sanala) leads; Aspernari follows her");
+	// invites: Aspernari+Torlis already partied → Aspernari (alphabetically first of them) invites Sanala; Torlis doesn't
+	const inv = [];
+	ctx.send_party_invite = (n) => (inv.push([character.name, n]), Promise.resolve());
+	ctx.get_party = () => ({ Aspernari: {}, Torlis: {} });
+	hb("Torlis", { ...tor, party: ["Aspernari", "Torlis"] }); hb("Sanala", { ...san, party: [] });
+	// run the 10s membership check by hand
+	vm.runInContext(`(() => { const mine = Object.keys(get_party() || {}); const missing = partners().filter((p) => !mine.includes(p.name));
+		if (in_member_party() && mine.filter((n) => members_cfg().includes(n)).sort()[0] === character.name) missing.forEach((p) => send_party_invite(p.name)); })()`, ctx);
+	assert(JSON.stringify(inv) === '[["Aspernari","Sanala"]]', `Aspernari invites Sanala (${JSON.stringify(inv)})`);
+	const acc44 = [];
+	ctx.accept_party_invite = (n) => acc44.push([character.name, n]);
+	vm.runInContext("on_party_invite('Sanala')", ctx); // Aspernari is partied with Torlis: must not leave
+	assert(!acc44.length, "a member partied with another member ignores invites (no party split)");
+	ctx.get_party = () => ({});
+	Object.assign(character, { name: "Sanala", ...san, gold: 0 });
+	vm.runInContext("on_party_invite('Aspernari')", ctx);
+	assert(JSON.stringify(acc44) === '[["Sanala","Aspernari"]]', "unpartied Sanala accepts");
+	// gold: richest (Aspernari) sends to the poorest (Sanala), not Torlis
+	Object.assign(character, { name: "Aspernari", ...asp });
+	vm.runInContext("state.gold_xfer_at = 0; state.gold_retry_at = 0", ctx);
+	hb("Torlis", tor); hb("Sanala", san);
+	const sends44 = [];
+	ctx.send_gold = (to, g) => (sends44.push([to, g]), Promise.resolve({ success: true }));
+	vm.runInContext("gold_balance()", ctx);
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+	assert(sends44.length === 1 && sends44[0][0] === "Sanala" && sends44[0][1] === 1950000, `richest sends 15% to the poorest (${JSON.stringify(sends44)})`);
+	Object.assign(character, { name: "Torlis", ...tor });
+	vm.runInContext("state.gold_xfer_at = 0", ctx);
+	hb("Aspernari", asp); hb("Sanala", san);
+	sends44.length = 0;
+	vm.runInContext("gold_balance()", ctx);
+	assert(!sends44.length, "a member who isn't the richest never sends");
+	// fight model: Sanala alone can't handle a mob that the trio can
+	Object.assign(character, { name: "Sanala", ...san, armor: 5, resistance: 5, range: 120, speed: 50 });
+	ctx.G.classes.mage = { damage_type: "magical" };
+	ctx.G.monsters.trio44 = { xp: 300, hp: 1500, attack: 6, respawn: 10, range: 20, speed: 10, frequency: 1 };
+	vm.runInContext("state.partners = {}; live_cache.clear()", ctx);
+	const solo44 = vm.runInContext("!!fight_profile('trio44')", ctx);
+	hb("Aspernari", asp); hb("Torlis", tor);
+	const trio44 = vm.runInContext("!!fight_profile('trio44')", ctx);
+	assert(!solo44 && trio44, `unsafe for Sanala alone, safe with both partners near (${solo44}, ${trio44})`);
+	vm.runInContext("state.duo_near = undefined; duo_check(); duo_check()", ctx);
+	assert(vm.runInContext("state.duo_near", ctx) === "Aspernari,Torlis", "leader tracks which members are near");
+	// goals: a monster on 2 of 3 lists is mutual; with no overlap, turns rotate Sanala → Aspernari → Torlis
+	ctx.G.monsters.m1 = { xp: 50, hp: 100, attack: 2, respawn: 5, range: 20, speed: 10, frequency: 1 };
+	ctx.G.monsters.m2 = { ...ctx.G.monsters.m1 }; ctx.G.monsters.m3 = { ...ctx.G.monsters.m1 };
+	ctx.G.maps.main.monsters.push({ type: "m1", count: 5, boundary: [0, 0, 50, 50] }, { type: "m2", count: 5, boundary: [60, 60, 90, 90] }, { type: "m3", count: 5, boundary: [100, 100, 150, 150] });
+	vm.runInContext(`state.turn = null; state.goals_cache = null; state.guide_ignore = {}; state.gprog = null; G.craft = {}; character.s = {};
+		state.guide_farm = { monster: "m1", map: "main", boundary: [0,0,50,50], count: 5, reason: "guide xp", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
+	hb("Aspernari", { ...asp, goals: [{ monster: "m2", w: 3, reason: "hunt", eta_h: 1 }] });
+	hb("Torlis", { ...tor, goals: [{ monster: "m2", w: 4, reason: "guide row" }] });
+	vm.runInContext("refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'm2' && state.directive.mutual", ctx), "m2 (Aspernari + Torlis) is mutual and wins");
+	hb("Torlis", { ...tor, goals: [{ monster: "m3", w: 4, reason: "guide row" }] });
+	vm.runInContext("state.turn = null; state.goals_cache = null", ctx);
+	const seq = [];
+	for (let i = 0; i < 4; i++) {
+		vm.runInContext("refresh_directive()", ctx);
+		seq.push(vm.runInContext("state.turn.who + ':' + state.directive.monster", ctx));
+		vm.runInContext("state.turn.end = Date.now() - 1", ctx);
+	}
+	assert(seq.join() === "Sanala:m1,Aspernari:m2,Torlis:m3,Sanala:m1", `turns rotate through all three (${seq})`);
 	console.log("ALL PASS");
 })();
