@@ -743,5 +743,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.items.intamulet = { type: "amulet", compound: {} };
 	const e40 = await vm.runInContext("run_compound", ctx)({ name: "intamulet", level: 1, scroll: "cscroll0" }, { request: { name: "intamulet", level: 2 } }).catch((e) => e);
 	assert(e40?.reason === "input_missing" && !walk40.length, "missing compound inputs: no walk to the NPC");
+
+	// 41) fetch loop v2: needed helmet worn → no fetch; not worn → one attempt, then none for 2h even if it vanishes again
+	ctx.G.items.helmet = { type: "helmet", upgrade: {} };
+	character.items = Array(42).fill(null); character.esize = 42; character.slots = { helmet: { name: "helmet", level: 5 } };
+	vm.runInContext("state.needs = new Map([['helmet', 2]]); state.bank_seen = { helmet: 3 }; state.fetch_try = {}", ctx);
+	assert(vm.runInContext("bag_plan().fetch.length", ctx) === 0, "worn copy satisfies the need");
+	character.slots = {};
+	character.bank = { items0: [{ name: "helmet", level: 2 }, { name: "helmet", level: 1 }] }; character.map = "bank";
+	ctx.parent.bank_packs = { items0: ["bank", 0, 0] };
+	ctx.bank_retrieve = (p, n) => { character.bank[p][n] = null; return Promise.resolve({ success: true }); }; // the copy "vanishes" (equipped elsewhere)
+	await vm.runInContext("task_bank(bag_plan().fetch)", ctx);
+	assert(vm.runInContext("bag_plan().fetch.length", ctx) === 0, "no second fetch within 2h even though none is in bag or worn");
+
+	// 42) loop brake: a 7th town run within 10 minutes is refused unless bags are critical
+	vm.runInContext("state.errand = null; smart_depth = 0; state.gear_skip = {}; state.town_runs = Array(6).fill(Date.now()); state.last_town = 0; state.needs = new Map(); state.fetch_try = {}", ctx);
+	ctx.quantity = () => 0; character.items = Array(42).fill(null); character.esize = 42; character.hp = character.max_hp;
+	ctx.get_nearest_monster = () => null; character.map = "main";
+	vm.runInContext("town_check()", ctx);
+	assert(vm.runInContext("!state.errand && skipped('town:loop')", ctx), "7th run in 10 min refused, town paused");
+	vm.runInContext("town_check()", ctx);
+	assert(vm.runInContext("!state.errand", ctx), "still paused on the next check");
+	ctx.quantity = () => 100;
 	console.log("ALL PASS");
 })();

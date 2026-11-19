@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.9";
+const VERSION = "11.10";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -125,7 +125,7 @@ const state = {
 	recovering: false, fled: false, parked: false, park_home: false,
 	directive: null, guide: null, guide_farm: null, last_guide: 0,
 	needs: new Map(),          // item name -> copies to keep in bags (guide steps + open quests)
-	gear_skip: {}, crafted: {}, fetched: {}, bank_seen: {}, guide_ignore: {}, guide_quests: {}, qprog: null, gprog: null,
+	gear_skip: {}, crafted: {}, fetched: {}, fetch_try: {}, bank_seen: {}, guide_ignore: {}, guide_quests: {}, qprog: null, gprog: null,
 };
 
 // =====================================================================
@@ -739,7 +739,11 @@ function bag_plan() {
 	// items the bank holds that bags need (quest inputs, guide step inputs)
 	// fetch a needed item only when the bag holds NO copy at any level. v11.8 counted only +0 copies (held()), so with
 	// upgraded copies in the bank it fetched one, still saw 0, fetched again, then banked the surplus: endless trips.
-	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) === 0 && !BAG_TYPES.has(G.items[n]?.type));
+	// v11.9 still looped: worn copies didn't count, and nothing limited retries. Now: no copy in bags OR worn, and at
+	// most one fetch attempt per item name every 2 hours (persisted), whatever happens to the fetched copy.
+	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
+	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
+		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
 	return { sell, bank, fetch, free: character.esize };
 }
 function nearest_shop() {
@@ -824,15 +828,20 @@ async function task_bank(fetch_names) {
 	let got = 0;
 	for (const name of fetch_names) {
 		if (character.esize < 2) break;
+		state.fetch_try[name] = Date.now();
+		let found = false;
 		for (const p in character.bank) {
 			if (!p.startsWith("items") || (packs[p] && packs[p][0] !== character.map)) continue;
 			const n = (character.bank[p] || []).findIndex((i) => i && i.name === name);
 			if (n < 0) continue;
 			await wait_budget(1, 40);
-			await T(bank_retrieve(p, n)).then(() => { got++; state.fetched[name] = Date.now(); }).catch((e) => game_log(`bank: ${name}: ${why(e)}`, "gray"));
+			found = true;
+			await T(bank_retrieve(p, n)).then(() => { got++; state.fetched[name] = Date.now(); game_log(`bank: fetched ${name} from ${p}`, "gray"); })
+				.catch((e) => game_log(`bank: fetching ${name} failed: ${why(e)}`, "gray"));
 			await sleep_ms(150);
 			break;
 		}
+		if (!found) game_log(`bank: ${name} not on this floor (${character.map}); not trying again for 2h`, "gray");
 	}
 	remember_bank();
 	game_log(`Bank: stored ${stored}, retrieved ${got}; ${character.esize} slots free`, "#58D685");
@@ -1375,6 +1384,7 @@ async function run_row(row) {
 			const n = pack[t.bankNum]?.name === a.name ? t.bankNum : pack.findIndex((i) => i && i.name === a.name && (i.level || 0) === (a.level || 0));
 			if (n < 0) throw { reason: "not_in_bank" };
 			await wait_budget(1, 30);
+			state.fetched[a.name] = Date.now(); // don't bank it straight back
 			return T(bank_retrieve(t.pack, n));
 		}
 		case "supplies":
@@ -1491,6 +1501,7 @@ function town_run(due) {
 let town_block_logged = 0;
 function town_check() {
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
+	if (skipped("town:loop") && character.esize > 3) return;
 	const due = town_due(partner()?.errand === "town"); // partner in town → share the trip
 	const what = due_tasks(due);
 	if (!what.length) return void (state.town_block = null);
@@ -1510,6 +1521,16 @@ function town_check() {
 		}
 		return;
 	}
+	// Loop brake: more than 6 runs in 10 minutes means something keeps coming back due — pause non-critical runs
+	state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
+	if (state.town_runs.length >= 6 && !critical) {
+		if (!skipped("town:loop")) {
+			skip("town:loop", 900_000, `${state.town_runs.length} runs in 10 min; last due: ${what.join("+")}`);
+			game_log(`Town: ${state.town_runs.length} trips in 10 min (${what.join("+")} keeps coming back) — pausing town trips 15 min. Send report().`, "#E25C5C");
+		}
+		return;
+	}
+	state.town_runs.push(Date.now());
 	state.last_town = Date.now();
 	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + partner().name : ""})`, "gray");
 	town_run(due);
@@ -1558,6 +1579,7 @@ function save_state() {
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
+		fetched: state.fetched, fetch_try: state.fetch_try,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -1575,6 +1597,8 @@ function load_state() {
 	Object.assign(state.guide_quests, d.guide_quests || {});
 	Object.assign(skip_why, d.skip_why || {});
 	if (d.bank_full_at) state.bank_full_at = d.bank_full_at;
+	Object.assign(state.fetched, d.fetched || {});
+	Object.assign(state.fetch_try, d.fetch_try || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	const off = now - (d.at || now);
@@ -1641,7 +1665,7 @@ function report() {
 	const plan = bag_plan(), kept = {};
 	character.items.forEach((i) => { if (i) kept[bag_class(i)] = (kept[bag_class(i)] || 0) + 1; });
 	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}, bank ${kept.bank || 0}, sell ${kept.sell || 0}${plan.fetch.length ? ` | to fetch: ${plan.fetch.join(", ")}` : ""}`);
-	for (const k of ["town:sell", "town:restock", "town:bank"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
+	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
 	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
 	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
 	L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
