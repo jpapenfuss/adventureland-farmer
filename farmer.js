@@ -55,7 +55,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "13.1";
+const VERSION = "13.2";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1099,9 +1099,16 @@ async function task_compound() {
 		const floor = shop_for(g.name) && !G.items[g.name]?.cash ? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
 		try {
 			// resources: the exact spare slots, so run_compound never grabs a guide-needed copy of the same item
+			const before = g.bags.slice(0, 3).map((k) => character.items[k]);
 			const r = await run_compound({ name: g.name, level: g.level, resources: g.bags.map((num) => ({ num })) }, null, floor);
 			n++;
-			if (!r?.success) skip(g.key, 600_000, "last compound failed"); // a breather, then retry with the next copies
+			if (!r?.success) {
+				await sleep_ms(500); // let the bag update arrive
+				// inputs still there = the server refused without rolling (not a real failure): don't retry soon, or
+				// each retry would cost a town trip
+				const untouched = before.every((it, i) => character.items[g.bags[i]] === it);
+				skip(g.key, untouched ? 6 * 3600_000 : 600_000, untouched ? `refused: ${why(r)}` : "last compound failed");
+			}
 		} catch (e) {
 			skip(g.key, 6 * 3600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`);
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
@@ -1496,7 +1503,7 @@ function pick_shared(mine) {
 	const now = Date.now(), me = character.name;
 	const members = [{ name: me, goals: goals_list() }, ...partners().map((p) => {
 		const goals = [...(p.goals || [])];
-		if (p.hunt?.c > 0) goals.push({ monster: p.hunt.id, w: CFG.goal_w.hunt, reason: `monster hunt ${p.hunt.c} left` }); // older versions
+		if (p.hunt?.c > 0 && !p.goals) goals.push({ monster: p.hunt.id, w: CFG.goal_w.hunt, reason: `monster hunt ${p.hunt.c} left` }); // older versions
 		if (p.want && !p.goals) goals.push({ ...p.want, w: CFG.goal_w.guide_farm });                                             // send only these
 		return { name: p.name, goals };
 	})];
