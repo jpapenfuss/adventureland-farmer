@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.1";
+const VERSION = "11.2";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -105,6 +105,7 @@ const CFG = {
 		heal_bonus: 2.5,       // leader's safety allowance × this while a priest partner is near
 		wait_max_ms: 180_000,  // leader holds position at most this long while a partner is away
 		beat_ms: 2000,         // status message interval
+		sync_factor: 2,        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
 	},
 };
 code_settings.show_smart_move_text = false;
@@ -830,8 +831,8 @@ async function task_bank(fetch_names) {
 	game_log(`Bank: stored ${stored}, retrieved ${got}; ${character.esize} slots free`, "#58D685");
 	return stored + got;
 }
-async function task_restock() {
-	if (quantity(CFG.hp_pot) >= CFG.pot_min && quantity(CFG.mp_pot) >= CFG.pot_min) return 0;
+async function task_restock(pot_min = CFG.pot_min) {
+	if (quantity(CFG.hp_pot) >= pot_min && quantity(CFG.mp_pot) >= pot_min) return 0;
 	if (!has_computer()) await go("potions");
 	let n = 0;
 	for (const p of [CFG.hp_pot, CFG.mp_pot]) {
@@ -1317,9 +1318,13 @@ async function guide_step(row) {
 // Town run: one errand doing everything due, in walking order
 // =====================================================================
 let bags_warned = 0;
-function town_due() {
+// relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
+// restock potions below pot_min × sync_factor
+function town_due(relaxed = false) {
 	const plan = bag_plan();
-	const short = plan.free < CFG.bag_min_free;
+	const min_free = relaxed ? CFG.bag_min_free * CFG.party.sync_factor : CFG.bag_min_free;
+	const pot_min = relaxed ? CFG.pot_min * CFG.party.sync_factor : CFG.pot_min;
+	const short = plan.free < min_free;
 	if (plan.free === 0 && !plan.sell.length && !plan.bank.length && Date.now() - bags_warned > 600_000) {
 		bags_warned = Date.now();
 		game_log("Bags full and everything in them is marked keep — run report() to see why", "#E25C5C");
@@ -1329,9 +1334,9 @@ function town_due() {
 		craft: !!next_quest_craft(),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch)),
-		restock: !skipped("town:restock") && (quantity(CFG.hp_pot) < CFG.pot_min || quantity(CFG.mp_pot) < CFG.pot_min),
-		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < CFG.bag_min_free && plan.bank.length > 0) || plan.fetch.length > 0),
-		plan,
+		restock: !skipped("town:restock") && (quantity(CFG.hp_pot) < pot_min || quantity(CFG.mp_pot) < pot_min),
+		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) || plan.fetch.length > 0),
+		plan, min_free, pot_min, relaxed,
 	};
 }
 function town_run(due) {
@@ -1368,12 +1373,12 @@ function town_run(due) {
 			if (here.bank.length || here.fetch.length) { did += await bag_step("bank", () => task_bank(here.fetch)); banked = true; }
 		}
 		const plan = bag_plan();
-		const short = plan.free < CFG.bag_min_free;
+		const short = plan.free < (due.min_free || CFG.bag_min_free);
 		if (due.sell || (short && plan.sell.length && !skipped("town:sell"))) did += await bag_step("sell", task_sell);
-		if (due.restock) did += await bag_step("restock", task_restock);
+		if (due.restock) did += await bag_step("restock", () => task_restock(due.pot_min));
 		const after = bag_plan();
 		// standing in the bank anyway (guide retrieves): store what's bankable now, short on space or not
-		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < CFG.bag_min_free || on_bank_floor()) && after.bank.length || after.fetch.length))
+		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < (due.min_free || CFG.bag_min_free) || on_bank_floor()) && after.bank.length || after.fetch.length))
 			did += await bag_step("bank", () => task_bank(after.fetch));
 		state.last_pick = 0; // re-evaluate where to fight
 		return did;
@@ -1386,7 +1391,7 @@ function town_run(due) {
 let town_block_logged = 0;
 function town_check() {
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
-	const due = town_due();
+	const due = town_due(partner()?.errand === "town"); // partner in town → share the trip
 	const what = Object.keys(due).filter((k) => k !== "plan" && due[k]);
 	if (!what.length) return void (state.town_block = null);
 	const critical = character.esize <= 3;
@@ -1406,7 +1411,7 @@ function town_check() {
 		return;
 	}
 	state.last_town = Date.now();
-	game_log(`Town: ${what.join("+")} (${due.plan.free} free)`, "gray");
+	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + partner().name : ""})`, "gray");
 	town_run(due);
 }
 
@@ -1561,9 +1566,14 @@ function why_not(mtype) {
 // =====================================================================
 const in_party_cfg = () => (CFG.party.members || []).includes(character.name) && CFG.party.members.length > 1;
 const others = () => (CFG.party.members || []).filter((n) => n !== character.name);
-function partner() {
+// partner_any: heard from in the last 10s, dead or alive; partner: alive
+function partner_any() {
 	const p = state.partner;
-	return p && Date.now() - p.t < 10_000 && !p.rip ? p : null;
+	return p && Date.now() - p.t < 10_000 ? p : null;
+}
+function partner() {
+	const p = partner_any();
+	return p && !p.rip ? p : null;
 }
 function partner_pos(p) {
 	const e = parent.entities?.[p.name];
@@ -1582,7 +1592,14 @@ function leader_name() {
 	if (!p) return character.name;
 	return p.level < character.level || (p.level === character.level && p.name < character.name) ? p.name : character.name;
 }
-const is_follower = () => in_party_cfg() && !!partner() && leader_name() !== character.name;
+// A dead leader is still the leader: the follower holds position instead of wandering off solo
+function leader_name_any() {
+	const p = partner_any();
+	if (!in_party_cfg() || !p) return character.name;
+	if (CFG.party.leader) return CFG.party.leader;
+	return p.level < character.level || (p.level === character.level && p.name < character.name) ? p.name : character.name;
+}
+const is_follower = () => in_party_cfg() && !!partner_any() && leader_name_any() !== character.name;
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
@@ -1628,7 +1645,14 @@ function party_heal() {
 }
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
 function follower_tick() {
-	const L = partner();
+	const L = partner_any();
+	if (L.rip) { // leader dead: stay here, heal, defend; it respawns in town and comes back
+		state.last_target_at = Date.now();
+		if (party_heal()) return;
+		const t = choose_target(false);
+		if (t) fight(t, false);
+		return;
+	}
 	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}` } : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
@@ -1651,10 +1675,12 @@ function follower_tick() {
 }
 // Leader: hold position (defend only) while a partner is in town or catching up, up to wait_max_ms
 function leader_waiting() {
-	const p = partner();
+	const p = partner_any();
 	if (!p || is_follower() || !state.pack) return (state.wait_since = 0), false;
 	const pos = partner_pos(p);
-	const away = p.errand || p.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far;
+	const away = p.rip || p.errand || p.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far;
+	// the healer just dropped out of reach: re-judge the pack without its damage/heals
+	if (away && !state.wait_since && p.ctype === "priest") { live_cache.clear(); state.last_pick = 0; }
 	if (!away) return (state.wait_since = 0), false;
 	state.wait_since = state.wait_since || Date.now();
 	return Date.now() - state.wait_since < CFG.party.wait_max_ms;
@@ -1704,8 +1730,8 @@ function tick() {
 			if (is_follower()) {
 				follower_tick();
 				loot_chests();
-				const L = partner();
-				set_message(`${errand_busy() ? state.errand + " | " : ""}with ${L.name}${L.pack ? " @ " + L.pack.mtype : ""} | ${character.esize} free`);
+				const L = partner_any();
+				set_message(`${errand_busy() ? state.errand + " | " : ""}${L.rip ? "waiting for " + L.name + " (dead)" : "with " + L.name + (L.pack ? " @ " + L.pack.mtype : "")} | ${character.esize} free`);
 				setTimeout(tick, 150);
 				return;
 			}
@@ -1723,7 +1749,8 @@ function tick() {
 				set_message("No viable pack");
 				wait = 5000;
 			} else if (waiting) {
-				set_message(`waiting for ${partner().name}${partner().errand ? " (" + partner().errand + ")" : ""}`);
+				const P = partner_any();
+				set_message(`waiting for ${P.name}${P.rip ? " (dead)" : P.errand ? " (" + P.errand + ")" : ""}`);
 			} else if (!walking() && !errand_busy()) {
 				if (!in_area) {
 					if (!state.waypoints.length) state.waypoints = make_waypoints(pack.boundary);

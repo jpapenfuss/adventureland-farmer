@@ -610,5 +610,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari's monster hunt/.test(state.directive.reason)", ctx),
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+
+	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
+	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.bank_full_at = 0; state.needs = new Map(); state.guide = null", ctx);
+	ctx.G.items.junk33 = { type: "material" };
+	character.items = Array(42).fill(null); for (let i = 0; i < 27; i++) character.items[i] = { name: "junk33", q: 1 };
+	character.esize = 15; character.hp = character.max_hp; character.s = {};
+	ctx.get_nearest_monster = () => null; ctx.quantity = () => 100;
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical" } });
+	const d33a = vm.runInContext("town_due(partner()?.errand === 'town')", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
+	const d33b = vm.runInContext("town_due(partner()?.errand === 'town')", ctx);
+	assert(!d33a.bank && d33b.bank && d33b.relaxed, `bank trip only when the partner is already in town (${d33a.bank}, ${d33b.bank})`);
+
+	// 34) a dead partner: the follower stays a follower (holds), the leader holds too
+	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 56, map: "main", x: 0, y: 0 });
+	handlers.cm({ name: "Torlis", message: { k: "hb", level: 38, ctype: "paladin", map: "main", x: 50, y: 0, hp: 0, max_hp: 900, rip: true, errand: null } });
+	const walk34 = [];
+	ctx.smart_move = (d) => (walk34.push(d), Promise.resolve());
+	vm.runInContext("follower_tick()", ctx);
+	assert(vm.runInContext("is_follower()", ctx) && !walk34.length, "follower holds while the leader is dead");
+	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 38 });
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 0, max_hp: 2500, rip: true, errand: null } });
+	vm.runInContext("state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
+	assert(vm.runInContext("leader_waiting() && state.last_pick === 0", ctx), "leader holds and re-judges the pack when the priest dies");
 	console.log("ALL PASS");
 })();
