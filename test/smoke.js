@@ -643,5 +643,34 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const due35 = vm.runInContext("town_due()", ctx);
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("due_tasks(town_due()).length === 0 && !state.errand && state.last_town === 0", ctx), `no town run when nothing is due (${JSON.stringify(vm.runInContext("due_tasks(town_due())", ctx))})`);
+
+	// 36) left alone: Torlis waits for Aspernari (in town) and solos safe mobs nearby; skips unsafe ones and far ones
+	ctx.setTimeout = (fn, ms) => (ms < 60000 && setImmediate(fn), 0);
+	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 40, map: "main", x: 0, y: 0, hp: 900, max_hp: 900, attack: 60, frequency: 1, range: 30, armor: 60, resistance: 30, damage_type: "physical", speed: 40 });
+	ctx.G.monsters.weak36 = { xp: 200, hp: 300, attack: 10, respawn: 5, range: 20, speed: 10, frequency: 1 };
+	ctx.G.monsters.brute36 = { xp: 2000, hp: 9000, attack: 120, respawn: 5, range: 20, speed: 10, frequency: 1 };
+	ctx.get_targeted_monster = () => null; ctx.change_target = () => {}; ctx.is_in_range = () => false; ctx.can_move_to = () => true;
+	ctx.get_nearest_monster = () => null;
+	vm.runInContext("state.hold = null; state.wait_since = 0; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }; state.errand = null; smart_depth = 0", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
+	ctx.parent.entities = {
+		b: { id: "b", type: "monster", mtype: "brute36", visible: true, hp: 9000, max_hp: 9000, x: 60, y: 0 },
+		far: { id: "far", type: "monster", mtype: "weak36", visible: true, hp: 300, max_hp: 300, x: 900, y: 0 },
+		w: { id: "w", type: "monster", mtype: "weak36", visible: true, hp: 300, max_hp: 300, x: 150, y: 50 },
+	};
+	const atk36 = [];
+	ctx.attack = (tg) => (atk36.push(tg.id), Promise.resolve());
+	ctx.can_attack = () => true;
+	vm.runInContext("for (const k in inflight) inflight[k] = false", ctx);
+	assert(vm.runInContext("leader_waiting()", ctx), "Torlis is waiting for Aspernari");
+	vm.runInContext("hold_grind()", ctx);
+	assert(atk36.join() === "w", `solos the safe mob within the radius, not the brute or the far one (${atk36})`);
+	// dead leader: the follower grinds solo too
+	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 57, attack: 180, frequency: 0.75, range: 180, damage_type: "magical", hp: 2500, max_hp: 2500 });
+	handlers.cm({ name: "Torlis", message: { k: "hb", level: 40, ctype: "paladin", map: "main", x: 0, y: 0, hp: 0, max_hp: 900, rip: true, errand: null } });
+	vm.runInContext("state.hold = null", ctx); atk36.length = 0;
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+	vm.runInContext("follower_tick()", ctx);
+	assert(atk36.includes("w") || atk36.includes("b"), `follower solos while the leader is dead (${atk36})`);
 	console.log("ALL PASS");
 })();

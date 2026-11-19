@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.3";
+const VERSION = "11.4";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -104,6 +104,7 @@ const CFG = {
 		heal_at: 0.75,         // priests heal any member below this HP fraction
 		heal_bonus: 2.5,       // leader's safety allowance × this while a priest partner is near
 		wait_max_ms: 180_000,  // leader holds position at most this long while a partner is away
+		wait_radius: 300,      // while waiting, solo-grind safe monsters within this many px of the waiting spot
 		beat_ms: 2000,         // status message interval
 		sync_factor: 2,        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
 	},
@@ -1650,13 +1651,8 @@ function party_heal() {
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
 function follower_tick() {
 	const L = partner_any();
-	if (L.rip) { // leader dead: stay here, heal, defend; it respawns in town and comes back
-		state.last_target_at = Date.now();
-		if (party_heal()) return;
-		const t = choose_target(false);
-		if (t) fight(t, false);
-		return;
-	}
+	if (L.rip) return void hold_grind(); // leader dead: grind what we can solo here until it walks back
+	state.hold = null;
 	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}` } : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
@@ -1678,6 +1674,39 @@ function follower_tick() {
 	}
 }
 // Leader: hold position (defend only) while a partner is in town or catching up, up to wait_max_ms
+// While a partner is away or dead, the one left behind grinds whatever it can SOLO near where it's waiting
+// (wait_radius around the spot where waiting began), instead of standing idle. Solo safety: partner_near() is null
+// while the partner is away, so fight_math leaves out its damage and heals; old (duo) verdicts are dropped on entry.
+function hold_grind() {
+	if (!state.hold || state.hold.map !== character.map) {
+		state.hold = { map: character.map, x: character.x, y: character.y };
+		live_cache.clear();
+	}
+	const h = state.hold, R = CFG.party.wait_radius;
+	state.last_target_at = Date.now();
+	if (party_heal()) return true;
+	let t = choose_target(false); // anything hitting us first
+	if (!t) {
+		const party = party_names();
+		let best_v = 0;
+		for (const id in parent.entities) {
+			const e = parent.entities[id];
+			if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target))) continue;
+			if (Math.hypot(e.x - h.x, e.y - h.y) > R) continue;
+			const f = entity_profile(e); // solo verdict
+			if (!f) continue;
+			const v = (e.xp || f.xp || 1) / (f.ttk * (e.hp / e.max_hp) + distance(character, e) / Math.max(character.speed, 1) + 0.2);
+			if (v > best_v && can_move_to(e)) (t = e), (best_v = v);
+		}
+	}
+	if (t && !watch_progress(t)) {
+		fight(t, Math.hypot(t.x - h.x, t.y - h.y) <= R); // approach only inside the radius
+		return true;
+	}
+	// nothing to do: drift back toward the waiting spot so the partner finds us
+	if (!walking() && Math.hypot(character.x - h.x, character.y - h.y) > R / 2 && can_move_to(h.x, h.y)) move_to(h.x, h.y, 800);
+	return false;
+}
 function leader_waiting() {
 	const p = partner_any();
 	if (!p || is_follower() || !state.pack) return (state.wait_since = 0), false;
@@ -1685,7 +1714,7 @@ function leader_waiting() {
 	const away = p.rip || p.errand || p.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far;
 	// the healer just dropped out of reach: re-judge the pack without its damage/heals
 	if (away && !state.wait_since && p.ctype === "priest") { live_cache.clear(); state.last_pick = 0; }
-	if (!away) return (state.wait_since = 0), false;
+	if (!away) return (state.wait_since = 0), (state.hold = null), false;
 	state.wait_since = state.wait_since || Date.now();
 	return Date.now() - state.wait_since < CFG.party.wait_max_ms;
 }
@@ -1743,8 +1772,15 @@ function tick() {
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
 			const waiting = leader_waiting();
-			if (waiting) state.last_target_at = Date.now(); // not idle: waiting for the partner
-			const t = choose_target((in_area || !pack) && !waiting);
+			if (waiting) {
+				const busy = hold_grind();
+				const P = partner_any();
+				set_message(`${busy ? "soloing" : "waiting"} near ${character.map} for ${P.name}${P.rip ? " (dead)" : P.errand ? " (" + P.errand + ")" : ""} | ${character.esize} free`);
+				loot_chests();
+				setTimeout(tick, 150);
+				return;
+			}
+			const t = choose_target(in_area || !pack);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
 				fight(t, true);
@@ -1752,9 +1788,6 @@ function tick() {
 			} else if (!pack) {
 				set_message("No viable pack");
 				wait = 5000;
-			} else if (waiting) {
-				const P = partner_any();
-				set_message(`waiting for ${P.name}${P.rip ? " (dead)" : P.errand ? " (" + P.errand + ")" : ""}`);
 			} else if (!walking() && !errand_busy()) {
 				if (!in_area) {
 					if (!state.waypoints.length) state.waypoints = make_waypoints(pack.boundary);
