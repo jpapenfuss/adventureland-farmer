@@ -765,5 +765,34 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("!state.errand", ctx), "still paused on the next check");
 	ctx.quantity = () => 100;
+
+	// 43) gold balance: Aspernari 13,191,492 vs Torlis 299,409 → Aspernari sends 15% (1,978,723) once; then 3h lockout both ways
+	ctx.setTimeout = (fn, ms) => (ms < 60000 && setImmediate(fn), 0);
+	const sends = [];
+	ctx.send_gold = (to, g) => { sends.push([to, g]); return Promise.resolve({ success: true }); };
+	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 57, gold: 13191492, map: "main", x: 0, y: 0, rip: false });
+	vm.runInContext("state.gold_xfer_at = 0; state.gold_retry_at = 0", ctx);
+	const hbT = (extra) => handlers.cm({ name: "Torlis", message: { k: "hb", level: 41, ctype: "paladin", map: "main", x: 100, y: 0, hp: 900, max_hp: 900, errand: null, gold: 299409, gold_xfer_at: 0, ...extra } });
+	hbT({});
+	vm.runInContext("gold_balance()", ctx);
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+	assert(sends.length === 1 && sends[0][0] === "Torlis" && sends[0][1] === 1978723, `richer sends 15% (${JSON.stringify(sends)})`);
+	vm.runInContext("gold_balance()", ctx);
+	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
+	assert(sends.length === 1, "no second transfer within 3h");
+	// the poorer side never sends; and it picks up the shared clock from the richer's heartbeat
+	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 41, gold: 299409 });
+	vm.runInContext("state.gold_xfer_at = 0", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 50, y: 0, hp: 2500, max_hp: 2500, errand: null, gold: 13191492, gold_xfer_at: Date.now() } });
+	vm.runInContext("gold_balance()", ctx);
+	assert(sends.length === 1 && vm.runInContext("state.gold_xfer_at > 0", ctx), "poorer never sends; shared 3h clock received");
+	// richer under 1,000,000 → no transfer; apart → waits
+	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 57, gold: 900000 });
+	vm.runInContext("state.gold_xfer_at = 0", ctx);
+	hbT({ gold: 10 });
+	assert(vm.runInContext("gold_balance()", ctx) === null && sends.length === 1, "no transfer when the richer has < 1,000,000");
+	character.gold = 13191492;
+	hbT({ map: "halloween" });
+	assert(vm.runInContext("gold_balance()", ctx) === "not together" && sends.length === 1, "waits until both are together");
 	console.log("ALL PASS");
 })();

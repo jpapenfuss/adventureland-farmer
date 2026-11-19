@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.10";
+const VERSION = "11.11";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -107,7 +107,10 @@ const CFG = {
 		beat_ms: 2000,         // status message interval
 		sync_factor: 2,
 		turn_min: 15,          // leader alternates this many minutes between its own goal and its partner's
-		mutual_max_h: 6,       // a goal counts toward "mutual" only if it would finish within this many hours        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
+		mutual_max_h: 6,       // a goal counts toward "mutual" only if it would finish within this many hours
+		// gold balance: if the poorer member has < min_ratio of the richer's gold, the richer sends give × its gold.
+		// Only when the richer has >= min_rich; at most once per every_h hours in either direction (shared, persisted).
+		gold: { enabled: true, min_ratio: 0.10, give: 0.15, min_rich: 1_000_000, every_h: 3 },        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
 	},
 };
 code_settings.show_smart_move_text = false;
@@ -1579,7 +1582,7 @@ function save_state() {
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
-		fetched: state.fetched, fetch_try: state.fetch_try,
+		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -1599,6 +1602,7 @@ function load_state() {
 	if (d.bank_full_at) state.bank_full_at = d.bank_full_at;
 	Object.assign(state.fetched, d.fetched || {});
 	Object.assign(state.fetch_try, d.fetch_try || {});
+	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	const off = now - (d.at || now);
@@ -1640,6 +1644,10 @@ function report() {
 	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${partner().name})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
+	if (partner() && CFG.party.gold?.enabled && Number.isFinite(partner().gold)) {
+		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
+		L(`gold: us ${character.gold.toLocaleString()} / ${partner().name} ${partner().gold.toLocaleString()} | last transfer ${state.gold_xfer_at ? Math.round((Date.now() - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > Date.now() ? `, next allowed in ${mins(next)}` : ""}`);
+	}
 	if (!is_follower() && partner()) {
 		if (state.shared?.mutual.length) L(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		if (state.shared?.too_slow.length) L(`too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
@@ -1742,6 +1750,7 @@ function heartbeat() {
 		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
 		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
 		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
+		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
 		want: state.directive && !state.directive.for_partner
 			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
 				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };
@@ -1751,6 +1760,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;
 	const first = !state.partner;
 	state.partner = { ...m.message, name: m.name, t: Date.now() };
+	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one shared clock
 	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, "#67A464");
 });
 setInterval(() => { if (spent() < BUDGET.soft - 30) heartbeat(); }, CFG.party.beat_ms);
@@ -1765,6 +1775,34 @@ setInterval(() => {
 	if (leader_name() === character.name) Promise.resolve(send_party_invite(p.name)).catch(() => {});
 	else if (!Object.keys(party).length) Promise.resolve(send_party_request(p.name)).catch(() => {});
 }, 10_000);
+
+// Gold balance between party members (see CFG.party.gold). Only the richer member acts; the 3-hour window is one
+// shared clock (max of both members' last-transfer times, persisted), so a reload on either side can't reset it.
+// send_gold needs both on the same map within 400px and the sender not in the bank.
+let gold_inflight = false;
+function gold_balance() {
+	const G_ = CFG.party.gold, p = partner();
+	if (!G_?.enabled || !p || !in_party_cfg() || gold_inflight || character.rip || typeof send_gold !== "function") return null;
+	if (!Number.isFinite(p.gold)) return null;                       // partner on an older version
+	const rich = character.gold, poor = p.gold;
+	if (rich <= poor || rich < G_.min_rich || poor >= rich * G_.min_ratio) return null;
+	if (Date.now() - (state.gold_xfer_at || 0) < G_.every_h * 3600_000) return null;
+	if (Date.now() < (state.gold_retry_at || 0)) return null;
+	const pos = partner_pos(p);
+	if (pos.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > 350 || on_bank_floor() || p.map.startsWith("bank")) return "not together";
+	const amount = Math.floor(rich * G_.give);
+	gold_inflight = true;
+	Promise.resolve(T(send_gold(p.name, amount)))
+		.then(() => {
+			state.gold_xfer_at = Date.now();
+			save_state();
+			game_log(`gold: sent ${amount.toLocaleString()} to ${p.name} (they had ${poor.toLocaleString()}, < ${G_.min_ratio * 100}% of our ${rich.toLocaleString()})`, "#FFD700");
+		})
+		.catch((e) => { state.gold_retry_at = Date.now() + 600_000; game_log(`gold: sending to ${p.name} failed: ${why(e)} (retry in 10 min)`, "gray"); })
+		.finally(() => (gold_inflight = false));
+	return "sent";
+}
+setInterval(() => { try { gold_balance(); } catch (e) {} }, 15_000);
 
 // Priests heal whoever in the party is lowest (partyheal when two or more are hurt)
 function party_heal() {
