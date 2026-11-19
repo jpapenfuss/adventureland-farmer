@@ -1,36 +1,49 @@
 // =====================================================================
-// Adventure Land farmer — v10.5 (see VERSION; report() prints it)
+// Adventure Land farmer. One file for every character; VERSION below is the only version number (report() prints
+// it). What changed between versions is in the git history, not here.
 //
-// What it does, in priority order every tick:
-//   1. Dead → respawn (waits the server's rip_time).
-//   2. HP < flee_hp → teleport to town, recover to recover_hp/recover_mp, fight back only if hit.
-//   3. Parked (park()) → finish the current errand, stand in town.
-//   4. Town run, when something is due and nothing is attacking us — one errand, in this order:
-//        Daisy (hunt turn-in/start) → Cole & other quest crafts → Progression Guide steps →
-//        sell junk → potions → bank (store everything not needed in bags; pull needed items back out).
-//   5. Fight at the chosen pack: guide farm row > guide quest materials > monster hunt > own quest
-//      materials > best measured/estimated xp/s pack.
+// Each tick, first match wins:
+//   1. Dead → respawn as soon as the server allows (rip_time).
+//   2. HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at recover_hp/recover_mp.
+//   3. park() was called → finish the current errand, stand in town until resume().
+//   4. Town run, when something is due: Daisy (hunt) → quest crafts (Cole etc.) → Progression Guide steps →
+//      sell → potions → bank. Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
+//      and attackers are ignored. While the party partner is in town, thresholds relax (sync_factor) to share the trip.
+//   5. Party follower → stay with the leader, shoot its target, heal (priests); if the leader is dead, solo-grind
+//      safe mobs nearby (wait_radius).
+//   6. Otherwise fight at the chosen pack.
 //
-// Diagnostics: type report() or why_not("bee") in the CODE console; both open a copyable text box.
+// Where to fight (solo or party leader):
+//   guide farm row > guide-quest materials > own monster hunt > own-quest materials > best xp/s pack.
+//   In a party the leader merges both members' weighted goal lists: a monster on both lists that both can finish
+//   within mutual_max_h wins; with no overlap it alternates turn_min-minute turns between the two top goals.
+//   Safety (fight_math) follows the server's damage formula on live monster stats; a nearby partner's damage and a
+//   priest's heals count only while that partner is near.
 //
-// Bag policy (the reason for the rewrite): every bag item is KEEP, SELL or BANK.
-//   KEEP: locked items, potions/scrolls/tools/computer, CFG.keep, items the guide's current steps use
-//         (rows + each plan's chosen .next path, not every alternative), inputs of open quest recipes.
-//   SELL: +0 normal-grade gear with no title worth <= sell_max_value, and CFG.sell names.
-//   BANK: everything else (spare amulets/belts/shoes, upgraded spares, materials nobody needs now).
-//   Runs whenever free slots drop below bag_min_free (default 10), not only when the bag is full.
+// Bags — every item is KEEP, SELL or BANK; acted on when free slots drop below bag_min_free:
+//   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, the copies the guide's current steps use, materials of
+//         unfinished quest recipes, anything fetched from the bank in the last hour.
+//   SELL: CFG.sell names; +0 plain gear only if auto_sell_gear, or while every usable bank pack is full.
+//   BANK: everything else. Needed items in the bank are fetched back (once per item per 2h).
 //
-// Server facts this relies on (checked against kaansoral/adventureland):
-//   - call cost: 200 per rolling 4s disconnects; move 2.5, equip 4, unequip 7; character.cc = server total.
-//   - town teleport (use_town): 3s channel, cancelled by attacking/moving/equipping; fails with >5 targets.
-//   - chests: gold multiplier lost beyond 400px or after 8 min. Respawn: 12s rip_time.
-//   - shop/upgrade/compound/craft/exchange distance checks are bypassed by a computer; Daisy's is not.
-//   - client deferreds never time out → every game call here goes through T().
-//   - Progression Guide rows (live dump): upgrade action.level = INPUT level, request.level = target;
-//     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
+// Party (CFG.party): the lowest-level member leads; members talk via send_cm every beat_ms, auto-invite each other,
+//   and balance gold (CFG.party.gold: richer sends 15% when the poorer has < 10%, at most once per 3h).
+//
+// Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
+//
+// Server behaviour relied on (checked against kaansoral/adventureland):
+//   - call cost: > 200 per rolling 4s disconnects; move 2.5, equip 4, unequip 7; character.cc = the server's total.
+//   - use_town: 3s channel, cancelled by attacking/moving/equipping; fails with > 5 monsters targeting you.
+//   - chests: gold multiplier lost beyond 400px or after 8 min; respawn rip_time 12s.
+//   - a computer bypasses shop/upgrade/compound/craft/exchange distance checks, not Daisy's.
+//   - client promises never time out → every game call goes through T(); every walk through go() (walk_timeout_ms).
+//   - monster-hunt kills and XP are credited to every party member; XP is split by damage dealt.
+//   - bank_b / bank_u floors stay locked until a bkey / ukey is used; send_gold needs same map, < 400px, not in bank.
+//   - Progression Guide rows: upgrade action.level = INPUT level, request.level = target; farm rows carry
+//     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.11";
+const VERSION = "11.12";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -168,7 +181,7 @@ const can_spend = (cost, reserve) => spent() + cost <= BUDGET.soft - reserve;
 async function wait_budget(cost, reserve) { while (!can_spend(cost, reserve)) await sleep_ms(250); }
 
 // Every walk has a deadline: the game's pathfinder retries a locked door ("The door is locked!" → "Lost the path"
-// → "Path found!") forever, which hung v10.5's bank errand in front of the locked bank_b door.
+// → "Path found!") forever, which would hang an errand (e.g. in front of the locked bank_b door).
 let smart_depth = 0;
 async function go(dest, ms = CFG.walk_timeout_ms) {
 	smart_depth++;
@@ -565,8 +578,8 @@ function sustain() {
 }
 const chest_tries = {};
 function loot_chests() {
-	// A full bag still opens chests: gold-only chests succeed, item chests fail with loot_no_space (v10 skipped
-	// every chest at 0 free slots, leaving the gold on the ground for hours)
+	// A full bag still opens chests: gold-only chests succeed; item chests fail with loot_no_space, so each is tried
+	// once at 0 free slots (gold would otherwise be left on the ground while the bag is full)
 	if (character.rip) return;
 	const now = Date.now();
 	let best = null, best_d = Infinity;
@@ -740,10 +753,9 @@ function bag_plan() {
 	const needed = needed_slots();
 	const sell = slots_where((i) => bag_class(i, needed) === "sell"), bank = slots_where((i) => bag_class(i, needed) === "bank");
 	// items the bank holds that bags need (quest inputs, guide step inputs)
-	// fetch a needed item only when the bag holds NO copy at any level. v11.8 counted only +0 copies (held()), so with
-	// upgraded copies in the bank it fetched one, still saw 0, fetched again, then banked the surplus: endless trips.
-	// v11.9 still looped: worn copies didn't count, and nothing limited retries. Now: no copy in bags OR worn, and at
-	// most one fetch attempt per item name every 2 hours (persisted), whatever happens to the fetched copy.
+	// Fetch a needed item only when no copy at any level is in the bags or worn, and at most one attempt per item
+	// name every 2 hours (persisted), whatever happens to the fetched copy. Counting only +0 copies, or not counting
+	// worn ones, lets a fetched copy look missing again — the bot then fetches/banks in a loop.
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
 	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
@@ -1192,9 +1204,9 @@ function guide_quest_ids(prog) {
 	return out;
 }
 // What bags must hold: name -> copies. The guide's steps touch a few copies at a time (one item to upgrade plus a
-// spare, three to compound), so only that many of the best copies stay; the rest is banked. v10 kept EVERY copy of
-// any name the guide mentioned — the equipment lesson plans helmet/coat/pants/gloves/shoes +7, so every dropped
-// helmet and pair of shoes was "needed", nothing was bankable, and the bag sat full for hours.
+// spare, three to compound), so only that many of the best copies stay; the rest is banked. Keeping every copy of
+// a mentioned name would make every dropped helmet/shoes "needed" whenever the guide plans gear upgrades
+// (its equipment lesson does), leaving nothing bankable.
 // Stackable items (materials, scrolls) are one slot no matter how many, so they're kept whole.
 function compute_needs(prog) {
 	const needs = new Map();
@@ -1400,7 +1412,7 @@ async function run_row(row) {
 // One guide step: re-read, run the top actionable row; failures back off (low odds 30 min, else 5 min)
 // A row we can do without walking anywhere from here: equips, retrieves from the bank floor we're standing on,
 // and NPC steps a computer covers. Those don't count toward guide_steps_per_run, so a bank visit keeps going
-// while the guide keeps asking for items from the bank (v10.7 left after each retrieve+equip and came back).
+// while the guide keeps asking for items from the bank (it reveals them one retrieve+equip at a time).
 const bank_floors = () => new Set(Object.values(bank_packs_list()).map((p) => p[0]));
 const on_bank_floor = () => bank_floors().has(character.map);
 function row_is_local(row) {
@@ -1427,8 +1439,8 @@ async function guide_step(row) {
 // Town run: one errand doing everything due, in walking order
 // =====================================================================
 let bags_warned = 0;
-// The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed; v11.2 derived "what's due" from
-// every truthy key, so the numeric min_free/pot_min made a town run due every 20s (empty trips, walking back alone).
+// The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed — never derive "what's due" from
+// its truthy keys: the numeric fields would make a town run permanently due.
 const TOWN_TASKS = ["hunt", "craft", "guide", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
@@ -1498,9 +1510,9 @@ function town_run(due) {
 	});
 }
 
-// Starts a town run when something is due. Blockers are recorded (report() shows them; the log says so every
-// 5 min): v10.5 silently required HP > 70% and no smart_move in flight, so a priest hovering at 60-70% HP or a
-// patrol that path-finds between waypoints could farm with a full bag for hours.
+// Starts a town run when something is due. Blockers are recorded (report() shows them; with a nearly full bag the
+// log says so every 5 min). Nearly full bags lower the HP floor and ignore attackers, and a patrol walk yields to
+// town — otherwise a priest hovering at 60-70% HP, or a patrol between waypoints, can farm with a full bag for hours.
 let town_block_logged = 0;
 function town_check() {
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
@@ -1576,7 +1588,7 @@ if (CFG.park_key && typeof map_key === "function") map_key(CFG.park_key, "snippe
 // =====================================================================
 // Persistence
 // =====================================================================
-const SAVE_KEY = "farmer_v9:" + character.name; // same key as v9: keeps learned state across the upgrade
+const SAVE_KEY = "farmer_v9:" + character.name; // historical name — don't change it, or saved state is lost
 function save_state() {
 	if (typeof set !== "function") return;
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
@@ -1876,7 +1888,7 @@ function hold_grind() {
 // Leader: never waits. The follower always knows where the leader is (heartbeat) and walks to it. What changes when
 // the partner leaves (town, dead, far) or comes back is the fight model: its damage and heals stop/start counting,
 // so the pack is re-judged at once — if it's too much solo, the leader moves to one it can handle, and back when
-// the partner returns. (v11.4 held position up to 3 minutes instead.)
+// the partner returns. Waiting in place gains nothing: the follower always knows where the leader is.
 function duo_check() {
 	if (!in_party_cfg() || is_follower()) return;
 	const near = !!partner_near();
