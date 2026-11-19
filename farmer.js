@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.8";
+const VERSION = "11.9";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -125,7 +125,7 @@ const state = {
 	recovering: false, fled: false, parked: false, park_home: false,
 	directive: null, guide: null, guide_farm: null, last_guide: 0,
 	needs: new Map(),          // item name -> copies to keep in bags (guide steps + open quests)
-	gear_skip: {}, crafted: {}, bank_seen: {}, guide_ignore: {}, guide_quests: {}, qprog: null, gprog: null,
+	gear_skip: {}, crafted: {}, fetched: {}, bank_seen: {}, guide_ignore: {}, guide_quests: {}, qprog: null, gprog: null,
 };
 
 // =====================================================================
@@ -604,6 +604,7 @@ function find_slots(name, level, n) {
 	character.items.forEach((i, k) => { if (out.length < n && i && i.name === name && (i.level || 0) === level && !i.l) out.push(k); });
 	return out.length === n ? out : null;
 }
+const held_any = (name) => character.items.reduce((n, i) => n + (i && i.name === name ? i.q || 1 : 0), 0);
 const held = (name, level) => character.items.reduce((n, i) => n + (i && i.name === name && (i.level || 0) === (level || 0) ? i.q || 1 : 0), 0);
 function shop_for(name) {
 	for (const id in G.npcs) if (!G.npcs[id].ignore && (G.npcs[id].items || []).includes(name) && find_npc(id)) return id;
@@ -697,6 +698,7 @@ async function run_upgrade(a, row) {
 async function run_compound(a, row) {
 	const from = input_level(a, row);
 	const scroll = a.scroll || "cscroll" + Math.max(0, item_grade({ name: a.name, level: from }));
+	if (!input_slots(a, from, 3)) throw { reason: "input_missing", want: `3x ${a.name}+${from}` }; // before walking anywhere
 	if (!has_computer()) await go("compound");
 	await ensure_scroll(scroll);
 	if (!has_computer()) await go("compound");
@@ -725,7 +727,8 @@ function bag_class(item, needed = needed_slots()) {
 	if (!item) return "empty";
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
-		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item))) return "keep";
+		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
+		Date.now() - (state.fetched[item.name] || 0) < 3600_000) return "keep"; // never store what we fetched within the hour
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -734,7 +737,9 @@ function bag_plan() {
 	const needed = needed_slots();
 	const sell = slots_where((i) => bag_class(i, needed) === "sell"), bank = slots_where((i) => bag_class(i, needed) === "bank");
 	// items the bank holds that bags need (quest inputs, guide step inputs)
-	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held(n) === 0 && !BAG_TYPES.has(G.items[n]?.type));
+	// fetch a needed item only when the bag holds NO copy at any level. v11.8 counted only +0 copies (held()), so with
+	// upgraded copies in the bank it fetched one, still saw 0, fetched again, then banked the surplus: endless trips.
+	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) === 0 && !BAG_TYPES.has(G.items[n]?.type));
 	return { sell, bank, fetch, free: character.esize };
 }
 function nearest_shop() {
@@ -824,7 +829,7 @@ async function task_bank(fetch_names) {
 			const n = (character.bank[p] || []).findIndex((i) => i && i.name === name);
 			if (n < 0) continue;
 			await wait_budget(1, 40);
-			await T(bank_retrieve(p, n)).then(() => got++).catch((e) => game_log(`bank: ${name}: ${why(e)}`, "gray"));
+			await T(bank_retrieve(p, n)).then(() => { got++; state.fetched[name] = Date.now(); }).catch((e) => game_log(`bank: ${name}: ${why(e)}`, "gray"));
 			await sleep_ms(150);
 			break;
 		}

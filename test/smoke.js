@@ -729,5 +729,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		goals: [{ monster: "crab", w: 2, reason: "wattire: crabclaw 0/200", eta_h: 150 }, { monster: "armadillo", w: 2, reason: "resistancering: ascale 4/5", eta_h: 0.8 }] } });
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'armadillo' && state.directive.mutual", ctx), `feasible mutual goal (armadillo) beats the 150h one (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+
+	// 40) no fetch loop: needed wcap, bank holds wcap+3 → fetch once; with the +3 in the bag, nothing more to fetch
+	ctx.G.items.wcap = { type: "helmet", upgrade: {} };
+	character.items = Array(42).fill(null); character.esize = 42;
+	vm.runInContext("state.needs = new Map([['wcap', 2]]); state.bank_seen = { wcap: 2 }", ctx);
+	assert(vm.runInContext("bag_plan().fetch.join()", ctx) === "wcap", "fetch the needed wcap when none is in the bag");
+	character.items[0] = { name: "wcap", level: 3 }; character.esize = 41;
+	assert(vm.runInContext("bag_plan().fetch.length === 0 && bag_plan().bank.length === 0", ctx), "an upgraded copy in the bag satisfies the need (no re-fetch, not banked)");
+	// compound row with inputs missing fails before walking
+	const walk40 = [];
+	ctx.smart_move = (d) => (walk40.push(d), Promise.resolve());
+	ctx.G.items.intamulet = { type: "amulet", compound: {} };
+	const e40 = await vm.runInContext("run_compound", ctx)({ name: "intamulet", level: 1, scroll: "cscroll0" }, { request: { name: "intamulet", level: 2 } }).catch((e) => e);
+	assert(e40?.reason === "input_missing" && !walk40.length, "missing compound inputs: no walk to the NPC");
 	console.log("ALL PASS");
 })();
