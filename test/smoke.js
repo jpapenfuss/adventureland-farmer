@@ -702,7 +702,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.drops = { monsters: { minimush: [[1 / 60, "spores"], [0.01, "mushcap"]] } };
 	ctx.G.craft = { mushhat: { items: [[5, "mushcap"]], cost: 0, quest: "mcollector" } };
 	ctx.G.items.mushhat = { type: "helmet" };
-	vm.runInContext(`state.turn = null; state.crafted = {}; state.gear_skip = {}; state.guide_ignore = {}; state.bank_seen = {};
+	vm.runInContext(`state.turn = null; state.crafted = {}; state.gear_skip = {}; state.guide_ignore = {}; state.bank_seen = {}; state.goals_cache = null;
 		state.guide_farm = { monster: "goo", map: "main", boundary: [-100,-100,100,100], count: 5, reason: "guide hunt_farm", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
 	character.items = Array(42).fill(null); character.s = {};
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
@@ -711,9 +711,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.mutual", ctx), `mutual goal (minimush) chosen (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 	// no overlap → turns between the two tops
 	ctx.G.craft = {};
-	vm.runInContext("state.turn = null; refresh_directive()", ctx);
+	vm.runInContext("state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'goo' && !state.directive.mutual", ctx), "no overlap: our own goal on our turn");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'tortoise'", ctx), "no overlap: partner's top goal on its turn");
+
+	// 39) live report: crab chosen as "mutual" for 200 crab claws at 1/1000 (~forever). Infeasible goals don't count.
+	ctx.G.items.crabclaw = { type: "material" }; ctx.G.items.ascale = { type: "material" };
+	ctx.G.monsters.crab = { xp: 50, hp: 200, attack: 5, respawn: 10, range: 20, speed: 10, frequency: 1 };
+	ctx.G.monsters.armadillo = { xp: 200, hp: 600, attack: 12, respawn: 10, range: 20, speed: 10, frequency: 1 };
+	ctx.G.maps.main.monsters.push({ type: "crab", count: 8, boundary: [500, 500, 700, 700] }, { type: "armadillo", count: 6, boundary: [700, 700, 900, 900] });
+	ctx.G.drops = { monsters: { crab: [[0.001, "crabclaw"]], armadillo: [[0.0008, "ascale"]] } };
+	ctx.G.craft = { wattire: { items: [[200, "crabclaw"]], cost: 0, quest: "mcollector" }, orbg: { items: [[1, "ascale"]], cost: 0, quest: "mcollector" } };
+	ctx.G.items.wattire = { type: "chest" }; ctx.G.items.orbg = { type: "orb" };
+	vm.runInContext("state.turn = null; state.goals_cache = null; state.crafted = {}; state.guide_farm = null; state.measured = {}; state.realism = 1", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+		goals: [{ monster: "crab", w: 2, reason: "wattire: crabclaw 0/200", eta_h: 150 }, { monster: "armadillo", w: 2, reason: "resistancering: ascale 4/5", eta_h: 0.8 }] } });
+	vm.runInContext("refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'armadillo' && state.directive.mutual", ctx), `feasible mutual goal (armadillo) beats the 150h one (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 	console.log("ALL PASS");
 })();

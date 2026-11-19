@@ -30,7 +30,7 @@
 //     farm rows carry action.route {monster,map,boundary,safe}; "bees" reason = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "11.7";
+const VERSION = "11.8";
 const CFG = {
 	// --- fighting
 	safety: 0.35,            // max fraction of max_hp a fight may cost (kiteable mobs count 1/kite_slack)
@@ -106,7 +106,8 @@ const CFG = {
 		wait_radius: 300,      // a follower whose leader is dead solo-grinds safe monsters within this many px
 		beat_ms: 2000,         // status message interval
 		sync_factor: 2,
-		turn_min: 15,          // leader alternates this many minutes between its own goal and its partner's        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
+		turn_min: 15,          // leader alternates this many minutes between its own goal and its partner's
+		mutual_max_h: 6,       // a goal counts toward "mutual" only if it would finish within this many hours        // while the partner is in town, go too at bag_min_free×this free slots / pot_min×this potions
 	},
 };
 code_settings.show_smart_move_text = false;
@@ -996,21 +997,38 @@ function partner_hunt_directive() {
 }
 // Every monster worth farming for this character, weighted: guide farm row 4, monster hunt 3, a drop for a missing
 // guide-quest material 2, for an own-quest material 1. Shared with the partner in the heartbeat.
+// Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
+function kills_per_s(mt) {
+	const f = fight_profile(mt);
+	if (!f) return 0;
+	let best = 0;
+	each_area((pack, area) => {
+		if (pack.type !== mt) return;
+		const m = state.measured[pack_key(area)];
+		const kps = m !== undefined ? m / Math.max(1, f.xp) : Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
+		best = Math.max(best, kps);
+	});
+	return best;
+}
 function goals_list() {
 	const out = [], now = Date.now();
+	if (state.goals_cache && now - state.goals_cache.at < 10_000) return state.goals_cache.list;
 	const g = state.guide_farm;
 	if (g && g.until > now && !((state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now))
 		out.push({ monster: g.monster, w: 4, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
 	const h = character.s.monsterhunt;
-	if (CFG.auto_monster_hunt && h?.c > 0) out.push({ monster: h.id, w: 3, reason: `monster hunt ${h.c} left` });
+	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
+	if (CFG.auto_monster_hunt && h?.c > 0) out.push({ monster: h.id, w: 3, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
 	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
 		if (!recipe_open(id)) continue;
 		for (const [q, n, l] of G.craft[id].items) {
-			if (l || GEAR.has(G.items[n]?.type) || owned_in_bags_or_bank(n, l) >= q) continue;
-			for (const [mt] of drop_sources(n)) if (farmable_type(mt))
-				out.push({ monster: mt, w: is_guide_quest(id) ? 2 : 1, reason: `${id}: ${n} ${owned_in_bags_or_bank(n, l)}/${q}` });
+			const have = owned_in_bags_or_bank(n, l);
+			if (l || GEAR.has(G.items[n]?.type) || have >= q) continue;
+			for (const [mt, rate] of drop_sources(n)) if (farmable_type(mt))
+				out.push({ monster: mt, w: is_guide_quest(id) ? 2 : 1, reason: `${id}: ${n} ${have}/${q}`, eta_h: eta(q - have, rate, mt) });
 		}
 	}
+	state.goals_cache = { at: now, list: out };
 	return out;
 }
 // Leader: mutual goals first (a monster on both lists; highest combined weight), else take turns between our top
@@ -1019,10 +1037,13 @@ function pick_shared(mine) {
 	const P = partner(), now = Date.now();
 	const by = new Map();
 	const add = (g, who) => {
-		const e = by.get(g.monster) || { monster: g.monster, me: 0, them: 0, src: null, why: [] };
+		const e = by.get(g.monster) || { monster: g.monster, me: 0, them: 0, me_eta: Infinity, them_eta: Infinity, src: null, why: [] };
+		const eh = g.eta_h ?? 0; // guide rows and older partners: no estimate → treat as feasible
+		if (eh > CFG.party.mutual_max_h) { (e.too_slow = e.too_slow || []).push(`${who === "me" ? character.name : P.name}: ${g.reason} ~${Math.round(eh)}h`); by.set(g.monster, e); return; }
 		e[who] = Math.max(e[who], g.w);
+		e[who + "_eta"] = Math.min(e[who + "_eta"], eh);
 		if (!e.src && valid_boundary(g.boundary)) e.src = g;
-		e.why.push(`${who === "me" ? character.name : P.name}: ${g.reason}`);
+		e.why.push(`${who === "me" ? character.name : P.name}: ${g.reason}${g.eta_h ? ` ~${g.eta_h}h` : ""}`);
 		by.set(g.monster, e);
 	};
 	goals_list().forEach((g) => add(g, "me"));
@@ -1035,9 +1056,12 @@ function pick_shared(mine) {
 		const area = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster);
 		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.me, mutual: e.me > 0 && e.them > 0 };
 	};
-	const cands = [...by.values()].filter(ok);
-	const mutual = cands.filter((e) => e.me && e.them).sort((a, b) => b.me + b.them - (a.me + a.them));
-	state.shared = { mutual: mutual.map((e) => `${e.monster} (${e.why.join("; ")})`), at: now };
+	const cands = [...by.values()].filter((e) => (e.me || e.them) && ok(e));
+	// mutual: both sides have a goal there that finishes within mutual_max_h; quicker goals rank higher
+	const rank = (e) => (e.me + e.them) / (1 + Math.max(e.me_eta, e.them_eta));
+	const mutual = cands.filter((e) => e.me && e.them).sort((a, b) => rank(b) - rank(a));
+	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${Math.max(e.me_eta, e.them_eta).toFixed(1)}h (${e.why.join("; ")})`),
+		too_slow: [...by.values()].flatMap((e) => (e.too_slow || []).map((w) => `${e.monster}: ${w}`)), at: now };
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
 	// nothing in common: alternate turns
 	const theirs = cands.filter((e) => e.them).sort((a, b) => b.them - a.them)[0];
@@ -1589,6 +1613,7 @@ function report() {
 	const h = character.s.monsterhunt;
 	if (!is_follower() && partner()) {
 		if (state.shared?.mutual.length) L(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
+		if (state.shared?.too_slow.length) L(`too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 		else if (state.turn) L(`no mutual goal; turn: ${state.turn.who === "me" ? character.name : partner().name}'s for ${mins(state.turn.end)}`);
 	}
 	if (is_follower()) L(`my goals (shared with ${partner_any().name}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
