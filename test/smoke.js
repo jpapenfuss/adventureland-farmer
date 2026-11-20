@@ -1297,7 +1297,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	delete ctx.parent.entities.k1;
 	character.rip = false; character.hp = 900;
 	vm.runInContext("log_ev('town', { due: 'sell+bank', did: 2, secs: 40 }); log_ev('upgrade', { item: 'nhelm', from: 3, ok: true }); log_ev('rate', { pack: 'croc@main', xp_s: 120 }); bucket().xp += 5000; bucket().time.fight = 50", ctx);
-	const h61 = vm.runInContext("history(6)", ctx);
+	const h61 = vm.runInContext("history(6, 'solo')", ctx);
 	assert(/time: fight/.test(h61) && /DEATH/.test(h61) && /croc 400/.test(h61) && /town trips: 1 \(sell 1, bank 1/.test(h61) && /upgrades: 1 ok/.test(h61) && /croc@main 120/.test(h61), `history() summarises every section:\n${h61}`);
 	const d61 = vm.runInContext("deaths(3)", ctx);
 	assert(/main damage: croc/.test(d61) && /hp, 1\/s: 400/.test(d61), "deaths() prints the full post-mortem");
@@ -1497,6 +1497,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(/2\/3 replied/.test(out68) && iS < iA && iA < iT && iT < iD && /torlis line/.test(out68) && /aspernari line/.test(out68) && !/STALE/.test(out68) &&
 		/stored copy, 10m old/.test(out68) && /merchant stored line/.test(out68), `combined in order, stale ignored, stored copy for the silent one:\n${out68}`);
 	assert(vm.runInContext("party_report()", ctx) === out68, "party_report() re-opens the last one");
+	// history(): asks everyone for history only; one "party history" window; doesn't replace the last party report
+	cm68.length = 0; modal68 = "";
+	vm.runInContext("history(2)", ctx);
+	const hreq = cm68.find(([, k]) => k === "rreq");
+	assert(hreq && hreq[2].kind === "history" && hreq[2].hours === 2 && hreq[0] === "Aspernari,Torlis,DoWhatNow", "history() asks the other three for their history");
+	cm68.length = 0; vm.runInContext("report_reply_at.Aspernari = 0", ctx);
+	handlers.cm({ name: "Aspernari", message: { k: "rreq", id: "h1", hours: 2, kind: "history" } });
+	const hrep = cm68.find(([, k]) => k === "rrep");
+	assert(hrep && hrep[2].lines.some((l) => /— history Sanala/.test(l)) && !hrep[2].lines.some((l) => /^level \d+ .* per 4s/.test(l)), "a history request is answered with history lines only");
+	handlers.cm({ name: "Torlis", message: { k: "rrep", id: hreq[2].id, v: "x", lines: ["torlis history"] } });
+	const hout = vm.runInContext(`report_finish("${hreq[2].id}")`, ctx);
+	assert(/party history \(2h\)/.test(hout) && /torlis history/.test(hout) && !/^roster:/m.test(hout) && /party history/.test(modal68) &&
+		vm.runInContext("party_report()", ctx) === out68, `combined history window, no party header, last report kept:\n${hout}`);
 	ctx.get = () => null; ctx.send_cm = () => Promise.resolve();
 	// 69) v16.0: batch compound fetches; merchant sole compounder; guide row backoff; guide-only trips wait; keep reasons
 	ctx.G.items.ringx = ctx.G.items.ringx || { type: "ring", compound: { attack: 1 }, attack: 2 };

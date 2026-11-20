@@ -1,4 +1,4 @@
-const VERSION = "18.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -965,7 +965,13 @@ function last_hour() {
 	return { dead: ev.filter((e) => e.type === "death").length, fled: ev.filter((e) => e.type === "flee").length,
 		xph: Math.round((b.xp || 0) + (pb.xp || 0) * (1 - frac)), town: ev.filter((e) => e.type === "town").length };
 }
-function history(hours = 6) { return share_text(`history ${character.name}`, history_lines(hours)); }
+// history(hours): in a party, every character's history in one window (like report()); history(hours, "solo") only ours
+function history(hours = 6, solo) {
+	const targets = party_names_all().filter((n) => n !== character.name);
+	if (solo === "solo" || hours === "solo" || !targets.length || typeof send_cm !== "function")
+		return share_text(`history ${character.name}`, history_lines(+hours || 6));
+	return party_gather("history", targets, hours, history_lines(hours));
+}
 function history_lines(hours = 6) {
 	const now = Date.now(), from = now - hours * 3600_000, ev = hist.ev.filter((e) => e.t >= from);
 	const L = [`— history ${character.name} v${VERSION}, last ${hours}h (${ev.length} events) —`];
@@ -3525,20 +3531,24 @@ function report(hours = 0) {
 	if (solo) hours = 0;
 	const targets = party_names_all().filter((n) => n !== character.name);
 	if (solo || !targets.length || typeof send_cm !== "function") return share_text("report()", [...report_lines(false), ...(hours > 0 ? history_lines(hours) : [])]);
-	const id = `${Date.now()}:${character.name}`;
 	const own = report_lines(false, true);
-	gather = { id, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: hours > 0 ? [...own, ...history_lines(hours)] : own } }, at: Date.now() };
-	Promise.resolve(send_cm(targets, { k: "rreq", id, hours })).catch(() => {});
-	game_log(`report: collecting from ${targets.join(", ")} (up to 6s)…`, C.info);
+	return party_gather("report", targets, hours, hours > 0 ? [...own, ...history_lines(hours)] : own);
+}
+// Ask every other character for its report or history; one window once all replied or after 6s
+function party_gather(kind, targets, hours, own) {
+	const id = `${Date.now()}:${character.name}`;
+	gather = { id, kind, hours, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: own } }, at: Date.now() };
+	Promise.resolve(send_cm(targets, { k: "rreq", id, hours, kind })).catch(() => {});
+	game_log(`${kind}: collecting from ${targets.join(", ")} (up to 6s)…`, C.info);
 	setTimeout(() => report_finish(id), 6000);
-	return `collecting reports from ${targets.join(", ")}…`;
+	return `collecting ${kind} from ${targets.join(", ")}…`;
 }
 function report_reply(m) {
 	const from = m.name, now = Date.now();
 	if (now - (report_reply_at[from] || 0) < 5000) return;
 	report_reply_at[from] = now;
 	const h = +m.message.hours || 0;
-	const lines = [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
+	const lines = m.message.kind === "history" ? history_lines(h || 6) : [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
 	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, lines })).catch(() => {});
 }
 function report_collect(m) {
@@ -3553,17 +3563,18 @@ function report_finish(id) {
 	const members = (CFG.party.members || []).filter((n) => n !== character.name).sort();
 	const order = [character.name, ...members, ...(CFG.merchant?.name && CFG.merchant.name !== character.name ? [CFG.merchant.name] : [])];
 	const replied = [...g.want].filter((n) => g.got[n]).length;
-	const out = [`══ party report v${VERSION} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...party_header_lines()];
+	const hist_k = g.kind === "history";
+	const out = [`══ party ${hist_k ? `history (${g.hours || 6}h)` : "report"} v${VERSION} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...(hist_k ? [] : party_header_lines())];
 	for (const n of order) {
 		const v = g.got[n]?.v;
 		out.push("", `▌ ${n}${v && v !== VERSION ? ` (v${v} ≠ v${VERSION}: update it)` : ""}`);
 		if (g.got[n]) { out.push(...g.got[n].lines); continue; }
-		const stored = typeof get === "function" ? get("farmer_report:" + n) : null;
+		const stored = !hist_k && typeof get === "function" ? get("farmer_report:" + n) : null;
 		if (stored && Array.isArray(stored.lines)) out.push(`(no reply — stored copy, ${ago(stored.at)} old, v${stored.v})`, ...stored.lines);
 		else out.push("(no reply: offline, on another server, or running an older version)");
 	}
-	last_party_report = out;
-	return share_text("party report", out);
+	if (!hist_k) last_party_report = out;
+	return share_text(hist_k ? "party history" : "party report", out);
 }
 // Everything shared, once: roster, leader and its pack, gold, hunts, last hour per member, bosses, merchant, mutual goals
 function party_header_lines() {
@@ -4592,7 +4603,7 @@ tick();
 //
 // Diagnostics (CODE console, copyable text box): report() — this character at once, then the whole party in one
 //   box (same server; stored copies otherwise); report(6) adds 6h history each; party_report() re-opens it;
-//   history(hours), deaths(n), why_not("monster"); gear_check() (every slot: worn vs best owned); selftest() (checks the client: functions, data, events, storage,
+//   history(hours) (party; history(h, "solo") just us), deaths(n), why_not("monster"); gear_check() (every slot: worn vs best owned); selftest() (checks the client: functions, data, events, storage,
 //   cm round trips); park()/resume(); forget().
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
