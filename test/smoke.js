@@ -2589,6 +2589,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/no kill_credit/.test(w) && /owes the merchant 900k/.test(w) && /1 death/.test(w), `flags missing kill_credit, a big unpaid bill, a death (${w})`);
 		vm.runInContext("seen.kill = 0; state.owe = 0; hist.ev = []; state.partners = {}", ctx);
 	}
+	// 110) v23.4: the xp stat is worth attack x fighters x 1% (merchants: nothing)
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, attack: 400 });
+		vm.runInContext("state.partners = {}; my_gear_cache = null", ctx);
+		hb("Torlis", { ...tor, level: 60 }); hb("Aspernari", { ...asp });
+		ctx.G.items.xorb = { type: "orb", xp: 5 };
+		assert(Math.abs(vm.runInContext("xp_weight('mage')", ctx) - 12) < 1e-9, `3 fighters, attack 400: 12 points per xp (${vm.runInContext("xp_weight('mage')", ctx)})`);
+		assert(vm.runInContext("gear_score({ name: 'xorb', level: 0 })", ctx) === 60 && vm.runInContext("gear_score({ name: 'xorb', level: 0 }, 'merchant')", ctx) === 0, "an orb with +5 xp: 60 points for a fighter, 0 for the merchant");
+		vm.runInContext("state.partners = {}", ctx);
+		assert(Math.abs(vm.runInContext("xp_weight('mage')", ctx) - 4) < 1e-9, "alone: 4 points per xp");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

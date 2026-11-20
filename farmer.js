@@ -1,4 +1,4 @@
-const VERSION = "23.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -74,6 +74,10 @@ const CFG = {
 		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
 		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, xp: 0.6, luck: 0.15, gold: 0.15 },
 	gear_tank: ["paladin", "warrior"],
+	// v23.4: the xp stat (+1% of the wearer's kill xp per point; server: xpm) is worth what that much more damage would
+	// earn: each fighter gets 1/n of every party kill, so +1% damage adds ~1/n % xp while +1 xp adds 1%. One point counts
+	// as gear_xp_value x attack x fighters (attack = 1 point). Merchants get no kill xp: 0. Replaces gear_w.xp.
+	gear_xp_value: 0.01,
 	// Own compounding (rings, earrings, amulets, belts, orbs...): three spare copies at one level → one a level higher.
 	// Spares = bags + bank, never worn, locked, titled, guide-needed, or wanted by a member as an upgrade.
 	compound_auto: true,
@@ -1600,13 +1604,19 @@ function item_props(item, ctype) {
 	for (const k in inc) if (typeof inc[k] === "number") out[k] = (out[k] || 0) + inc[k] * lv;
 	return out;
 }
+// Points per xp stat point for a class (v23.4): its attack (ours, or a partner's from its heartbeat) x fighters x value
+function xp_weight(ctype) {
+	if (ctype === "merchant") return 0;
+	const atk = ctype === character.ctype ? character.attack : partners().find((p) => p.ctype === ctype)?.attack;
+	return CFG.gear_xp_value * (atk || character.attack || 100) * party_n();
+}
 function gear_score(item, ctype = character.ctype) {
 	if (!item || !G.items[item.name]) return 0;
 	const p = item_props(item, ctype), W = CFG.gear_w, main = G.classes[ctype]?.main_stat, tank = CFG.gear_tank.includes(ctype);
 	let s = 0;
 	for (const k in p) {
 		if (!p[k] || typeof p[k] !== "number") continue;
-		let w = MAIN_STATS.includes(k) ? (k === main ? W.main_stat : W.off_stat) : W[k];
+		let w = MAIN_STATS.includes(k) ? (k === main ? W.main_stat : W.off_stat) : k === "xp" ? xp_weight(ctype) : W[k];
 		if (!w) continue;
 		if (tank && DEF_STATS.has(k)) w *= CFG.gear_tank_mult;
 		s += p[k] * w;
