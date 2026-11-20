@@ -42,7 +42,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; globalThis.__run_row_real = run_row", ctx); // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; globalThis.__run_row_real = run_row", ctx); // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -2258,6 +2258,33 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("remember_bank()", ctx);
 		assert(vm.runInContext("state.bank_gear[0].name === 'fresh'", ctx), "off a bank floor, a lingering character.bank doesn't overwrite the snapshot");
 		character.bank = undefined; vm.runInContext("state.bank_gear = []; state.bank_seen = {}; state.bank_at = 0; state.bank_by = null", ctx);
+	}
+	// 103) v21.0 split mode: the leader splits on easy content, regroups for a due probe (with a timeout); a follower
+	// farms its own spot (occupied spots score lower) and follows when it finds nothing
+	{
+		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.merchant = null; state.probe = null; state.directive = null; state.split_on = false; state.regroup_since = 0", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 1000, max_hp: 1000 });
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
+		vm.runInContext("state.probe_at = Date.now(); split_decide()", ctx);
+		assert(vm.runInContext("state.split_on && split_now()", ctx), "leader: nothing special going on → split");
+		vm.runInContext("state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()", ctx);
+		assert(vm.runInContext("!state.split_on && state.regroup_since > 0", ctx), "probe due → regroup");
+		vm.runInContext("state.regroup_since = Date.now() - CFG.party.split.regroup_max_min * 60000 - 1; split_decide()", ctx);
+		assert(vm.runInContext("state.split_on && Date.now() - state.probe_at < 5000", ctx), "nobody came back in time → probe skipped this round, split again");
+		vm.runInContext("state.directive = { monster: 'franky', boss: true }; split_decide()", ctx);
+		assert(vm.runInContext("!state.split_on", ctx), "a boss → together");
+		vm.runInContext("state.directive = null; state.split_on = false", ctx);
+		// follower side
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60 });
+		vm.runInContext("state.partners = {}; state.split_fallback = 0", ctx);
+		hb("Sanala", { ...san, level: 51, split: true, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+		assert(vm.runInContext("split_now() && !is_follower()", ctx), "the leader's split flag frees the follower");
+		vm.runInContext("state.split_fallback = Date.now() + 60000", ctx);
+		assert(vm.runInContext("is_follower()", ctx), "a follower in fallback (nothing to farm alone) follows again");
+		hb("Sanala", { ...san, level: 51, split: false });
+		vm.runInContext("state.split_fallback = 0", ctx);
+		assert(vm.runInContext("is_follower()", ctx), "regroup: the follower follows");
+		vm.runInContext("state.partners = {}; CFG.party.split.enabled = false; state.split_on = false", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");

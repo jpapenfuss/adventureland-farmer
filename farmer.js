@@ -1,4 +1,4 @@
-const VERSION = "20.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "21.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -248,6 +248,11 @@ const CFG = {
 		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
 		// their own (near the leader, not one a member is hitting) instead of the leader's target.
 		spread: true, spread_ttk: 3,
+		// v21.0: the server gives every online party member an equal share of every kill wherever it is (no distance
+		// rule; hunts count party kills too), so on easy content the fighters farm separate spots. Each picks only what
+		// it can kill alone; one that finds nothing follows the leader. The leader calls everyone back for probes,
+		// bosses and events (regroup_max_min at most, then the probe is skipped this round).
+		split: { enabled: true, regroup_max_min: 10, occupied_mult: 0.6, fallback_min: 5 },
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
 		turn_min: 15,          // with no mutual goal, the leader alternates 15-min turns between its goal and its partner's
@@ -747,6 +752,8 @@ function pick_pack() {
 		if (seen.has(key) || (state.cooldown[key] || 0) > now) return;
 		seen.add(key);
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
+		// split: a spot a partner is already farming scores lower, so we spread over different spots
+		if (split_now() && partners().some((m) => m.pack && pack_key(m.pack) === key)) p.score *= CFG.party.split.occupied_mult;
 		if (!best || p.score > best.score) best = p;
 	});
 	state.last_pick = now;
@@ -784,6 +791,8 @@ function pick_pack() {
 		if (best.score < (state.measured[pack_key(cur)] ?? cur.score) * CFG.switch_margin) best = cur;
 	}
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${state.measured[pack_key(best)] ? " measured" : " est"})`);
+	// split, nothing we can farm alone: follow the leader for a while (is_follower turns true until split_fallback)
+	if (!best && split_now() && leader_name() !== character.name) state.split_fallback = now + CFG.party.split.fallback_min * 60_000;
 }
 // Patrol route: a 3x3 grid snaking through the area at 15%, 50% and 85% of its width/height, so the server shows us
 // every part of the pack (it only sends entities near us) without hugging the edges
@@ -2636,7 +2645,10 @@ function hunt_feasible(h) {
 	const best = best_known_xps();
 	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
 	if (!(h.ms > 0)) return true; // no expiry known
-	const kps = kills_per_s(h.id) * (1 + 0.6 * partners_near().length);
+	// party kills count wherever they happen (server: monster_hunt_logic for every member): while split, the members
+	// farming that monster anywhere; together, the members near
+	const helpers = split_now() ? partners().filter((p) => p.pack?.mtype === h.id).length : partners_near().length;
+	const kps = kills_per_s(h.id) * (1 + 0.6 * helpers);
 	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
 }
 function hunt_directive() {
@@ -2902,7 +2914,7 @@ function refresh_directive() {
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
-	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
+	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss && !split_now()) d = pick_shared(mine) || mine; // a boss beats every goal; split: own goals
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
@@ -3925,6 +3937,12 @@ function party_header_lines() {
 		: [...fighters].sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1))[0].name;
 	const lp = fighters.find((f) => f.name === lead)?.pack;
 	out.push(`leader: ${lead}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
+	if (CFG.party.split?.enabled) {
+		const sp = lead === character.name ? !!state.split_on : !!state.partners[lead]?.split;
+		const due = (state.probe_at || 0) + (CFG.probe?.every_min || 0) * 60_000;
+		out.push(sp ? `party: farming separately${CFG.probe?.enabled ? ` (regroup for a probe in ${mins(due)})` : ""} — ${fighters.map((f) => `${f.name} @ ${f.pack ? f.pack.mtype : "?"}`).join(", ")}`
+			: `party: together${lead === character.name && state.regroup_since ? ` (regrouping for a probe, ${ago(state.regroup_since)})` : ""}`);
+	}
 	const M = is_merchant() ? { name: character.name, gold: character.gold, map: character.map, esize: character.esize, serving: state.serving } : merchant_hb();
 	out.push(`gold: ${[...fighters, ...(M ? [M] : [])].map((f) => `${f.name} ${fmt_k(f.gold || 0)}`).join(" / ")}`);
 	const hunts = {};
@@ -4003,13 +4021,36 @@ function leader_name() {
 }
 const leader_name_any = leader_name;
 const leader_hb = () => state.partners[leader_name()];
-const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_name() !== character.name;
+// Split mode (CFG.party.split): the leader decides (state.split_on, sent in its heartbeat); others read its beat
+const split_now = () => !!CFG.party.split?.enabled && in_party_cfg() && partners_any().length > 0 &&
+	(leader_name() === character.name ? !!state.split_on : !!leader_hb()?.split);
+// A follower stops following while split, unless it found nothing it can farm alone (then it follows for fallback_min)
+const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_name() !== character.name &&
+	!(split_now() && Date.now() >= (state.split_fallback || 0));
+// Leader: split unless a probe is running or due, a boss or an event is on. A due probe waits regroup_max_min for
+// everyone to arrive, then is skipped for this round.
+function split_decide() {
+	const S_ = CFG.party.split, P = CFG.probe, now = Date.now();
+	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void (state.split_on = false);
+	let on = !state.probe && !state.directive?.boss && !event_live();
+	if (on && P?.enabled && now - (state.probe_at || 0) >= P.every_min * 60_000) {
+		state.regroup_since = state.regroup_since || now;
+		if (now - state.regroup_since < S_.regroup_max_min * 60_000) on = false;
+		else { state.probe_at = now; state.regroup_since = 0; log_ev("regroup_timeout", {}); game_log(`party: not everyone made it back for the probe in ${S_.regroup_max_min} min; skipping it this round`, C.dim); }
+	} else if (on) state.regroup_since = 0;
+	if (on !== !!state.split_on) {
+		state.split_on = on;
+		log_ev(on ? "split" : "regroup", {});
+		game_log(on ? "party: farming separately (equal xp shares wherever we are)" : "party: regrouping", C.info);
+		state.last_pick = 0;
+	}
+}
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -4891,6 +4932,7 @@ function tick() {
 				setTimeout(tick, 150);
 				return;
 			}
+			split_decide();
 			duo_check();
 			probe_check();
 			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
