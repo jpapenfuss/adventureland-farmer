@@ -2025,6 +2025,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(before93 === 1 && vm.runInContext("skipped('equip:hpam:2') && bank_upgrades().length === 0", ctx), `refused equip → paused 6h and dropped from bank upgrades (before: ${before93})`);
 	ctx.equip = eq_save; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; state.bank_gear = []", ctx);
+	// 94) quiet_logs: "Received a code message from" lines are dropped; others pass; re-wrapping keeps the original
+	const logged94 = []; const add94 = function (m, c) { logged94.push(m); }; ctx.parent.add_log = add94;
+	vm.runInContext("quiet_logs(); quiet_logs()", ctx);
+	ctx.parent.add_log("Received a code message from: Torlis", "#aaf"); ctx.parent.add_log("Monster hunt: 20x bee", "#fff");
+	assert(JSON.stringify(logged94) === '["Monster hunt: 20x bee"]' && ctx.parent.add_log.farmer_orig === add94, `cm log lines hidden, others kept, no double wrap (${JSON.stringify(logged94)})`);
+	vm.runInContext("CFG.quiet_logs = []; quiet_logs(); CFG.quiet_logs = [/code message from/i]", ctx);
+	assert(ctx.parent.add_log === add94, "quiet_logs = [] restores the game's own add_log");
 	all_done = true;
 	console.log("ALL PASS");
 })();

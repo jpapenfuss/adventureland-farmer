@@ -1,4 +1,4 @@
-const VERSION = "18.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -132,6 +132,7 @@ const CFG = {
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
 	guide_steps_per_run: 5,    // guide steps that need walking, per town run (steps done in place don't count)
 	town_min_gap_ms: 20_000,   // at least 20s between town runs
+	quiet_logs: [/code message from/i], // v18.4: game-log lines hidden (the heartbeats' "Received a code message from")
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
 	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
@@ -3264,6 +3265,21 @@ function share_text(title, lines) {
 			`<textarea readonly style="width:100%;height:420px;background:#111;color:#cfe;font-size:13px" onclick="this.select()">${esc(text)}</textarea>`);
 	return text;
 }
+// Hide game-log lines matching CFG.quiet_logs: wraps the game page's add_log (the client's log function). A reload
+// re-wraps the original, never a wrapper; [] turns it off.
+function quiet_logs() {
+	const P = typeof parent !== "undefined" ? parent : null;
+	if (!P || typeof P.add_log !== "function") return false;
+	const orig = P.add_log.farmer_orig || P.add_log, pats = CFG.quiet_logs || [];
+	const f = function (message, color) {
+		if (typeof message === "string" && pats.some((re) => re.test(message))) return;
+		return orig.apply(this, arguments);
+	};
+	f.farmer_orig = orig;
+	P.add_log = pats.length ? f : orig;
+	return true;
+}
+quiet_logs();
 // report(): one-screen summary of what the bot is doing and why (also as copyable text)
 // ---- Report (v17): facts once, two renderers ----
 // report_facts(): this character's state as { key, scope, text, quiet } in display order.
