@@ -69,7 +69,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "14.0";
+const VERSION = "14.1";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -403,7 +403,7 @@ function farmable_entity(e) {
 
 // Server complete_attack(): hit = attack · damage_multiplier(defense − pierce); 1hp targets take 1;
 // evasion (physical) / avoidance miss; reflection bounces magic; dreturn hits melee; lifesteal/self_healing heal.
-function fight_math(m) {
+function fight_math(m, use_tank = true) {
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -413,7 +413,7 @@ function fight_math(m) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = !(m.aggro > 0.3) && tank_cover(), D = tank || character; // who the monster will be hitting
+	const tank = use_tank && !(m.aggro > 0.3) && tank_cover(), D = tank || character; // who the monster will be hitting
 	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
 	const their_dps = their_hit * (m.frequency || 1);
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
@@ -448,6 +448,8 @@ function hold_for_tank(t) {
 	if (!t || t.target) return false;
 	const tank = tank_cover();
 	if (!tank) return false;
+	const solo = G.monsters[t.mtype] && fight_math({ ...G.monsters[t.mtype], hp: t.max_hp || G.monsters[t.mtype].hp, attack: t.attack ?? G.monsters[t.mtype].attack }, false);
+	if (solo && safe_enough(solo, t.mtype)) return false; // safe without the tank: no reason to wait
 	if (tank_hold.id !== t.id) {
 		tank_hold.id = t.id; tank_hold.at = Date.now();
 		if (typeof send_cm === "function") Promise.resolve(send_cm([tank.name], { k: "tgt", id: t.id })).catch(() => {});
@@ -1131,7 +1133,7 @@ async function run_upgrade(a, row) {
 	const preview = await T(upgrade(k, find_slot(scroll, 0), null, true)); // last arg true = preview only: {chance}
 	if (!preview || !(preview.chance >= chance_floor(a.name, CFG.min_upgrade_chance, k, from))) throw { reason: "low_chance", chance: preview?.chance };
 	await wait_budget(1, RESERVE.errand);
-	const r = await T(upgrade(k, find_slot(scroll, 0)));
+	const r = await T(upgrade(k, find_slot(scroll, 0)), 60_000); // the server takes 500·L·√L ms (+7: ~9s, +9: 13.5s)
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	return r;
 }
@@ -1150,7 +1152,7 @@ async function run_compound(a, row, floor) {
 	const preview = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0), null, true));
 	if (!preview || !(preview.chance >= (floor ?? chance_floor(a.name, CFG.min_compound_chance)))) throw { reason: "low_chance", chance: preview?.chance };
 	await wait_budget(1, RESERVE.errand);
-	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)));
+	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)), 40_000); // the server takes 10s to combine
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	return r;
 }
@@ -2370,6 +2372,8 @@ function load_state() {
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
+	// v14.1: compounds/upgrades that took longer than 10s were reported as "timeout" and paused 6-24h: retry them
+	for (const k in state.gear_skip) if (/timeout/.test(skip_why[k] || "") && /^(cmp:|upg:|upgrade:|compound:)/.test(k)) delete state.gear_skip[k];
 	const off = now - (d.at || now);
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
@@ -2804,8 +2808,8 @@ function follower_tick() {
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
 	let t = L.target && parent.entities[L.target];
-	if (!(t && valid(t) && t.type === "monster")) t = choose_target(false);
 	const pos = partner_pos(L);
+	if (!(t && valid(t) && t.type === "monster")) t = choose_target(false) || follower_pick(pos);
 	let engaging = false;
 	if (t) {
 		if (get_targeted_monster() !== t) change_target(t);
@@ -2823,6 +2827,20 @@ function follower_tick() {
 		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
 		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);
 	}
+}
+// Follower with nothing to hit (the leader one-shots its targets, e.g. goos): take our own monster of the leader's
+// pack type within wait_radius of the leader. Followers don't run pick_pack, so its safety is checked here (30s cache).
+function follower_pick(pos) {
+	const mt = state.pack?.mtype;
+	if (!mt || pos.map !== character.map) return null;
+	if (Date.now() - (state.fsafe_at || 0) > 30_000 || state.fsafe_mt !== mt) {
+		const f = fight_profile(mt);
+		if (f) state.safe[mt] = f; else delete state.safe[mt];
+		state.fsafe_at = Date.now(); state.fsafe_mt = mt;
+	}
+	if (!state.safe[mt]) return null;
+	const e = choose_target(true);
+	return e && e.mtype === mt && Math.hypot(e.x - pos.x, e.y - pos.y) <= CFG.party.wait_radius ? e : null;
 }
 // Follower whose leader is dead: grind whatever it can SOLO near where it is (wait_radius), drift back when idle.
 // Solo safety: partner_near() is null while the partner is dead, so fight_math leaves out its damage and heals.
