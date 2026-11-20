@@ -7,7 +7,8 @@
 //   2. HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at recover_hp/recover_mp.
 //   3. park() was called → finish the current errand, stand in town until resume().
 //   4. Town run, when something is due: Daisy (hunt) → quest crafts (Cole etc.) → Progression Guide steps →
-//      compound spares → sell → potions → bank (→ compound sets the bank visit completed). Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
+//      compound spares → upgrade project → exchange → elixir → sell → potions → bank (→ compound sets the bank visit
+//      completed). With the merchant online, fighters go only at <= fighter_min_free slots / fighter_pot_min potions. Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
 //      and attackers are ignored. While another party member is in town, thresholds relax (sync_factor) to share the trip.
 //   5. Party follower → stay with the leader, close in on and hit its target (within wait_radius of the leader),
 //      heal (priests), energize the lowest-mana member (mages); if the leader is dead, solo-grind
@@ -20,7 +21,10 @@
 //   In a party the leader merges every member's weighted goal list: a monster on 2+ lists whose goals finish within
 //   mutual_max_h wins (more members and quicker first); with no overlap, members take turn_min-minute turns.
 //   Safety (fight_math) follows the server's damage formula on live monster stats; nearby members' damage and a
-//   nearby priest's heals count only while they're near.
+//   nearby priest's heals count only while they're near. Tank first (CFG.party.tank_first): with a paladin/warrior
+//   near, the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's HP/armour.
+//   Class skills: priest heal/partyheal/curse/absorb, mage energize (lowest-mana member)/burst, paladin
+//   selfheal/smash/mshield, ranger mark/supershot.
 //
 // Bags — every item is KEEP, SELL or BANK; acted on when free slots drop below bag_min_free:
 //   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, the copies the guide's current steps use, materials of
@@ -40,6 +44,16 @@
 //   worn, locked, titled, guide-needed or a member's upgrade) are compounded on town runs up to +compound_max_level,
 //   when the server's preview clears compound_min_chance. Bank copies are fetched to complete a set.
 //
+// Upgrades (CFG.upgrade_auto): one project at a time: the NPC-sold piece whose upgraded copy (up to +7, scroll0/1
+//   levels) beats a member's worn piece by the most per gold, bought and upgraded step by step behind the server's
+//   preview. Elixirs (elixir_auto): keep the elixir slot filled (owned, else Liquid Luck when rich). Exchange
+//   (exchange_auto): boxes/gems/candies opened once the bags hold a full set.
+//
+// Merchant (CFG.merchant, a merchant-class character): not a party member. It carries potions to fighters low on
+//   potions or bag space, collects their bankable/sellable items, casts mluck (level 40+), fetches bank upgrades for
+//   them, and runs the town work (sell, bank, compound, upgrade projects, exchange). The richest near fighter keeps
+//   its gold at CFG.merchant.float.
+//
 // Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
@@ -55,7 +69,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "13.2";
+const VERSION = "14.0";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -116,6 +130,23 @@ const CFG = {
 	compound_min_chance_rebuyable: 0.6, // ...or >= 60% when an NPC sells the item (failure only costs gold)
 	compound_per_run: 6,       // compounds per town run at most
 	gear_tank_mult: 2,
+	// Own upgrading (upgrade_auto): one project at a time: an NPC-sold piece, upgraded (spare copies only, never worn
+	// gear) to the level where it beats what a member wears by the most per gold. Each step is gated by the server's
+	// preview (min_chance_rebuyable: a failure only costs gold); at low odds the project stops at the level reached.
+	upgrade_auto: true,
+	upgrade_max_level: 7,      // target at most +7, and only levels that take scroll0/scroll1 (scroll2 costs ~1.6M)
+	upgrade_spend: 0.2,        // a project may cost at most 20% of the gold above gold_reserve (estimate without failures)
+	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
+	upgrade_steps_per_run: 8,  // upgrade steps per town run
+	// Elixirs (elixir_auto): keep the elixir slot filled with the best one owned (bags, then bank; elixirs with a
+	// withdrawal effect are skipped). None owned and gold >= elixir_buy_min_gold → buy elixir_buy. Lost on death.
+	elixir_auto: true,
+	elixir_buy: "elixirluck",  // Liquid Luck: 240k for 12h of +16 luck (the only elixir an NPC sells)
+	elixir_buy_min_gold: 5_000_000,
+	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
+	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
+	exchange_auto: true,
+	exchange_skip: [],         // item names never exchanged
 	// --- town / Progression Guide ------------------------------------------------------------------------------------
 	gear: true,                // execute Progression Guide steps (upgrade, equip, craft, ...); false = only read it
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
@@ -155,6 +186,20 @@ const CFG = {
 	                           //   only a few rows at a time, so a quest can scroll out of view and back)
 	auto_monster_hunt: true,   // take and turn in Daisy's monster hunts, and farm the hunt target when safe
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
+	// --- merchant (same script; a merchant-class character named here works for the party instead of fighting) ---------
+	merchant: {
+		name: "DoWhatNow",
+		serve_free: 12,        // visit a fighter with fewer free bag slots than this...
+		serve_pots: 80,        // ...or fewer potions of either kind than this
+		pot_carry: 400,        // potions of each kind taken out per trip (configured tier, or the cheap one if gold is short)
+		self_pots: 20,         // potions of each kind the merchant keeps for itself
+		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
+		trip_gap_ms: 120_000,  // at most one trip every 2 min
+		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
+		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
+		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
+		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
+	},
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
 	party: {
 		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9); [] = solo
@@ -162,7 +207,12 @@ const CFG = {
 		follow: 90,            // px; followers stay within this of the leader (close enough to heal, not in its way)
 		follow_far: 500,       // px; farther than this (or another map) → path-find to the leader instead of stepping
 		heal_at: 0.75,         // priests heal any member below 75% HP
-		heal_bonus: 2.5,       // leader's safety allowance × 2.5 while a priest partner is near (its heals offset damage)
+		heal_bonus: 2.5,
+		// Tank first: with a tank (CFG.gear_tank) near, the others hold fire on an untouched monster for up to
+		// tank_hold_ms so the tank takes its aggro; risk is then judged against the tank's HP and armour, so the party
+		// can take spots the leader couldn't survive alone. Not for aggressive monsters (G.monsters[].aggro > 0.3).
+		tank_first: true,
+		tank_hold_ms: 4000,       // leader's safety allowance × 2.5 while a priest partner is near (its heals offset damage)
 		wait_radius: 300,      // px; a follower whose leader is dead solo-grinds safe monsters within this radius
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
@@ -235,6 +285,8 @@ const state = {
 	bank_gear: [],           // gear seen in the bank at the last visit: [{ name, level, p, stat_type }] (saved, max 400)
 	guide_equip: {},         // slot -> when the guide last equipped it (gear_guide_respect_h) (saved)
 	gear_sent: {},           // "name:level>member" -> when we last tried to hand it over (retry after 10 min)
+	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
+	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
 	qprog: null, gprog: null, // stall watch for quest materials / guide farm rows: { key, have, t } (saved)
 	partners: {},            // party member name -> its last heartbeat + t (when received)
@@ -361,7 +413,8 @@ function fight_math(m) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const their_hit = (m.attack || 0) * dm(((theirs_magic ? character.resistance : character.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
+	const tank = !(m.aggro > 0.3) && tank_cover(), D = tank || character; // who the monster will be hitting
+	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
 	const their_dps = their_hit * (m.frequency || 1);
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0); // heal per s
@@ -377,11 +430,30 @@ function fight_math(m) {
 		// returns dreturn % of each physical hit to attackers with range < 75 (melee)
 	const chase = m.charge || m.speed || 0; // targeted monsters move at charge speed
 	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
-	return { ttk, xp: m.xp, their_dps, self_dps, kiteable };
+	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= character.max_hp * CFG.safety * (state.danger[mtype] || 1) *
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * (state.danger[mtype] || 1) *
 	(partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+// A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
+function tank_cover() {
+	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
+	return partners_near(300).find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp &&
+		Number.isFinite(p.armor) && p.v === VERSION) || null;
+}
+// Hold fire on an untouched monster while the tank engages it (tells the tank the target right away, not at the
+// next heartbeat). Gives up after tank_hold_ms, so a tank that doesn't come can't stall us.
+const tank_hold = { id: null, at: 0 };
+function hold_for_tank(t) {
+	if (!t || t.target) return false;
+	const tank = tank_cover();
+	if (!tank) return false;
+	if (tank_hold.id !== t.id) {
+		tank_hold.id = t.id; tank_hold.at = Date.now();
+		if (typeof send_cm === "function") Promise.resolve(send_cm([tank.name], { k: "tgt", id: t.id })).catch(() => {});
+	}
+	return Date.now() - tank_hold.at < CFG.party.tank_hold_ms;
+}
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
 	const f = fight_math(G.monsters[mtype]);
@@ -541,8 +613,22 @@ function end_session() {
 }
 // Every second: count xp toward the current pack's measurement while we're there (300px slack) and not walking or on
 // an errand. A measurement closes after 2 × measure_min_s so the picker keeps getting fresh numbers.
+// Per-hour rates over the last hour (report, heartbeat): a sample of cumulative xp and gold every minute
+const stats = { xp: 0, samples: [] };
+setInterval(() => {
+	stats.samples.push({ t: Date.now(), xp: stats.xp, gold: character.gold });
+	if (stats.samples.length > 61) stats.samples.shift();
+}, 60_000);
+function rates() {
+	const a = stats.samples[0], now = Date.now();
+	if (!a || now - a.t < 120_000) return null; // under 2 minutes of data
+	const h = (now - a.t) / 3600_000;
+	return { xph: Math.round((stats.xp - a.xp) / h), gph: Math.round((character.gold - a.gold) / h), mins: Math.round(h * 60) };
+}
+const fmt_k = (n) => (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.abs(n) >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
 setInterval(() => {
 	const d = xp_delta(), p = state.pack;
+	stats.xp += d;
 	if (!p || character.rip) return;
 	const here = character.map === p.map && in_boundary(p.boundary, 300);
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
@@ -696,16 +782,35 @@ function class_skills(t) {
 			break;
 		case "priest":
 			if (party_heal()) return true; // heal shares the attack cooldown
+			// absorb: pull every monster on a squishy member (not the tank) below 70% HP onto us, while we're healthy
+			if (can_use("absorb") && character.hp > character.max_hp * 0.6) {
+				const ents = Object.values(parent.entities || {});
+				const victim = others().map((n) => parent.entities?.[n]).find((e) => e && !e.rip && valid(e) &&
+					!CFG.gear_tank.includes(e.ctype) && e.hp < e.max_hp * 0.7 && distance(character, e) < (G.skills.absorb?.range || 240) &&
+					ents.some((m) => m.type === "monster" && m.target === e.name));
+				if (victim) fire("absorb", victim);
+			}
 			if (!t.s?.cursed && can_use("curse")) fire("curse", t);
 			break;
-		case "paladin":
+		case "paladin": {
+			// mana shield: below 50% HP with MP to spare, damage comes out of MP (1.5 dmg per MP until 200 MP left);
+			// off again once HP is back or MP runs low (smash/selfheal need it)
+			const ms = !!character.s?.mshield;
+			if (G.skills.mshield && can_use("mshield") && (ms ? character.mp < 250 || character.hp > character.max_hp * 0.85
+				: character.hp < character.max_hp * 0.5 && character.mp > 400)) fire("mshield");
 			if (character.hp < character.max_hp * 0.5 && can_use("selfheal")) fire("selfheal");
 			else if (t.hp > character.attack * 2 && can_use("smash")) fire("smash", t);
 			break;
+		}
 		case "warrior":
 			if (!character.s.warcry && can_use("warcry")) fire("warcry");
 			break;
 		case "mage": {
+			// burst: all MP as one hit (MP × ratio, 6s cooldown) on a target that can soak most of it, when we're nearly
+			// full and carry MP potions to refill
+			const ratio = G.skills.burst?.ratio || 0.555;
+			if (G.skills.burst && can_use("burst") && character.mp >= character.max_mp * 0.9 && t.hp >= character.mp * ratio * 0.6 &&
+				pot_count("mp") >= CFG.pot_min) return fire("burst", t), true;
 			if (!can_use("energize")) break;
 			// the party member lowest on mana (below 40%) within range, else ourselves below 50%. A priest's heals run
 			// on mana, so in a party this mostly keeps the healer going.
@@ -726,6 +831,7 @@ function fight(t, steer = true) {
 	if (get_targeted_monster() !== t) change_target(t);
 	if (steer && !walking() && !kite(t) && !errand_busy()) approach(t);
 	else if (!steer && !walking()) kite(t);
+	if (hold_for_tank(t)) { if (character.ctype === "priest") party_heal(); return; }
 	if (!class_skills(t) && can_attack(t)) fire("attack", t);
 }
 // Potions of any tier: the game's use_hp/use_mp drink the last bag item that gives hp/mp, whatever its name
@@ -861,8 +967,9 @@ const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m) => gear
 function bank_upgrades() {
 	if (!CFG.gear_auto || !CFG.bank) return [];
 	const g = my_gear(), by = {};
+	const takers = is_merchant() ? gear_takers().slice(1) : []; // the merchant fetches fighters' upgrades and delivers them
 	for (const it of state.bank_gear || []) {
-		const r = gear_gain(it, character.ctype, g);
+		const r = gear_gain(it, character.ctype, g) || takers.map((m) => gear_gain(it, m.ctype, m.g)).find(Boolean);
 		if (r && (!by[r.slot] || r.gain > by[r.slot].gain)) by[r.slot] = { name: it.name, level: it.level, key: `gear:${it.name}:${it.level}`, gain: r.gain };
 	}
 	// rings/earrings: the two slots may pick the same bank piece; fetching it twice is harmless (the second fails)
@@ -890,7 +997,7 @@ async function equip_upgrades() {
 // Hand a bag spare to a nearby member it's an upgrade for (one item per call). Items that are upgrades for us stay;
 // locked/bound items and copies the guide needs are never sent.
 async function share_gear() {
-	if (!CFG.gear_auto || !in_party_cfg() || gear_busy || character.rip || typeof send_item !== "function") return false;
+	if (!CFG.gear_auto || !(in_party_cfg() || is_merchant()) || gear_busy || character.rip || typeof send_item !== "function") return false;
 	const near = new Set(partners_near(CFG.gear_share_range).map((p) => p.name));
 	const takers = gear_takers().slice(1).filter((m) => near.has(m.name) && (m.esize ?? 1) > 0), now = Date.now();
 	if (!takers.length) return false;
@@ -915,7 +1022,7 @@ async function share_gear() {
 	}
 	return false;
 }
-setInterval(() => { equip_upgrades().then((did) => did || share_gear()).catch(() => {}); }, 5_000);
+setInterval(() => { equip_upgrades().then((did) => did || drink_elixir()).then((did) => did || share_gear()).catch(() => {}); }, 5_000);
 // A computer (or supercomputer) in the bags lets shop/upgrade/compound/craft/exchange work from anywhere
 const has_computer = () => character.items.some((i) => i && (i.name === "computer" || i.name === "supercomputer"));
 // First unlocked bag slot holding name at exactly this upgrade level (-1 if none); find_slots: n of them or null
@@ -999,7 +1106,7 @@ const upgrade_scroll = (name, level) => "scroll" + Math.max(0, item_grade({ name
 // One upgrade step from a guide row. If the exact input isn't owned (a "develop" step), take the best spare below
 // the target (or buy a +0) and upgrade it one level. Gated by the server's own success preview and chance_floor().
 async function run_upgrade(a, row) {
-	let from = input_level(a, row), scroll = a.scroll;
+	let from = input_level(a, row), scroll = a.scroll || upgrade_scroll(a.name, from);
 	const target = row?.request?.name === a.name && row.request.level ? row.request.level : from + 1;
 	let ks = input_slots(a, from, 1);
 	if (!ks) {
@@ -1117,6 +1224,147 @@ async function task_compound() {
 	return n;
 }
 
+// ---- Own upgrading (CFG.upgrade_auto) ----
+// Highest level ≤ upgrade_max_level reachable with scroll0/scroll1 (0 = none)
+function upgrade_target(name) {
+	let to = 0;
+	for (let l = 1; l <= CFG.upgrade_max_level; l++) {
+		const sc = upgrade_scroll(name, l - 1);
+		if (sc === "scroll2" || !G.items[sc]) break;
+		to = l;
+	}
+	return to;
+}
+// Gold for a +0 copy and the scrolls up to `to` (no failures counted)
+function upgrade_cost(name, to) {
+	let c = G.items[name]?.g || 0;
+	for (let l = 0; l < to; l++) c += G.items[upgrade_scroll(name, l)]?.g || 1e9;
+	return c;
+}
+const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
+// Best project: the NPC-sold piece whose upgraded copy beats a member's worn piece by the most points per gold
+function pick_upgrade() {
+	const budget = (character.gold - CFG.gold_reserve) * CFG.upgrade_spend;
+	if (!CFG.upgrade_auto || budget <= 0) return null;
+	const takers = gear_takers().filter((m) => m.ctype !== "merchant");
+	let best = null;
+	for (const name in G.items) {
+		const def = G.items[name];
+		if (!def.upgrade || !GEAR.has(def.type) || def.cash || skipped("upg:" + name) || CFG.quest_craft_skip.includes(name)) continue;
+		const to = upgrade_target(name);
+		if (!to) continue;
+		const cost = upgrade_cost(name, to);
+		if (cost > budget) continue;
+		if (best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to)) continue;
+		for (const m of takers) {
+			const r = gear_gain({ name, level: to }, m.ctype, m.g);
+			if (!r) continue;
+			const v = r.gain / cost;
+			if (!best || v > best.v) best = { name, to, for: m.name, slot: r.slot, gain: Math.round(r.gain), cost, v };
+		}
+	}
+	return best && shop_for(best.name) ? best : null; // shop_for is the slow check: only for the winner
+}
+// Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
+function upgrade_due() {
+	if (!CFG.upgrade_auto || merchant_does_it()) return false;
+	const now = Date.now();
+	if (!state.upg && now - (state.upg_pick_at || 0) > 600_000) {
+		state.upg_pick_at = now;
+		state.upg = pick_upgrade();
+		if (state.upg) game_log(`upgrade project: ${state.upg.name} → +${state.upg.to} for ${state.upg.for}'s ${state.upg.slot} (+${state.upg.gain} pts, ~${Math.round(state.upg.cost / 1000)}k)`, C.info);
+	}
+	return !!state.upg && !skipped("upg:" + state.upg.name) && best_level_held(state.upg.name) < state.upg.to;
+}
+async function task_upgrade() {
+	let n = 0;
+	for (let i = 0; i < CFG.upgrade_steps_per_run; i++) {
+		const P = state.upg;
+		if (!P) break;
+		const top = best_level_held(P.name);
+		if (top >= P.to) {
+			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
+			state.upg = null;
+			break;
+		}
+		if (P.spent_from === undefined) P.spent_from = character.gold;
+		if (P.spent_from - character.gold > P.cost * CFG.upgrade_abort_x) {
+			skip("upg:" + P.name, 24 * 3600_000, "over budget");
+			game_log(`upgrade ${P.name}: failures pushed the cost past ${CFG.upgrade_abort_x}x the estimate; stopped${top >= 1 ? ` at +${top}` : ""}`, C.bad);
+			state.upg = null;
+			break;
+		}
+		try {
+			await run_upgrade({ name: P.name }, { request: { name: P.name, level: P.to } });
+			n++;
+		} catch (e) {
+			skip("upg:" + P.name, 24 * 3600_000, why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
+			game_log(`upgrade ${P.name}: ${why(e)}; project stopped${top >= 1 ? ` at +${top}` : ""}`, C.dim);
+			state.upg = null; // the copy reached so far is free again (equip/share judge it)
+			break;
+		}
+	}
+	return n;
+}
+// ---- Elixirs (CFG.elixir_auto) ----
+const elixir_active = () => { const e = character.slots?.elixir; return !!e && !(e.expires && Date.parse(e.expires) <= Date.now()); };
+const elixir_ok = (name) => { const d = G.items[name]; return !!d && d.type === "elixir" && !!d.duration && !d.withdrawal; };
+function best_elixir() {
+	let best = null;
+	character.items.forEach((it, k) => {
+		if (!it || it.l || !elixir_ok(it.name)) return;
+		const sc = gear_score({ name: it.name, level: 0 });
+		if (!best || sc > best.score) best = { k, name: it.name, score: sc };
+	});
+	return best;
+}
+const bank_elixir = () => (state.bank_gear || []).filter((i) => elixir_ok(i.name))
+	.sort((a, b) => gear_score({ name: b.name }) - gear_score({ name: a.name }))[0] || null;
+const elixir_buy_due = () => CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && !bank_elixir() &&
+	character.gold >= CFG.elixir_buy_min_gold && !!G.items[CFG.elixir_buy] && !skipped("town:elixir");
+async function drink_elixir() {
+	if (!CFG.elixir_auto || character.ctype === "merchant" || character.rip || elixir_active()) return false;
+	const b = best_elixir();
+	if (!b || !can_spend(EMIT_COST.equip, RESERVE.errand)) return false;
+	await T(equip(b.k)).then(() => game_log(`elixir: drank ${b.name}`, C.ok)).catch((e) => game_log(`elixir ${b.name}: ${why(e)}`, C.dim));
+	return true;
+}
+async function task_elixir() {
+	await buy_from_npc(CFG.elixir_buy, 1);
+	await until(() => !!best_elixir(), 3000);
+	return (await drink_elixir()) ? 1 : 0;
+}
+// ---- Exchange (CFG.exchange_auto) ----
+function exchange_pick(needed = needed_slots()) {
+	if (!CFG.exchange_auto || character.esize < 2) return -1;
+	return character.items.findIndex((it, k) => {
+		const d = it && G.items[it.name];
+		return !!d?.e && (it.q || 1) >= d.e && !it.l && !needed.has(k) && !CFG.keep.includes(it.name) &&
+			!CFG.exchange_skip.includes(it.name) && d.type !== "token" && !skipped("exch:" + it.name);
+	});
+}
+async function task_exchange() {
+	let n = 0;
+	for (let i = 0; i < 20; i++) {
+		const k = exchange_pick();
+		if (k < 0) break;
+		const it = character.items[k];
+		try {
+			await go_exchange({ name: it.name });
+			const k2 = find_slot(it.name, it.level || 0);
+			if (k2 < 0) break;
+			await wait_budget(1, RESERVE.errand);
+			const r = await T(exchange(k2), 30_000); // the exchange roll takes several seconds
+			n++;
+			game_log(`exchange ${it.name} → ${r?.reward || "?"}`, C.ok);
+		} catch (e) {
+			skip("exch:" + it.name, 6 * 3600_000, why(e));
+			game_log(`exchange ${it.name}: ${why(e)}; retrying in 6h`, C.dim);
+		}
+	}
+	return n;
+}
+
 // =====================================================================
 // Bags: keep / sell / bank
 // =====================================================================
@@ -1154,6 +1402,8 @@ function bag_plan() {
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
 	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
+	const bx = CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && bank_elixir();
+	if (bx) fetch.push({ name: bx.name, key: "elixir:" + bx.name });
 	for (const u of [...bank_upgrades(), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > 2 * 3600_000) fetch.push(u);
 	return { sell, bank, fetch, free: character.esize };
@@ -1195,7 +1445,7 @@ function remember_bank() {
 	const gear = [];
 	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i) {
 		seen[i.name] = (seen[i.name] || 0) + (i.q || 1);
-		if (GEAR.has(G.items[i.name]?.type) && gear.length < 400) gear.push({ name: i.name, level: i.level || 0, p: i.p, stat_type: i.stat_type });
+		if ((GEAR.has(G.items[i.name]?.type) || G.items[i.name]?.type === "elixir") && gear.length < 400) gear.push({ name: i.name, level: i.level || 0, p: i.p, stat_type: i.stat_type });
 	}
 	state.bank_seen = seen;
 	state.bank_gear = gear;
@@ -1276,12 +1526,12 @@ async function task_bank(fetch_names) {
 // potion if that half covers the full refill, else the cheap tier (hpot0/mpot0, 20g instead of 100g) — so a new,
 // poor character still gets potions. May dip into gold_reserve (potions are what it's for).
 const CHEAP_POT = { hp: "hpot0", mp: "mpot0" };
-async function task_restock(pot_min = CFG.pot_min) {
+async function task_restock(pot_min = CFG.pot_min, pot_buy = CFG.pot_buy) {
 	if (pot_count("hp") >= pot_min && pot_count("mp") >= pot_min) return 0;
 	if (!has_computer()) await go("potions");
 	let n = 0;
 	for (const [kind, best] of [["hp", CFG.hp_pot], ["mp", CFG.mp_pot]]) {
-		const want = CFG.pot_buy - pot_count(kind);
+		const want = pot_buy - pot_count(kind);
 		if (want <= 0) continue;
 		const budget = character.gold / (kind === "hp" ? 2 : 1); // hp first takes up to half; mp gets what's left
 		const p = budget >= want * (G.items[best].g || 1) ? best : CHEAP_POT[kind];
@@ -1691,6 +1941,8 @@ function compute_needs(prog) {
 // Recomputed on each call (cheap: one pass over 42 slots); bag_plan() computes it once and passes it down
 function needed_slots() {
 	const keep = new Set(), by = {};
+	const P = state.upg; // the upgrade project's copies below its target stay put (not equipped/sent/banked/compounded)
+	if (P) character.items.forEach((i, k) => { if (i && i.name === P.name && (i.level || 0) < P.to) keep.add(k); });
 	character.items.forEach((i, k) => { if (i && state.needs.has(i.name)) (by[i.name] = by[i.name] || []).push(k); });
 	for (const n in by) {
 		if (G.items[n]?.s) { by[n].forEach((k) => keep.add(k)); continue; }
@@ -1915,7 +2167,7 @@ async function guide_step(row) {
 let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated at most every 10 min)
 // The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed — never derive "what's due" from
 // its truthy keys: the numeric fields would make a town run permanently due.
-const TOWN_TASKS = ["hunt", "craft", "guide", "compound", "sell", "restock", "bank"];
+const TOWN_TASKS = ["hunt", "craft", "guide", "compound", "upgrade", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
 // restock potions below pot_min × sync_factor
@@ -1923,8 +2175,9 @@ const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // sell_batch junk items pile up); bank also when needed items wait in the bank.
 function town_due(relaxed = false) {
 	const plan = bag_plan();
-	const min_free = relaxed ? CFG.bag_min_free * CFG.party.sync_factor : CFG.bag_min_free;
-	const pot_min = relaxed ? CFG.pot_min * CFG.party.sync_factor : CFG.pot_min;
+	let min_free = relaxed ? CFG.bag_min_free * CFG.party.sync_factor : CFG.bag_min_free;
+	let pot_min = relaxed ? CFG.pot_min * CFG.party.sync_factor : CFG.pot_min;
+	if (merchant_hb()) { min_free = Math.min(min_free, CFG.merchant.fighter_min_free); pot_min = Math.min(pot_min, CFG.merchant.fighter_pot_min); }
 	const short = plan.free < min_free;
 	if (plan.free === 0 && !plan.sell.length && !plan.bank.length && Date.now() - bags_warned > 600_000) {
 		bags_warned = Date.now();
@@ -1934,6 +2187,9 @@ function town_due(relaxed = false) {
 		hunt: hunt_due(),
 		craft: !!next_quest_craft(),
 		compound: compound_groups().some((g) => g.bags.length >= 3),
+		upgrade: upgrade_due(),
+		exchange: exchange_pick() >= 0,
+		elixir: elixir_buy_due(),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch)),
 		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
@@ -1970,6 +2226,9 @@ function town_run(due) {
 		}
 		guide_refresh(); // needs may have changed (crafted, upgraded) before deciding what to bank
 		if (due.compound || compound_groups().some((g) => g.bags.length >= 3)) did += (await step("compound", task_compound)) || 0;
+		if (upgrade_due()) did += (await step("upgrade", task_upgrade)) || 0;
+		if (exchange_pick() >= 0) did += (await step("exchange", task_exchange)) || 0;
+		if (elixir_buy_due()) did += await bag_step("elixir", task_elixir);
 		// Still in the bank after the guide's retrieves: store/fetch now, before walking anywhere else
 		let banked = false;
 		if (CFG.bank && on_bank_floor() && !skipped("town:bank")) {
@@ -2085,7 +2344,7 @@ function save_state() {
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
-		bank_gear: state.bank_gear, guide_equip: state.guide_equip,
+		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2107,6 +2366,7 @@ function load_state() {
 	Object.assign(state.fetch_try, d.fetch_try || {});
 	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
+	if (d.upg?.name) state.upg = d.upg;
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -2157,6 +2417,25 @@ function report() {
 		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
 		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
 		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""} | bank upgrades: ${bank_upgrades().map((u) => u.name + "+" + u.level).join(", ") || "none"} | for party: ${held_for.join(", ") || "none"}`);
+	}
+	{
+		const r = rates(), pr = partners().filter((x) => x.rates).map((x) => `${x.name} ${fmt_k(x.rates.xph)} xp/h ${fmt_k(x.rates.gph)} g/h`);
+		L(`rates (last ${r ? r.mins : 0} min): us ${r ? `${fmt_k(r.xph)} xp/h, ${fmt_k(r.gph)} gold/h` : "collecting"}${pr.length ? " | " + pr.join(" | ") : ""}`);
+	}
+	if (is_merchant()) {
+		const f = merchant_job();
+		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
+	} else if (CFG.merchant?.name) {
+		const M = merchant_hb();
+		L(`merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
+	}
+	if (CFG.upgrade_auto) {
+		const P = state.upg;
+		L(`upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})` : merchant_does_it() ? "left to the merchant" : "no project"}`);
+	}
+	if (CFG.elixir_auto && character.ctype !== "merchant") {
+		const e = character.slots?.elixir;
+		L(`elixir: ${elixir_active() ? `${e.name}${e.expires ? ` until ${new Date(e.expires).toLocaleTimeString()}` : ""}` : best_elixir() ? "about to drink " + best_elixir().name : bank_elixir() ? "fetching " + bank_elixir().name + " from the bank" : character.gold >= CFG.elixir_buy_min_gold ? "buying " + CFG.elixir_buy : `none (buys ${CFG.elixir_buy} at ${fmt_k(CFG.elixir_buy_min_gold)} gold)`}`);
 	}
 	if (CFG.compound_auto) {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
@@ -2279,13 +2558,21 @@ function heartbeat() {
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
 		party: Object.keys(get_party() || {}), // who we're in a game party with (invites use it)
 		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
+		armor: character.armor, resistance: character.resistance, // tank_first fight model
+		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), // merchant service, report
 		mp: character.mp, max_mp: character.max_mp,
 		want: state.directive && !state.directive.for_partner
 			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
 				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };
-	Promise.resolve(send_cm(others(), msg)).catch(() => {});
+	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
+	Promise.resolve(send_cm(to, msg)).catch(() => {});
 }
 if (typeof character.on === "function") character.on("cm", (m) => {
+	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
+		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
+		return;
+	}
+	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) return void (state.merchant = { ...m.message, name: m.name, t: Date.now() });
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;
 	const first = !fresh(state.partners[m.name]);
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
@@ -2341,6 +2628,128 @@ function party_invite_tick() {
 	}
 }
 setInterval(party_invite_tick, 10_000); // every 10s until everyone online is in
+
+// =====================================================================
+// Merchant (CFG.merchant). Not a party member: it never leads, fights or joins the game party. Fighters send it their
+// heartbeats; it sends "mhb" back (position, free slots, gold). It carries potions out to fighters running low or
+// short on bag space, collects their bankable/sellable items, casts mluck, and does the town work (sell, bank,
+// compound, upgrade projects, exchange) for everyone, so fighters rarely leave the pack.
+// =====================================================================
+const is_merchant = () => character.ctype === "merchant" && CFG.merchant?.name === character.name;
+const merchant_hb = () => (!is_merchant() && fresh(state.merchant) && state.merchant.name === CFG.merchant?.name ? state.merchant : null);
+// Upgrade projects: the merchant does them while it's online (fighters keep fighting)
+const merchant_does_it = () => !!merchant_hb();
+function merchant_beat() {
+	if (!is_merchant() || typeof send_cm !== "function") return;
+	const msg = { k: "mhb", v: VERSION, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip };
+	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
+}
+setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
+// The fighter most in need of a visit: fewest free slots, then fewest potions
+function merchant_job() {
+	const M = CFG.merchant;
+	const need = (p) => (p.esize ?? 99) < M.serve_free || (p.pots && (p.pots.hp < M.serve_pots || p.pots.mp < M.serve_pots));
+	return partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
+		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0] || null;
+}
+// Bag slot of a potion of this kind, preferring the configured tier, never the last self_pots
+function pot_slot(kind) {
+	let best = -1;
+	character.items.forEach((it, k) => {
+		const d = it && G.items[it.name];
+		if (!d || d.type !== "pot" || !(d.gives || []).some(([g, v]) => g === kind && v > 0)) return;
+		if (best < 0 || it.name === CFG[kind + "_pot"]) best = k;
+	});
+	return best;
+}
+async function give_pots(f) {
+	for (const kind of ["hp", "mp"]) {
+		const want = CFG.pot_buy - (f.pots?.[kind] ?? CFG.pot_buy);
+		const spare = pot_count(kind) - CFG.merchant.self_pots;
+		const k = pot_slot(kind);
+		if (want < 20 || spare <= 0 || k < 0) continue;
+		const q = Math.min(want, spare, character.items[k].q || 1);
+		await wait_budget(1, RESERVE.errand);
+		await T(send_item(f.name, k, q)).then(() => game_log(`merchant: ${q} ${character.items[k]?.name || kind + " pots"} → ${f.name}`, C.ok))
+			.catch((e) => game_log(`merchant: potions to ${f.name}: ${why(e)}`, C.dim));
+		if (f.pots) f.pots[kind] += q;
+	}
+}
+function mluck_near() {
+	if (!G.skills.mluck || !can_use("mluck")) return;
+	const ents = [character, ...others().map((n) => parent.entities?.[n])];
+	const e = ents.find((x) => x && !x.rip && (x === character || (valid(x) && distance(character, x) < CFG.merchant.mluck_range)) &&
+		!(x.s?.mluck && x.s.mluck.f === character.name && x.s.mluck.ms > 600_000)); // ours, with > 10 min left: fine
+	if (e) fire("mluck", e);
+}
+// One service trip: stock potions, walk to the fighter (it moves: re-aim up to 4 times), hand potions to every fighter
+// near, then wait for their items
+async function serve(f) {
+	state.serving = f.name;
+	try {
+		const M = CFG.merchant;
+		await task_restock(M.pot_carry, M.pot_carry + M.self_pots).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
+		for (let i = 0; i < 4; i++) {
+			const q = state.partners[f.name];
+			if (!fresh(q) || q.rip || q.errand === "town") return;
+			const pos = partner_pos(q);
+			if (pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) < 150) break;
+			await go({ map: pos.map, x: pos.x, y: pos.y });
+		}
+		for (const p of partners_near(350)) await give_pots(p);
+		const end = Date.now() + M.wait_ms;
+		while (Date.now() < end && character.esize > 2 && !character.rip) {
+			mluck_near();
+			const q = state.partners[f.name], pos = q && partner_pos(q);
+			if (pos && pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) > 200) move_to(pos.x, pos.y, 500);
+			await sleep_ms(1000);
+		}
+		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
+	} finally { state.serving = null; }
+}
+let merchant_trip_at = 0;
+function merchant_tick() {
+	const f = merchant_job();
+	set_message(`${errand_busy() ? state.errand + " | " : ""}merchant${f ? " → " + f.name : ""} | ${character.esize} free`);
+	if (walking() || errand_busy()) return;
+	mluck_near();
+	if (f && character.esize >= 8 && Date.now() - merchant_trip_at > CFG.merchant.trip_gap_ms) {
+		merchant_trip_at = Date.now();
+		return void errand("serve", () => serve(f));
+	}
+	// idle: wait near the town spawn (bank, shops and upgrade NPCs are close)
+	const home = G.maps.main?.spawns?.[0] || [0, 0];
+	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) travel({ map: "main", x: home[0], y: home[1] });
+}
+// Fighter side: with the merchant within 300px, hand it bankable/sellable items (one per 0.7s, never what a member
+// would wear) and, if we're the richest fighter near, top its gold up to the float
+let handoff_busy = false, merchant_gold_at = 0;
+async function merchant_handoff() {
+	const M = merchant_hb();
+	if (!M || handoff_busy || character.rip || M.rip || M.map !== character.map || typeof send_item !== "function") return;
+	const e = parent.entities?.[M.name], pos = e || M;
+	if (Math.hypot(pos.x - character.x, pos.y - character.y) > 300) return;
+	handoff_busy = true;
+	try {
+		const fighters = [{ name: character.name, gold: character.gold }, ...partners_near(400)];
+		const richest = fighters.sort((a, b) => (b.gold || 0) - (a.gold || 0))[0];
+		if (richest.name === character.name && M.gold < CFG.merchant.float && character.gold > CFG.merchant.float * 3 &&
+			Date.now() - merchant_gold_at > 1800_000 && typeof send_gold === "function") {
+			merchant_gold_at = Date.now();
+			const g = Math.round(CFG.merchant.float - M.gold);
+			await T(send_gold(M.name, g)).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
+		}
+		if ((M.esize ?? 0) <= 2) return;
+		const needed = needed_slots(), cmp = compound_slots(needed);
+		const k = character.items.findIndex((it) => it && ["bank", "sell"].includes(bag_class(it, needed, cmp)) && !gear_wanted_by(it));
+		if (k < 0 || !can_spend(1, RESERVE.errand)) return;
+		const it = character.items[k];
+		await T(send_item(M.name, k, it.q || 1)).then(() => { M.esize--; game_log(`merchant: gave ${it.name}${it.q > 1 ? " x" + it.q : ""}`, C.dim); })
+			.catch((er) => game_log(`merchant: giving ${it.name}: ${why(er)}`, C.dim));
+	} finally { handoff_busy = false; }
+}
+setInterval(() => { merchant_handoff().catch(() => {}); }, 700);
 
 // Gold balance (see CFG.party.gold): only the richest member acts, toward the poorest. The every_h window is one
 // party-wide clock (max of all members' last-transfer times, persisted), so a reload anywhere can't reset it.
@@ -2404,7 +2813,7 @@ function follower_tick() {
 		// leader; kiting (ranged, when the target is on us) takes precedence
 		if (!walking() && !errand_busy() && !kite(t) && distance(character, t) > standoff(t).reach &&
 			pos.map === character.map && Math.hypot(t.x - pos.x, t.y - pos.y) <= CFG.party.wait_radius) { approach(t); engaging = true; }
-		if (!class_skills(t) && can_attack(t)) fire("attack", t);
+		if (!hold_for_tank(t) && !class_skills(t) && can_attack(t)) fire("attack", t);
 	}
 	if (engaging || walking() || errand_busy()) return;
 	const d = pos.map === character.map ? Math.hypot(pos.x - character.x, pos.y - character.y) : Infinity;
@@ -2511,6 +2920,12 @@ function tick() {
 			state.dead_handled = false;
 			if (Date.now() - state.last_guide > CFG.guide_interval_ms) guide_refresh();
 			town_check();
+			if (is_merchant()) {
+				merchant_tick();
+				loot_chests();
+				setTimeout(tick, 250);
+				return;
+			}
 			if (is_follower()) {
 				follower_tick();
 				loot_chests();

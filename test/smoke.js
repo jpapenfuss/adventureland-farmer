@@ -1016,5 +1016,135 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(!cmp.includes("REAL") && vm.runInContext("skipped('cmp:ringx:1')", ctx), "low preview chance: group paused, no compound");
 	character.slots = {}; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);
+	// 49) upgrade project: pick the NPC piece that beats Torlis's worn helmet most per gold, upgrade a spare to target
+	ctx.G.items.scroll0 = { type: "uscroll", g: 1000 }; ctx.G.items.scroll1 = { type: "uscroll", g: 40000 };
+	ctx.G.items.nhelm = { type: "helmet", armor: 5, upgrade: { armor: 6 }, g: 2000 };
+	ctx.G.npcs.armorer = { items: ["nhelm"] };
+	const fn_save = ctx.find_npc; ctx.find_npc = () => ({ map: "main", x: 0, y: 0 });
+	Object.assign(character, { name: "Torlis", ...tor, gold: 5e6, rip: false });
+	character.slots = { helmet: { name: "helm1", level: 0 } }; character.items = Array(42).fill(null);
+	character.items[0] = { name: "computer" }; character.items[1] = { name: "scroll0", q: 20 }; character.items[2] = { name: "nhelm", level: 0 };
+	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null", ctx);
+	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
+	const to49 = vm.runInContext("state.upg.to", ctx);
+	assert(vm.runInContext("needed_slots().has(2)", ctx), "project copy protected (not equipped/sent/banked mid-project)");
+	const ups49 = [];
+	ctx.upgrade = (k, sk, off, preview) => {
+		if (preview) return Promise.resolve({ chance: 0.95 });
+		ups49.push(character.items[k].level || 0); character.items[k] = { name: "nhelm", level: (character.items[k].level || 0) + 1 };
+		return Promise.resolve({ success: true });
+	};
+	await vm.runInContext("task_upgrade()", ctx);
+	assert(character.items[2].level === Math.min(to49, 8) || ups49.length === 8, `upgraded step by step (${ups49} → +${character.items[2].level}, target +${to49})`);
+	if (character.items[2].level >= to49) { await vm.runInContext("task_upgrade()", ctx); assert(vm.runInContext("state.upg", ctx) === null, "project closed at target"); }
+	// low odds stop the project at the level reached and pause that item
+	vm.runInContext("state.upg = { name: 'nhelm', to: 9, for: 'Torlis', slot: 'helmet', gain: 10, cost: 1000 }", ctx);
+	character.items[2] = { name: "nhelm", level: 2 };
+	ctx.upgrade = (k, sk, off, preview) => Promise.resolve(preview ? { chance: 0.1 } : { success: true });
+	await vm.runInContext("task_upgrade()", ctx);
+	assert(vm.runInContext("state.upg === null && skipped('upg:nhelm')", ctx), "low preview: project stopped, item paused");
+	// with the merchant online, fighters leave projects to it
+	vm.runInContext("state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 0 }", ctx);
+	assert(!vm.runInContext("upgrade_due()", ctx), "fighter skips upgrade projects while the merchant is online");
+	vm.runInContext("state.merchant = null", ctx);
+	ctx.find_npc = fn_save;
+
+	// 50) elixir: drink the best owned (not a withdrawal one); none active → fetch from bank; buy when rich
+	ctx.G.items.elixirstr0 = { type: "elixir", str: 6, duration: 12 }; ctx.G.items.ale = { type: "elixir", str: 50, duration: 1, withdrawal: "hangover" };
+	ctx.G.items.elixirluck = { type: "elixir", luck: 16, duration: 12, g: 240000 };
+	ctx.G.classes.paladin.main_stat = "str";
+	character.items = Array(42).fill(null); character.items[3] = { name: "ale", q: 1 }; character.items[4] = { name: "elixirstr0", q: 2 };
+	character.slots = {};
+	const drank = [];
+	ctx.equip = (k, slot) => (drank.push(character.items[k].name), Promise.resolve());
+	await vm.runInContext("drink_elixir()", ctx);
+	assert(JSON.stringify(drank) === '["elixirstr0"]', `drinks the best non-withdrawal elixir (${drank})`);
+	character.slots = { elixir: { name: "elixirstr0", expires: new Date(Date.now() + 3600e3).toISOString() } }; drank.length = 0;
+	await vm.runInContext("drink_elixir()", ctx);
+	assert(!drank.length, "an active elixir isn't replaced");
+	character.slots = {}; character.items = Array(42).fill(null);
+	vm.runInContext("state.bank_gear = [{ name: 'elixirstr0', level: 0 }]; state.fetch_try = {}", ctx);
+	assert(/elixir:elixirstr0/.test(vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx)), "fetches an elixir from the bank when none is active");
+	vm.runInContext("state.bank_gear = []", ctx);
+	assert(vm.runInContext("elixir_buy_due()", ctx), "rich and none owned → buy Liquid Luck");
+	character.gold = 1e6;
+	assert(!vm.runInContext("elixir_buy_due()", ctx), "...not below elixir_buy_min_gold");
+
+	// 51) exchange: a full set of an exchangeable item, but never needed/kept ones
+	ctx.G.items.gem0 = { type: "gem", e: 1, s: true }; ctx.G.items.seashell = { type: "material", e: 20, s: true };
+	character.items[6] = { name: "seashell", q: 5 }; character.items[7] = { name: "gem0", q: 1 };
+	assert(vm.runInContext("exchange_pick()", ctx) === 7, "picks the full exchange set (gem0), not 5/20 seashells");
+	vm.runInContext("state.needs = new Map([['gem0', 1]])", ctx);
+	assert(vm.runInContext("exchange_pick()", ctx) === -1, "never exchanges what the guide/quests need");
+	vm.runInContext("state.needs = new Map()", ctx); character.items = Array(42).fill(null);
+
+	// 52) tank first: with Torlis near, Sanala holds fire on an untouched monster; risk is judged on Torlis's HP
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 48, hp: 900, max_hp: 900, mp: 500, max_mp: 1000, x: 0, y: 0, armor: 10, resistance: 10, rip: false, attack: 600, frequency: 1 });
+	vm.runInContext("state.partners = {}; live_cache.clear()", ctx);
+	hb("Torlis", { ...tor, x: 40, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000 });
+	ctx.G.monsters.brute = { xp: 900, hp: 4000, attack: 220, respawn: 10, range: 20, speed: 10, frequency: 1, aggro: 0 };
+	const with_tank = vm.runInContext("!!fight_profile('brute')", ctx);
+	vm.runInContext("CFG.party.tank_first = false", ctx);
+	const without = vm.runInContext("!!fight_profile('brute')", ctx);
+	vm.runInContext("CFG.party.tank_first = true", ctx);
+	assert(with_tank && !without, `a monster too strong for Sanala is fine with Torlis tanking (${with_tank}, ${without})`);
+	ctx.G.monsters.brute.aggro = 1;
+	assert(!vm.runInContext("!!fight_profile('brute')", ctx), "...but not an aggressive one (it may go for anyone)");
+	const tg = { id: "b1", type: "monster", mtype: "brute", visible: true, hp: 4000, max_hp: 4000, x: 100, y: 0, target: null };
+	ctx.parent.entities.b1 = tg;
+	const cms = []; ctx.send_cm = (to, m) => (cms.push([to.join(), m.k]), Promise.resolve());
+	assert(vm.runInContext("hold_for_tank(parent.entities.b1)", ctx) && JSON.stringify(cms) === '[["Torlis","tgt"]]', `holds fire and points Torlis at it (${JSON.stringify(cms)})`);
+	vm.runInContext("tank_hold.at -= CFG.party.tank_hold_ms + 1", ctx);
+	assert(!vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "gives up holding after tank_hold_ms");
+	tg.target = "Torlis";
+	assert(!vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "fires once the tank has it");
+	delete ctx.parent.entities.b1;
+	handlers.cm({ name: "Torlis", message: { k: "tgt", id: "zz" } });
+	assert(vm.runInContext("state.partners.Torlis.target", ctx) === "zz", "a tgt message updates that member's target at once");
+
+	// 53) class skills: burst at full MP on a big target; priest absorbs for a hurt non-tank; paladin mana shield
+	ctx.G.skills.burst = { ratio: 0.555 }; ctx.G.skills.absorb = { range: 240, mp: 200 }; ctx.G.skills.mshield = { mp: 0 };
+	used.length = 0;
+	character.mp = 1000; character.items[0] = { name: "mpot1", q: 100 };
+	vm.runInContext("class_skills({ hp: 5000, s: {} })", ctx);
+	assert(used.some(([s]) => s === "burst"), `mage bursts at full MP (${JSON.stringify(used)})`);
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", hp: 2500, max_hp: 2500, mp: 2000, max_mp: 2000 });
+	ctx.parent.entities.Sanala = { id: "Sanala", name: "Sanala", type: "character", ctype: "mage", visible: true, hp: 300, max_hp: 900, x: 30, y: 0 };
+	ctx.parent.entities.m53 = { id: "m53", type: "monster", mtype: "goo", visible: true, target: "Sanala", hp: 10, max_hp: 10, x: 40, y: 0 };
+	used.length = 0; ctx.heal = () => Promise.resolve();
+	vm.runInContext("CFG.party.heal_at = 0.2; class_skills({ hp: 10, s: { cursed: true } }); CFG.party.heal_at = 0.75", ctx);
+	assert(used.some(([s, tgt]) => s === "absorb" && tgt === "Sanala"), `priest absorbs the monsters on Sanala (${JSON.stringify(used)})`);
+	delete ctx.parent.entities.Sanala; delete ctx.parent.entities.m53;
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", hp: 300, max_hp: 1000, mp: 800, max_mp: 1000, s: {} });
+	used.length = 0;
+	vm.runInContext("class_skills({ hp: 10, s: {} })", ctx);
+	assert(used.some(([s]) => s === "mshield"), `paladin raises mana shield at low HP (${JSON.stringify(used)})`);
+	character.s = {}; character.items = Array(42).fill(null);
+
+	// 54) merchant: picks the neediest fighter, hands potions, keeps its own; fighters hand loot and top up its gold
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 5, hp: 500, max_hp: 500, mp: 100, max_mp: 100, x: 0, y: 0, map: "main", gold: 50000, rip: false, esize: 30 });
+	vm.runInContext("state.partners = {}", ctx);
+	hb("Torlis", { ...tor, x: 40, y: 0, esize: 20, pots: { hp: 150, mp: 150 } });
+	hb("Sanala", { ...san, x: 40, y: 0, esize: 5, pots: { hp: 150, mp: 150 } });
+	hb("Aspernari", { ...asp, x: 40, y: 0, esize: 30, pots: { hp: 10, mp: 190 } });
+	assert(vm.runInContext("is_merchant() && !in_party_cfg() && merchant_job().name", ctx) === "Sanala", "merchant serves the fighter with the fullest bags first");
+	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 100 }; character.items[1] = { name: "mpot1", q: 100 };
+	const gave = []; ctx.send_item = (to, k, q) => (gave.push([to, character.items[k].name, q]), Promise.resolve());
+	await vm.runInContext("give_pots(state.partners.Aspernari)", ctx);
+	assert(JSON.stringify(gave) === '[["Aspernari","hpot1",80]]', `hands potions, keeping self_pots (${JSON.stringify(gave)})`);
+	// fighter side
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", gold: 10e6, x: 0, y: 0 });
+	character.items = Array(42).fill(null); character.items[5] = { name: "gslime", q: 3 };
+	vm.runInContext("state.needs = new Map(); state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 50, y: 0, esize: 30, gold: 100 }; merchant_gold_at = 0", ctx);
+	hb("Torlis", { ...tor, x: 40, y: 0 }); hb("Sanala", { ...san, x: 40, y: 0 });
+	const golds = []; ctx.send_gold = (to, g) => (golds.push([to, g]), Promise.resolve());
+	gave.length = 0;
+	await vm.runInContext("merchant_handoff()", ctx);
+	assert(JSON.stringify(golds) === '[["DoWhatNow",999900]]' && gave.length === 1 && gave[0][1] === "gslime", `richest tops up the merchant and hands loot (${JSON.stringify(golds)} ${JSON.stringify(gave)})`);
+	assert(vm.runInContext("town_due().min_free", ctx) === 3, "fighters' own town threshold drops while the merchant is online");
+	vm.runInContext("state.merchant = null", ctx);
+	const rep_ok = (() => { try { vm.runInContext("report()", ctx); return true; } catch (e) { console.error(e); return false; } })();
+	assert(rep_ok, "report() runs with every new section");
+	character.items = Array(42).fill(null); character.slots = {};
 	console.log("ALL PASS");
 })();
