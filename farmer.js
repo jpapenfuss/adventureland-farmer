@@ -1,4 +1,4 @@
-const VERSION = "23.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -140,7 +140,6 @@ const CFG = {
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
 	guide_steps_per_run: 5,    // guide steps that need walking, per town run (steps done in place don't count)
 	town_min_gap_ms: 20_000,   // at least 20s between town runs
-	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
 	// v18.7 gold budget: optional spending (upgrade projects, guide buys/upgrades, compounds, crafting, Ponty, elixirs,
 	// donations) only while the party's spending over the last window_h stays under share × what it earned (loot,
 	// sales). Potions and other necessities are never held back, but they count as spending.
@@ -149,6 +148,7 @@ const CFG = {
 	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
 	hunt_min_xp: 0,
 	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
+	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
@@ -244,12 +244,12 @@ const CFG = {
 		follow: 90,            // px; followers stay within this of the leader (close enough to heal, not in its way)
 		follow_far: 500,       // px; farther than this (or another map) → path-find to the leader instead of stepping
 		heal_at: 0.75,         // priests heal any member below 75% HP
-		heal_bonus: 2.5,
+		heal_bonus: 2.5,       // safety allowance × 2.5 while a priest partner is near (its heals offset damage)
 		// Tank first: with a tank (CFG.gear_tank) near, the others hold fire on an untouched monster for up to
 		// tank_hold_ms so the tank takes its aggro; risk is then judged against the tank's HP and armour, so the party
 		// can take spots the leader couldn't survive alone. Not for aggressive monsters (G.monsters[].aggro > 0.3).
 		tank_first: true,
-		tank_hold_ms: 4000,       // leader's safety allowance × 2.5 while a priest partner is near (its heals offset damage)
+		tank_hold_ms: 4000,    // how long the others hold fire on an untouched monster for the tank
 		wait_radius: 300,      // px; a follower whose leader is dead solo-grinds safe monsters within this radius
 		// v20.0: kill xp is split equally among an account's fighters in the party (server: share by owner), so
 		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
@@ -671,6 +671,8 @@ function score_area(t, pack, area) {
 	const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
 	return { est, score: meas()[pack_key(area)] ?? est * state.realism };
 }
+// Split: a partner with an earlier name farms this spot (v23.2)
+const occupied = (key) => split_now() && partners().some((m) => m.name < character.name && m.pack && valid_boundary(m.pack.boundary) && pack_key(m.pack) === key);
 // Measured xp/s per spot, one table per mode (v23.1): a spot farmed by the whole party kills ~n times as fast as by one
 // fighter alone, so the two can't share a table. Split = farming alone; together = the party's rate.
 const meas = (split = split_now()) => (split ? state.measured_solo : state.measured);
@@ -804,8 +806,10 @@ function pick_pack() {
 		if (seen.has(key) || (state.cooldown[key] || 0) > now) return;
 		seen.add(key);
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
-		// split: a spot a partner is already farming scores lower, so we spread over different spots
-		if (split_now() && partners().some((m) => m.pack && pack_key(m.pack) === key)) p.score *= CFG.party.split.occupied_mult;
+		// split: a spot a partner is already farming scores lower, so we spread over different spots. Only partners with an
+		// earlier name count (v23.2), as for hunt/quest targets: the first keeps a spot, the rest move — counting everyone
+		// made two fighters on one spot both look elsewhere
+		if (occupied(key)) p.score *= CFG.party.split.occupied_mult;
 		if (!best || p.score > best.score) best = p;
 	});
 	state.last_pick = now;
@@ -840,7 +844,7 @@ function pick_pack() {
 	}
 	const cur = state.pack;
 	if (cur && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now) && best && pack_key(best) !== pack_key(cur)) {
-		if (best.score < (meas()[pack_key(cur)] ?? cur.score) * CFG.switch_margin) best = cur;
+		if (best.score < (meas()[pack_key(cur)] ?? cur.score) * (occupied(pack_key(cur)) ? CFG.party.split.occupied_mult : 1) * CFG.switch_margin) best = cur;
 	}
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
 	// split, nothing we can farm alone: follow the leader for a while (is_follower turns true until split_fallback)
@@ -1108,7 +1112,11 @@ function history_lines(hours = 6) {
 	const L = [`— history ${character.name} v${VERSION}, last ${hours}h (${ev.length} events) —`];
 	const tot = {};
 	const hrs = Object.keys(hist.buckets).map(Number).filter((k) => k + 3600_000 > from).sort((a, b) => b - a);
-	for (const k of hrs) for (const [c, n] of Object.entries(hist.buckets[k].time)) tot[c] = (tot[c] || 0) + n;
+	// v23.2: a bucket only partly inside the window counts for that part (history(1) used to sum up to 2 hours)
+	for (const k of hrs) {
+		const end = Math.min(k + 3600_000, now), frac = Math.max(0, end - Math.max(k, from)) / Math.max(1, end - k);
+		for (const [c, n] of Object.entries(hist.buckets[k].time)) tot[c] = (tot[c] || 0) + n * frac;
+	}
 	const T_ = sum_obj(tot) || 1;
 	L.push(`time: ${Object.entries(tot).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ${Math.round((n / T_) * 100)}%`).join(", ") || "no data yet"}`);
 	L.push("hour   xp      gold    kills deaths flees");
@@ -1209,6 +1217,12 @@ const gold_ok = (cost) => (cost || 0) <= gold_room() && (!is_merchant() || chara
 // so tokens/Ponty never buy a copy another character is already carrying (Sanala bought mparmor for Aspernari while
 // the merchant held two)
 const bag_gear_names = () => [...new Set(character.items.filter((i) => i && GEAR.has(G.items[i.name]?.type)).map((i) => i.name))].slice(0, 40);
+// gear name -> highest level in our bags (heartbeats; v23.2: upgrade projects skip pieces someone already has at the target)
+const bag_gear_levels = () => { const o = {}; for (const i of character.items) if (i && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); return o; };
+function party_holds_level(name, level) {
+	const M = state.merchant && fresh(state.merchant) ? [state.merchant] : [];
+	return [...partners_any(), ...M].some((p) => (p.bag_lv?.[name] ?? -1) >= level || Object.values(p.worn || {}).some((w) => w?.name === name && (w.level || 0) >= level));
+}
 function party_holds(name) {
 	if (held_any(name) > 0 || (state.bank_gear || []).some((i) => i.name === name)) return true;
 	const M = state.merchant && fresh(state.merchant) ? [state.merchant] : [];
@@ -1661,12 +1675,19 @@ function bank_upgrades() {
 	// the merchant fetches fighters' upgrades and delivers them; with no merchant online, fighters fetch each other's
 	// (share_gear hands them over when near)
 	const takers = is_merchant() || !merchant_recent() ? gear_takers().slice(1) : [];
+	// v23.2: the best piece per (member, slot) — keyed by slot alone, one member's chest upgrade hid every other's for
+	// the 2h fetch window. A piece that's best for two members is fetched once (share_gear gives it to the bigger gain).
 	for (const it of state.bank_gear || []) {
-		const r = (!equip_paused(it) && gear_gain(it, character.ctype, g)) || takers.map((m) => gear_gain(it, m.ctype, m.g)).find(Boolean);
-		if (r && (!by[r.slot] || r.gain > by[r.slot].gain)) by[r.slot] = { name: it.name, level: it.level, key: `gear:${it.name}:${it.level}`, gain: r.gain };
+		const own = !equip_paused(it) && gear_gain(it, character.ctype, g);
+		const cands = own ? [[character.name, own]] : takers.map((m) => [m.name, gear_gain(it, m.ctype, m.g)]).filter(([, r]) => r);
+		for (const [who, r] of cands) {
+			const k = `${who}:${r.slot}`;
+			if (!by[k] || r.gain > by[k].gain) by[k] = { name: it.name, level: it.level, key: `gear:${it.name}:${it.level}`, gain: r.gain };
+		}
 	}
-	// rings/earrings: the two slots may pick the same bank piece; fetching it twice is harmless (the second fails)
-	return Object.values(by);
+	// rings/earrings: the two slots may pick the same bank piece; the key dedupe fetches it once
+	const seen_k = new Set();
+	return Object.values(by).filter((u) => !seen_k.has(u.key) && seen_k.add(u.key));
 }
 // A piece the server refused to equip (level, class...) isn't tried, fetched or held for 6h
 const equip_paused = (it) => skipped(`equip:${it.name}:${it.level || 0}`);
@@ -2026,7 +2047,7 @@ async function task_compound() {
 			const item_verdict = ["low_chance", "not_combinable", "mismatch"].includes(why(e));
 			skip(g.key, item_verdict ? 6 * 3600_000 : 600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
 			town_reason.compound = `${g.name}+${g.level}: ${why(e)}`;
-			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
+			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in ${item_verdict ? "6h" : "10 min"}`, C.dim);
 		}
 	}
 	return n;
@@ -2075,7 +2096,8 @@ function pick_upgrade() {
 			if (!to) continue;
 			const cost = upgrade_cost(name, to);
 			if (cost > cap) continue;
-			if (best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to)) continue;
+			// a copy at the target level already exists: ours, the bank's, or (v23.2) in another member's bags or worn
+			if (best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to)) continue;
 			for (const m of takers) {
 				const r = gear_gain({ name, level: to }, m.ctype, m.g);
 				if (!r || (high && !H.slots.includes(r.slot))) continue;
@@ -2258,7 +2280,7 @@ async function task_exchange() {
 			log_ev("exchange", { item: it.name, reward: r?.reward || null });
 		} catch (e) {
 			skip("exch:" + it.name, pause_ms(e, 6 * 3600_000), why(e));
-			game_log(`exchange ${it.name}: ${why(e)}; retrying in 6h`, C.dim);
+			game_log(`exchange ${it.name}: ${why(e)}; retrying in ${TRANSIENT.has(why(e)) ? "10 min" : "6h"}`, C.dim);
 		}
 	}
 	return n;
@@ -4007,8 +4029,9 @@ function selftest_finish(R, others_, id) {
 // report(hours): own report at once; then one text box with every character's section once all replied or after 6s.
 // hours > 0 adds each character's history(hours). Non-repliers show their stored copy (saved every 5 min to browser
 // storage, shared by characters running in the same browser) or "no reply". party_report() re-opens the last one.
-let gather = null, last_party_report = null;
-const report_reply_at = {}; // requester -> last reply (one per 5s)
+const gathers = new Map(); // id -> a report/history/gear_check being collected (v23.2: several at once)
+let last_party_report = null;
+const report_reply_at = {}; // "requester:kind" -> last reply (one per 5s per kind: report() then history() both answer)
 const party_names_all = () => [...new Set([...(CFG.party.members || []), CFG.merchant?.name].filter(Boolean))];
 // report(): one window. In a party: the combined report (after every reply or 6s). Solo, or report("solo"): this
 // character's full report. Each character's history of the last CFG.report_history_h hours (1) comes with it
@@ -4024,29 +4047,30 @@ function report(hours = CFG.report_history_h) {
 // Ask every other character for its report or history; one window once all replied or after 6s
 function party_gather(kind, targets, hours, own) {
 	const id = `${Date.now()}:${character.name}`;
-	gather = { id, kind, hours, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: own } }, at: Date.now() };
+	gathers.set(id, { id, kind, hours, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: own } }, at: Date.now() });
 	Promise.resolve(send_cm(targets, { k: "rreq", id, hours, kind })).catch(() => {});
 	game_log(`${kind}: collecting from ${targets.join(", ")} (up to 6s)…`, C.info);
 	setTimeout(() => report_finish(id), 6000);
 	return `collecting ${kind} from ${targets.join(", ")}…`;
 }
 function report_reply(m) {
-	const from = m.name, now = Date.now();
-	if (now - (report_reply_at[from] || 0) < 5000) return;
-	report_reply_at[from] = now;
+	const from = m.name, now = Date.now(), rk = `${from}:${m.message.kind || "report"}`;
+	if (now - (report_reply_at[rk] || 0) < 5000) return;
+	report_reply_at[rk] = now;
 	const h = +m.message.hours || 0;
 	const lines = m.message.kind === "history" ? history_lines(h || 6) : m.message.kind === "gear" ? gear_check_lines() : [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
 	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, lines })).catch(() => {});
 }
 function report_collect(m) {
-	if (!gather || m.message.id !== gather.id || !gather.want.has(m.name)) return;
-	gather.got[m.name] = { v: m.message.v, lines: Array.isArray(m.message.lines) ? m.message.lines : [] };
-	if ([...gather.want].every((n) => gather.got[n])) report_finish(gather.id);
+	const g = gathers.get(m.message.id);
+	if (!g || !g.want.has(m.name)) return;
+	g.got[m.name] = { v: m.message.v, lines: Array.isArray(m.message.lines) ? m.message.lines : [] };
+	if ([...g.want].every((n) => g.got[n])) report_finish(g.id);
 }
 function report_finish(id) {
-	if (!gather || gather.id !== id) return null;
-	const g = gather;
-	gather = null;
+	const g = gathers.get(id);
+	if (!g) return null;
+	gathers.delete(id);
 	const members = (CFG.party.members || []).filter((n) => n !== character.name).sort();
 	const order = [character.name, ...members, ...(CFG.merchant?.name && CFG.merchant.name !== character.name ? [CFG.merchant.name] : [])];
 	const replied = [...g.want].filter((n) => g.got[n]).length;
@@ -4132,7 +4156,7 @@ function why_not(mtype) {
 const in_party_cfg = () => (CFG.party.members || []).includes(character.name) && CFG.party.members.length > 1;
 const others = () => (CFG.party.members || []).filter((n) => n !== character.name);
 // Party members are known only through their heartbeats (state.partners: name -> last message + t).
-// "Fresh" = heard from in the last 10s (5 missed heartbeats → treat as offline).
+// "Fresh" = heard from in the last 20s (10 missed heartbeats → treat as offline).
 const fresh = (p) => !!p && Date.now() - p.t < 20_000; // 10 missed beats: a busy member skips some (budget)
 const partners_any = () => others().map((n) => state.partners[n]).filter(fresh);   // online, dead or alive
 const partners = () => partners_any().filter((p) => !p.rip);                        // online and alive
@@ -4172,7 +4196,15 @@ const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_
 // everyone to arrive, then is skipped for this round.
 function split_decide() {
 	const S_ = CFG.party.split, P = CFG.probe, now = Date.now();
-	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void (state.split_on = false);
+	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void ((state.split_on = false), (state.was_leader = false));
+	// v23.2: just became the leader (levels crossed, the old one went offline): carry on its split decision and probe
+	// clock from its heartbeat instead of starting over (a regroup and a probe check on every handover)
+	if (!state.was_leader) {
+		state.was_leader = true;
+		const prev = partners_any().filter((p) => p.split !== undefined);
+		state.probe_at = Math.max(state.probe_at || 0, ...prev.map((p) => p.probe_at || 0));
+		if (prev.some((p) => p.split)) state.split_on = true;
+	}
 	let on = !state.probe && !state.directive?.boss && !event_live();
 	if (on && P?.enabled && now - (state.probe_at || 0) >= P.every_min * 60_000) {
 		// v23.1: only call everyone back if a probe would find something — judged for the whole party (as it would be
@@ -4202,7 +4234,7 @@ function split_decide() {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, qshort: qshort(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -4322,7 +4354,7 @@ const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
-	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});

@@ -2517,6 +2517,65 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.find_npc = fn_s;
 		}
 	}
+	// 108) v23.2 low-priority fixes
+	{
+		const V = vm.runInContext("VERSION", ctx);
+		// bank upgrades: one per (member, slot), so two fighters' chest upgrades are both fetched
+		ctx.G.items.chA = { type: "chest", armor: 300 }; ctx.G.items.chB = { type: "chest", armor: 280 };
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, map: "main", x: 0, y: 0, rip: false, esize: 30 });
+		character.items = Array(42).fill(null); character.slots = { chest: { name: "chB", level: 0 } }; // the merchant has its own
+		vm.runInContext("state.partners = {}; state.bank_gear = [{ name: 'chA', level: 0 }, { name: 'chB', level: 0 }]; state.gear_skip = {}; my_gear_cache = null", ctx);
+		hb("Torlis", { ...tor, level: 60, gear: { w: { chest: 0 }, own: {} } });
+		hb("Sanala", { ...san, level: 51, gear: { w: { chest: 0 }, own: {} } });
+		const bu = vm.runInContext("bank_upgrades().map((u) => u.name).sort().join()", ctx);
+		assert(bu === "chA,chB", `both members' chest upgrades are fetched (${bu})`);
+		vm.runInContext("state.bank_gear = []; state.partners = {}", ctx); character.slots = {};
+		// report() and history() back to back: both collected, both answered
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51 });
+		const cm108 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => (cm108.push([to.join(), m]), Promise.resolve());
+		vm.runInContext("report(0); history(1)", ctx);
+		const ids = cm108.filter(([, m]) => m.k === "rreq").map(([, m]) => m.id);
+		assert(ids.length === 2 && vm.runInContext(`gathers.has("${ids[0]}") && gathers.has("${ids[1]}")`, ctx), "two collections run at once");
+		cm108.length = 0; vm.runInContext("for (const k in report_reply_at) delete report_reply_at[k]", ctx);
+		handlers.cm({ name: "Torlis", message: { k: "rreq", id: "r1", hours: 0 } });
+		handlers.cm({ name: "Torlis", message: { k: "rreq", id: "h1", hours: 1, kind: "history" } });
+		assert(cm108.filter(([, m]) => m.k === "rrep").length === 2, "a report request and a history request from the same member are both answered");
+		for (const id of ids) vm.runInContext(`report_finish("${id}")`, ctx);
+		ctx.send_cm = scm;
+		// leadership handover: the new leader carries on the split decision and probe clock
+		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.was_leader = false; state.split_on = false; state.probe_at = 0; state.directive = null; state.probe = null", ctx);
+		const pa = Date.now() - 600000;
+		hb("Torlis", { ...tor, level: 60, split: true, probe_at: pa });
+		vm.runInContext("split_decide()", ctx);
+		assert(vm.runInContext(`state.split_on && state.probe_at === ${pa}`, ctx), "a new leader keeps the old one's split and probe clock");
+		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false; state.was_leader = false; state.partners = {}", ctx);
+		// history: a bucket half inside the window counts half
+		{
+			const hb_s = vm.runInContext("hist.buckets", ctx);
+			const h0 = Math.floor(Date.now() / 3600000) * 3600000;
+			vm.runInContext(`hist.buckets = { [${h0 - 3600000}]: { time: { walk: 3600 }, xp: 0, gold: 0, kills: 0, deaths: 0, flees: 0 }, [${h0}]: { time: { fight: 100 }, xp: 0, gold: 0, kills: 0, deaths: 0, flees: 0 } }`, ctx);
+			const line = vm.runInContext("history_lines(1).find((l) => l.startsWith('time:'))", ctx);
+			const now = Date.now(), into = (now - h0) / 3600000, walk = 3600 * (1 - into), pct = Math.round(walk / (walk + 100) * 100);
+			assert(new RegExp(`walk ${pct}%`).test(line), `history(1): only the last hour's part of the older bucket counts (${line}; expected walk ${pct}%)`);
+			ctx.__hb_s = hb_s; vm.runInContext("hist.buckets = __hb_s", ctx);
+		}
+		// upgrade projects skip a piece another member already has at the target level
+		hb("Torlis", { ...tor, level: 60, bag_lv: { wbow: 7 } });
+		assert(vm.runInContext("party_holds_level('wbow', 7) && !party_holds_level('wbow', 8)", ctx), "Torlis carries wbow+7: a +7 project is skipped, +8 isn't");
+		// occupied spots: only partners with an earlier name count
+		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.split_on = false", ctx);
+		Object.assign(character, { name: "Torlis", ...tor, level: 60 });
+		hb("Sanala", { ...san, level: 51, split: true });
+		hb("Aspernari", { ...asp, pack: { mtype: "goo", map: "main", boundary: [100, 100, 400, 400] } });
+		assert(vm.runInContext("occupied('main:100,100,400,400')", ctx), "Torlis: Aspernari (earlier name) farms it → occupied");
+		Object.assign(character, { name: "Aspernari", ...asp });
+		vm.runInContext("state.partners = {}", ctx);
+		hb("Sanala", { ...san, level: 51, split: true });
+		hb("Torlis", { ...tor, level: 60, pack: { mtype: "goo", map: "main", boundary: [100, 100, 400, 400] } });
+		assert(!vm.runInContext("occupied('main:100,100,400,400')", ctx), "Aspernari: Torlis (later name) there doesn't push her off");
+		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}", ctx);
+		character.items = Array(42).fill(null);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
