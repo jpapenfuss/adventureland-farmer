@@ -1881,6 +1881,50 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const gc87 = vm.runInContext("gear_check()", ctx);
 	assert(/^helmet\s+hA\+0 \d+ pts \| best owned: hC\+0 \d+ pts \(bank\) — UPGRADE/m.test(gc87), `gear_check lists the bank helmet as an upgrade:\n${gc87.split("\n").slice(0, 6).join("\n")}`);
 	character.slots = {}; vm.runInContext("state.bank_gear = []", ctx);
+	// 88) probing: picks a monster just over the limit that beats the best xp/s; guarded start; raised flee; endings
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 1000, attack: 100, frequency: 1,
+		armor: 0, resistance: 0, range: 200, map: "main", x: 0, y: 0, rip: false, s: {} });
+	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 200 }; character.items[1] = { name: "mpot1", q: 200 };
+	vm.runInContext("state.partners = {}; state.merchant = null; state.probe = null; state.probe_at = 0; state.gear_skip = {}; state.calib = {}; state.calib_all = { ratio: 1, n: 0 }; state.danger = {}; state.directive = null; state.recovering = false; state.errand = null; state.cooldown = {}; live_cache.clear()", ctx);
+	ctx.parent.S = {};
+	// risk ≈ attack·ttk; tune three monsters around the limit (1000 hp × safety 0.35 = 350)
+	ctx.G.monsters.edge = { xp: 4000, hp: 500, attack: 400, frequency: 1, range: 20, speed: 10, respawn: 5 };   // over, high xp → probe
+	ctx.G.monsters.wall = { xp: 9000, hp: 500, attack: 1200, frequency: 1, range: 20, speed: 10, respawn: 5 }; // far over → never
+	ctx.G.monsters.meh = { xp: 20, hp: 500, attack: 400, frequency: 1, range: 20, speed: 10, respawn: 5 };     // over, but poor xp
+	ctx.G.maps.main.monsters.push({ type: "edge", count: 6, boundary: [600, 600, 800, 800] }, { type: "wall", count: 6, boundary: [900, 900, 1000, 1000] }, { type: "meh", count: 6, boundary: [1100, 1100, 1200, 1200] });
+	const ro = (m) => vm.runInContext(`risk_over('${m}')`, ctx);
+	assert(ro("edge") > 1 && ro("edge") <= 2 && ro("wall") > 2, `risk ratios: edge x${ro("edge").toFixed(2)}, wall x${ro("wall").toFixed(2)}`);
+	vm.runInContext("state.best_score = 50", ctx);
+	assert(vm.runInContext("probe_ready()", ctx), "solo, healthy, stocked → a probe may start");
+	assert(vm.runInContext("probe_pick().mt", ctx) === "edge", "picks the over-limit monster that beats the best xp/s (not the wall, not the poor one)");
+	hb("Torlis", { ...tor, x: 900, y: 900, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
+	assert(!vm.runInContext("probe_ready()", ctx), "a member far away blocks the probe");
+	hb("Torlis", { ...tor, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 20, mp: 200 } });
+	assert(!vm.runInContext("probe_ready()", ctx), "a member low on potions blocks the probe");
+	hb("Torlis", { ...tor, level: 60, attack: 1, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } }); // Sanala (51) leads; negligible damage keeps edge over the limit
+	vm.runInContext("pick_pack()", ctx);
+	assert(vm.runInContext("state.probe && state.probe.mtype === 'edge' && state.pack.probe", ctx), "pick_pack starts the probe");
+	assert(vm.runInContext("flee_at()", ctx) === 0.55, "flee threshold raised during the probe");
+	vm.runInContext("pick_pack()", ctx);
+	assert(vm.runInContext("state.pack.mtype === 'edge' && !state.probe_at_reset", ctx), "the probe holds the pack through repicks");
+	// a member under 40% → failure, 6h cooldown + incident
+	hb("Torlis", { ...tor, level: 60, x: 20, y: 0, hp: 1000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
+	vm.runInContext("probe_check()", ctx);
+	assert(vm.runInContext("!state.probe && skipped('probe:edge') && state.danger.edge < 1 && state.gear_skip['probe:edge'] - Date.now() > 5 * 3600000", ctx), "member under 40% HP → failure, 6h cooldown, incident");
+	// time's up → success, 2h cooldown
+	hb("Torlis", { ...tor, level: 60, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
+	vm.runInContext("state.gear_skip = {}; state.danger = {}; state.probe = { mtype: 'edge', start: Date.now() - 700000, until: Date.now() - 1, ratio: 1.4, prof: { probe: true } }", ctx);
+	vm.runInContext("probe_check()", ctx);
+	const pe = vm.runInContext("hist.ev.filter((e) => e.type === 'probe').pop()", ctx);
+	assert(pe && pe.result === "ok" && vm.runInContext("state.gear_skip['probe:edge'] - Date.now() < 2.1 * 3600000", ctx), "time up → success, 2h cooldown, logged");
+	// a follower raises its flee threshold from the leader's probe flag
+	Object.assign(character, { name: "Torlis", ...tor, level: 60 });
+	vm.runInContext("state.partners = {}", ctx);
+	hb("Sanala", { ...san, level: 51, pack: { mtype: "edge", map: "main", boundary: [600, 600, 800, 800], probe: true } });
+	vm.runInContext("state.pack = { mtype: 'edge', map: 'main', boundary: [600,600,800,800], probe: true }", ctx);
+	assert(vm.runInContext("is_follower() && flee_at() === 0.55", ctx), "followers flee at 55% while the leader probes");
+	vm.runInContext("state.pack = null; state.probe = null; state.partners = {}; state.gear_skip = {}; G.maps.main.monsters = G.maps.main.monsters.filter((p) => !['edge','wall','meh'].includes(p.type))", ctx);
+	character.items = Array(42).fill(null);
 	all_done = true;
 	console.log("ALL PASS");
 })();

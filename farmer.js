@@ -1,4 +1,4 @@
-const VERSION = "17.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -20,6 +20,12 @@ const CFG = {
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
 	flee_hp: 0.25,             // below 25% HP: teleport to town (use_town) and recover
+	// Probing: the safety model only picks monsters it already calls safe, so it never learns about harder ones. Every
+	// every_min the leader may try the best-xp spot whose risk is just over the limit (up to max_over x) and that beats
+	// the best normal xp/s by min_gain, for `minutes`, with every member fleeing at flee_hp instead of 25%. A member
+	// fleeing or dropping below abort_hp ends it as a failure (fail_cooldown_h before that monster is tried again);
+	// lasting the time is a success (win_cooldown_h). Calibration learns from the fights either way.
+	probe: { enabled: true, every_min: 45, minutes: 10, max_over: 2.0, min_gain: 1.25, flee_hp: 0.55, abort_hp: 0.4, fail_cooldown_h: 6, win_cooldown_h: 2 },
 	recover_hp: 0.85,          // ...and stay out until HP is back to 85%
 	recover_mp: 0.4,           //    and MP to 40% (enough for heals/skills on the way back)
 	loot_range: 400,           // px; the server pays a chest's gold multiplier only within 400px of the opener
@@ -314,6 +320,8 @@ const state = {
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
+	probe: null,             // running probe { mtype, start, until, ratio, prof }
+	probe_at: 0,             // last time a probe was considered (every_min)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	fund_need: 0,            // merchant: gold its current project step needs from the fighters
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
@@ -533,6 +541,7 @@ function live_ok(e) {
 	const f = state.safe[e.mtype];
 	if (!f) return null;
 	if (f.trusted && !((e.level || 1) > 1)) return f; // guide-judged safe and not levelled up: trust it
+	if (f.probe) return f; // probing this monster on purpose (the flee threshold is raised instead)
 	const lf = entity_profile(e);
 	return lf ? { ttk: lf.ttk, xp: lf.xp } : null;
 }
@@ -596,10 +605,71 @@ function set_pack(p, label) {
 }
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
+// ---- Probing (CFG.probe) ----
+// How far over the safety limit a monster is: fight_risk ÷ the same budget safe_enough uses (1 = exactly at it)
+function risk_over(mt) {
+	const m = G.monsters[mt], f = m && fight_math(m);
+	if (!f) return Infinity;
+	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mt) * (partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+	return fight_risk(f) / Math.max(1, limit);
+}
+const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower() && leader_hb()?.pack?.probe)) ? CFG.probe.flee_hp : CFG.flee_hp);
+// May the leader start a probe now? Everyone near, healthy and stocked; nothing else special going on
+function probe_ready() {
+	const P = CFG.probe, now = Date.now();
+	if (!P?.enabled || is_follower() || is_merchant() || state.probe || now - (state.probe_at || 0) < P.every_min * 60_000) return false;
+	if (state.directive?.boss || event_live() || errand_busy() || state.recovering || character.rip) return false;
+	const all = partners();
+	if (partners_near().length < all.length || character.hp < character.max_hp * 0.8) return false;
+	if (pot_count("hp") < CFG.pot_min * 2 || pot_count("mp") < CFG.pot_min * 2) return false;
+	return all.every((p) => p.max_hp && p.hp >= p.max_hp * 0.8 && (p.pots?.hp ?? 0) >= CFG.pot_min * 2 && (p.pots?.mp ?? 0) >= CFG.pot_min * 2);
+}
+// Best-xp spot of a monster just past the limit that would beat the best normal spot by min_gain
+function probe_pick() {
+	const P = CFG.probe, now = Date.now();
+	let best = null;
+	for (const mt in G.monsters) {
+		if (!farmable_type(mt) || state.safe[mt] || skipped("probe:" + mt)) continue;
+		const r = risk_over(mt);
+		if (!(r > 1 && r <= P.max_over)) continue;
+		const m = G.monsters[mt], f = fight_math(m);
+		each_area((pack, area) => {
+			if (pack.type !== mt || (!pack.grow && (expected_respawn(mt, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
+			if ((state.cooldown[pack_key(area)] || 0) > now) return;
+			const est = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
+			if (est >= P.min_gain * (state.best_score || 0) && (!best || est > best.est)) best = { mt, area, est, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
+		});
+	}
+	return best;
+}
+// Leader: end a running probe on time (success) or on trouble (failure)
+function probe_check() {
+	const P = state.probe;
+	if (!P) return;
+	const now = Date.now(), members = [character, ...partners()];
+	const fled = !!state.recovering || partners().some((p) => p.recovering);
+	const low = members.some((p) => p.max_hp && p.hp < p.max_hp * CFG.probe.abort_hp);
+	const dead = !!character.rip || partners_any().some((p) => p.rip);
+	const result = fled || low || dead ? "fail" : now >= P.until ? "ok" : null;
+	if (!result) return;
+	const c = state.calib[P.mtype];
+	log_ev("probe", { mtype: P.mtype, mins: Math.round((now - P.start) / 60_000), result, why: dead ? "death" : fled ? "flee" : low ? "low hp" : "time",
+		ratio: c ? +c.ratio.toFixed(2) : null, n: c?.n || 0, over: +P.ratio.toFixed(2) });
+	skip("probe:" + P.mtype, (result === "ok" ? CFG.probe.win_cooldown_h : CFG.probe.fail_cooldown_h) * 3600_000, result);
+	if (result === "fail" && !fled && !dead) incident(P.mtype, 0.8); // a flee/death already recorded its own incident
+	game_log(`probe ${P.mtype}: ${result === "ok" ? "held for " + CFG.probe.minutes + " min" : "aborted (" + (dead ? "death" : fled ? "flee" : "low hp") + ")"}`, result === "ok" ? C.ok : C.warn);
+	state.probe = null;
+	state.last_pick = 0;
+}
 function pick_pack() {
 	state.safe = {};
 	for (const t in G.monsters) { const f = fight_profile(t); if (f) state.safe[t] = f; }
 	const now = Date.now();
+	if (state.probe && now < state.probe.until) { // a probe holds the pack until probe_check ends it
+		state.safe[state.probe.mtype] = state.probe.prof;
+		state.last_pick = now;
+		return;
+	}
 	let best = null;
 	const seen = new Set();
 	each_area((pack, area) => {
@@ -614,6 +684,18 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.best_score = best ? best.score : 0;
+	if (probe_ready()) {
+		state.probe_at = now;
+		const pb = probe_pick();
+		if (pb) {
+			const prof = { ttk: pb.ttk, xp: G.monsters[pb.mt].xp, probe: true };
+			state.probe = { mtype: pb.mt, start: now, until: now + CFG.probe.minutes * 60_000, ratio: pb.r, pred: pb.pred, prof };
+			state.safe[pb.mt] = prof;
+			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
+			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.est, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
+				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s (flee at ${CFG.probe.flee_hp * 100}%)`);
+		}
+	}
 
 	const d = state.directive;
 	if (d && d.until > now && farmable_type(d.monster) && !state.safe[d.monster] && d.guide_safe)
@@ -900,6 +982,8 @@ function history_lines(hours = 6) {
 	if (bosses.length) L.push(`bosses: ${bosses.slice(-4).map((e) => `${e.name} ${ago(e.t)} ago`).join(", ")}`);
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
+	const probes = ev.filter((e) => e.type === "probe");
+	if (probes.length) L.push(`probes: ${probes.slice(-6).map((e) => `${e.mtype} ${e.result === "ok" ? "✓" : "✗ " + e.why} (x${e.over} over; calibration ${e.ratio ?? "?"} over ${e.n} fights)`).join(" | ")}`);
 	const stuck = ev.filter((e) => e.type === "stuck");
 	if (stuck.length) L.push(`watchdog: ${stuck.length} — ${stuck.slice(-5).map((e) => `${e.kind} ${ago(e.t)} ago (${e.note})`).join(" | ")}`);
 	const errs = ev.filter((e) => e.type === "error");
@@ -2947,7 +3031,7 @@ function recover() {
 	}
 	const threat = get_nearest_monster({ target: character.name });
 	const channeling = !!character.c.town;
-	if (!channeling && Date.now() - (state.town_at || 0) > 1500 && (!state.fled || (threat && character.hp < character.max_hp * CFG.flee_hp))) {
+	if (!channeling && Date.now() - (state.town_at || 0) > 1500 && (!state.fled || (threat && character.hp < character.max_hp * flee_at()))) {
 		if (walking() || is_moving(character)) stop("smart"), stop("move");
 		if (fire("use_town")) (state.fled = true), (state.town_at = Date.now());
 	}
@@ -3157,6 +3241,12 @@ function report_facts() {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
 		F("compound", "self", `compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
 			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""), !gs.length && !paused.length);
+	}
+	if (CFG.probe?.enabled && !M_ && !is_follower()) {
+		const P = state.probe, last = [...hist.ev].reverse().find((e) => e.type === "probe");
+		const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
+		F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : next > Date.now() ? `next considered in ${mins(next)}` : "due (needs everyone near, 80%+ HP, potions)"}` +
+			(last ? ` | last: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""), !P && !last);
 	}
 	if (p && !p.boss && !M_) F("safety", "self", `safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
 	if (state.guide_farm && !M_) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
@@ -3449,7 +3539,7 @@ function heartbeat() {
 	const t = get_targeted_monster(), p = state.pack;
 	const msg = { k: "hb", v: VERSION, level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
-		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive } : null,
+		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
 		rpiercing: character.rpiercing || 0, range: character.range,
@@ -4090,7 +4180,7 @@ function follower_tick() {
 	const L = leader_hb();
 	if (L.rip) return void hold_grind(); // leader dead: grind what we can solo here until it walks back
 	state.hold = null;
-	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}` } : null;
+	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, probe: !!L.pack.probe } : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
 	const pos = partner_pos(L), lt = L.target && parent.entities[L.target];
@@ -4123,7 +4213,8 @@ function follower_tick() {
 function follower_pick(pos) {
 	const mt = state.pack?.mtype;
 	if (!mt || pos.map !== character.map) return null;
-	if (Date.now() - (state.fsafe_at || 0) > 30_000 || state.fsafe_mt !== mt) {
+	if (state.pack.probe) state.safe[mt] = { ttk: 5, xp: G.monsters[mt]?.xp || 0, probe: true }; // the leader is probing it
+	else if (Date.now() - (state.fsafe_at || 0) > 30_000 || state.fsafe_mt !== mt) {
 		const f = fight_profile(mt);
 		if (f) state.safe[mt] = f; else delete state.safe[mt];
 		state.fsafe_at = Date.now(); state.fsafe_mt = mt;
@@ -4218,7 +4309,7 @@ function tick() {
 				Promise.resolve(respawn()).catch((e) => { if (e?.ms > 0) next_respawn = Date.now() + e.ms + 200; });
 			}
 			wait = 1000;
-		} else if (state.recovering || character.hp < character.max_hp * CFG.flee_hp) {
+		} else if (state.recovering || character.hp < character.max_hp * flee_at()) {
 			state.dead_handled = false;
 			recover();
 			loot_chests();
@@ -4248,6 +4339,7 @@ function tick() {
 				return;
 			}
 			duo_check();
+			probe_check();
 			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
@@ -4314,6 +4406,8 @@ tick();
 //   on 2+ lists whose goals finish within mutual_max_h wins (more members, quicker first); otherwise members take
 //   turn_min-minute turns.
 //
+// Probing (CFG.probe): every every_min the leader may try, for `minutes`, the best-xp spot just past the safety limit,
+//   with everyone fleeing at probe.flee_hp; calibration learns from it, so the safe frontier can move.
 // Safety: fight_math follows the server's damage formula on live monster stats; nearby members' damage and a nearby
 //   priest's heals count only while they're near. Tank first: with a paladin/warrior near, it picks the targets and
 //   announces them; the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's
