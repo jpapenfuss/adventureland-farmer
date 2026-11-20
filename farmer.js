@@ -1,4 +1,4 @@
-const VERSION = "21.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "21.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2024,7 +2024,12 @@ function pick_upgrade() {
 }
 // Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
 function upgrade_due() {
-	if (!CFG.upgrade_auto || merchant_does_it()) return false;
+	if (!CFG.upgrade_auto) return false;
+	if (merchant_does_it()) {
+		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags
+		if (state.upg && !is_merchant()) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
+		return false;
+	}
 	const now = Date.now();
 	if (!state.upg && now - (state.upg_pick_at || 0) > 600_000) {
 		state.upg_pick_at = now;

@@ -2294,6 +2294,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.measured['main:0,0,10,11'] === undefined", ctx), "a measurement that spans a mode change is dropped");
 		vm.runInContext("state.partners = {}; CFG.party.split.enabled = false; state.split_on = false; state.measured = {}", ctx);
 	}
+	// 104) v21.2: a fighter's own upgrade project is dropped once the merchant runs projects (its copies are freed)
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest" });
+	vm.runInContext("state.upg = { name: 'wshield', to: 7, for: 'Aspernari', slot: 'offhand', gain: 38, cost: 12000 }; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0 }", ctx);
+	assert(vm.runInContext("upgrade_due() === false && state.upg === null", ctx), "merchant online: the fighter's project is dropped");
+	vm.runInContext("state.merchant = null", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();
