@@ -1166,5 +1166,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("send_own_gold('Torlis', 5000)", ctx);
 	handlers.cm({ name: "Sanala", message: { k: "gold", g: 2000 } });
 	assert(vm.runInContext("stats.adj", ctx) === 3000, "sent +5000 / received −2000 tracked as transfers");
+	// 57) merchant donates gold above keep for XP, capped per day, stops at to_level
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 5, gold: 1_300_000, map: "main", rip: false });
+	const emits = []; ctx.parent.socket.emit = (ev, d) => emits.push([ev, d && d.gold]);
+	vm.runInContext("state.donated = null; donate_at = 0; merchant_donate()", ctx);
+	assert(JSON.stringify(emits) === '[["donate",1000000]]', `donates up to chunk, keeping 300k (${JSON.stringify(emits)})`);
+	character.gold = 5e6; emits.length = 0;
+	vm.runInContext("donate_at = 0; state.donated.g = 2_500_000; merchant_donate()", ctx);
+	assert(JSON.stringify(emits) === '[["donate",500000]]', `respects the daily cap (${JSON.stringify(emits)})`);
+	character.level = 40; emits.length = 0;
+	vm.runInContext("donate_at = 0; state.donated = null; merchant_donate()", ctx);
+	assert(!emits.length, "no donations at to_level");
+	ctx.parent.socket.emit = () => {};
 	console.log("ALL PASS");
 })();

@@ -52,7 +52,8 @@
 // Merchant (CFG.merchant, a merchant-class character): not a party member. It carries potions to fighters low on
 //   potions or bag space, collects their bankable/sellable items, casts mluck (level 40+), fetches bank upgrades for
 //   them, and runs the town work (sell, bank, compound, upgrade projects, exchange). The richest near fighter keeps
-//   its gold at CFG.merchant.float.
+//   its gold at CFG.merchant.float. Merchants get no kill XP; it levels by donating gold (donate: 3.2-4.8 XP per gold
+//   on the server) until donate.to_level (40 = mluck).
 //
 // Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
 //
@@ -69,7 +70,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "14.2";
+const VERSION = "14.3";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -199,6 +200,14 @@ const CFG = {
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
 		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
+		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
+		// stand gives 1% of a level per 3h, negligible). Levels 1→40 take ~3M XP, i.e. ~0.7-1M gold.
+		donate: {
+			to_level: 40,        // donate until this level (40 = mluck; 30 = massproduction)
+			keep: 300_000,       // never below this (potions for the fighters)
+			chunk: 1_000_000,    // per donation at most
+			per_day: 3_000_000,  // at most this much per 24h
+		},
 	},
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
 	party: {
@@ -2355,7 +2364,7 @@ function save_state() {
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
-		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg,
+		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2378,6 +2387,7 @@ function load_state() {
 	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.upg?.name) state.upg = d.upg;
+	if (d.donated) state.donated = d.donated;
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -2438,6 +2448,8 @@ function report() {
 	}
 	if (is_merchant()) {
 		const f = merchant_job();
+		const D = CFG.merchant.donate;
+		if (D) L(`xp: level ${character.level}${character.level < D.to_level ? `, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && Date.now() - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)` : " (donations done)"}`);
 		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
 	} else if (CFG.merchant?.name) {
 		const M = merchant_hb();
@@ -2726,6 +2738,21 @@ async function serve(f) {
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
 	} finally { state.serving = null; }
 }
+// Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
+let donate_at = 0;
+function merchant_donate() {
+	const D = CFG.merchant.donate, now = Date.now();
+	if (!D || character.level >= D.to_level || now - donate_at < 60_000 || character.map === "bank") return false;
+	donate_at = now;
+	const day = state.donated && now - state.donated.since < 86_400_000 ? state.donated : (state.donated = { since: now, g: 0 });
+	const g = Math.floor(Math.min(character.gold - D.keep, D.chunk, D.per_day - day.g));
+	if (g < 100_000 || !can_spend(1, RESERVE.errand)) return false; // < 100k: the server's "low" donation, skip
+	parent.socket.emit("donate", { gold: g });
+	day.g += g;
+	save_state();
+	game_log(`merchant: donated ${fmt_k(g)} gold for XP (${fmt_k(day.g)} today, level ${character.level} → ${D.to_level})`, C.info);
+	return true;
+}
 let merchant_trip_at = 0;
 function merchant_tick() {
 	const f = merchant_job();
@@ -2736,6 +2763,7 @@ function merchant_tick() {
 		merchant_trip_at = Date.now();
 		return void errand("serve", () => serve(f));
 	}
+	merchant_donate();
 	// idle: wait near the town spawn (bank, shops and upgrade NPCs are close)
 	const home = G.maps.main?.spawns?.[0] || [0, 0];
 	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) travel({ map: "main", x: home[0], y: home[1] });
