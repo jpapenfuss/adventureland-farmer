@@ -1447,5 +1447,33 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext(`bag_class(character.items[${k67}])`, ctx) === "sell", "purged junk is classed sell");
 	character.bank = undefined; character.items = Array(42).fill(null);
 	vm.runInContext("state.purge = {}; state.bank_free = null; recipe_inputs = null", ctx);
+	// 68) party report: report() asks everyone, replies are combined in order, stale ids ignored, stored copies fill gaps
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 50, map: "main", x: 0, y: 0, rip: false, hp: 900, max_hp: 900, s: {} });
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("state.partners = {}; state.merchant = null; gather = null; last_party_report = null; state.pack = null", ctx);
+	const cm68 = []; ctx.send_cm = (to, m) => (cm68.push([to.join(), m.k, m]), Promise.resolve());
+	let modal68 = ""; ctx.parent.show_modal = (h) => (modal68 = h);
+	vm.runInContext("report()", ctx);
+	const req = cm68.find(([, k]) => k === "rreq");
+	assert(req && req[0] === "Aspernari,Torlis,DoWhatNow" && /fighting:/.test(modal68), `report() shows ours and asks the other three (${req && req[0]})`);
+	const id68 = req[2].id;
+	// responder side: a request makes us reply with our lines; a 2nd within 5s doesn't
+	cm68.length = 0;
+	handlers.cm({ name: "Torlis", message: { k: "rreq", id: "x1", hours: 2 } });
+	handlers.cm({ name: "Torlis", message: { k: "rreq", id: "x2", hours: 2 } });
+	const reps = cm68.filter(([, k]) => k === "rrep");
+	assert(reps.length === 1 && reps[0][0] === "Torlis" && reps[0][2].lines.some((l) => /— report v/.test(l)) && reps[0][2].lines.some((l) => /— history Sanala/.test(l)),
+		`replies once with report + history lines (${reps.length})`);
+	// collector: stale id ignored; Aspernari + Torlis reply, DoWhatNow silent but has a stored copy
+	handlers.cm({ name: "Torlis", message: { k: "rrep", id: "old", v: "15.9", lines: ["STALE"] } });
+	handlers.cm({ name: "Torlis", message: { k: "rrep", id: id68, v: "15.9", lines: ["torlis line"] } });
+	handlers.cm({ name: "Aspernari", message: { k: "rrep", id: id68, v: "15.9", lines: ["aspernari line"] } });
+	ctx.get = (k) => (k === "farmer_report:DoWhatNow" ? { at: Date.now() - 600000, v: "15.9", lines: ["merchant stored line"] } : null);
+	const out68 = vm.runInContext(`report_finish("${id68}")`, ctx);
+	const iS = out68.indexOf("▌ Sanala"), iA = out68.indexOf("▌ Aspernari"), iT = out68.indexOf("▌ Torlis"), iD = out68.indexOf("▌ DoWhatNow");
+	assert(/2\/3 replied/.test(out68) && iS < iA && iA < iT && iT < iD && /torlis line/.test(out68) && /aspernari line/.test(out68) && !/STALE/.test(out68) &&
+		/stored copy, 10m old/.test(out68) && /merchant stored line/.test(out68), `combined in order, stale ignored, stored copy for the silent one:\n${out68}`);
+	assert(vm.runInContext("party_report()", ctx) === out68, "party_report() re-opens the last one");
+	ctx.get = () => null; ctx.send_cm = () => Promise.resolve();
 	console.log("ALL PASS");
 })();

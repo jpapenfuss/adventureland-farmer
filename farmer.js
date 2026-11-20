@@ -59,6 +59,8 @@
 //   home it runs a stand (CFG.merchant.stand): spare valuables listed at 3x value, -10% per 12h, floor 1.5x.
 //
 // Diagnostics: report(), history(hours), deaths(n) and why_not("monster") in the CODE console (copyable text box).
+//   report() also gathers every other character's report (same server; stored copies otherwise) into one text box;
+//   report(6) adds each one's 6h history; party_report() re-opens the last one.
 //   park()/resume(), forget().
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
@@ -74,7 +76,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.8";
+const VERSION = "15.9";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -878,7 +880,8 @@ function last_hour() {
 	return { dead: ev.filter((e) => e.type === "death").length, fled: ev.filter((e) => e.type === "flee").length,
 		xph: Math.round((b.xp || 0) + (pb.xp || 0) * (1 - frac)), town: ev.filter((e) => e.type === "town").length };
 }
-function history(hours = 6) {
+function history(hours = 6) { return share_text(`history ${character.name}`, history_lines(hours)); }
+function history_lines(hours = 6) {
 	const now = Date.now(), from = now - hours * 3600_000, ev = hist.ev.filter((e) => e.t >= from);
 	const L = [`— history ${character.name} v${VERSION}, last ${hours}h (${ev.length} events) —`];
 	const tot = {};
@@ -918,7 +921,7 @@ function history(hours = 6) {
 	if (stuck.length) L.push(`watchdog: ${stuck.length} — ${stuck.slice(-5).map((e) => `${e.kind} ${ago(e.t)} ago (${e.note})`).join(" | ")}`);
 	const errs = ev.filter((e) => e.type === "error");
 	if (errs.length) L.push(`errors: ${errs.slice(-3).map((e) => `${ago(e.t)}: ${e.msg}`).join(" | ")}`);
-	return share_text(`history ${character.name}`, L);
+	return L;
 }
 function deaths(n = 5) {
 	const xs = hist.ev.filter((e) => e.type === "death" || e.type === "flee").slice(-n);
@@ -2824,7 +2827,7 @@ function load_state() {
 }
 load_state();
 setInterval(() => { save_state(); save_hist(); }, 60_000);
-function on_destroy() { save_state(); save_hist(); } // the game calls this just before the code is stopped or reloaded
+function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
 function forget() { Object.assign(state, { measured: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
@@ -2844,9 +2847,9 @@ function share_text(title, lines) {
 	return text;
 }
 // report(): one-screen summary of what the bot is doing and why (also as copyable text)
-function report() {
+function report_lines(log = true) {
 	const lines = [];
-	const L = (s, c = C.note) => { lines.push(s); game_log(s, c); };
+	const L = (s, c = C.note) => { lines.push(s); if (log) game_log(s, c); };
 	const p = state.pack, d = state.directive;
 	L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, C.title);
 	if (is_merchant()) L(`merchant mode: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
@@ -2950,9 +2953,65 @@ function report() {
 	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
 	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
 	L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
-	return share_text("report()", lines);
+	return lines;
 }
 // why_not("bee"): is this monster farmable and safe for us, with the numbers behind the verdict
+// ---- Party report (v15.9): report() here asks every other character (same server, via cm) for its report ----
+// report(hours): own report at once; then one text box with every character's section once all replied or after 6s.
+// hours > 0 adds each character's history(hours). Non-repliers show their stored copy (saved every 5 min to browser
+// storage, shared by characters running in the same browser) or "no reply". party_report() re-opens the last one.
+let gather = null, last_party_report = null;
+const report_reply_at = {}; // requester -> last reply (one per 5s)
+const party_names_all = () => [...new Set([...(CFG.party.members || []), CFG.merchant?.name].filter(Boolean))];
+function report(hours = 0) {
+	const mine = report_lines(true);
+	const text = share_text("report()", mine);
+	const targets = party_names_all().filter((n) => n !== character.name);
+	if (!targets.length || typeof send_cm !== "function") return text;
+	const id = `${Date.now()}:${character.name}`;
+	gather = { id, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: hours > 0 ? [...mine, ...history_lines(hours)] : mine } }, at: Date.now() };
+	Promise.resolve(send_cm(targets, { k: "rreq", id, hours })).catch(() => {});
+	game_log(`report: collecting from ${targets.join(", ")} (up to 6s)…`, C.info);
+	setTimeout(() => report_finish(id), 6000);
+	return text;
+}
+function report_reply(m) {
+	const from = m.name, now = Date.now();
+	if (now - (report_reply_at[from] || 0) < 5000) return;
+	report_reply_at[from] = now;
+	const h = +m.message.hours || 0;
+	const lines = [...report_lines(false), ...(h > 0 ? history_lines(h) : [])];
+	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, lines })).catch(() => {});
+}
+function report_collect(m) {
+	if (!gather || m.message.id !== gather.id || !gather.want.has(m.name)) return;
+	gather.got[m.name] = { v: m.message.v, lines: Array.isArray(m.message.lines) ? m.message.lines : [] };
+	if ([...gather.want].every((n) => gather.got[n])) report_finish(gather.id);
+}
+function report_finish(id) {
+	if (!gather || gather.id !== id) return null;
+	const g = gather;
+	gather = null;
+	const members = (CFG.party.members || []).filter((n) => n !== character.name).sort();
+	const order = [character.name, ...members, ...(CFG.merchant?.name && CFG.merchant.name !== character.name ? [CFG.merchant.name] : [])];
+	const replied = [...g.want].filter((n) => g.got[n]).length;
+	const out = [`══ party report ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`];
+	for (const n of order) {
+		out.push("", `▌ ${n}`);
+		if (g.got[n]) { out.push(...g.got[n].lines); continue; }
+		const stored = typeof get === "function" ? get("farmer_report:" + n) : null;
+		if (stored && Array.isArray(stored.lines)) out.push(`(no reply — stored copy, ${ago(stored.at)} old, v${stored.v})`, ...stored.lines);
+		else out.push("(no reply: offline, on another server, or running an older version)");
+	}
+	last_party_report = out;
+	return share_text("party report", out);
+}
+const party_report = () => (last_party_report ? share_text("party report", last_party_report) : "no party report yet: run report()");
+// Stored copy for party reports when cm can't reach us (other server, same browser)
+function store_report() {
+	if (typeof set === "function") try { set("farmer_report:" + character.name, { at: Date.now(), v: VERSION, lines: report_lines(false) }); } catch (e) {}
+}
+setInterval(store_report, 300_000);
 function why_not(mtype) {
 	const lines = [];
 	const L = (s) => { lines.push(s); game_log(s, C.note); };
@@ -3036,6 +3095,10 @@ function heartbeat() {
 if (typeof character.on === "function") character.on("cm", (m) => {
 	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
 		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
+		return;
+	}
+	if (m && (m.message?.k === "rreq" || m.message?.k === "rrep") && party_names_all().includes(m.name)) {
+		if (m.message.k === "rreq") report_reply(m); else report_collect(m);
 		return;
 	}
 	if (m && m.message?.k === "gold" && ((CFG.party.members || []).includes(m.name) || m.name === CFG.merchant?.name)) {
