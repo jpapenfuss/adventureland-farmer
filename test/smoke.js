@@ -1534,5 +1534,40 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		`compact section drops shared/idle lines:\n${cmp71}`);
 	assert(/^gold: us/m.test(full71) && /^tokens:/m.test(full71) && full71.split("\n").length > cmp71.split("\n").length, "the full report keeps everything");
 	vm.runInContext("state.merchant = null; state.pack = null", ctx); delete character.s.monsterhunt;
+	// 72) must-hold items: Tracktrix fetched from the bank, else bought with tokens before any gear; one fighter buys the
+	// merchant's copy and hands only that over
+	ctx.G.items.tracker = { type: "tracker", g: 12 };
+	ctx.G.tokens = { monstertoken: { tracker: 4, mphat: 3 } };
+	ctx.G.items.mphat = { type: "helmet", armor: 40, class: ["paladin"] };
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30, rip: false, map: "main", x: 0, y: 0, s: {} });
+	character.items = Array(42).fill(null); character.slots = { helmet: { name: "helm1", level: 0 } };
+	vm.runInContext("state.partners = {}; state.merchant = null; state.bank_seen = { tracker: 1 }; state.fetch_try = {}; state.bank_gear = []; state.hold_for = {}; state.gear_skip = {}; state.guide_equip = {}", ctx);
+	assert(vm.runInContext("bag_plan().fetch.some((f) => f.key === 'hold:tracker')", ctx) && vm.runInContext("town_due().bank", ctx), "missing tracker in the bank → fetched (bank due)");
+	vm.runInContext("state.bank_seen = {}", ctx);
+	character.items[0] = { name: "monstertoken", q: 5 };
+	assert(vm.runInContext("token_pick().name", ctx) === "tracker", "missing tracker, 5 tokens → buy the tracker first");
+	character.items[0].q = 3;
+	assert(vm.runInContext("token_pick()", ctx) === null, "3 tokens: gear (3 tokens) can't eat the tracker's reserve");
+	character.items[1] = { name: "tracker", q: 1 };
+	assert(vm.runInContext("token_pick() && token_pick().name", ctx) === "mphat", "tracker held → tokens go to gear again");
+	assert(vm.runInContext("bag_class(character.items[1])", ctx) === "keep", "the tracker is never banked or sold");
+	// merchant lacks one: only the alphabetically first eligible fighter buys it
+	character.items[0].q = 6;
+	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 50, y: 0, esize: 20, gold: 1e6, need: ['tracker'] }", ctx);
+	hb("Aspernari", { ...asp, tokens: 9, need: [] });
+	assert(vm.runInContext("token_pick() && token_pick().name", ctx) === "mphat", "Aspernari (first alphabetically, eligible) buys the merchant's copy, not Torlis");
+	hb("Aspernari", { ...asp, tokens: 1, need: [] });
+	const tp72 = vm.runInContext("token_pick()", ctx);
+	assert(tp72 && tp72.name === "tracker" && tp72.for === "DoWhatNow", `Aspernari can't afford it → Torlis buys it for the merchant (${JSON.stringify(tp72)})`);
+	// hand-off: only the extra copy goes, and only to the merchant
+	character.items[2] = { name: "tracker", q: 1 };
+	vm.runInContext("state.hold_for = { tracker: { to: 'DoWhatNow', at: Date.now() } }; handoff_busy = false; merchant_gold_at = Date.now()", ctx);
+	const sent72 = []; ctx.send_item = (to, k, q) => (sent72.push([to, character.items[k].name, q]), character.items[k] = null, Promise.resolve());
+	await vm.runInContext("merchant_handoff()", ctx);
+	assert(JSON.stringify(sent72) === '[["DoWhatNow","tracker",1]]' && vm.runInContext("held_any('tracker')", ctx) === 1 && vm.runInContext("!state.hold_for.tracker", ctx), `extra tracker handed to the merchant, ours kept (${JSON.stringify(sent72)})`);
+	const r72 = vm.runInContext("report_lines(false).find((l) => l.startsWith('hold:'))", ctx);
+	assert(/tracker ✓/.test(r72), `report: hold line (${r72})`);
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("state.merchant = null; state.hold_for = {}", ctx);
 	console.log("ALL PASS");
 })();

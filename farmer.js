@@ -1,4 +1,4 @@
-const VERSION = "16.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "16.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -39,6 +39,10 @@ const CFG = {
 	need_copies_upgrade: 2,    // copies of an item the guide is upgrading kept in bags (the one in work + a spare)
 	need_copies_compound: 4,   // copies of a compoundable item the guide is working on (3 per compound + 1)
 	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"], // never sold or banked
+	// Items every character should carry (one each), re-acquired when missing: fetched from the bank if one is there,
+	// else bought with the named token at its shop (the Tracktrix: 4 monster tokens at Daisy). The merchant never earns
+	// tokens, so one fighter buys its copy and hands it over on a supply run.
+	hold: { tracker: "monstertoken" },
 	// --- own gear (scored by stats, independent of the guide) ---------------------------------------------------------
 	// Watchdog (v15.5): every 30s, catch silent stalls the timeouts miss. frozen: moved < 20px and gained no xp for
 	// frozen_min → stop the walk, cool the pack, re-pick. noprog: leader/solo with a pack but no xp for noprog_min →
@@ -198,7 +202,7 @@ const RANGED = ["ranger", "mage", "priest"].includes(character.ctype); // classe
 // Item types that are equipment (sellable as junk, bankable as spares)
 const GEAR = new Set(["weapon", "shield", "helmet", "chest", "pants", "gloves", "shoes", "cape", "ring", "earring", "amulet", "belt", "orb", "source", "quiver", "misc_offhand"]);
 // Item types that always stay in the bags: consumables, scrolls, tools, keys
-const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "misc", "throw",
+const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "tracker", "misc", "throw",
 	"booster", "skill_item", "bank_key", "spawner", "placeholder", "computer"]);
 
 // Log colours (game_log's second argument)
@@ -257,6 +261,7 @@ const state = {
 	guide_equip: {},         // slot -> when the guide last equipped it (gear_guide_respect_h) (saved)
 	gear_sent: {},           // "name:level>member" -> when we last tried to hand it over (retry after 10 min)
 	bank_free: null,         // { free, total, at }: bank slots at the last visit (saved)
+	hold_for: {},            // must-hold item -> bought for the merchant (hand it over), when (saved)
 	row_fails: {},           // guide row id -> consecutive failures (pause backoff) (saved)
 	purge: {},               // "name:level" -> when the merchant pulled it from the bank to sell/list (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
@@ -1746,6 +1751,7 @@ function bag_plan() {
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
 	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
+	for (const n of hold_missing()) if (state.bank_seen[n] > 0 && Date.now() - (state.fetch_try["hold:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "hold:" + n });
 	const bx = CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && bank_elixir();
 	if (bx) fetch.push({ name: bx.name, key: "elixir:" + bx.name });
 	if (is_merchant() && CFG.merchant.stand?.enabled) {
@@ -2747,7 +2753,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
-		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails,
+		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2778,6 +2784,7 @@ function load_state() {
 	if (d.bank_free) state.bank_free = d.bank_free;
 	Object.assign(state.purge, d.purge || {});
 	Object.assign(state.row_fails, d.row_fails || {});
+	Object.assign(state.hold_for, d.hold_for || {});
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -2867,6 +2874,15 @@ function report_lines(log = true, compact = false) {
 	if (full && CFG.boss?.enabled && !is_merchant()) {
 		const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
 		L(`bosses: ${live.length ? live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ") : "none live on this server"}`);
+	}
+	{
+		const miss = hold_missing(), names = Object.keys(CFG.hold || {}).filter((n) => G.items[n]);
+		if (names.length && (full || miss.length)) L(`hold: ${names.map((n) => {
+			if (!miss.includes(n)) return `${n} ✓`;
+			if (state.bank_seen[n] > 0) return `${n} missing — fetching from the bank`;
+			const p = hold_price(n), t = held_any(CFG.hold[n]);
+			return is_merchant() ? `${n} missing — a fighter buys it (${p} tokens)` : `${n} missing — ${t >= p ? `buying (${p} tokens)` : `${t}/${p} tokens`}`;
+		}).join(", ")}${Object.keys(state.hold_for).length ? ` | for the merchant: ${Object.keys(state.hold_for).join(", ")}` : ""}`);
 	}
 	if (CFG.token_auto && !is_merchant() && (full || held_any("monstertoken") > 0)) {
 		const b = token_pick();
@@ -3011,6 +3027,9 @@ function party_header_lines() {
 	out.push(`last hour: ${fighters.map((f) => `${f.name} ${f.h1 ? `${f.h1.dead}d/${f.h1.fled}f/${f.h1.town}town` : "?"}${f.rates ? ` ${fmt_k(f.rates.xph)}xp/h` : ""}`).join(" | ")}`);
 	const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
 	if (live.length) out.push(`bosses: ${live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ")}`);
+	const lack = [...fighters.map((f) => [f.name, f.name === character.name ? hold_missing() : f.need]), ...(M ? [[M.name, M.name === character.name ? hold_missing() : M.need]] : [])]
+		.filter(([, nd]) => Array.isArray(nd) && nd.length);
+	if (lack.length) out.push(`missing must-hold items: ${lack.map(([n, nd]) => `${n} (${nd.join(", ")})`).join(", ")}`);
 	if (CFG.merchant?.name) out.push(`merchant ${CFG.merchant.name}: ${M ? `${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free` : "offline (fighters do their own town runs)"}`);
 	if (lead === character.name && state.shared?.mutual.length) out.push(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 	return out;
@@ -3097,7 +3116,7 @@ function heartbeat() {
 		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
 		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
-		mp: character.mp, max_mp: character.max_mp };
+		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing() };
 	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
 	Promise.resolve(send_cm(to, msg)).catch(() => {});
 }
@@ -3185,7 +3204,7 @@ const merchant_does_it = () => !!merchant_hb();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	const msg = { k: "mhb", v: VERSION, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
-		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip };
+		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing() };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
@@ -3256,13 +3275,41 @@ async function serve(f) {
 }
 // ---- Monster tokens (CFG.token_auto) ----
 // Best shop piece by points per token: class gear a member would wear (+0), not already owned (bags or bank)
+// ---- Must-hold items (CFG.hold) ----
+const hold_price = (n) => G.tokens?.[CFG.hold?.[n]]?.[n];
+const hold_missing = () => Object.keys(CFG.hold || {}).filter((n) => G.items[n] && held_any(n) === 0);
+// Tokens set aside for our own missing must-hold items that the bank can't supply
+const token_reserve = () => hold_missing().filter((n) => !(state.bank_seen[n] > 0)).reduce((a, n) => a + (hold_price(n) || 0), 0);
+// The merchant's missing must-hold item that we should buy: only the alphabetically first fighter that already holds
+// its own copy and can afford another, so exactly one copy gets bought
+function hold_for_merchant() {
+	const M = merchant_hb();
+	if (!M || !Array.isArray(M.need) || is_merchant()) return null;
+	for (const n of M.need) {
+		const price = hold_price(n), cur = CFG.hold[n];
+		if (!price || state.bank_seen[n] > 0 || held_any(n) !== 1 || state.hold_for[n]) continue; // ours only, no extra yet
+		const me = { name: character.name, tokens: held_any(cur), need: hold_missing() };
+		const ok = [me, ...partners()].filter((f) => Array.isArray(f.need) && !f.need.includes(n) && (f.tokens || 0) >= price)
+			.sort((a, b) => (a.name < b.name ? -1 : 1));
+		if (ok[0]?.name === character.name) return { name: n, price, for: M.name, gain: 0, hold: true };
+	}
+	return null;
+}
 function token_pick() {
 	const have = held_any("monstertoken"), shop = G.tokens?.monstertoken || {};
 	if (!CFG.token_auto || have <= 0 || character.esize < 2) return null;
+	// must-hold items first: ours, then the merchant's
+	for (const n of hold_missing()) {
+		const price = hold_price(n);
+		if (CFG.hold[n] === "monstertoken" && price && price <= have && !(state.bank_seen[n] > 0)) return { name: n, price, for: character.name, gain: 0, hold: true };
+	}
+	const mh = hold_for_merchant();
+	if (mh) return mh;
+	const budget = have - token_reserve(); // gear never spends tokens a missing must-hold item needs
 	let best = null;
 	for (const name in shop) {
 		const price = shop[name];
-		if (price > have || !GEAR.has(G.items[name]?.type) || held_any(name) || (state.bank_gear || []).some((i) => i.name === name)) continue;
+		if (price > budget || !GEAR.has(G.items[name]?.type) || held_any(name) || (state.bank_gear || []).some((i) => i.name === name)) continue;
 		for (const m of gear_takers().filter((x) => x.ctype !== "merchant")) {
 			const r = gear_gain({ name, level: 0 }, m.ctype, m.g);
 			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
@@ -3280,6 +3327,7 @@ async function task_tokens() {
 		try {
 			await T(exchange_buy("monstertoken", b.name));
 			n++;
+			if (b.hold && b.for !== character.name) state.hold_for[b.name] = { to: b.for, at: Date.now() };
 			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
@@ -3504,6 +3552,15 @@ async function merchant_handoff() {
 			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
+		// a must-hold item we bought for the merchant: hand it over (we keep our own copy)
+		for (const n in state.hold_for) {
+			if (!(M.need || []).includes(n)) { if (held_any(n) < 2 || Date.now() - state.hold_for[n].at > 86_400_000) delete state.hold_for[n]; continue; }
+			const k = character.items.findIndex((it) => it && it.name === n && !it.l);
+			if (k < 0 || held_any(n) < 2 || !can_spend(1, RESERVE.errand)) continue;
+			await T(send_item(M.name, k, 1)).then(() => { delete state.hold_for[n]; game_log(`merchant: gave ${n} (its own copy)`, C.ok); log_ev("give", { to: M.name, item: n }); })
+				.catch((er) => game_log(`merchant: giving ${n}: ${why(er)}`, C.dim));
+			return;
+		}
 		const needed = needed_slots(), cmp = compound_slots(needed);
 		const k = character.items.findIndex((it) => it && ["bank", "sell"].includes(bag_class(it, needed, cmp)) && !gear_wanted_by(it));
 		if (k < 0 || !can_spend(1, RESERVE.errand)) return;
@@ -3806,7 +3863,9 @@ tick();
 //   for gear_guide_respect_h. Compounding: three spare copies at one level (bags + bank) up to +compound_max_level
 //   behind the server's preview, up to compound_per_run sets per trip; done only by the merchant while it's online.
 //   Upgrade projects: the NPC-sold piece whose upgraded copy beats a member's worn piece most per gold. Monster
-//   tokens buy shop class gear for a member; exchangeables (boxes, gems) are opened.
+//   tokens buy shop class gear for a member; exchangeables (boxes, gems) are opened. Must-hold items (CFG.hold: the
+//   Tracktrix) are kept by every character and re-acquired when missing: from the bank, else for tokens (reserved
+//   ahead of gear); one fighter buys the merchant's copy and hands it over.
 //
 // Party (CFG.party): the lowest-level member leads; members talk via send_cm every beat_ms (heartbeats), invite each
 //   other without splitting a party, and balance gold (the richest sends 15% to the poorest below 10% of its gold,
