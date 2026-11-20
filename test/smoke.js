@@ -1303,5 +1303,40 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("state.calib.croc && state.calib.croc.n === 1 && Math.round(state.calib.croc.act) === 77", ctx), "a fight's hits are recorded when the target dies");
 	assert(/calibration x/.test(vm.runInContext("why_not('croc'); calib_text('croc')", ctx)), "why_not/report show the calibration");
 	vm.runInContext("state.calib = {}; state.calib_all = { ratio: 1, n: 0 }; state.danger = {}; state.danger_at = {}", ctx);
+	// 63) stand: buys a stand, opens it, lists the most valuable spare at 3x, cuts stale prices to the floor, notices sales
+	ctx.G.items.stand0 = { type: "stand", stand: "stand0", g: 40000 };
+	ctx.G.items.goldring = { type: "ring", g: 200000 }; ctx.G.items.cheapthing = { type: "material", g: 10 };
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 20, gold: 2e6, map: "main", x: 0, y: 0, rip: false, moving: false, esize: 30, stand: false });
+	character.items = Array(42).fill(null); character.slots = {};
+	character.items[3] = { name: "goldring", level: 0 }; character.items[4] = { name: "cheapthing", q: 5 };
+	vm.runInContext("state.stand = {}; state.partners = {}; state.needs = new Map(); state.gear_skip = {}; stand_cache = null; cmp_cache = null; state.errand = null", ctx);
+	assert(vm.runInContext("bag_class(character.items[3])", ctx) === "keep" && vm.runInContext("bag_class(character.items[4])", ctx) !== "keep", "valuable spare held for the stand, cheap junk isn't");
+	const buys63 = []; ctx.buy = (n, q) => { buys63.push(n); character.items[0] = { name: n }; return Promise.resolve({ success: true }); };
+	ctx.find_npc = () => ({ map: "main", x: 0, y: 0 }); ctx.G.npcs.standmerchant = { items: ["stand0"] };
+	await vm.runInContext("stand_tick()", ctx);
+	assert(buys63[0] === "stand0", `buys a stand when it has none (${buys63})`);
+	const opens = []; ctx.open_stand = (k) => { opens.push(k); character.stand = true; return Promise.resolve(); };
+	await vm.runInContext("stand_tick()", ctx);
+	assert(opens[0] === 0 && character.stand, "opens the stand");
+	const trades = []; ctx.trade = (k, slot, price, q) => { trades.push([character.items[k].name, slot, price]); character.slots[slot] = { ...character.items[k], price }; character.items[k] = null; return Promise.resolve(); };
+	await vm.runInContext("stand_tick()", ctx);
+	assert(JSON.stringify(trades) === '[["goldring","trade1",360000]]', `lists the ring at 3x its value (${JSON.stringify(trades)})`);
+	// stale: cut 10%, never below 1.5x
+	ctx.unequip = (slot) => { const k = character.items.findIndex((i) => !i); character.items[k] = character.slots[slot]; delete character.slots[slot]; return Promise.resolve(); };
+	vm.runInContext("state.stand.trade1.at = state.stand.trade1.cut_at = Date.now() - 13 * 3600e3", ctx); trades.length = 0;
+	await vm.runInContext("stand_tick()", ctx);
+	assert(trades.length === 1 && trades[0][2] === 324000, `stale listing re-listed 10% lower (${JSON.stringify(trades)})`);
+	vm.runInContext("state.stand.trade1.price = 185000; state.stand.trade1.cut_at = Date.now() - 13 * 3600e3", ctx); trades.length = 0;
+	await vm.runInContext("stand_tick()", ctx);
+	assert(trades.length === 1 && trades[0][2] === 180000, `never below 1.5x value (${JSON.stringify(trades)})`);
+	// sale: slot empties while open
+	delete character.slots.trade1;
+	await vm.runInContext("stand_tick()", ctx);
+	assert(vm.runInContext("!state.stand.trade1 && hist.ev.some((e) => e.type === 'sold' && e.item === 'goldring+0')", ctx), "an emptied slot is logged as a sale");
+	// closes before walking
+	const closes = []; ctx.close_stand = () => { closes.push(1); character.stand = false; return Promise.resolve(); };
+	await vm.runInContext("stand_close()", ctx);
+	assert(closes.length === 1 && !character.stand, "stand closed before a trip");
+	character.items = Array(42).fill(null); character.slots = {}; vm.runInContext("state.stand = {}", ctx);
 	console.log("ALL PASS");
 })();

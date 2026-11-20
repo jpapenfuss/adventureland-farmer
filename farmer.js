@@ -55,7 +55,8 @@
 //   them, and runs the town work (sell, bank, compound, upgrade projects, exchange). The richest near fighter keeps
 //   its gold at CFG.merchant.float. Merchants get no kill XP; it levels by donating gold (donate: 3.2-4.8 XP per gold
 //   on the server) until donate.to_level (40 = mluck). Every 10 min it checks Ponty's secondhand stock for fighter
-//   upgrades and compound-set completions. At level 30+ it casts massproduction before each upgrade/compound.
+//   upgrades and compound-set completions. At level 30+ it casts massproduction before each upgrade/compound. Idle at
+//   home it runs a stand (CFG.merchant.stand): spare valuables listed at 3x value, -10% per 12h, floor 1.5x.
 //
 // Diagnostics: report(), history(hours), deaths(n) and why_not("monster") in the CODE console (copyable text box).
 //   park()/resume(), forget().
@@ -73,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.1";
+const VERSION = "15.2";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -218,6 +219,11 @@ const CFG = {
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
 		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
+		// Stand: while idle at home the merchant lists spare valuables for other players (16 trade slots) at
+		// markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value
+		// (above the NPC's 0.6x). Worth listing: value >= min_value, gear at +3 or more, a higher grade, or titled.
+		// Stand trades also give merchant XP. The stand is closed before every walk (speed 10 while open).
+		stand: { enabled: true, min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
 		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
 		// stand gives 1% of a level per 3h, negligible). Levels 1→40 take ~3M XP, i.e. ~0.7-1M gold.
 		donate: {
@@ -315,6 +321,7 @@ const state = {
 	bank_gear: [],           // gear seen in the bank at the last visit: [{ name, level, p, stat_type }] (saved, max 400)
 	guide_equip: {},         // slot -> when the guide last equipped it (gear_guide_respect_h) (saved)
 	gear_sent: {},           // "name:level>member" -> when we last tried to hand it over (retry after 10 min)
+	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
@@ -1664,6 +1671,7 @@ function is_junk(item) {
 function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (!item) return "empty";
 	if ((held_cmp || compound_slots(needed)).has(character.items.indexOf(item))) return "keep"; // waiting to be compounded
+	if (is_merchant() && stand_hold().has(character.items.indexOf(item))) return "keep"; // stock for the stand
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
@@ -1686,6 +1694,11 @@ function bag_plan() {
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
 	const bx = CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && bank_elixir();
 	if (bx) fetch.push({ name: bx.name, key: "elixir:" + bx.name });
+	if (is_merchant() && CFG.merchant.stand?.enabled) {
+		const free = TRADE_SLOTS.length - Object.keys(state.stand).length - stand_hold().size, nd = new Set(), cm = new Set();
+		for (const it of (state.bank_gear || []).filter((i) => stand_worthy(i, -1, nd, cm)).slice(0, Math.max(0, Math.min(free, character.esize - 6))))
+			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
+	}
 	for (const u of [...bank_upgrades(), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > 2 * 3600_000) fetch.push(u);
 	return { sell, bank, fetch, free: character.esize };
@@ -2528,6 +2541,7 @@ function town_due(relaxed = false) {
 }
 function town_run(due) {
 	return errand("town", async () => {
+		await stand_close(); // a stand slows us to speed 10
 		const step = async (label, fn) => { try { return await fn(); } catch (e) { town_reason[label] = town_reason[label] || why(e); game_log(`${label}: ${why(e)}`, C.dim); } };
 		// step: run one task, record why it failed (for report()), never let one failure end the run.
 		// A bag/potion task that achieves nothing (bank full, item on another bank floor, no gold) pauses 15 min,
@@ -2681,7 +2695,7 @@ function save_state() {
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
-		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated,
+		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2708,6 +2722,7 @@ function load_state() {
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.donated) state.donated = d.donated;
+	if (d.stand) state.stand = d.stand;
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -2774,6 +2789,8 @@ function report() {
 		const f = merchant_job();
 		const D = CFG.merchant.donate;
 		if (D) L(`xp: level ${character.level}${character.level < D.to_level ? `, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && Date.now() - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)` : " (donations done)"}`);
+		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && Date.now() - e.t < 86_400_000);
+		L(`stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length} for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}`);
 		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
 	} else if (CFG.merchant?.name) {
 		const M = merchant_hb();
@@ -3051,6 +3068,7 @@ function mluck_near() {
 // One service trip: stock potions, walk to the fighter (it moves: re-aim up to 4 times), hand potions to every fighter
 // near, then wait for their items
 async function serve(f) {
+	await stand_close();
 	const serve_t0 = Date.now();
 	state.serving = f.name;
 	try {
@@ -3128,6 +3146,7 @@ let secondhand_at = 0;
 async function task_secondhands() {
 	const ref = G.maps.main?.ref?.secondhands;
 	if (!ref) return 0;
+	await stand_close();
 	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) await go({ map: "main", x: ref.x, y: ref.y + 40 });
 	parent.socket.emit("secondhands");
 	await sleep_ms(1500); // the list arrives as a "secondhands" event; the client keeps it in parent.secondhands
@@ -3153,6 +3172,91 @@ async function task_secondhands() {
 		}
 	}
 	return n;
+}
+// ---- Stand (CFG.merchant.stand) ----
+const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
+const unit_value = (it) => {
+	const f = typeof calculate_item_value === "function" ? calculate_item_value : parent?.calculate_item_value;
+	return Math.max(1, Math.round(f ? f({ ...it, q: 1 }) : (G.items[it.name]?.g || 0) * 0.6));
+};
+function stand_worthy(it, k, needed, cmp) {
+	const d = it && G.items[it.name], S_ = CFG.merchant.stand;
+	if (!d || it.l || it.b || needed.has(k) || cmp.has(k) || CFG.keep.includes(it.name) || BAG_TYPES.has(d.type) ||
+		d.type === "stand" || d.type === "token" || gear_wanted_by(it)) return false;
+	return unit_value(it) >= S_.min_value || (GEAR.has(d.type) && (it.level || 0) >= 3) || item_grade(it) >= 1 || !!it.p;
+}
+// Bag slots held back for the stand: the most valuable candidates, as many as there are free trade slots
+let stand_cache = null;
+function stand_hold() {
+	if (!CFG.merchant?.stand?.enabled || !is_merchant()) return new Set();
+	const key = character.items.map((i) => (i ? i.name + (i.level || 0) + (i.q || 1) : "")).join() + Object.keys(state.stand).length;
+	if (stand_cache && stand_cache.key === key && Date.now() - stand_cache.at < 2000) return stand_cache.set;
+	const needed = needed_slots(), cmp = compound_slots(needed), free = TRADE_SLOTS.length - Object.keys(state.stand).length;
+	const ks = character.items.map((it, k) => (stand_worthy(it, k, needed, cmp) ? k : -1)).filter((k) => k >= 0)
+		.sort((a, b) => unit_value(character.items[b]) - unit_value(character.items[a])).slice(0, Math.max(0, free));
+	stand_cache = { key, at: Date.now(), set: new Set(ks) };
+	return stand_cache.set;
+}
+async function stand_close() {
+	if (!character.stand || typeof close_stand !== "function") return;
+	await T(close_stand(), 3000).catch(() => {});
+	await until(() => !character.stand, 2000);
+}
+// Idle at home: open the stand, notice sales, cut stale prices, list new stock (one listing action per call)
+let stand_busy = false;
+async function stand_tick() {
+	const S_ = CFG.merchant.stand;
+	if (!S_?.enabled || stand_busy || walking() || errand_busy()) return;
+	stand_busy = true;
+	try {
+		const now = Date.now(), sl = character.slots || {};
+		// sales: a listing whose slot emptied (we only take items down by re-listing, which updates state first)
+		if (character.stand) for (const slot in state.stand) { // trade slots are only reliable while the stand is open
+			const L_ = state.stand[slot], cur = sl[slot];
+			if (cur && cur.name === L_.name) continue;
+			{
+				log_ev("sold", { item: `${L_.name}+${L_.level}`, q: L_.q, price: L_.price });
+				game_log(`stand: sold ${L_.name}+${L_.level}${L_.q > 1 ? " x" + L_.q : ""} for ${fmt_k(L_.price)}`, C.gold || C.ok);
+				delete state.stand[slot];
+			}
+		}
+		if (!character.stand) {
+			let k = character.items.findIndex((i) => i && G.items[i.name]?.stand);
+			if (k < 0) {
+				if (skipped("stand:buy") || character.gold < (G.items[S_.item]?.g || 40000) + CFG.merchant.donate.keep) return;
+				skip("stand:buy", 6 * 3600_000, "buying a stand");
+				await buy_from_npc(S_.item, 1).catch((e) => game_log(`stand: buying ${S_.item}: ${why(e)}`, C.dim));
+				return;
+			}
+			await T(open_stand(k), 3000).catch(() => {});
+			return;
+		}
+		// price cuts: re-list at the lower price
+		for (const slot in state.stand) {
+			const L_ = state.stand[slot];
+			if (now - (L_.cut_at || L_.at) < S_.cut_every_h * 3600_000) continue;
+			const min_price = Math.ceil(L_.value * S_.floor * L_.q), next = Math.max(min_price, Math.floor(L_.price * (1 - S_.cut)));
+			L_.cut_at = now;
+			if (next >= L_.price) continue;
+			await T(unequip(slot), 5000).catch(() => {});
+			const k = character.items.findIndex((i) => i && i.name === L_.name && (i.level || 0) === L_.level);
+			if (k < 0) { delete state.stand[slot]; return; }
+			await T(trade(k, slot, next, L_.q), 5000).then(() => { L_.price = next; game_log(`stand: ${L_.name} now ${fmt_k(next)}`, C.dim); })
+				.catch(() => delete state.stand[slot]);
+			return;
+		}
+		// new listing
+		const slot = TRADE_SLOTS.find((t) => !sl[t] && !state.stand[t]);
+		const k = [...stand_hold()][0];
+		if (!slot || k === undefined) return;
+		const it = character.items[k], q = it.q || 1, value = unit_value(it), price = Math.ceil(value * S_.markup * q);
+		await wait_budget(1, RESERVE.errand);
+		await T(trade(k, slot, price, q), 5000).then(() => {
+			state.stand[slot] = { name: it.name, level: it.level || 0, q, price, value, at: now };
+			stand_cache = null;
+			game_log(`stand: listed ${it.name}+${it.level || 0}${q > 1 ? " x" + q : ""} at ${fmt_k(price)} (value ${fmt_k(value * q)})`, C.dim);
+		}).catch((e) => game_log(`stand: listing ${it.name}: ${why(e)}`, C.dim));
+	} finally { stand_busy = false; }
 }
 // Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
 let donate_at = 0;
@@ -3186,7 +3290,10 @@ function merchant_tick() {
 	}
 	// idle: wait near the town spawn (bank, shops and upgrade NPCs are close)
 	const home = G.maps.main?.spawns?.[0] || [0, 0];
-	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) travel({ map: "main", x: home[0], y: home[1] });
+	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) {
+		if (character.stand) return void stand_close();
+		travel({ map: "main", x: home[0], y: home[1] });
+	} else if (!character.moving) stand_tick().catch(() => {});
 }
 // Fighter side: with the merchant within 300px, hand it bankable/sellable items (one per 0.7s, never what a member
 // would wear) and, if we're the richest fighter near, top its gold up to the float
