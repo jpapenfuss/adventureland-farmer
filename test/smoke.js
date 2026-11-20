@@ -3172,6 +3172,43 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; state.safe = {}; state.pick_skips = {}", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 1000, max_hp: 1000 });
 	}
+	// 123) v24.11: together by default; the leader travels as a group (waits for stragglers, pulls once all are there)
+	{
+		const split0 = vm.runInContext("CFG.party.split.enabled", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 1000, max_hp: 1000 });
+		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}; state.group_wait = null; state.group_ok = null; state.errand = null", ctx);
+		const P = "{ mtype: 'goo', map: 'main', boundary: [1000, 1000, 1400, 1400] }";
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: 50, y: 0 });
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === "Torlis", "heading out with Torlis 900px behind: wait for him");
+		hb("Torlis", { ...tor, level: 60, x: 400, y: 0 });
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === "Torlis", "...until he's well in (400px: not yet, once waiting)");
+		hb("Torlis", { ...tor, level: 60, x: 200, y: 0 });
+		assert(vm.runInContext(`group_hold(${P}, false) === null && state.group_wait === null`, ctx), "200px: go");
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 0, errand: "town" });
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "a member on its own errand isn't waited for");
+		hb("Torlis", { ...tor, level: 60, x: 1200, y: 1200, pack: { mtype: "goo", map: "main", boundary: [1000, 1000, 1400, 1400] } });
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "one already at our spot (waiting for us) isn't a straggler");
+		// at the spot: hold the pull until everyone's there; once assembled, no more holds at this spot
+		Object.assign(character, { x: 1200, y: 1200 });
+		hb("Torlis", { ...tor, level: 60, x: 1200, y: 1250 }); hb("Aspernari", { ...asp, level: 58, x: 200, y: 200 });
+		assert(vm.runInContext(`group_hold(${P}, true)`, ctx) === "Aspernari", "arrived; Aspernari still on the way: no pull yet");
+		hb("Aspernari", { ...asp, level: 58, x: 1210, y: 1190 });
+		assert(vm.runInContext(`group_hold(${P}, true) === null && state.group_ok === 'main:1000,1000,1400,1400'`, ctx), "all there: assembled");
+		hb("Aspernari", { ...asp, level: 58, x: 200, y: 200 });
+		assert(vm.runInContext(`group_hold(${P}, true)`, ctx) === null, "assembled at this spot: people moving around in the fight don't stop it");
+		// a stuck straggler: wait_s, then go on for go_s
+		Object.assign(character, { x: 0, y: 0 });
+		vm.runInContext("state.group_ok = null; state.group_wait = null", ctx);
+		hb("Aspernari", { ...asp, level: 58, x: 3000, y: 0 }); hb("Torlis", { ...tor, level: 60, x: 10, y: 0 });
+		vm.runInContext(`group_hold(${P}, false); state.group_wait.since = Date.now() - CFG.party.group.wait_s * 1000 - 1`, ctx);
+		assert(vm.runInContext(`group_hold(${P}, false) === null && state.group_wait.go_until > Date.now()`, ctx), "waited wait_s: go on");
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "...for go_s");
+		vm.runInContext("CFG.party.split.enabled = true", ctx);
+		assert(vm.runInContext(`group_hold(${P}, false) === null`, ctx), "split: no group travel");
+		vm.runInContext(`CFG.party.split.enabled = ${split0}; state.partners = {}; state.group_wait = null; state.group_ok = null`, ctx);
+		assert(/split: \{ enabled: false,/.test(src) && /group: \{ enabled: true, radius: 450/.test(src), "v24.11 defaults: together, group travel on");
+		Object.assign(character, { x: 0, y: 0 });
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

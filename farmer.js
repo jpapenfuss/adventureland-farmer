@@ -1,4 +1,4 @@
-const VERSION = "24.10"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.11"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -266,6 +266,12 @@ const CFG = {
 		// can take spots the leader couldn't survive alone. Not for aggressive monsters (G.monsters[].aggro > 0.3).
 		tank_first: true,
 		tank_hold_ms: 4000,    // how long the others hold fire on an untouched monster for the tank
+		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
+		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
+		// trickled in one by one, the leader (lowest level, often the mage) first. Members on their own errand,
+		// recovering, or already waiting at our spot don't count. A straggler is waited for wait_s at most, then the
+		// party goes on for go_s before waiting again.
+		group: { enabled: true, radius: 450, wait_s: 45, go_s: 60 },
 		wait_radius: 300,      // px; a follower whose leader is dead solo-grinds safe monsters within this radius
 		// v20.0: kill xp is split equally among an account's fighters in the party (server: share by owner), so
 		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
@@ -275,7 +281,10 @@ const CFG = {
 		// rule; hunts count party kills too), so on easy content the fighters farm separate spots. Each picks only what
 		// it can kill alone; one that finds nothing follows the leader. The leader calls everyone back for probes,
 		// bosses and events (regroup_max_min at most, then the probe is skipped this round).
-		split: { enabled: true, regroup_max_min: 10, occupied_mult: 0.6, fallback_min: 5,
+		// v24.11: off — together by default. Measured split ~ together (990k vs 948k/h) while walking was 72-93% of the
+		// time; together the fight model counts the tank's armour, the priest's heals and everyone's damage, so the party
+		// can farm content no fighter can alone, and nobody dies alone. Set true to split (and measure) again.
+		split: { enabled: false, regroup_max_min: 10, occupied_mult: 0.6, fallback_min: 5,
 			// v24.0: split vs together is measured, not assumed. Every member receives a share of every party kill wherever
 			// it is, so the leader's own xp intake measures the whole party in either mode. Each second of normal farming
 			// is booked to the mode it was spent in (bosses, events, probes, regroups, death and recovery are left out);
@@ -4519,6 +4528,8 @@ function party_header_lines() {
 		: [...fighters].sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1))[0].name;
 	const lp = fighters.find((f) => f.name === lead)?.pack;
 	out.push(`leader: ${lead}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
+	const gw = lead === character.name ? state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null : state.partners[lead]?.grp_wait;
+	if (!CFG.party.split?.enabled) out.push(`party: together (CFG.party.split off)${gw ? ` — waiting for ${gw}` : ""}`);
 	if (CFG.party.split?.enabled) {
 		const sp = lead === character.name ? !!state.split_on : !!state.partners[lead]?.split;
 		const pa = lead === character.name ? state.probe_at : state.partners[lead]?.probe_at, due = (pa || 0) + (CFG.probe?.every_min || 0) * 60_000;
@@ -4677,6 +4688,34 @@ function calp_share() {
 	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= 20) o[k.slice(0, -2)] = +state.calib[k].ratio.toFixed(3);
 	return o;
 }
+// ---- Group travel (CFG.party.group, v24.11) ----
+// Leader, together: the members we should wait for, as text — or null to go on (nothing to wait for, or waited enough)
+function group_hold(pack, here) {
+	const G_ = CFG.party.group, now = Date.now();
+	if (!G_?.enabled || !in_party_cfg() || split_now() || !pack || pack.boss || is_follower() || leader_name() !== character.name || errand_busy())
+		return void (state.group_wait = null), null;
+	const key = pack_key(pack);
+	if (here && state.group_ok === key) return null; // assembled at this spot already: fights move people around
+	const at_pack = (q, p) => p.pack && valid_boundary(p.pack.boundary) && pack_key(p.pack) === key && q.map === pack.map &&
+		in_rect(q.x, q.y, [pack.boundary[0] - 300, pack.boundary[1] - 300, pack.boundary[2] + 300, pack.boundary[3] + 300]);
+	const r = state.group_wait ? G_.radius * 0.6 : G_.radius; // once waiting, until they're well in
+	const far = partners().filter((p) => {
+		if (p.errand || p.recovering || p.rip) return false;
+		const q = partner_pos(p);
+		if (at_pack(q, p)) return false; // already there, waiting for us (our errand)
+		return q.map !== character.map || Math.hypot(q.x - character.x, q.y - character.y) > r;
+	});
+	if (!far.length) { if (here) state.group_ok = key; state.group_wait = null; return null; }
+	const W = state.group_wait || (state.group_wait = { since: now, go_until: 0 });
+	if (W.go_until > now) return null;
+	if (now - W.since > G_.wait_s * 1000) { // waited enough: carry on for a while
+		W.go_until = now + G_.go_s * 1000; W.since = W.go_until;
+		log_ev("group_timeout", { who: far.map((p) => p.name).join(",") });
+		return null;
+	}
+	W.who = far.map((p) => p.name).join(", ");
+	return W.who;
+}
 // ---- Verdicts shared with the party (v24.6) ----
 // Deaths and flees (incident + the pack's cooldown) and probe results used to stay in the state of whoever had them;
 // together, only the leader picks, from its own tables — so a follower's death changed nothing and the party walked
@@ -4751,7 +4790,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, follows: is_follower(), calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -5727,6 +5766,18 @@ function tick() {
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
+			if (pack && state.group_ok && state.group_ok !== pack_key(pack)) state.group_ok = null;
+			// v24.11: travel as a group — wait for stragglers before (and while) walking, and before pulling at the spot
+			const hold = group_hold(pack, in_area);
+			if (hold) {
+				const a = hit_on_me() || choose_target(false); // what's attacking one of us still gets fought
+				if (a) fight(a, true);
+				else if (walking() && !errand_busy()) { try { stop("smart"); } catch (e) {} }
+				set_message(`waiting for ${hold} (${Math.round((Date.now() - state.group_wait.since) / 1000)}s)`);
+				loot_chests();
+				setTimeout(tick, 250);
+				return;
+			}
 			const spread_on = CFG.party.spread && !!pack && !pack.probe && spread_ok(pack.mtype); // v24.8: easy content: our own targets
 			const t = hit_on_me() || (!i_am_tank() && !spread_on && caller_target()) || choose_target(in_area || !pack, true);
 			announce_target(t);
