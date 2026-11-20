@@ -1,4 +1,4 @@
-const VERSION = "23.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3756,9 +3756,38 @@ quiet_logs();
 //   scope "party": the party header shows it once for everyone (roster, leader/directive, goals merge, gold, hunts,
 //   last hour, rates, bosses, merchant) — only the solo report prints these from here.
 //   quiet: nothing worth reading right now (done quests, farm rows, idle features, normal safety); solo shows them.
+// Things that look wrong right now (v23.3): one "checks:" line per character, so a report shows at a glance whether the
+// latest fixes work in the game. Each check names what it saw.
+function health_checks() {
+	const W = [], now = Date.now(), hr = hist.ev.filter((e) => now - e.t < 3600_000), M_ = is_merchant();
+	const up_min = (now - seen.since) / 60_000;
+	if (!M_ && in_party_cfg() && !split_now() && seen.kill >= 20 && !seen.kc) W.push(`no kill_credit events after ${seen.kill} kills (together-mode spot rates not measured)`);
+	if (!M_ && up_min > 20 && seen.target_hit === 0 && !state.parked) W.push(`no hits landed in ${Math.round(up_min)} min`);
+	const deaths = hr.filter((e) => e.type === "death").length, flees = hr.filter((e) => e.type === "flee").length;
+	if (deaths) W.push(`${deaths} death${deaths > 1 ? "s" : ""} in the last hour`);
+	if (flees >= 3) W.push(`${flees} flees in the last hour`);
+	const stuck = hr.filter((e) => e.type === "stuck").length;
+	if (stuck >= 2) W.push(`watchdog acted ${stuck}x in the last hour`);
+	const trips = town_causes();
+	if (!M_ && trips.span >= 30 && trips.n * 60 / Math.max(trips.span, 1) > 8) W.push(`${trips.n} town trips in ${trips.span} min`);
+	if ((state.owe || 0) > 500_000) W.push(`owes the merchant ${fmt_k(state.owe)} (not near it to pay?)`);
+	if (M_ && character.gold < CFG.merchant.donate.keep) W.push(`merchant gold ${fmt_k(character.gold)} < its ${fmt_k(CFG.merchant.donate.keep)} potion float`);
+	if (spent() > BUDGET.soft) W.push(`call budget over (${Math.round(spent())}/${BUDGET.soft})`);
+	// a quest that has everything (bags + our bank share) but hasn't been crafted
+	for (const id of quest_recipes()) {
+		const r = G.craft[id];
+		if (!recipe_wanted(id) || skipped("qc:" + id)) continue;
+		if (r.items.every(([q, n, l]) => owned_in_bags_or_bank(n, l) >= q) && !has_inputs(r) && !bag_plan().fetch.some((f) => r.items.some(([, n]) => (f.name || f) === n)))
+			W.push(`quest ${id}: materials complete (bags + bank) but no fetch planned`);
+	}
+	const errs = hr.filter((e) => e.type === "error");
+	if (errs.length) W.push(`${errs.length} error${errs.length > 1 ? "s" : ""} logged in the last hour (history())`);
+	return W;
+}
 function report_facts() {
 	const out = [], F = (key, scope, text, quiet = false) => out.push({ key, scope, text, quiet });
 	const p = state.pack, d = state.directive, M_ = is_merchant(), now = Date.now();
+	{ const W = health_checks(); F("checks", "self", W.length ? `checks: ⚠ ${W.join(" | ")}` : "checks: ok"); }
 	// what we're doing (fight target and reason merged into one line; say so when we're not there yet)
 	if (M_) F("doing", "self", `merchant: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
 	else {

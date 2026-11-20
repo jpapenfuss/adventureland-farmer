@@ -2576,6 +2576,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}", ctx);
 		character.items = Array(42).fill(null);
 	}
+	// 109) v23.3: the report's checks line flags what looks wrong
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false });
+		character.items = Array(42).fill(null);
+		vm.runInContext("state.partners = {}; state.owe = 0; hist.ev = []; seen.kill = 0; seen.kc = 0; seen.target_hit = 5", ctx);
+		hb("Torlis", { ...tor, level: 60 });
+		assert(vm.runInContext("health_checks().length", ctx) === 0, `nothing wrong → no checks (${vm.runInContext("JSON.stringify(health_checks())", ctx)})`);
+		assert(/^checks: ok$/m.test(vm.runInContext("report_lines(false).join('\\n')", ctx)), "report: checks: ok");
+		vm.runInContext("seen.kill = 30; state.owe = 900000; log_ev('death', { killer: 'x' })", ctx);
+		const w = vm.runInContext("health_checks().join(' | ')", ctx);
+		assert(/no kill_credit/.test(w) && /owes the merchant 900k/.test(w) && /1 death/.test(w), `flags missing kill_credit, a big unpaid bill, a death (${w})`);
+		vm.runInContext("seen.kill = 0; state.owe = 0; hist.ev = []; state.partners = {}", ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
