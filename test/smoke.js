@@ -2872,6 +2872,61 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.use_skill = us; ctx.get_nearest_monster = gnm;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500, x: 0, y: 0, c: {}, slots: {} });
 	}
+	// 117) v24.5 town/gear review fixes: the merchant leaves fighter gear to fighters (and takes worn pieces off);
+	// bank copies go one per member; locked bank items are ignored; stacks list per unit; a stopped project is capped
+	{
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, map: "main", x: 0, y: 0, rip: false, esize: 30, stand: false });
+		character.items = Array(42).fill(null); character.slots = {};
+		ctx.G.items.helm117 = { type: "helmet", armor: 60 };
+		vm.runInContext("state.partners = {}; state.gear_skip = {}; state.errand = null; my_gear_cache = null; gear_busy = false; m_release_at = 0", ctx);
+		hb("Torlis", { ...tor, level: 60, gear: { w: { helmet: 0 }, own: {} } });
+		character.items[2] = { name: "helm117", level: 0 };
+		const eq = []; const eq0 = ctx.equip, uq0 = ctx.unequip;
+		ctx.equip = (k, slot) => { eq.push(slot); character.slots[slot] = character.items[k]; character.items[k] = null; return Promise.resolve(); };
+		ctx.unequip = (slot) => { eq.push("off:" + slot); const k = character.items.findIndex((i) => !i); character.items[k] = character.slots[slot]; delete character.slots[slot]; return Promise.resolve(); };
+		await vm.runInContext("equip_upgrades()", ctx);
+		assert(!eq.length && character.items[2]?.name === "helm117", `merchant: a helmet Torlis would gain from isn't worn (${eq})`);
+		character.slots.helmet = character.items[2]; character.items[2] = null;
+		vm.runInContext("my_gear_cache = null", ctx);
+		await vm.runInContext("equip_upgrades()", ctx);
+		assert(eq.join() === "off:helmet" && !character.slots.helmet, `...and one it already wears comes off, for delivery (${eq})`);
+		eq.length = 0;
+		hb("Torlis", { ...tor, level: 60, gear: { w: { helmet: 1e6 }, own: {} } });
+		vm.runInContext("my_gear_cache = null; m_release_at = 0", ctx);
+		await vm.runInContext("equip_upgrades()", ctx);
+		assert(eq.join() === "helmet", `no fighter wants it: the merchant wears it (${eq})`);
+		ctx.equip = eq0; ctx.unequip = uq0; character.slots = {}; character.items = Array(42).fill(null);
+		// bank: the merchant fetches for fighters first; each copy to one member
+		hb("Torlis", { ...tor, level: 60, gear: { w: { helmet: 0 }, own: {} } });
+		vm.runInContext("state.bank_gear = [{ name: 'helm117', level: 0 }]; my_gear_cache = null", ctx);
+		assert(vm.runInContext("bank_upgrades().length === 1", ctx), "one bank copy, one fetch");
+		// locked bank items aren't counted or listed
+		character.map = "bank"; character.bank = { items0: [{ name: "helm117", level: 0, l: "l" }, { name: "spores", q: 7, l: "l" }, { name: "spores", q: 3 }] };
+		vm.runInContext("state.bank_gear = []; state.bank_seen = {}; remember_bank()", ctx);
+		assert(vm.runInContext("state.bank_gear.length === 0 && state.bank_seen.spores === 3", ctx), `locked bank items ignored (${vm.runInContext("JSON.stringify([state.bank_gear, state.bank_seen])", ctx)})`);
+		character.map = "main"; character.bank = undefined; vm.runInContext("state.bank_gear = []; state.bank_seen = {}; state.bank_at = 0", ctx);
+		// worn pieces carry their lock (a swap never takes a locked partner piece)
+		character.slots = { ring1: { name: "goldring", level: 0, l: "l" } };
+		assert(vm.runInContext("worn_items().ring1.l === true", ctx), "worn_items marks a locked piece");
+		character.slots = {};
+		// stand: a stack is listed at a per-unit price
+		ctx.G.items.gem117 = { type: "gem", g: 200000, s: 9999 };
+		character.stand = true; character.items[5] = { name: "gem117", q: 5 };
+		const tr = []; const trade0 = ctx.trade;
+		ctx.trade = (k, slot, price, q) => { tr.push([character.items[k].name, price, q]); character.slots[slot] = { ...character.items[k], price }; character.items[k] = null; return Promise.resolve(); };
+		vm.runInContext("state.stand = {}; state.needs = new Map(); stand_cache = null; cmp_cache = null", ctx);
+		await vm.runInContext("stand_tick()", ctx);
+		const one = vm.runInContext("Math.ceil(unit_value({ name: 'gem117', q: 1 }) * CFG.merchant.stand.markup)", ctx);
+		assert(tr.length === 1 && tr[0][0] === "gem117" && tr[0][2] === 5 && tr[0][1] === one, `5 gems listed at ${one} each, not x5 (${JSON.stringify(tr)})`);
+		ctx.trade = trade0; character.stand = false; character.slots = {}; character.items = Array(42).fill(null); vm.runInContext("state.stand = {}", ctx);
+		// a project stopped by its odds: remembered, and a re-pick aims no higher
+		vm.runInContext("state.upg_caps = {}; upg_cap('helm117', 6)", ctx);
+		assert(vm.runInContext("upg_cap_level('helm117') === 6 && upg_cap_level('other') === Infinity", ctx), "the level a stopped project reached is its ceiling");
+		vm.runInContext("state.upg_caps.helm117.at = Date.now() - 8 * 86400000", ctx);
+		assert(vm.runInContext("upg_cap_level('helm117') === Infinity", ctx), "...for 7 days");
+		vm.runInContext("state.upg_caps = {}; state.partners = {}; my_gear_cache = null", ctx);
+		delete ctx.G.items.helm117; delete ctx.G.items.gem117;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

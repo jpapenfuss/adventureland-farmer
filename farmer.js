@@ -1,4 +1,4 @@
-const VERSION = "24.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -384,6 +384,7 @@ const state = {
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
+	upg_caps: {},            // item -> { level, at }: the level a project reached before odds/failures stopped it (v24.5, saved)
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)
 	mode_ab: null,           // leader: split vs together xp measurements and the measured choice (v24.0, saved)
@@ -1771,34 +1772,45 @@ const wanted_by_member = (item) => CFG.gear_auto && gear_takers().some((m, i) =>
 // Gear in the bank that beats what we wear: one per slot (the best), as task_bank fetch entries
 function bank_upgrades() {
 	if (!CFG.gear_auto || !CFG.bank) return [];
-	const g = my_gear(), by = {};
+	const g = my_gear(), offers = [];
 	// the merchant fetches fighters' upgrades and delivers them; with no merchant online, fighters fetch each other's
 	// (share_gear hands them over when near)
 	const takers = is_merchant() || !merchant_recent() ? gear_takers().slice(1) : [];
-	// v23.2: the best piece per (member, slot) — keyed by slot alone, one member's chest upgrade hid every other's for
-	// the 2h fetch window. A piece that's best for two members is fetched once (share_gear gives it to the bigger gain).
-	for (const it of state.bank_gear || []) {
+	(state.bank_gear || []).forEach((it, i) => {
 		const own = !equip_paused(it) && gear_gain(it, character.ctype, g);
-		const cands = own ? [[character.name, own]] : takers.map((m) => [m.name, gear_gain(it, m.ctype, m.g)]).filter(([, r]) => r);
-		for (const [who, r] of cands) {
-			const k = `${who}:${r.slot}`;
-			if (!by[k] || r.gain > by[k].gain) by[k] = { name: it.name, level: it.level, key: `gear:${it.name}:${it.level}`, gain: r.gain };
-		}
+		const theirs = () => takers.map((m) => [m.name, gear_gain(it, m.ctype, m.g)]).filter(([, r]) => r);
+		// v24.5: a fighter keeps first claim; the merchant takes a piece only if no fighter would
+		const cands = is_merchant() ? (theirs().length ? theirs() : own ? [[character.name, own]] : []) : own ? [[character.name, own]] : theirs();
+		for (const [who, r] of cands) offers.push({ ms: `${who}:${r.slot}`, i, gain: r.gain, it });
+	});
+	// v23.2: one piece per (member, slot); v24.5: and each bank copy to one (member, slot), biggest gains first — a
+	// piece best for two members went to one, and the other's next-best piece was never fetched
+	const used_ms = new Set(), used_i = new Set(), out = [];
+	for (const o of offers.sort((a, b) => b.gain - a.gain)) {
+		if (used_ms.has(o.ms) || used_i.has(o.i)) continue;
+		used_ms.add(o.ms); used_i.add(o.i);
+		const it = o.it;
+		out.push({ name: it.name, level: it.level, p: it.p, stat_type: it.stat_type, exact: true, gain: o.gain,
+			key: `gear:${it.name}:${it.level}${it.p ? ":" + it.p : ""}${it.stat_type ? ":" + it.stat_type : ""}` });
 	}
-	// rings/earrings: the two slots may pick the same bank piece; the key dedupe fetches it once
-	const seen_k = new Set();
-	return Object.values(by).filter((u) => !seen_k.has(u.key) && seen_k.add(u.key));
+	return out;
 }
 // A piece the server refused to equip (level, class...) isn't tried, fetched or held for 6h
 const equip_paused = (it) => skipped(`equip:${it.name}:${it.level || 0}`);
 // Wear the best upgrade in the bags (one equip per call; the replaced piece drops into the bags and is judged again)
 let gear_busy = false;
+// v24.5: the merchant wears only what no fighter would (and never a project or guide copy): it equipped fighter pieces
+// the moment it held them — deliveries, Ponty buys, a project's in-progress copy (whose loss restarted the project) —
+// and nothing ever took them off again. What it wears that a fighter now wants comes off, for gear_target to deliver.
+let m_release_at = 0;
 async function equip_upgrades() {
 	if (!CFG.gear_auto || gear_busy || character.rip || errand_busy()) return false;
-	const needed = needed_slots(), g = my_gear();
+	const needed = needed_slots(), g = my_gear(), M_ = is_merchant();
+	const fighters = M_ ? gear_takers().slice(1).filter((m) => m.ctype !== "merchant") : [];
+	const for_fighter = (it) => fighters.some((m) => gear_gain(it, m.ctype, m.g));
 	let best = null;
 	character.items.forEach((it, k) => {
-		if (!it || equip_paused(it)) return;
+		if (!it || equip_paused(it) || (M_ && (needed.has(k) || for_fighter(it)))) return;
 		const r = gear_gain(it, character.ctype, g);
 		// a copy the guide holds as an upgrade/compound input is worn only when clearly better (v20.0)
 		if (r && needed.has(k) && r.gain < (g.w[r.slot] || 0) * CFG.gear_input_gain) return;
@@ -1808,7 +1820,7 @@ async function equip_upgrades() {
 	if (!best && g.dh) {
 		let one = null, off = null;
 		character.items.forEach((it, k) => {
-			if (!it || equip_paused(it) || needed.has(k)) return;
+			if (!it || equip_paused(it) || needed.has(k) || (M_ && for_fighter(it))) return;
 			const d = G.items[it.name], cls = G.classes[character.ctype] || {};
 			if (!d) return;
 			const sc = gear_score(it);
@@ -1818,6 +1830,16 @@ async function equip_upgrades() {
 		const cur = g.w.mainhand || 0, sum = (one?.sc || 0) + (off?.sc || 0);
 		if (one && off && character.esize >= 1 && sum - cur >= CFG.gear_min_gain && sum - cur >= cur * CFG.gear_margin)
 			best = { slot: "mainhand", gain: sum - cur, score: one.sc, k: one.k, it: one.it };
+	}
+	if (!best && M_ && fighters.length && character.esize >= 2 && Date.now() - m_release_at > 60_000 && typeof unequip === "function") {
+		const s_ = GEAR_SLOTS.find((s) => { const X = character.slots?.[s]; return X && !X.l && !X.b && for_fighter(X); });
+		if (s_ && can_spend(EMIT_COST.equip, RESERVE.errand)) {
+			const X = character.slots[s_];
+			m_release_at = Date.now();
+			gear_busy = true;
+			try { await T(unequip(s_)); game_log(`gear: took off ${X.name}+${X.level || 0} — an upgrade for a fighter`, C.ok); return true; }
+			catch (e) { game_log(`gear: unequip ${s_}: ${why(e)}`, C.dim); return false; } finally { gear_busy = false; }
+		}
 	}
 	if (!best || !can_spend(EMIT_COST.equip, RESERVE.errand)) return false;
 	gear_busy = true;
@@ -1850,7 +1872,7 @@ async function share_gear() {
 	const needed = needed_slots(), mine = my_gear();
 	for (let k = 0; k < character.items.length; k++) {
 		const it = character.items[k];
-		if (!it || it.l || it.b || needed.has(k) || !GEAR.has(G.items[it.name]?.type) || (!equip_paused(it) && gear_gain(it, character.ctype, mine))) continue;
+		if (!it || it.l || it.b || needed.has(k) || !GEAR.has(G.items[it.name]?.type) || (!is_merchant() && !equip_paused(it) && gear_gain(it, character.ctype, mine))) continue;
 		let to = null;
 		for (const m of takers) {
 			const r = gear_gain(it, m.ctype, m.g);
@@ -1872,7 +1894,7 @@ async function share_gear() {
 // Worn pieces per slot (heartbeat), so members can spot swaps that help both
 function worn_items() {
 	const out = {}, sl = character.slots || {};
-	for (const s of GEAR_SLOTS) if (sl[s]) out[s] = { name: sl[s].name, level: sl[s].level || 0, p: sl[s].p, stat_type: sl[s].stat_type };
+	for (const s of GEAR_SLOTS) if (sl[s]) out[s] = { name: sl[s].name, level: sl[s].level || 0, p: sl[s].p, stat_type: sl[s].stat_type, l: !!(sl[s].l || sl[s].b) };
 	return out;
 }
 // v19.7/v20.0: a worn piece of ours that's an upgrade for a member near: take it off and send it. The member wears it
@@ -1889,7 +1911,8 @@ async function swap_worn() {
 		for (const s of GEAR_SLOTS) {
 			if (s === "mainhand" || s === "offhand") continue; // weapons/offhands are class-bound
 			const X = sl[s], Y = p.worn[s];
-			if (!X || !Y || X.l || X.b || (X.name === Y.name && (X.level || 0) === Y.level)) continue;
+			// v24.5: their piece must be free too (a locked one would stay in their bags and ours would be lost to them)
+			if (!X || !Y || X.l || X.b || Y.l || (X.name === Y.name && (X.level || 0) === Y.level)) continue;
 			if (!slots_for(Y.name, character.ctype, mine).includes(s) || !slots_for(X.name, p.ctype, p.gear).includes(s)) continue;
 			const ours = gear_score(Y) - (mine.w[s] || 0), theirs = gear_score(X, p.ctype) - (p.gear.w[s] || 0);
 			const ok = (gain, cur) => gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin;
@@ -2179,6 +2202,10 @@ function upgrade_cost(name, to) {
 	for (let l = 0; l < to; l++) c += G.items[upgrade_scroll(name, l)]?.g || 1e9;
 	return c;
 }
+// Upgrade ceilings (v24.5): item -> { level, at } where a project of it was stopped by its odds or its failures.
+// Kept 7 days (saved). A re-pick aims no higher, and is skipped while a copy at that level exists anywhere.
+const upg_cap = (name, level) => { state.upg_caps[name] = { level, at: Date.now() }; };
+const upg_cap_level = (name) => { const c = state.upg_caps[name]; return c && Date.now() - c.at < 7 * 86400_000 ? c.level : Infinity; };
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
 // Best project: the NPC-sold piece whose upgraded copy beats a member's worn piece by the most points per gold
 function pick_upgrade() {
@@ -2192,7 +2219,9 @@ function pick_upgrade() {
 		// normal target (scroll0/1 levels) and, for weapon slots, the high target (scroll2 levels too)
 		const targets = [[upgrade_target(name), budget, false]];
 		if (H?.enabled) targets.push([upgrade_target(name, true), gold * H.spend, true]);
-		for (const [to, cap, high] of targets) {
+		const capL = upg_cap_level(name);
+		for (let [to, cap, high] of targets) {
+			if (to > capL) to = capL; // v24.5: no higher than a past project of it reached before its odds/failures stopped it
 			if (!to) continue;
 			const cost = upgrade_cost(name, to);
 			if (cost > cap) continue;
@@ -2252,6 +2281,7 @@ async function task_upgrade() {
 		// sales, potion buys and the fighters' funding move it
 		if (P.spent === undefined) P.spent = 0;
 		if (P.spent > P.cost * CFG.upgrade_abort_x) {
+			upg_cap(P.name, Math.max(0, top));
 			skip("upg:" + P.name, 24 * 3600_000, "over budget");
 			game_log(`upgrade ${P.name}: failures pushed the cost past ${CFG.upgrade_abort_x}x the estimate; stopped${top >= 1 ? ` at +${top}` : ""}`, C.bad);
 			state.upg = null;
@@ -2264,6 +2294,9 @@ async function task_upgrade() {
 			n++;
 		} catch (e) {
 			P.spent += Math.max(0, g0 - character.gold);
+			// v24.5: refused for its odds, the next step will be refused again: remember the level reached, so the project
+			// isn't re-picked a day later to rebuild a copy at that level from +0 (and stopped there again, every day)
+			if (e?.chance !== undefined) upg_cap(P.name, Math.max(0, top));
 			skip("upg:" + P.name, pause_ms(e, 24 * 3600_000), why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
 			game_log(`upgrade ${P.name}: ${why(e)}; project stopped${top >= 1 ? ` at +${top}` : ""}`, C.dim);
 			state.upg = null; // the copy reached so far is free again (equip/share judge it)
@@ -2509,7 +2542,8 @@ function remember_bank() {
 	let free = 0, total = 0;
 	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) { total++; if (!i) free++; }
 	if (total) state.bank_free = { free, total, at: Date.now() };
-	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i) {
+	// v24.5: locked items (the owner's) are left out — fetched, nothing would use them, and they never went back
+	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i && !i.l) {
 		seen[i.name] = (seen[i.name] || 0) + (i.q || 1);
 		if ((GEAR.has(G.items[i.name]?.type) || G.items[i.name]?.type === "elixir") && gear.length < 400) gear.push({ name: i.name, level: i.level || 0, p: i.p, stat_type: i.stat_type });
 	}
@@ -2592,7 +2626,10 @@ async function task_bank(fetch_names) {
 	// pull back what bags need: packs on this floor first, then other unlocked floors that hold what's left (v18.1:
 	// before, a piece on bank_b/bank_u was listed as a bank upgrade forever and never fetched)
 	let got = 0;
-	const match = (want) => (i) => i && i.name === (want.name || want) && (want.level === undefined || (i.level || 0) === want.level);
+	// v24.5: never a locked copy; a gear piece (bank_upgrades) by its title and stat type too — the first copy at that
+	// name/level could be a worse one, which went back after 1-2h and was fetched again every 2h
+	const match = (want) => (i) => i && !i.l && i.name === (want.name || want) && (want.level === undefined || (i.level || 0) === want.level) &&
+		(!want.exact || ((i.p || null) === (want.p || null) && (i.stat_type || null) === (want.stat_type || null)));
 	const fetch_here = async (wants) => {
 		const left = [];
 		for (const want of wants) {
@@ -3789,7 +3826,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
-		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
+		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -3833,6 +3870,7 @@ function load_state() {
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
+	if (d.upg_caps && typeof d.upg_caps === "object") state.upg_caps = d.upg_caps;
 	if (d.donated) state.donated = d.donated;
 	if (d.stand) state.stand = d.stand;
 	if (d.bank_free) state.bank_free = d.bank_free;
@@ -4617,7 +4655,7 @@ const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
-	const msg = { k: "mhb", v: VERSION, b: BUILD, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+	const msg = { k: "mhb", v: VERSION, b: BUILD, worn: CFG.gear_auto ? worn_items() : null, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
@@ -5026,14 +5064,18 @@ async function stand_tick() {
 		// price cuts: re-list at the lower price
 		for (const slot in state.stand) {
 			const L_ = state.stand[slot];
-			if (now - (L_.cut_at || L_.at) < S_.cut_every_h * 3600_000) continue;
-			const min_price = Math.ceil(L_.value * S_.floor * L_.q), next = Math.max(min_price, Math.floor(L_.price * (1 - S_.cut)));
+			// v24.5: the server's price is per unit (a buyer pays price x q); stacks were listed at q times their value.
+			// A stack listed before (no per_unit) is re-listed at once at the per-unit price.
+			const old = L_.q > 1 && !L_.per_unit;
+			if (!old && now - (L_.cut_at || L_.at) < S_.cut_every_h * 3600_000) continue;
+			const min_price = Math.ceil(L_.value * S_.floor);
+			const next = old ? Math.ceil(L_.value * S_.markup) : Math.max(min_price, Math.floor(L_.price * (1 - S_.cut)));
 			L_.cut_at = now;
-			if (next >= L_.price) continue;
+			if (next >= L_.price) { L_.per_unit = true; continue; }
 			await T(unequip(slot), 5000).catch(() => {});
 			const k = character.items.findIndex((i) => i && i.name === L_.name && (i.level || 0) === L_.level);
 			if (k < 0) { delete state.stand[slot]; return; }
-			await T(trade(k, slot, next, L_.q), 5000).then(() => { L_.price = next; game_log(`stand: ${L_.name} now ${fmt_k(next)}`, C.dim); })
+			await T(trade(k, slot, next, L_.q), 5000).then(() => { L_.price = next; L_.per_unit = true; game_log(`stand: ${L_.name} now ${fmt_k(next)}${L_.q > 1 ? " each" : ""}`, C.dim); })
 				.catch(() => delete state.stand[slot]);
 			return;
 		}
@@ -5041,12 +5083,12 @@ async function stand_tick() {
 		const slot = TRADE_SLOTS.find((t) => !sl[t] && !state.stand[t]);
 		const k = [...stand_hold()][0];
 		if (!slot || k === undefined) return;
-		const it = character.items[k], q = it.q || 1, value = unit_value(it), price = Math.ceil(value * S_.markup * q);
+		const it = character.items[k], q = it.q || 1, value = unit_value(it), price = Math.ceil(value * S_.markup); // per unit
 		await wait_budget(1, RESERVE.errand);
 		await T(trade(k, slot, price, q), 5000).then(() => {
-			state.stand[slot] = { name: it.name, level: it.level || 0, q, price, value, at: now };
+			state.stand[slot] = { name: it.name, level: it.level || 0, q, price, value, at: now, per_unit: true };
 			stand_cache = null;
-			game_log(`stand: listed ${it.name}+${it.level || 0}${q > 1 ? " x" + q : ""} at ${fmt_k(price)} (value ${fmt_k(value * q)})`, C.dim);
+			game_log(`stand: listed ${it.name}+${it.level || 0}${q > 1 ? " x" + q : ""} at ${fmt_k(price)}${q > 1 ? " each" : ""} (value ${fmt_k(value)}${q > 1 ? " each" : ""})`, C.dim);
 		}).catch((e) => game_log(`stand: listing ${it.name}: ${why(e)}`, C.dim));
 	} finally { stand_busy = false; }
 }
