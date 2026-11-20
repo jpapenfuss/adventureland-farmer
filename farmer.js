@@ -1,4 +1,4 @@
-const VERSION = "16.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "16.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -88,6 +88,15 @@ const CFG = {
 	// party (tank first) must take tank_s seconds of the boss's damage within the safety budget, and one hit may not
 	// exceed one_hit of the squishiest member near. In practice: snowman, pinkgoo, wabbit yes; dragold, franky no.
 	boss: { enabled: true, tank_s: 10, one_hit: 0.4, skip: [] },
+	// Server events joined with join(name) while parent.S lists them (fighters only; merchants can't join):
+	//   goobrawl (daily, 9 min): Brawl Goos (100k hp, 100k xp, attack 5, xp shared by damage) on Goo Island; the rare
+	//     Rainbow Goo (48M xp, attack 320) only if it passes the boss survival check.
+	//   crabxx (40 min): clear the Huge Crabs (4.2k hp, attack 240) so the Giga Crab can be hurt; joined only when
+	//     the fight model calls Huge Crabs safe for us. Ice Golem / A/B testing aren't joined (too strong / PvP).
+	events: {
+		goobrawl: { on: true, map: "goobrawl", targets: ["bgoo"], extra: "rgoo" },
+		crabxx: { on: true, targets: ["crabx"], extra: "crabxx", safe_from: "crabx" },
+	},
 	// Monster tokens (Daisy): spend on the shop's class gear that a member would wear, best points per token first
 	token_auto: true,
 	// Secondhands (Ponty, main): items players sold to NPCs, resold at 2x item value (3x cash-shop items). The merchant
@@ -2210,6 +2219,63 @@ function boss_tick(pack) {
 	set_message(`→ BOSS ${pack.mtype} @ ${b.map}`);
 	return true;
 }
+// ---- Server events (CFG.events) ----
+// The event to be at: live in the server's event list, and safe for us (its safe_from monster passes fight_math)
+function event_live() {
+	if (is_merchant() || character.rip) return null;
+	const S_ = (typeof parent !== "undefined" && parent.S) || {};
+	for (const name in CFG.events || {}) {
+		const ev = CFG.events[name];
+		if (!ev.on || !S_[name]) continue;
+		const sf = ev.safe_from && G.monsters[ev.safe_from];
+		if (sf && !safe_enough(fight_math(sf), ev.safe_from)) continue;
+		return name;
+	}
+	return null;
+}
+// Are we at the event? goobrawl: on its map; others: within 800px of the event's reported position
+function event_here(name) {
+	const ev = CFG.events[name], e = parent.S?.[name];
+	if (ev.map) return character.map === ev.map;
+	return !!e && e.map === character.map && Number.isFinite(e.x) && Math.hypot(e.x - character.x, e.y - character.y) < 800;
+}
+let event_join_at = 0, event_logged = null;
+// Leader and followers alike: join, then fight the event's monsters (they're cooperative, which normal targeting
+// skips). Leaving: off the event map once it's over. Returns true when it took the tick.
+function event_tick() {
+	const name = event_live(), now = Date.now();
+	if (!name) {
+		event_logged = null;
+		if (character.map === "goobrawl" && !walking() && !errand_busy()) { travel({ map: "main" }); return true; } // event over
+		return false;
+	}
+	if (errand_busy() || state.recovering) return false;
+	const ev = CFG.events[name];
+	if (event_logged !== name) { event_logged = name; log_ev("event", { name }); game_log(`event: ${name} — joining`, C.info); }
+	if (!event_here(name)) {
+		if (now - event_join_at > 20_000 && typeof join === "function") {
+			event_join_at = now;
+			if (walking()) try { stop("smart"); } catch (e) {}
+			Promise.resolve(join(name)).catch((e) => game_log(`event ${name}: ${why(e)}`, C.dim));
+		}
+		set_message(`→ event ${name}`);
+		return true;
+	}
+	const party = party_names();
+	const ok = (e) => e.type === "monster" && valid(e) && (ev.targets.includes(e.mtype) || (e.mtype === ev.extra && boss_safe(ev.extra)));
+	const t = Object.values(parent.entities || {}).filter(ok)
+		.sort((a, b) => (party.has(b.target) ? 1 : 0) - (party.has(a.target) ? 1 : 0) || distance(character, a) - distance(character, b))[0];
+	if (t) {
+		state.last_target_at = now;
+		fight(t, true);
+		set_message(`event ${name}: ${t.mtype} ${t.hp}/${t.max_hp}`);
+	} else {
+		const e = parent.S?.[name];
+		if (!walking() && Number.isFinite(e?.x) && e.map === character.map) move_to(e.x, e.y, 1000);
+		set_message(`event ${name}: waiting for spawns`);
+	}
+	return true;
+}
 // The guide's farm row if it's current, not paused and not outlevelled (guide_farm_min_xp; a row we can't measure,
 // e.g. a monster we can't fight but the guide calls safe, is kept)
 function live_guide_farm() {
@@ -2870,6 +2936,10 @@ function report_lines(log = true, compact = false) {
 	} else if (full && CFG.merchant?.name) {
 		const M = merchant_hb();
 		L(`merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
+	}
+	{
+		const ev = event_live();
+		if (ev) L(`event: ${ev} — ${event_here(ev) ? "at it" : "joining"}`);
 	}
 	if (full && CFG.boss?.enabled && !is_merchant()) {
 		const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
@@ -3762,6 +3832,7 @@ function tick() {
 			state.dead_handled = false;
 			if (Date.now() - state.last_guide > CFG.guide_interval_ms) guide_refresh();
 			town_check();
+			if (event_tick()) { loot_chests(); setTimeout(tick, 200); return; }
 			if (is_merchant()) {
 				merchant_tick();
 				loot_chests();
@@ -3835,6 +3906,7 @@ tick();
 //      leader's pack type within wait_radius of the leader, staying engaged until the kill; heal (priests),
 //      energize the lowest-mana member (mages). Leader dead → solo-grind safe mobs nearby.
 //   7. Leader / solo → a live boss we can survive, else fight at the chosen pack.
+//   (Before 5-7: a live server event in CFG.events — Goo Brawl, Giga Crab — that we can survive: join and fight it.)
 //
 // Where to fight (solo or party leader):
 //   live boss > own monster hunt > own-quest materials > guide-quest materials > guide farm row (skipped when
