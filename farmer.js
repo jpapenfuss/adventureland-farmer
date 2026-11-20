@@ -1,4 +1,4 @@
-const VERSION = "24.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
