@@ -1,4 +1,4 @@
-const VERSION = "18.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -312,7 +312,9 @@ const state = {
 	bad_ids: {},             // entity id -> until: targets that took no damage (immune/healing)
 	prog: null,              // { id, hp, t }: damage progress on the current target
 	errand: null, errand_at: 0, errand_token: null, // running errand name, start time, and identity token
-	last_town: 0,            // when the last town run started
+	last_town: 0,            // when the last town run started (saved)
+	town_end_at: Date.now(), // when the last town run finished (saved); a fresh start counts as one, so deferrable
+	                         //   work waits town_soft_gap_ms after loading instead of triggering a trip at once
 	recovering: false, fled: false, // low-HP recovery in progress; use_town sent
 	parked: false, park_home: false, // park() active; the trip to town has been started
 	directive: null,         // farm instruction overriding the xp/s choice: { monster, map, boundary, count, reason, until }
@@ -3294,6 +3296,7 @@ function save_state() {
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
+		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [],
 		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at,
@@ -3320,6 +3323,10 @@ function load_state() {
 	Object.assign(state.fetched, d.fetched || {});
 	Object.assign(state.fetch_try, d.fetch_try || {});
 	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
+	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
+	if (d.last_town) state.last_town = d.last_town;
+	if (d.town_end_at) state.town_end_at = d.town_end_at;
+	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.donated) state.donated = d.donated;

@@ -2091,6 +2091,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0, bag_gear: ['mparmor'] }", ctx);
 	assert(vm.runInContext("token_pick()", ctx) === null, "the merchant carries one: no token buy");
 	character.items = Array(42).fill(null); vm.runInContext("state.partners = {}; state.merchant = null", ctx);
+	// 98) v19.0: trip timers survive a reload
+	{
+		const store98 = {}; const set_s = ctx.set, get_s = ctx.get;
+		ctx.set = (k, v) => ((store98[k] = JSON.parse(JSON.stringify(v))), true); ctx.get = (k) => store98[k] ?? null;
+		const t0 = Date.now() - 300000;
+		vm.runInContext(`state.last_town = ${t0}; state.town_end_at = ${t0 + 60000}; save_state(); state.last_town = 0; state.town_end_at = 0; load_state()`, ctx);
+		assert(vm.runInContext(`state.last_town === ${t0} && state.town_end_at === ${t0 + 60000}`, ctx), "last_town / town_end_at saved and restored");
+		ctx.set = set_s; ctx.get = get_s;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
