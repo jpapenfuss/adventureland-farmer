@@ -1,4 +1,4 @@
-const VERSION = "19.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -225,7 +225,9 @@ const CFG = {
 		},
 	},
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
-	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10 }, // v18.1: walk-time estimates for goal choice
+	// commit_min (v19.3): once the leader heads for a target it keeps it for the walk there + this many minutes of
+	// fighting (a boss, an unsafe target or a finished goal still switch at once)
+	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10, commit_min: 10 }, // v18.1: walk-time estimates for goal choice
 	party: {
 		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9); [] = solo
 		leader: null,          // null = the lowest-level member online leads (picks packs, others assist); or a name
@@ -2743,6 +2745,17 @@ function refresh_directive() {
 	// turns (pick_shared).
 	let d = mine;
 	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
+	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
+	const cur = state.directive, L = state.dir_lock;
+	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) &&
+		(state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster))) {
+		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
+		d = cur;
+	} else state.dir_held = null;
+	if (d && (!cur || cur.monster !== d.monster || cur.map !== d.map)) {
+		const a = valid_boundary(d.boundary) ? d : resolve_area(d.monster, d.map, d.boundary);
+		state.dir_lock = { monster: d.monster, until: now + ((a ? travel_s(a.map, a.boundary) : 60) + CFG.travel.commit_min * 60) * 1000 };
+	}
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
@@ -3523,6 +3536,7 @@ function report_facts() {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
 		F("gold", "party", `gold: us ${character.gold.toLocaleString()} / ${golds.map((x) => `${x.name} ${x.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((now - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > now ? `, next allowed in ${mins(next)}` : ""}`);
 	}
+	if (state.dir_held && state.dir_lock && !M_) F("dir_held", "self", `committed to ${state.directive?.monster} for ${mins(state.dir_lock.until)} more; then: ${state.dir_held.monster} (${state.dir_held.reason})`);
 	if (!is_follower() && partners().length && !M_) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);

@@ -42,6 +42,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
+vm.runInContext("CFG.travel.commit_min = 0", ctx); // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -2104,6 +2105,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext(`state.last_town === ${t0} && state.town_end_at === ${t0 + 60000}`, ctx), "last_town / town_end_at saved and restored");
 		ctx.set = set_s; ctx.get = get_s;
 	}
+	// 99) v19.3: the leader keeps a target it's walking to; a boss still overrides
+	vm.runInContext("state.partners = {}", ctx);
+	hb("Torlis", { ...tor, level: 60 });
+	vm.runInContext(`CFG.travel.commit_min = 10; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
+		state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.safe.arcticbee = { ttk: 1, xp: 1 };
+		globalThis.__ps = pick_shared; globalThis.__hd = hunt_directive; globalThis.__bd = boss_directive;
+		pick_shared = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], reason: "mutual" });
+		hunt_directive = () => null; boss_directive = () => null; refresh_directive()`, ctx);
+	assert(vm.runInContext("state.directive.monster === 'arcticbee' && state.dir_held && state.dir_held.monster === 'bee'", ctx), "committed: arcticbee kept, bee noted as waiting");
+	vm.runInContext("state.dir_lock.until = Date.now() - 1; refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'bee'", ctx), "commitment over: switches to bee");
+	vm.runInContext(`state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] }; state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 };
+		boss_directive = () => ({ monster: "franky", map: "main", boundary: [0,0,10,10], boss: true, reason: "boss" }); refresh_directive()`, ctx);
+	assert(vm.runInContext("state.directive.monster === 'franky'", ctx), "a boss overrides the commitment");
+	vm.runInContext("pick_shared = globalThis.__ps; hunt_directive = globalThis.__hd; boss_directive = globalThis.__bd; state.partners = {}; state.directive = null; state.dir_lock = null; CFG.travel.commit_min = 0", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();
