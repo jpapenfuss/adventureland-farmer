@@ -74,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.4";
+const VERSION = "15.5";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -116,6 +116,11 @@ const CFG = {
 	need_copies_compound: 4,   // copies of a compoundable item the guide is working on (3 per compound + 1)
 	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"], // never sold or banked
 	// --- own gear (scored by stats, independent of the guide) ---------------------------------------------------------
+	// Watchdog (v15.5): every 30s, catch silent stalls the timeouts miss. frozen: moved < 20px and gained no xp for
+	// frozen_min → stop the walk, cool the pack, re-pick. noprog: leader/solo with a pack but no xp for noprog_min →
+	// cool the pack and re-pick (3rd time in an hour: teleport to town first). lost: a follower out of reach of the
+	// leader (other map / > follow_far) for lost_min → teleport to town, then walk to the leader.
+	watchdog: { enabled: true, frozen_min: 3, noprog_min: 10, lost_min: 5 },
 	history_max: 1500,         // events kept in the persistent log (history(), deaths()); ~300KB per character
 	history_hours: 48,         // hourly time/xp/gold buckets kept
 	gear_auto: true,           // equip bag/bank items that score higher than what's worn; hand spares to party members
@@ -777,6 +782,70 @@ function incident(mt, mult) {
 	state.danger[mt] = (state.danger[mt] || 1) * mult;
 	state.danger_at[mt] = Date.now();
 }
+// ---- Watchdog (CFG.watchdog) ----
+const wd = { pos: [], lost_since: null, acts: [] };
+function wd_act(kind, note) {
+	const now = Date.now();
+	wd.acts = wd.acts.filter((t) => now - t.t < 3600_000);
+	wd.acts.push({ t: now, kind });
+	log_ev("stuck", { kind, note, map: character.map, x: Math.round(character.x), y: Math.round(character.y), pack: state.pack?.mtype || null });
+	game_log(`watchdog: ${kind} — ${note}`, C.warn);
+}
+function watchdog() {
+	const W = CFG.watchdog, now = Date.now();
+	if (!W?.enabled) return;
+	wd.pos.push({ t: now, map: character.map, x: character.x, y: character.y, xp: stats.xp });
+	wd.pos = wd.pos.filter((p) => now - p.t <= 15 * 60_000);
+	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant()) {
+		wd.lost_since = null;
+		return;
+	}
+	const since = (min) => wd.pos.filter((p) => now - p.t >= min * 60_000).pop(); // the sample ~min minutes ago
+	const no_xp = (p) => !!p && stats.xp - p.xp <= 0;
+	const still = (p) => !!p && wd.pos.filter((q) => q.t >= p.t).every((q) => q.map === character.map && Math.hypot(q.x - character.x, q.y - character.y) < 20);
+	const reset = (p) => { wd.pos = wd.pos.filter((q) => q.t > now - 1000); return p; };
+	if (is_follower()) {
+		const L = leader_hb(), pos = L && partner_pos(L);
+		const away = !!pos && !L.rip && !L.errand && (pos.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far);
+		wd.lost_since = away ? wd.lost_since || now : null;
+		if (away && now - wd.lost_since > W.lost_min * 60_000) {
+			wd.lost_since = null;
+			wd_act("lost", `${Math.round(W.lost_min)} min away from ${L.name}; town, then back to it`);
+			try { stop("smart"); } catch (e) {}
+			state.travel_block_until = 0;
+			errand("regroup", async () => { await T(use_skill("use_town"), 8000).catch(() => {}); await sleep_ms(4000); await go(partner_pos(leader_hb())).catch(() => {}); });
+			return;
+		}
+		const f = since(W.frozen_min);
+		if (still(f) && no_xp(f) && !away) { // a follower glued in place while the leader is near: walk back to it
+			reset();
+			wd_act("frozen", `follower stuck ${W.frozen_min} min; walking to ${L?.name}`);
+			try { stop("smart"); } catch (e) {}
+			state.travel_block_until = 0;
+		}
+		return;
+	}
+	const f = since(W.frozen_min);
+	if (state.pack && still(f) && no_xp(f)) { // no pack = nothing safe to fight: waiting is correct, not a stall
+		reset();
+		wd_act("frozen", `no movement and no xp for ${W.frozen_min} min${state.pack ? " at " + state.pack.mtype : ""}`);
+		try { stop("smart"); } catch (e) {}
+		state.travel_block_until = 0;
+		if (state.pack) state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
+		state.last_pick = 0;
+		return;
+	}
+	const n = since(W.noprog_min);
+	if (state.pack && no_xp(n)) {
+		reset();
+		const repeat = wd.acts.filter((a) => a.kind === "noprog").length >= 2;
+		wd_act("noprog", `no xp for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
+		state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
+		state.last_pick = 0;
+		if (repeat) { try { stop("smart"); } catch (e) {} use_skill("use_town"); }
+	}
+}
+setInterval(() => { try { watchdog(); } catch (e) { log_error("watchdog: " + e); } }, 30_000);
 // Where this second went
 function time_class() {
 	if (character.rip) return "dead";
@@ -838,6 +907,8 @@ function history(hours = 6) {
 	if (bosses.length) L.push(`bosses: ${bosses.slice(-4).map((e) => `${e.name} ${ago(e.t)} ago`).join(", ")}`);
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
+	const stuck = ev.filter((e) => e.type === "stuck");
+	if (stuck.length) L.push(`watchdog: ${stuck.length} — ${stuck.slice(-5).map((e) => `${e.kind} ${ago(e.t)} ago (${e.note})`).join(" | ")}`);
 	const errs = ev.filter((e) => e.type === "error");
 	if (errs.length) L.push(`errors: ${errs.slice(-3).map((e) => `${ago(e.t)}: ${e.msg}`).join(" | ")}`);
 	return share_text(`history ${character.name}`, L);
@@ -2800,6 +2871,10 @@ function report() {
 		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
 		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
 		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""} | bank upgrades: ${bank_upgrades().map((u) => u.name + "+" + u.level).join(", ") || "none"} | for party: ${held_for.join(", ") || "none"}`);
+	}
+	{
+		const acts = wd.acts.filter((a) => Date.now() - a.t < 3600_000);
+		if (acts.length) L(`watchdog: ${acts.length} intervention(s) in 1h (last: ${acts[acts.length - 1].kind} ${ago(acts[acts.length - 1].t)} ago)`);
 	}
 	{
 		const h = last_hour(), ph = partners().filter((x) => x.h1).map((x) => `${x.name} ${x.h1.dead}d/${x.h1.fled}f`);

@@ -1396,5 +1396,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("caller_target() === null && !i_am_tank()", ctx), "without a tank nothing changes");
 	for (const id of ["g65", "far65"]) delete ctx.parent.entities[id];
 	ctx.distance = dist_save; ctx.send_cm = () => Promise.resolve();
+	// 66) watchdog: frozen leader, no-progress leader (3rd time → town), lost follower; never during errands/parked
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 1, x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
+	vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; state.recovering = false; smart_depth = 0; hist.ev = []; wd.acts = []; wd.lost_since = null", ctx);
+	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}", ctx);
+	const seed = (mins, dx = 0) => vm.runInContext(`wd.pos = [{ t: Date.now() - ${mins} * 60000, map: 'main', x: ${100 + dx}, y: 100, xp: stats.xp }]`, ctx);
+	const stop66 = []; ctx.stop = (w) => stop66.push(w);
+	seed(4);
+	vm.runInContext("watchdog()", ctx);
+	assert(vm.runInContext("hist.ev.some((e) => e.type === 'stuck' && e.kind === 'frozen') && Object.keys(state.cooldown).length === 1", ctx) && stop66.includes("smart"), "frozen leader: walk stopped, pack cooled down, logged");
+	// moving but no xp for 11 min → noprog; third time in an hour → town
+	vm.runInContext("hist.ev = []; state.cooldown = {}", ctx);
+	const town66 = []; ctx.use_skill = (s) => (town66.push(s), Promise.resolve());
+	for (let i = 0; i < 3; i++) { seed(11, 300); vm.runInContext("watchdog()", ctx); }
+	assert(vm.runInContext("hist.ev.filter((e) => e.kind === 'noprog').length", ctx) === 3 && town66.includes("use_town"), `no-progress acted 3x, the 3rd with a town teleport (${town66})`);
+	// during an errand or parked: nothing
+	vm.runInContext("hist.ev = []; wd.acts = []; state.errand = 'town'; state.errand_at = Date.now()", ctx); seed(30);
+	vm.runInContext("watchdog(); state.errand = null; state.parked = true", ctx); seed(30);
+	vm.runInContext("watchdog(); state.parked = false", ctx);
+	assert(vm.runInContext("hist.ev.length", ctx) === 0, "no intervention during an errand or while parked");
+	// lost follower: other map than the leader for > lost_min
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", map: "halloween", x: 0, y: 0 });
+	hb("Sanala", { ...san, level: 1, map: "main", x: 0, y: 0 });
+	town66.length = 0;
+	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; watchdog()", ctx);
+	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) === "regroup", "lost follower regroups via town");
+	vm.runInContext("state.errand = null; state.pack = null; wd.pos = []; wd.acts = []; hist.ev = []", ctx);
+	ctx.stop = (a) => calls.push("stop:" + a);
 	console.log("ALL PASS");
 })();
