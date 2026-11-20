@@ -1,82 +1,4 @@
-// =====================================================================
-// Adventure Land farmer. One file for every character; VERSION below is the only version number (report() prints
-// it). What changed between versions is in the git history, not here.
-//
-// Each tick, first match wins:
-//   1. Dead → respawn as soon as the server allows (rip_time).
-//   2. HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at recover_hp/recover_mp.
-//   3. park() was called → finish the current errand, stand in town until resume().
-//   4. Town run, when something is due: Daisy (hunt) → quest crafts (Cole etc.) → Progression Guide steps →
-//      compound spares → upgrade project → exchange → elixir → sell → potions → bank (→ compound sets the bank visit
-//      completed). With the merchant online, fighters go only at <= fighter_min_free slots / fighter_pot_min potions. Normally needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical
-//      and attackers are ignored. While another party member is in town, thresholds relax (sync_factor) to share the trip.
-//   5. Party follower → stay with the leader, close in on and hit its target (within wait_radius of the leader),
-//      heal (priests), energize the lowest-mana member (mages); if the leader is dead, solo-grind
-//      safe mobs nearby (wait_radius).
-//   6. Otherwise fight at the chosen pack.
-//
-// Where to fight (solo or party leader):
-//   own monster hunt > own-quest materials > guide-quest materials > guide farm row (skipped when outlevelled) >
-//   best xp/s pack (CFG.goal_w).
-//   In a party the leader merges every member's weighted goal list: a monster on 2+ lists whose goals finish within
-//   mutual_max_h wins (more members and quicker first); with no overlap, members take turn_min-minute turns.
-//   Safety (fight_math) follows the server's damage formula on live monster stats; nearby members' damage and a
-//   nearby priest's heals count only while they're near. Tank first (CFG.party.tank_first): with a paladin/warrior
-//   near, the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's HP/armour.
-//   World bosses (CFG.boss): a live cooperative boss on this server that the party can survive beats every other goal.
-//   Class skills: priest heal/partyheal/curse/absorb, mage energize (lowest-mana member)/burst, paladin
-//   selfheal/smash/mshield, ranger mark/supershot.
-//
-// Bags — every item is KEEP, SELL or BANK; acted on when free slots drop below bag_min_free:
-//   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, the copies the guide's current steps use, materials of
-//         unfinished quest recipes, anything fetched from the bank in the last hour.
-//   SELL: CFG.sell names; +0 plain gear only if auto_sell_gear, or while every usable bank pack is full.
-//   BANK: everything else. Needed items in the bank are fetched back (once per item per 2h).
-//
-// Party (CFG.party, any number of members): the lowest-level member leads, the others follow it; members talk via
-//   send_cm every beat_ms, invite each other without splitting an existing party, and balance gold (CFG.party.gold:
-//   the richest sends 15% to the poorest when the poorest has < 10% of its gold, at most once per 3h party-wide).
-//
-// Gear (CFG.gear_auto): items are scored by class-weighted stats (CFG.gear_w; tanks weigh defence double). Every 5s
-//   wear the best bag upgrade, else hand a bag spare to a nearby member it's an upgrade for (send_item). The bank is
-//   account-wide: upgrades seen there are fetched on the next bank visit, so a piece one member banks reaches another.
-//   Slots the guide equipped are left to it for gear_guide_respect_h; gear a member would wear is never auto-sold.
-//   Compounding (CFG.compound_auto): three spare copies of a compoundable item at one level (bags + bank; never
-//   worn, locked, titled, guide-needed or a member's upgrade) are compounded on town runs up to +compound_max_level,
-//   when the server's preview clears compound_min_chance. Bank copies are fetched to complete a set.
-//
-// Upgrades (CFG.upgrade_auto): one project at a time: the NPC-sold piece whose upgraded copy (up to +7, scroll0/1
-//   levels) beats a member's worn piece by the most per gold, bought and upgraded step by step behind the server's
-//   preview. Elixirs (elixir_auto): keep the elixir slot filled (owned, else Liquid Luck when rich). Exchange
-//   (exchange_auto): boxes/gems/candies opened once the bags hold a full set.
-//
-// Merchant (CFG.merchant, a merchant-class character): not a party member. It carries potions to fighters low on
-//   potions or bag space, collects their bankable/sellable items, casts mluck (level 40+), fetches bank upgrades for
-//   them, and runs the town work (sell, bank, compound, upgrade projects, exchange). The richest near fighter keeps
-//   its gold at CFG.merchant.float. Merchants get no kill XP; it levels by donating gold (donate: 3.2-4.8 XP per gold
-//   on the server) until donate.to_level (40 = mluck). Every 10 min it checks Ponty's secondhand stock for fighter
-//   upgrades and compound-set completions. At level 30+ it casts massproduction before each upgrade/compound. Idle at
-//   home it runs a stand (CFG.merchant.stand): spare valuables listed at 3x value, -10% per 12h, floor 1.5x.
-//
-// Diagnostics: report(), history(hours), deaths(n) and why_not("monster") in the CODE console (copyable text box).
-//   report() also gathers every other character's report (same server; stored copies otherwise) into one text box;
-//   report(6) adds each one's 6h history; party_report() re-opens the last one.
-//   park()/resume(), forget().
-//
-// Server behaviour relied on (checked against kaansoral/adventureland):
-//   - call cost: > 200 per rolling 4s disconnects; move 2.5, equip 4, unequip 7; character.cc = the server's total.
-//   - use_town: 3s channel, cancelled by attacking/moving/equipping; fails with > 5 monsters targeting you.
-//   - chests: gold multiplier lost beyond 400px or after 8 min; respawn rip_time 12s.
-//   - a computer bypasses shop/upgrade/compound/craft/exchange distance checks, not Daisy's.
-//   - client promises never time out → every game call goes through T(); every walk through go() (walk_timeout_ms).
-//   - monster-hunt kills and XP are credited to every party member; XP is split by damage dealt.
-//   - bank_b / bank_u floors stay locked until a bkey / ukey is used; send_gold needs same map, < 400px, not in bank.
-//   - send_item: same map, < 400px. Two-handed weapons (G.classes[].doublehand) need the offhand empty.
-//   - Progression Guide rows: upgrade action.level = INPUT level, request.level = target; farm rows carry
-//     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
-// =====================================================================
-
-const VERSION = "16.2";
+const VERSION = "16.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3835,3 +3757,84 @@ function tick() {
 
 setInterval(() => { if (spent() <= BUDGET.soft) sustain(); }, 250); // potions/regen checked 4x a second
 tick();
+
+// =====================================================================
+// OVERVIEW
+// Adventure Land farmer. One file for every character (fighters and the merchant); VERSION (first line) is the only
+// version number, and report() prints it. What changed between versions is in the git history, not here.
+//
+// Each tick, first match wins:
+//   1. Dead → respawn as soon as the server allows (rip_time).
+//   2. HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at recover_hp/recover_mp.
+//   3. park() was called → finish the current errand, stand in town until resume().
+//   4. Town run, when something is due: Daisy (hunt, tokens) → quest crafts (Cole etc.) → Progression Guide steps →
+//      compound → upgrade project → exchange → elixir → sell → potions → bank (→ compound what the bank visit
+//      fetched). Needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical and attackers are
+//      ignored. A member already in town relaxes the thresholds (sync_factor) to share the trip. With the merchant
+//      online, fighters go only at <= fighter_min_free slots / fighter_pot_min potions, and for guide steps alone at
+//      most every guide_gap_ms.
+//   5. Merchant → supply runs, secondhands, donations, stand (see Merchant).
+//   6. Party follower → stay with the leader; hit the tank's target, else the leader's, else its own pick of the
+//      leader's pack type within wait_radius of the leader, staying engaged until the kill; heal (priests),
+//      energize the lowest-mana member (mages). Leader dead → solo-grind safe mobs nearby.
+//   7. Leader / solo → a live boss we can survive, else fight at the chosen pack.
+//
+// Where to fight (solo or party leader):
+//   live boss > own monster hunt > own-quest materials > guide-quest materials > guide farm row (skipped when
+//   outlevelled) > best xp/s pack (CFG.goal_w). In a party the leader merges every member's weighted goals: a monster
+//   on 2+ lists whose goals finish within mutual_max_h wins (more members, quicker first); otherwise members take
+//   turn_min-minute turns.
+//
+// Safety: fight_math follows the server's damage formula on live monster stats; nearby members' damage and a nearby
+//   priest's heals count only while they're near. Tank first: with a paladin/warrior near, it picks the targets and
+//   announces them; the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's
+//   HP/armour (not for aggressive monsters). Each monster's safety multiplier = calibration (actual ÷ predicted
+//   damage per fight, after 20 fights: x0.4-1.5) × incidents (death x0.6, flee x0.8, fading 10%/h).
+//   Bosses (cooperative: shared xp/loot) are judged on surviving boss.tank_s seconds of their damage.
+//   Class skills: priest heal/partyheal/curse/absorb/darkblessing, mage energize/burst/cburst, paladin
+//   selfheal/smash/mshield/purify, ranger mark/supershot, merchant mluck/massproduction.
+//
+// Bags — every item is KEEP, SELL or BANK; acted on when free slots drop below bag_min_free:
+//   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, copies the guide/quests/upgrade project need, compound
+//         sets, stand stock (merchant), anything fetched from the bank in the last hour.
+//   SELL: CFG.sell names; +0 plain gear only if auto_sell_gear or the bank is full; the merchant's bank purge.
+//   BANK: everything else. Needed items, gear upgrades and compound copies in the bank are fetched back.
+//
+// Gear: items are scored by class-weighted stats (CFG.gear_w; tanks weigh defence double). Every 5s wear the best
+//   bag upgrade, drink the best elixir, else hand a spare to a nearby member it upgrades (send_item). The bank is
+//   account-wide, so upgrades seen there are fetched for whoever they fit. Slots the guide equipped are left to it
+//   for gear_guide_respect_h. Compounding: three spare copies at one level (bags + bank) up to +compound_max_level
+//   behind the server's preview, up to compound_per_run sets per trip; done only by the merchant while it's online.
+//   Upgrade projects: the NPC-sold piece whose upgraded copy beats a member's worn piece most per gold. Monster
+//   tokens buy shop class gear for a member; exchangeables (boxes, gems) are opened.
+//
+// Party (CFG.party): the lowest-level member leads; members talk via send_cm every beat_ms (heartbeats), invite each
+//   other without splitting a party, and balance gold (the richest sends 15% to the poorest below 10% of its gold,
+//   at most every 3h). The watchdog (every 30s) catches frozen, no-progress and lost-follower stalls.
+//
+// Merchant (CFG.merchant): not a party member. Carries potions to fighters low on potions or bag space and collects
+//   their loot; casts mluck; fetches bank upgrades for them; does all compounding and upgrade projects while online;
+//   checks Ponty's secondhands for upgrades / compound completions; levels by donating gold (no kill XP) up to
+//   donate.to_level; idle at home it runs a stand (3x value, -10% per 12h, floor 1.5x); with the bank nearly full it
+//   pulls low-value items to sell or list. The richest fighter nearby keeps its gold at float.
+//
+// Diagnostics (CODE console, copyable text box): report() — this character at once, then the whole party in one
+//   box (same server; stored copies otherwise); report(6) adds 6h history each; party_report() re-opens it;
+//   history(hours), deaths(n), why_not("monster"); park()/resume(); forget().
+//
+// Server behaviour relied on (checked against kaansoral/adventureland):
+//   - call cost: > 200 per rolling 4s disconnects; move 2.5, equip 4, unequip 7; cm 1-2; character.cc = server total.
+//   - client promises never time out → every game call goes through T(); every walk through go() (walk_timeout_ms).
+//   - compound takes 10s on the server (5s with massproduction); an upgrade to +L takes 500·L·√L ms.
+//   - use_town: 3s channel, cancelled by attacking/moving/equipping; fails with > 5 monsters targeting you.
+//   - chests: gold multiplier lost beyond 400px or after 8 min; respawn rip_time 12s.
+//   - a computer bypasses shop/upgrade/compound/craft/exchange distance checks, not Daisy's.
+//   - monster-hunt kills and XP are credited to every party member; XP is split by damage dealt; merchants get none.
+//   - send_gold / send_item: same map, < 400px; cm reaches only characters on the same server.
+//   - bank_b / bank_u floors stay locked until a bkey / ukey is used; bank contents arrive after entering.
+//   - an open stand sets speed to 10; two-handed weapons (G.classes[].doublehand) need the offhand empty.
+//   - the runner defines ~350 globals (e.g. pm, smart, T): a top-level const/let with one of those names aborts the
+//     whole script (test/smoke.js checks this); function declarations may replace them.
+//   - Progression Guide rows: upgrade action.level = INPUT level, request.level = target; farm rows carry
+//     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
+// =====================================================================
