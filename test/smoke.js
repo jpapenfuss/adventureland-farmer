@@ -2642,6 +2642,68 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("best_known_xps()", ctx) === 2000, "no pick (a follower): the best measured");
 		vm.runInContext("state.measured = {}; state.best_score = 0", ctx);
 	}
+	// 113) v24.0: split vs together is measured; the leader books its xp intake to the mode it's in and picks the better one
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
+		vm.runInContext(`CFG.party.split.enabled = true; state.partners = {}; state.was_leader = true; state.split_on = false; state.mode_ab = null;
+			state.probe = null; state.directive = null; state.regroup_since = 0; state.recovering = false; state.probe_at = Date.now(); hist.ev = []`, ctx);
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
+		vm.runInContext("split_decide()", ctx);
+		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split'", ctx), "no data yet: split (the default), choice made now");
+		vm.runInContext("state.mode_ab.flip_at = Date.now()", ctx);
+		vm.runInContext("mode_ab_tick(10)", ctx);
+		assert(vm.runInContext("state.mode_ab.split.s === 0", ctx), "the first settle_min after a split/regroup isn't booked");
+		vm.runInContext("state.mode_ab.flip_at = 0; for (let i = 0; i < 60; i++) mode_ab_tick(10)", ctx);
+		assert(vm.runInContext("state.mode_ab.split.s === 60 && state.mode_ab.split.xp === 600 && state.mode_ab.together.s === 0", ctx), "a second of split farming is booked to split");
+		const old = "Date.now() - CFG.party.split.ab.hold_min * 60000 - 1", need = "CFG.party.split.ab.sample_min * 60";
+		vm.runInContext(`state.mode_ab.since = ${old}; split_decide()`, ctx);
+		assert(vm.runInContext("state.split_on", ctx), "the current mode is measured first (60s < sample_min)");
+		vm.runInContext(`Object.assign(state.mode_ab.split, { s: ${need}, xp: ${need} * 10 }); split_decide()`, ctx);
+		assert(vm.runInContext("!state.split_on && state.mode_ab.mode === 'together' && hist.ev.some((e) => e.type === 'mode_ab' && e.why === 'too little data on it')", ctx),
+			"split measured; together has no data → try together");
+		vm.runInContext("state.mode_ab.flip_at = 0; mode_ab_tick(5)", ctx);
+		assert(vm.runInContext("state.mode_ab.together.s === 1 && state.mode_ab.together.xp === 5", ctx), "together farming is booked to together");
+		vm.runInContext(`Object.assign(state.mode_ab.together, { s: ${need}, xp: ${need} * 5 }); split_decide()`, ctx);
+		assert(vm.runInContext("!state.split_on", ctx), "a new choice holds hold_min even when it's worse");
+		vm.runInContext(`state.mode_ab.since = ${old}; split_decide()`, ctx);
+		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split' && hist.ev.some((e) => e.type === 'mode_ab' && e.why === 'it earns more' && e.split === 36000 && e.together === 18000)", ctx),
+			"together measured at half the xp → back to split");
+		vm.runInContext(`state.mode_ab.since = ${old}; Object.assign(state.mode_ab.together, { s: ${need}, xp: ${need} * 10.5 }); split_decide()`, ctx);
+		assert(vm.runInContext("state.mode_ab.mode === 'split'", ctx), "5% better isn't enough (margin 1.1)");
+		vm.runInContext(`Object.assign(state.mode_ab.together, { s: ${need}, xp: ${need} * 12 }); split_decide()`, ctx);
+		assert(vm.runInContext("state.mode_ab.mode === 'together' && !state.split_on", ctx), "20% better is");
+		vm.runInContext(`state.mode_ab.since = ${old}; Object.assign(state.mode_ab.split, { s: ${need} * 0.4, xp: ${need} * 0.4 * 20 }); split_decide()`, ctx);
+		assert(vm.runInContext("state.mode_ab.mode === 'split' && state.split_on", ctx), "the faded loser (under half of sample_min) is re-tried, whatever its old rate");
+		assert(/mode changes: .*→ split \(it earns more; split 36k\/h, together 18k\/h\)/.test(vm.runInContext("history_lines(1).join('\\n')", ctx)), "history lists mode changes");
+		// forced periods: not booked, and they don't change the choice or its clock
+		vm.runInContext(`state.mode_ab.since = ${old}; state.mode_ab.split = { s: ${need}, xp: ${need} * 20 }; state.mode_ab.flip_at = 0;
+			globalThis.__pp4 = probe_pick; probe_pick = () => ({ mt: 'edge', area: {}, est: 1, r: 1.4 });
+			state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()`, ctx);
+		assert(vm.runInContext("!state.split_on && state.regroup_since > 0 && state.mode_ab.mode === 'split'", ctx), "a probe regroup: together for now, the choice stays split");
+		vm.runInContext("globalThis.__s4 = state.mode_ab.split.s; mode_ab_tick(50); split_decide()", ctx);
+		assert(vm.runInContext("state.mode_ab.split.s === globalThis.__s4 && state.mode_ab.together.s === " + vm.runInContext(need, ctx) + " && !state.split_on", ctx), "regrouping isn't booked to either mode");
+		vm.runInContext("state.regroup_since = 0; state.probe = { mtype: 'edge' }; split_decide(); mode_ab_tick(50)", ctx);
+		assert(vm.runInContext("!state.split_on && state.mode_ab.together.s === " + vm.runInContext(need, ctx), ctx), "a running probe isn't booked either");
+		vm.runInContext("state.probe = null; state.probe_at = Date.now(); split_decide()", ctx);
+		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split'", ctx), "probe over → split again (no lock-in together)");
+		vm.runInContext("probe_pick = globalThis.__pp4", ctx);
+		// fading: 8h halves both samples
+		vm.runInContext("state.mode_ab.at = Date.now() - CFG.party.split.ab.half_life_h * 3600000; state.mode_ab.flip_at = Date.now(); globalThis.__s4 = state.mode_ab.split.s; mode_ab_tick(0)", ctx);
+		assert(vm.runInContext("Math.abs(state.mode_ab.split.s - globalThis.__s4 / 2) < 1", ctx), "a half-life halves the sample");
+		// report text, save/load, handover
+		assert(/party xp split 72k\/h \(20m of data\) vs together 43k\/h \(20m of data\)/.test(vm.runInContext("mode_why()", ctx)), `mode text (${vm.runInContext("mode_why()", ctx)})`);
+		const store113 = {}, sg113 = [ctx.set, ctx.get];
+		ctx.set = (k, v) => ((store113[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in store113 ? JSON.parse(store113[k]) : null);
+		vm.runInContext("globalThis.__ab4 = JSON.stringify(state.mode_ab); save_state(); state.mode_ab = null; load_state()", ctx);
+		[ctx.set, ctx.get] = sg113;
+		assert(vm.runInContext("JSON.stringify(state.mode_ab) === globalThis.__ab4", ctx), "saved and loaded");
+		const ab = JSON.parse(vm.runInContext("globalThis.__ab4", ctx));
+		vm.runInContext("state.mode_ab = null; state.was_leader = false; state.partners = {}", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 900, split: true, probe_at: Date.now(), ab: { ...ab, at: Date.now() } });
+		vm.runInContext("split_decide()", ctx);
+		assert(vm.runInContext(`state.mode_ab && state.mode_ab.split.s === ${ab.split.s} && state.split_on`, ctx), "a new leader adopts the old leader's measurements");
+		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false; state.mode_ab = null; state.partners = {}; state.was_leader = false; hist.ev = []", ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

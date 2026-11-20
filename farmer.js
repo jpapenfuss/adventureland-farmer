@@ -1,4 +1,4 @@
-const VERSION = "23.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -268,7 +268,15 @@ const CFG = {
 		// rule; hunts count party kills too), so on easy content the fighters farm separate spots. Each picks only what
 		// it can kill alone; one that finds nothing follows the leader. The leader calls everyone back for probes,
 		// bosses and events (regroup_max_min at most, then the probe is skipped this round).
-		split: { enabled: true, regroup_max_min: 10, occupied_mult: 0.6, fallback_min: 5 },
+		split: { enabled: true, regroup_max_min: 10, occupied_mult: 0.6, fallback_min: 5,
+			// v24.0: split vs together is measured, not assumed. Every member receives a share of every party kill wherever
+			// it is, so the leader's own xp intake measures the whole party in either mode. Each second of normal farming
+			// is booked to the mode it was spent in (bosses, events, probes, regroups, death and recovery are left out);
+			// samples fade with half_life_h so the comparison follows levels and gear. A mode with under sample_min
+			// minutes of data is tried once the current mode has that much; otherwise the party switches only to a mode
+			// earning margin x more, and holds any choice for hold_min. The first settle_min after each split/regroup
+			// (walking) isn't booked. The losing mode's sample fades; under half of sample_min it is re-tried.
+			ab: { enabled: true, sample_min: 40, hold_min: 30, margin: 1.1, half_life_h: 8, settle_min: 3 } },
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
 		turn_min: 15,          // with no mutual goal, the leader alternates 15-min turns between its goal and its partner's
@@ -373,6 +381,7 @@ const state = {
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)
+	mode_ab: null,           // leader: split vs together xp measurements and the measured choice (v24.0, saved)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	fund_need: 0,            // merchant: gold its current project step needs from the fighters
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
@@ -1186,6 +1195,8 @@ function history_lines(hours = 6) {
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
 	const probes = ev.filter((e) => e.type === "probe");
 	if (probes.length) L.push(`probes: ${probes.slice(-6).map((e) => `${e.mtype} ${e.result === "ok" ? "✓" : "✗ " + e.why} (x${e.over} over; calibration ${e.ratio ?? "?"} over ${e.n} fights)`).join(" | ")}`);
+	const modes = ev.filter((e) => e.type === "mode_ab");
+	if (modes.length) L.push(`mode changes: ${modes.slice(-6).map((e) => `${ago(e.t)} ago → ${e.mode} (${e.why}; split ${fmt_k(e.split)}/h, together ${fmt_k(e.together)}/h)`).join(" | ")}`);
 	const stuck = ev.filter((e) => e.type === "stuck");
 	if (stuck.length) L.push(`watchdog: ${stuck.length} — ${stuck.slice(-5).map((e) => `${e.kind} ${ago(e.t)} ago (${e.note})`).join(" | ")}`);
 	const errs = ev.filter((e) => e.type === "error");
@@ -1296,6 +1307,7 @@ let gold_prev = null;
 setInterval(() => {
 	const d = xp_delta(), p = state.pack;
 	stats.xp += d;
+	mode_ab_tick(d);
 	const b = bucket(), cls = time_class();
 	b.time[cls] = (b.time[cls] || 0) + 1;
 	b.xp += d;
@@ -3689,7 +3701,7 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
+		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -3722,6 +3734,7 @@ function load_state() {
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
+	if (d.mode_ab?.split && d.mode_ab?.together) state.mode_ab = d.mode_ab; // v24.0
 	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due (and a regroup) at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
@@ -4183,6 +4196,8 @@ function party_header_lines() {
 		const pa = lead === character.name ? state.probe_at : state.partners[lead]?.probe_at, due = (pa || 0) + (CFG.probe?.every_min || 0) * 60_000;
 		out.push(sp ? `party: farming separately${CFG.probe?.enabled && pa ? ` (regroup for a probe in ${mins(due)})` : ""} — ${fighters.map((f) => `${f.name} @ ${f.pack ? f.pack.mtype : "?"}`).join(", ")}`
 			: `party: together${lead === character.name && state.regroup_since ? ` (regrouping for a probe, ${ago(state.regroup_since)})` : ""}`);
+		const ab = lead === character.name ? state.mode_ab : state.partners[lead]?.ab;
+		if (CFG.party.split.ab?.enabled && ab?.split) out.push(`mode: ${ab.mode === "split" ? "separate" : "together"} by measurement since ${ago(ab.since)} — ${mode_why(ab)}`);
 	}
 	const M = is_merchant() ? { name: character.name, gold: character.gold, map: character.map, esize: character.esize, serving: state.serving } : merchant_hb();
 	out.push(`gold: ${[...fighters, ...(M ? [M] : [])].map((f) => `${f.name} ${fmt_k(f.gold || 0)}`).join(" / ")}`);
@@ -4282,37 +4297,87 @@ function split_decide() {
 		const prev = partners_any().filter((p) => p.split !== undefined);
 		state.probe_at = Math.max(state.probe_at || 0, ...prev.map((p) => p.probe_at || 0));
 		if (prev.some((p) => p.split)) state.split_on = true;
+		const ab = prev.map((p) => p.ab).filter((a) => a?.split && a?.together).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+		if (ab && (ab.at || 0) > (state.mode_ab?.at || 0)) state.mode_ab = JSON.parse(JSON.stringify(ab));
 	}
-	let on = !state.probe && !state.directive?.boss && !event_live();
+	const forced = !!state.probe || !!state.directive?.boss || !!event_live();
+	const pref = mode_pick(); // v24.0: the mode that has earned more (or needs data)
+	let on = !forced && pref === "split", why_ = forced ? "a probe, boss or event" : on ? "" : mode_why();
 	if (on && P?.enabled && now - (state.probe_at || 0) >= P.every_min * 60_000) {
 		// v23.1: only call everyone back if a probe would find something — judged for the whole party (as it would be
 		// once regrouped) against the party's best normal spot. Most checks find nothing; each regroup cost a walk.
+		let regroup = true;
 		if (!state.regroup_since) {
 			const ref = best_score_for("all"), pb = probe_pick("all", ref);
 			if (!pb) {
 				state.probe_at = now;
 				state.probe_none = { at: now, best: Math.round(ref), dry: true };
 				log_ev("probe_dry", { best: Math.round(ref) });
-				return void (state.split_on || (state.split_on = true, state.last_pick = 0, log_ev("split", {}), game_log("party: farming separately (equal xp shares wherever we are)", C.info)));
+				regroup = false;
 			}
 		}
-		state.regroup_since = state.regroup_since || now;
-		if (now - state.regroup_since < S_.regroup_max_min * 60_000) on = false;
-		else { state.probe_at = now; state.regroup_since = 0; log_ev("regroup_timeout", {}); game_log(`party: not everyone made it back for the probe in ${S_.regroup_max_min} min; skipping it this round`, C.dim); }
-	} else if (on) state.regroup_since = 0;
+		if (regroup) {
+			state.regroup_since = state.regroup_since || now;
+			if (now - state.regroup_since < S_.regroup_max_min * 60_000) { on = false; why_ = "for a probe"; }
+			else { state.probe_at = now; state.regroup_since = 0; log_ev("regroup_timeout", {}); game_log(`party: not everyone made it back for the probe in ${S_.regroup_max_min} min; skipping it this round`, C.dim); }
+		}
+	} else if (on || pref !== "split") state.regroup_since = 0;
 	if (on !== !!state.split_on) {
 		state.split_on = on;
-		log_ev(on ? "split" : "regroup", {});
-		game_log(on ? "party: farming separately (equal xp shares wherever we are)" : "party: regrouping", C.info);
+		if (state.mode_ab) state.mode_ab.flip_at = now;
+		log_ev(on ? "split" : "regroup", { why: on ? mode_why() : why_ });
+		game_log(on ? `party: farming separately${mode_why() ? ` (${mode_why()})` : ""}` : `party: together (${why_})`, C.info);
 		state.last_pick = 0;
 	}
+}
+// ---- Split vs together, measured (CFG.party.split.ab, v24.0) ----
+// state.mode_ab: { split: {xp, s}, together: {xp, s}, at (last fade), mode (the measured choice), since (when mode was
+// chosen), flip_at (last actual split/regroup) }. mode is kept apart from split_on: probes, bosses and events override
+// split_on for a while without changing the choice or its hold clock.
+const ab_rate = (b) => (b && b.s > 0 ? b.xp / b.s : 0); // xp per second
+const ab_state = () => state.mode_ab || (state.mode_ab = { split: { xp: 0, s: 0 }, together: { xp: 0, s: 0 }, at: Date.now(), mode: "split", since: Date.now(), flip_at: 0 });
+// Leader, every second: book this second's xp to the mode we're in, unless something else decides the mode right now
+function mode_ab_tick(d) {
+	const A = CFG.party.split?.ab, now = Date.now();
+	if (!A?.enabled || !CFG.party.split.enabled || !in_party_cfg() || leader_name() !== character.name || !partners().length) return;
+	const M = ab_state();
+	if (now - (M.at || now) >= 60_000) { // fade both samples once a minute (and over any offline gap)
+		const k = Math.pow(0.5, (now - M.at) / (A.half_life_h * 3600_000));
+		for (const m of ["split", "together"]) { M[m].xp *= k; M[m].s *= k; }
+		M.at = now;
+	}
+	if (state.probe || state.directive?.boss || state.regroup_since || character.rip || state.recovering || event_live()) return;
+	const cur = state.split_on ? "split" : "together";
+	if (cur !== M.mode || now - (M.flip_at || 0) < A.settle_min * 60_000) return;
+	M[cur].xp += Math.max(0, d); M[cur].s += 1;
+}
+// The mode to be in (leader, each split_decide): finish measuring the current one, then try the other if its data is
+// thin; else switch only to one earning margin x more. A choice holds hold_min.
+function mode_pick() {
+	const A = CFG.party.split?.ab, now = Date.now();
+	if (!A?.enabled) return "split";
+	const M = ab_state(), cur = M.mode, other = cur === "split" ? "together" : "split", need = A.sample_min * 60;
+	if (now - (M.since || 0) < A.hold_min * 60_000 || M[cur].s < need) return cur;
+	const why = M[other].s < need / 2 ? "too little data on it" : ab_rate(M[other]) > ab_rate(M[cur]) * A.margin ? "it earns more" : "";
+	if (!why) return cur;
+	M.mode = other; M.since = now;
+	log_ev("mode_ab", { mode: other, why, split: Math.round(ab_rate(M.split) * 3600), together: Math.round(ab_rate(M.together) * 3600) });
+	game_log(`party: trying ${other === "split" ? "separate spots" : "farming together"} — ${why} (${mode_why()})`, C.info);
+	return other;
+}
+// The measurements, as text (report/log); M defaults to ours
+function mode_why(M = state.mode_ab) {
+	const A = CFG.party.split?.ab;
+	if (!A?.enabled || !M?.split || !M?.together) return "";
+	const f = (m) => `${m} ${fmt_k(Math.round(ab_rate(M[m]) * 3600))}/h${M[m].s < A.sample_min * 60 ? ` (${Math.round(M[m].s / 60)}m of data)` : ""}`;
+	return `party xp ${f("split")} vs ${f("together")}`;
 }
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
