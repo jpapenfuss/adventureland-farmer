@@ -765,7 +765,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.monsters.crab = { xp: 50, hp: 200, attack: 5, respawn: 10, range: 20, speed: 10, frequency: 1 };
 	ctx.G.monsters.armadillo = { xp: 200, hp: 600, attack: 12, respawn: 10, range: 20, speed: 10, frequency: 1 };
 	ctx.G.maps.main.monsters.push({ type: "crab", count: 8, boundary: [500, 500, 700, 700] }, { type: "armadillo", count: 6, boundary: [700, 700, 900, 900] });
-	ctx.G.drops = { monsters: { crab: [[0.001, "crabclaw"]], armadillo: [[0.0008, "ascale"]] } };
+	ctx.G.drops = { monsters: { crab: [[0.001, "crabclaw"]], armadillo: [[0.002, "ascale"]] } }; // v24.6: drops split across the party; 0.0008 now took us >3h
 	ctx.G.craft = { wattire: { items: [[200, "crabclaw"]], cost: 0, quest: "mcollector" }, orbg: { items: [[1, "ascale"]], cost: 0, quest: "mcollector" } };
 	ctx.G.items.wattire = { type: "chest" }; ctx.G.items.orbg = { type: "orb" };
 	vm.runInContext("state.turn = null; state.goals_cache = null; state.crafted = {}; state.guide_farm = null; state.measured = {}; state.realism = 1", ctx);
@@ -2926,6 +2926,58 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("upg_cap_level('helm117') === Infinity", ctx), "...for 7 days");
 		vm.runInContext("state.upg_caps = {}; state.partners = {}; my_gear_cache = null", ctx);
 		delete ctx.G.items.helm117; delete ctx.G.items.gem117;
+	}
+	// 118) v24.6 party review fixes: deaths, flees and probe results are shared; calibration by how the fight is judged;
+	// a measurement covers only time at the spot; realism clamped; a re-trial isn't held by the margin
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
+		vm.runInContext("state.partners = {}; state.danger = {}; state.cooldown = {}; state.probe_ok = {}; state.calib = {}; hist.ev = []", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 30, y: 0 });
+		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "incident", mtype: "goo", mult: 0.6, key: "main:100,100,400,400", cd: Date.now() + 1800000, death: true } });
+		assert(vm.runInContext("Math.abs(state.danger.goo - 0.6) < 1e-9 && state.cooldown['main:100,100,400,400'] > Date.now() + 1700000", ctx),
+			"a partner's death at a pack: we take its incident and the pack's cooldown");
+		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "probe_ok", mtype: "goo", mult: 1.5 } });
+		assert(vm.runInContext("state.probe_ok.goo && state.probe_ok.goo.mult === 1.5", ctx), "a probe that held is shared");
+		assert(vm.runInContext("Math.abs(danger_of('goo', { solo: false, mates: 1 }) / danger_of('goo', { solo: true, mates: 0 }) - 1.5) < 1e-9", ctx), "...and widens the party verdict, not the solo one");
+		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "probe_fail", mtype: "goo" } });
+		assert(vm.runInContext("!state.probe_ok.goo", ctx), "a failed probe clears it");
+		handlers.cm({ name: "Stranger", message: { k: "verdict", kind: "incident", mtype: "goo", mult: 0.1 } });
+		assert(vm.runInContext("Math.abs(state.danger.goo - 0.6) < 1e-9", ctx), "verdicts from outside the party are ignored");
+		// our own death is sent
+		const sent118 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent118.push([to, m]); return Promise.resolve(); };
+		vm.runInContext(`state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.dead_handled = false;
+			pmring.hits.push({ t: Date.now(), mtype: 'goo', dmg: 500 }); on_death(); pmring.hits.length = 0; state.dead_handled = false`, ctx);
+		assert(sent118.some(([to, m]) => m.k === "verdict" && m.kind === "incident" && m.death && m.key === "main:100,100,400,400" && to.includes("Torlis")), "our death is sent to the party");
+		// a probe that held is recorded and sent
+		sent118.length = 0;
+		vm.runInContext("state.probe = { mtype: 'goo', start: Date.now() - 700000, until: Date.now() - 1, ratio: 1.4 }; state.recovering = false; probe_check()", ctx);
+		assert(vm.runInContext("Math.abs(state.probe_ok.goo.mult - 1.47) < 1e-9", ctx) && sent118.some(([, m]) => m.kind === "probe_ok" && m.mtype === "goo"), "probe held: verdict widened x1.4 x 1.05 and sent");
+		ctx.send_cm = scm;
+		// calibration: a fight under tank cover isn't ours to record; the tank's shared ratio is used for it
+		vm.runInContext("state.calib = {}; cal.cur.goo = 50; globalThis.__fm = fight_math; fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, solo: false, mates: 1, tank: 'Torlis', hp_pool: 900 }); calib_record('goo')", ctx);
+		assert(vm.runInContext("Object.keys(state.calib).length === 0", ctx), "under tank cover: nothing recorded");
+		hb("Torlis", { ...tor, level: 60, x: 30, y: 0, calp: { goo: 0.5 } });
+		assert(vm.runInContext("Math.abs(calib_factor('goo', { solo: false, mates: 1, tank: 'Torlis' }) - 1.5) < 1e-9", ctx), "the tank's calibration (hits half as hard) gives the covered verdict x1.5");
+		vm.runInContext("fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, solo: true, mates: 0, tank: null, hp_pool: 1000 }); cal.cur.goo = 25; calib_record('goo')", ctx);
+		assert(vm.runInContext("state.calib.goo && state.calib.goo.n === 1 && !state.calib['goo@p']", ctx), "a solo fight goes to the solo table");
+		vm.runInContext("fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, solo: false, mates: 1, tank: null, hp_pool: 1000 }); cal.cur.goo = 25; calib_record('goo')", ctx);
+		assert(vm.runInContext("state.calib['goo@p'] && state.calib['goo@p'].n === 1", ctx), "a party fight with no tank cover goes to the party table");
+		vm.runInContext("fight_math = globalThis.__fm; state.calib = {}; state.danger = {}; state.cooldown = {}; state.probe_ok = {}; cal.cur = {}", ctx);
+		// a measurement covers only the time at the spot
+		vm.runInContext(`state.measured = {}; state.realism = 1; state.split_on = false;
+			state.session = { key: 'main:5,5,6,6', mtype: 'goo', est: 10, xp: 0, kx: 0, kc: 1000, kc_n: 5, split: split_now(), start: Date.now() - 300000, end: Date.now() - 200000 }; end_session()`, ctx);
+		assert(Math.abs(vm.runInContext("state.measured['main:5,5,6,6']", ctx) - 10) < 0.01, `1000 xp over the 100s spent there = 10 xp/s, not over 300s (${vm.runInContext("state.measured['main:5,5,6,6']", ctx)})`);
+		vm.runInContext(`state.session = { key: 'main:7,7,8,8', mtype: 'goo', est: 0.01, xp: 0, kx: 0, kc: 100000, kc_n: 1, split: split_now(), start: Date.now() - 100000 }; end_session()`, ctx);
+		assert(vm.runInContext("state.realism <= 3 && Math.abs(state.realism - (0.7 + 5 * 0.3)) < 1e-9", ctx), `a wild sample moves realism by at most 5x its weight (${vm.runInContext("state.realism", ctx)})`);
+		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1; state.session = null", ctx);
+		// a re-trial is judged on rates alone once it has its data
+		hb("Aspernari", { ...asp, level: 58, x: -30, y: 0 });
+		vm.runInContext(`CFG.party.split.enabled = true; state.was_leader = true; state.mode_ab = { split: { xp: 2400 * 10, s: 2400 }, together: { xp: 2400 * 10.5, s: 2400 },
+			at: Date.now(), mode: 'together', since: Date.now() - 3600000, flip_at: 0, trial: true }`, ctx);
+		assert(vm.runInContext("mode_pick() === 'together' && !state.mode_ab.trial", ctx), "re-trial 5% better: it stays, on its rate");
+		vm.runInContext("Object.assign(state.mode_ab, { mode: 'together', trial: true, since: 0, together: { xp: 2400 * 9.5, s: 2400 } })", ctx);
+		assert(vm.runInContext("mode_pick() === 'split'", ctx), "re-trial 5% worse: back to split (no 10% margin protecting the re-trial)");
+		vm.runInContext("CFG.party.split.enabled = false; state.mode_ab = null; state.partners = {}; state.was_leader = false; state.pack = null; hist.ev = []", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");
