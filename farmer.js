@@ -1,4 +1,4 @@
-const VERSION = "24.11"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.12"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -42,7 +42,8 @@ const CFG = {
 	hp_pot: "hpot1",           // HP potion bought and used (hpot1 = the 400 HP potion)
 	mp_pot: "mpot1",           // MP potion bought and used (mpot1 = the 500 MP potion)
 	pot_min: 30,               // restock when either potion drops below this many
-	pot_buy: 200,              // ...back up to this many (as far as gold allows)
+	pot_buy: 1000,             // ...back up to this many (as far as gold allows). v24.12: was 200 — potions stack to 9999
+	                           // in one slot, so carrying more costs no bag space, and every restock is a trip saved
 	// --- bags ------------------------------------------------------------------------------------------------------
 	bag_min_free: 10,          // town run (sell + bank) when free bag slots drop below this (bags hold 42)
 	sell: [],                  // item names to always sell
@@ -211,8 +212,10 @@ const CFG = {
 		name: "DoWhatNow",
 		wear_gear: false,      // v24.7: the merchant doesn't fight: gear it wore (spare jewellery) broke compound sets and did nothing
 		serve_free: 12,        // visit a fighter with fewer free bag slots than this...
-		serve_pots: 80,        // ...or fewer potions of either kind than this
-		pot_carry: 400,        // potions of each kind taken out per trip (configured tier, or the cheap one if gold is short)
+		serve_pots: 500,       // ...or fewer potions of either kind than this (v24.12: half of pot_buy; was 80 — fighters
+		                       // ran low, walked to town, and the merchant stayed idle)
+		pot_carry: 3000,       // most potions of each kind taken out per trip (v24.12: it takes what the fighters are short of
+		                       // to reach pot_buy, so one trip tops everyone up; was a fixed 400)
 		self_pots: 20,         // potions of each kind the merchant keeps for itself
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
@@ -5047,7 +5050,10 @@ async function serve(f) {
 	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type) && best_fighter_for(it)?.name === f.name) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
 	try {
 		const M = CFG.merchant;
-		await task_restock(M.pot_carry, M.pot_carry + M.self_pots).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
+		// v24.12: enough for every fighter's shortfall to pot_buy (they're together: one trip tops all of them up)
+		const short = (k) => partners().reduce((t, p) => t + Math.max(0, CFG.pot_buy - (p.pots?.[k] ?? CFG.pot_buy)), 0);
+		const carry = Math.min(M.pot_carry, Math.max(short("hp"), short("mp"), 100)) + M.self_pots;
+		await task_restock(carry, carry).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
 		for (let i = 0; i < 4; i++) {
 			if (state.errand) state.errand_at = Date.now(); // each re-aimed walk is progress
 			const q = state.partners[f.name];

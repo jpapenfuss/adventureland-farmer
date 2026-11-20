@@ -136,7 +136,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(JSON.stringify(bought) === '[["hpot0",100],["mpot0",100]]', `poor: restock falls back to cheap potions (${JSON.stringify(bought)})`);
 	bought.length = 0; character.gold = 100000;
 	await vm.runInContext(`state.errand = null; smart_depth = 0; task_restock()`, ctx);
-	assert(JSON.stringify(bought) === '[["hpot1",200],["mpot1",200]]', `rich: restock buys the configured potions (${JSON.stringify(bought)})`);
+	assert(JSON.stringify(bought) === '[["hpot1",1000],["mpot1",1000]]', `rich: restock buys the configured potions, up to pot_buy (v24.12: 1000) (${JSON.stringify(bought)})`);
+	assert(vm.runInContext("CFG.pot_buy === 1000 && CFG.merchant.serve_pots === 500", ctx) && /const carry = Math\.min\(M\.pot_carry, Math\.max\(short\("hp"\), short\("mp"\), 100\)\) \+ M\.self_pots/.test(src),
+		"v24.12: the merchant comes out at 500 and carries every fighter's shortfall to pot_buy");
 	character.gold = 1000;
 
 	// 10) governor honours the server-reported call cost
@@ -1175,7 +1177,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 100 }; character.items[1] = { name: "mpot1", q: 100 };
 	const gave = []; ctx.send_item = (to, k, q) => (gave.push([to, character.items[k].name, q]), Promise.resolve());
 	await vm.runInContext("give_pots(state.partners.Aspernari)", ctx);
-	assert(JSON.stringify(gave) === '[["Aspernari","hpot1",80]]', `hands potions, keeping self_pots (${JSON.stringify(gave)})`);
+	// v24.12: pot_buy 1000 — Aspernari (10 hp, 190 mp) is short of both; each limited by our 100 minus self_pots 20
+	assert(JSON.stringify(gave) === '[["Aspernari","hpot1",80],["Aspernari","mpot1",80]]', `hands potions, keeping self_pots (${JSON.stringify(gave)})`);
 	// fighter side
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", gold: 10e6, x: 0, y: 0 });
 	character.items = Array(42).fill(null); character.items[5] = { name: "gslime", q: 3 };
@@ -1894,8 +1897,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: 0 });
 	character.items = Array(42).fill(null); character.items[2] = { name: "tracker", q: 1 };
 	vm.runInContext("state.partners = {}", ctx);
-	hb("Torlis", { ...tor, esize: 30, pots: { hp: 200, mp: 200 }, tokens: 0, need: ["tracker"] });
-	hb("Sanala", { ...san, esize: 30, pots: { hp: 200, mp: 200 }, tokens: 0, need: [] });
+	hb("Torlis", { ...tor, esize: 30, pots: { hp: 1000, mp: 1000 }, tokens: 0, need: ["tracker"] }); // v24.12: stocked = pot_buy
+	hb("Sanala", { ...san, esize: 30, pots: { hp: 1000, mp: 1000 }, tokens: 0, need: [] });
 	assert(vm.runInContext("merchant_job() && merchant_job().name", ctx) === "Torlis", "a held Tracktrix makes Torlis a delivery job");
 	character.items[2] = null;
 	assert(vm.runInContext("merchant_job()", ctx) === null, "nothing to deliver and no needs → no trip");
@@ -2424,7 +2427,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_cm = (to, m) => (bills.push([to.join(), m]), Promise.resolve());
 		await vm.runInContext("give_pots({ name: 'Torlis', pots: { hp: 50, mp: 200 } })", ctx);
 		const bill = bills.find(([, m]) => m.k === "bill");
-		assert(bill && bill[0] === "Torlis" && bill[1].g === 150 * 20, `merchant bills Torlis for 150 hpot1 at 20 = 3000 (${JSON.stringify(bill)})`);
+		// v24.12: Torlis is 950 short of pot_buy 1000; we have 300 and keep self_pots 20 → 280 handed, billed at 20 each
+		assert(bill && bill[0] === "Torlis" && bill[1].g === 280 * 20, `merchant bills Torlis for 280 hpot1 at 20 = 5600 (${JSON.stringify(bill)})`);
 		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, gold: 500000, map: "main", x: 0, y: 0 });
 		character.items = Array(42).fill(null);
 		vm.runInContext("state.owe = 0; state.partners = {}; handoff_busy = false; merchant_gold_at = Date.now()", ctx);
