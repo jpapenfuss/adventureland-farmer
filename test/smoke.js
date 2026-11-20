@@ -1486,6 +1486,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("report()", ctx);
 	const req = cm68.find(([, k]) => k === "rreq");
 	assert(req && req[0] === "Aspernari,Torlis,DoWhatNow" && modal68 === "", `report() asks the other three and opens no window until the combined one (${req && req[0]})`);
+	assert(req[2].hours === 1, `v22.2: report() asks for each character's 1h history too (${req[2].hours})`);
 	const id68 = req[2].id;
 	// responder side: a request makes us reply with our lines; a 2nd within 5s doesn't
 	cm68.length = 0;

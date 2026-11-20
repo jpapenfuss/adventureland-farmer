@@ -1,4 +1,4 @@
-const VERSION = "22.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "22.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -148,6 +148,7 @@ const CFG = {
 	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
 	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
 	hunt_min_xp: 0,
+	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
@@ -3904,10 +3905,11 @@ let gather = null, last_party_report = null;
 const report_reply_at = {}; // requester -> last reply (one per 5s)
 const party_names_all = () => [...new Set([...(CFG.party.members || []), CFG.merchant?.name].filter(Boolean))];
 // report(): one window. In a party: the combined report (after every reply or 6s). Solo, or report("solo"): this
-// character's full report. report(6) adds each character's 6h history.
-function report(hours = 0) {
+// character's full report. Each character's history of the last CFG.report_history_h hours (1) comes with it
+// (v22.2); report(6) widens that to 6h, report(0) leaves it out.
+function report(hours = CFG.report_history_h) {
 	const solo = hours === "solo";
-	if (solo) hours = 0;
+	if (solo) hours = CFG.report_history_h;
 	const targets = party_names_all().filter((n) => n !== character.name);
 	if (solo || !targets.length || typeof send_cm !== "function") return share_text("report()", [...report_lines(false), ...(hours > 0 ? history_lines(hours) : [])]);
 	const own = report_lines(false, true);
