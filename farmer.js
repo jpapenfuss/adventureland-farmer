@@ -1,4 +1,4 @@
-const VERSION = "19.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3353,6 +3353,15 @@ function load_state() {
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
+// v19.2: say which version just started, how it was loaded, and what ran before (per character, in browser storage)
+(() => {
+	const key = "farmer_ver:" + character.name, prev = typeof get === "function" ? get(key) : null;
+	const fl = typeof window !== "undefined" ? window.farmer_loaded : null;
+	const how = fl ? (fl.how || "loaded") : "pasted";
+	const was = prev?.v ? (prev.v === VERSION ? `same as before` : `was v${prev.v}`) : "first run here";
+	game_log(`★ farmer v${VERSION} running — ${how}; ${was}`, prev?.v && prev.v !== VERSION ? "#7f7" : fl?.how?.includes("cache") ? "#fa0" : "#8cf");
+	if (typeof set === "function") set(key, { v: VERSION, at: Date.now() });
+})();
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept

@@ -41,6 +41,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 }
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
+if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
