@@ -1,4 +1,4 @@
-const VERSION = "16.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "16.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -182,6 +182,13 @@ const CFG = {
 		// the rest is sold to an NPC. Never recipe materials (anyone's quests), exchangeables, tokens, gear a member
 		// would wear, compound-set copies, keep or locked items.
 		purge_below: 0.1, purge_n: 10,
+		// Merrit (Market Parcels): an open stand with a listing, in Mainland's square (x -240..240, y -120..144) or
+		// southern aisle (x -88..88, y 144..360), on pavement she can reach, held still for 2 minutes, gets one parcel
+		// per account per hour when she walks by. Spacing: > npc_gap px from fixed NPCs, > stand_gap px from other
+		// stands, > stand_vgap px vertically from a stand within stand_gap px sideways. A routine supply trip waits
+		// until the stand has stood min_stay_ms (urgent ones don't: a fighter under urgent_free slots / urgent_pots).
+		merrit: { enabled: true, square: [-240, -120, 240, 144], aisle: [-88, 144, 88, 360], npc_gap: 40, stand_gap: 10,
+			stand_vgap: 15, step: 16, min_stay_ms: 150_000, urgent_free: 4, urgent_pots: 30 },
 		stand: { enabled: true, min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
 		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
 		// stand gives 1% of a level per 3h, negligible). Levels 1→40 take ~3M XP, i.e. ~0.7-1M gold.
@@ -284,6 +291,9 @@ const state = {
 	hold_for: {},            // must-hold item -> bought for the merchant (hand it over), when (saved)
 	row_fails: {},           // guide row id -> consecutive failures (pause backoff) (saved)
 	purge: {},               // "name:level" -> when the merchant pulled it from the bank to sell/list (saved)
+	mspot: null,             // merchant: the stand spot for Merrit { x, y } (saved)
+	stand_since: 0,          // merchant: when the stand was last opened and left still (Merrit's 2-minute timer)
+	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
@@ -2931,6 +2941,7 @@ function save_state() {
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
+		mspot: state.mspot, parcel_at: state.parcel_at,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2962,6 +2973,8 @@ function load_state() {
 	Object.assign(state.purge, d.purge || {});
 	Object.assign(state.row_fails, d.row_fails || {});
 	Object.assign(state.hold_for, d.hold_for || {});
+	if (d.mspot) state.mspot = d.mspot;
+	if (d.parcel_at) state.parcel_at = d.parcel_at;
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -3041,6 +3054,10 @@ function report_lines(log = true, compact = false) {
 		if (D) L(`xp: level ${character.level}${character.level < D.to_level ? `, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && Date.now() - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)` : " (donations done)"}`);
 		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[`${i.name}:${i.level || 0}`]).length;
 		if (bf) L(`bank: ${bf.free} of ${bf.total} free (seen ${ago(bf.at)} ago)${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+		if (merrit_on()) {
+			const sp = state.mspot, st = state.stand_since ? Math.round((Date.now() - state.stand_since) / 1000) : 0;
+			L(`merrit: ${sp ? `spot ${sp.x},${sp.y} (${in_rect(sp.x, sp.y, CFG.merchant.merrit.square) ? "square" : "aisle"})` : "no qualifying spot"} | ${character.stand ? `stand still ${Math.floor(st / 60)}m${st % 60}s${st >= 120 ? " — ready for her" : ""}` : "stand closed"} | parcels ${parcel_count()}${state.parcel_at ? `, last ${ago(state.parcel_at)} ago` : ""}`);
+		}
 		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && Date.now() - e.t < 86_400_000);
 		L(`stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length} for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}`);
 		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
@@ -3669,6 +3686,60 @@ async function bank_purge() {
 	if (got) { game_log(`bank: ${bf.free}/${bf.total} free — pulled ${got} low-value items to sell/list`, C.info); log_ev("purge", { n: got, free: bf.free, total: bf.total }); }
 	return got;
 }
+// ---- Merrit: a stand spot that earns Market Parcels ----
+const in_rect = (x, y, r) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
+// Fixed NPCs on Mainland (roamers — citizens, ones with a boundary or a loop — don't count)
+function fixed_npcs() {
+	const out = [];
+	for (const n of G.maps.main?.npcs || []) {
+		if (/^citizen/.test(n.id || "") || n.boundary || n.loop) continue;
+		if (Array.isArray(n.position)) out.push(n.position);
+		for (const p of n.positions || []) if (Array.isArray(p)) out.push(p);
+	}
+	return out;
+}
+// Can a stand stand here? Region, NPC and stand spacing, and walkable straight from (0,0) (Merrit's centre)
+function spot_ok(x, y) {
+	const M = CFG.merchant.merrit;
+	if (!in_rect(x, y, M.square) && !in_rect(x, y, M.aisle)) return false;
+	if (fixed_npcs().some(([nx, ny]) => Math.hypot(nx - x, ny - y) <= M.npc_gap)) return false;
+	for (const e of Object.values(parent.entities || {})) {
+		if (!e || e.type !== "character" || !e.stand || e.name === character.name || e.map && e.map !== "main") continue;
+		const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y);
+		if (Math.hypot(dx, dy) <= M.stand_gap || (dx <= M.stand_gap && dy <= M.stand_vgap)) return false;
+	}
+	if (typeof can_move === "function") {
+		try { if (!can_move({ map: "main", x: 0, y: 0, going_x: x, going_y: y, base: character.base || { h: 8, v: 7, vn: 2 } })) return false; } catch (e) {}
+	}
+	return true;
+}
+// Our spot: the saved one while it still qualifies, else the qualifying grid point nearest (0,0)
+function merrit_spot() {
+	const M = CFG.merchant.merrit;
+	if (state.mspot && spot_ok(state.mspot.x, state.mspot.y)) return state.mspot;
+	const pts = [];
+	for (const r of [M.square, M.aisle]) for (let x = r[0]; x <= r[2]; x += M.step) for (let y = r[1]; y <= r[3]; y += M.step) pts.push([x, y]);
+	pts.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
+	const p = pts.find(([x, y]) => spot_ok(x, y));
+	state.mspot = p ? { x: p[0], y: p[1] } : null;
+	if (p) game_log(`merrit: stand spot ${p[0]},${p[1]}`, C.dim);
+	return state.mspot;
+}
+const merrit_on = () => is_merchant() && !!CFG.merchant.merrit?.enabled;
+// Parcel arrivals (any item named "Market Parcel"): counted every 30s on the merchant
+let parcel_ids = null, parcels_prev = null;
+const parcel_count = () => {
+	if (!parcel_ids) parcel_ids = Object.keys(G.items).filter((n) => /market parcel/i.test(G.items[n]?.name || ""));
+	return parcel_ids.reduce((a, n) => a + held_any(n), 0);
+};
+setInterval(() => {
+	if (!merrit_on()) return;
+	const n = parcel_count();
+	if (parcels_prev !== null && n > parcels_prev) { state.parcel_at = Date.now(); log_ev("parcel", { n: n - parcels_prev }); game_log(`merrit: Market Parcel received`, C.ok); }
+	parcels_prev = n;
+	if (!character.stand || character.moving || walking()) state.stand_since = 0;
+	else if (!state.stand_since) state.stand_since = Date.now();
+}, 30_000);
 // ---- Stand (CFG.merchant.stand) ----
 const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
 const unit_value = (it) => {
@@ -3775,16 +3846,34 @@ function merchant_tick() {
 	set_message(`${errand_busy() ? state.errand + " | " : ""}merchant${f ? " → " + f.name : ""} | ${character.esize} free`);
 	if (walking() || errand_busy()) return;
 	mluck_near();
-	if (f && character.esize >= 8 && Date.now() - merchant_trip_at > CFG.merchant.trip_gap_ms) {
+	const MM = CFG.merchant.merrit;
+	const urgent = f && ((f.esize ?? 99) < MM.urgent_free || Math.min(f.pots?.hp ?? 999, f.pots?.mp ?? 999) < MM.urgent_pots);
+	const settling = merrit_on() && character.stand && state.stand_since && Date.now() - state.stand_since < MM.min_stay_ms;
+	if (f && character.esize >= 8 && Date.now() - merchant_trip_at > CFG.merchant.trip_gap_ms && (!settling || urgent)) {
 		merchant_trip_at = Date.now();
 		return void errand("serve", () => serve(f));
 	}
 	merchant_donate();
-	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5) {
+	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5 && !settling) { // Ponty can wait for Merrit
 		secondhand_at = Date.now();
 		return void errand("secondhands", () => task_secondhands());
 	}
-	// idle: wait near the town spawn (bank, shops and upgrade NPCs are close)
+	// idle: stand at the Merrit spot (or near the town spawn without it); standing still there is what earns parcels
+	if (merrit_on()) {
+		const sp = merrit_spot();
+		if (sp) {
+			const here = character.map === "main" && Math.hypot(character.x - sp.x, character.y - sp.y) <= 12;
+			if (here && !character.moving) {
+				// arrived (smart_move stops a few px short): keep where we are if that spot qualifies too
+				if (Math.hypot(character.x - sp.x, character.y - sp.y) > 2 && spot_ok(character.x, character.y)) state.mspot = { x: Math.round(character.x), y: Math.round(character.y) };
+				return void stand_tick().catch(() => {});
+			}
+			if (here) return;
+			if (character.stand) return void stand_close();
+			if (character.map === "main" && Math.hypot(character.x - sp.x, character.y - sp.y) < 150 && can_move_to(sp.x, sp.y)) return void move_to(sp.x, sp.y, 1000);
+			return void travel({ map: "main", x: sp.x, y: sp.y });
+		}
+	}
 	const home = G.maps.main?.spawns?.[0] || [0, 0];
 	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) {
 		if (character.stand) return void stand_close();
@@ -4143,7 +4232,9 @@ tick();
 //   their loot; casts mluck; fetches bank upgrades for them; does all compounding and upgrade projects while online;
 //   checks Ponty's secondhands for upgrades / compound completions; levels by donating gold (no kill XP) up to
 //   donate.to_level; idle at home it runs a stand (3x value, -10% per 12h, floor 1.5x); with the bank nearly full it
-//   pulls low-value items to sell or list. The richest fighter nearby keeps its gold at float.
+//   pulls low-value items to sell or list. The richest fighter nearby keeps its gold at float. Its idle spot is a
+//   stand position that qualifies for Merrit's Market Parcels (square/aisle, spacing rules, 2 minutes still);
+//   routine supply trips wait until the stand has stood min_stay_ms.
 //
 // Diagnostics (CODE console, copyable text box): report() — this character at once, then the whole party in one
 //   box (same server; stored copies otherwise); report(6) adds 6h history each; party_report() re-opens it;

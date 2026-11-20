@@ -1690,6 +1690,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(until77 > 0 && until77 <= 600_000 && vm.runInContext("state.fund_need", ctx) > 0, `broke compound: 10-min pause + funding request (${Math.round(until77 / 60000)}m, ${vm.runInContext("state.fund_need", ctx)})`);
 	ctx.__rc = rc_save; vm.runInContext("run_compound = __rc; state.fund_need = 0; state.gear_skip = {}", ctx);
 	character.items = Array(42).fill(null);
+	// 78) Merrit: a stand spot in the square/aisle, clear of fixed NPCs and other stands; routine trips wait 2.5 min
+	ctx.G.maps.main.npcs = [{ id: "fixedguy", position: [0, 0] }, { id: "citizen0", position: [20, 20] }, { id: "bean", position: [16, 0], boundary: [-100, -100, 100, 100] }];
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, gold: 1e6, map: "main", x: 500, y: 500, esize: 30, rip: false, stand: false, moving: false });
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("state.mspot = null; state.partners = {}; state.merchant = null", ctx);
+	assert(!vm.runInContext("spot_ok(0, 0)", ctx) && !vm.runInContext("spot_ok(300, 0)", ctx) && !vm.runInContext("spot_ok(0, 400)", ctx) && vm.runInContext("spot_ok(0, 200)", ctx),
+		"spot rules: not on a fixed NPC, not outside the square/aisle; the aisle qualifies");
+	const sp78 = vm.runInContext("merrit_spot()", ctx);
+	assert(sp78 && Math.hypot(sp78.x, sp78.y) > 40 && Math.hypot(sp78.x, sp78.y) < 64, `nearest qualifying grid point to the centre (${JSON.stringify(sp78)})`);
+	ctx.parent.entities.rival = { id: "rival", name: "Rival", type: "character", stand: true, map: "main", x: sp78.x + 5, y: sp78.y };
+	const sp78b = vm.runInContext("merrit_spot()", ctx);
+	assert(sp78b && (sp78b.x !== sp78.x || sp78b.y !== sp78.y), `another stand next to our spot → we pick a new one (${JSON.stringify(sp78b)})`);
+	ctx.parent.entities.rival.x = sp78b.x; ctx.parent.entities.rival.y = sp78b.y + 12; // within 10px sideways, 12px vertically
+	assert(!vm.runInContext(`spot_ok(${sp78b.x}, ${sp78b.y})`, ctx), "too close in front/behind another stand is refused");
+	delete ctx.parent.entities.rival;
+	// routine trip waits while the stand settles; an urgent one goes
+	Object.assign(character, { x: sp78b.x, y: sp78b.y, stand: true });
+	vm.runInContext(`state.mspot = { x: ${sp78b.x}, y: ${sp78b.y} }; state.stand_since = Date.now() - 30000; merchant_trip_at = 0; state.errand = null; smart_depth = 0`, ctx);
+	hb("Torlis", { ...tor, x: 900, y: 900, esize: 10, pots: { hp: 150, mp: 150 } });
+	vm.runInContext("merchant_tick()", ctx);
+	assert(vm.runInContext("state.errand", ctx) === null, "routine supply trip waits for the 2-minute window");
+	hb("Torlis", { ...tor, x: 900, y: 900, esize: 2, pots: { hp: 150, mp: 150 } });
+	vm.runInContext("merchant_tick()", ctx);
+	assert(vm.runInContext("state.errand", ctx) === "serve", "an urgent trip (2 free slots) goes at once");
+	vm.runInContext("state.errand = null; state.partners = {}; G.maps.main.npcs = []; state.mspot = null", ctx);
+	character.stand = false;
 	all_done = true;
 	console.log("ALL PASS");
 })();
