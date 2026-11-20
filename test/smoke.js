@@ -2310,6 +2310,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Sanala", { ...san, level: 51, split: true });
 		vm.runInContext("refresh_directive()", ctx);
 		assert(vm.runInContext("state.directive === null", ctx), `split: the guide farm row doesn't set the spot (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+		// v22.1: a quest/hunt monster a partner with an earlier name already farms is left to it while split
+		vm.runInContext("hunt_directive = () => ({ monster: 'minimush', map: 'halloween', boundary: [0,0,50,50], reason: 'wgloves spores' })", ctx);
+		hb("Sanala", { ...san, level: 51, split: true });
+		hb("Aspernari", { ...asp, x: 0, y: 0, pack: { mtype: "minimush", map: "halloween", boundary: [0, 0, 50, 50] } });
+		vm.runInContext("refresh_directive()", ctx);
+		assert(vm.runInContext("state.directive === null && state.dir_dup && state.dir_dup.by === 'Aspernari'", ctx), `Torlis leaves minimush to Aspernari (${vm.runInContext("JSON.stringify(state.dir_dup)", ctx)})`);
+		hb("Aspernari", { ...asp, x: 0, y: 0, pack: { mtype: "bat", map: "cave", boundary: [0, 0, 50, 50] } });
+		vm.runInContext("refresh_directive()", ctx);
+		assert(vm.runInContext("state.directive && state.directive.monster === 'minimush'", ctx), "nobody else on it: Torlis takes it");
+		vm.runInContext("hunt_directive = () => null; state.directive = null; state.dir_lock = null", ctx);
+		assert(vm.runInContext("probe_ready() === false && probe_why() === 'only the leader probes'", ctx), "split frees Torlis from following but not into probing (Sanala leads)");
 		hb("Sanala", { ...san, level: 51, split: false });
 		vm.runInContext("state.gprog = null; refresh_directive()", ctx);
 		vm.runInContext(`live_guide_farm = globalThis.__lgf; hunt_directive = globalThis.__hd2; quest_directive = globalThis.__qd; boss_directive = globalThis.__bd2;

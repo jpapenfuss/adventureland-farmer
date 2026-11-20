@@ -1,4 +1,4 @@
-const VERSION = "22.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "22.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -672,7 +672,7 @@ const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower(
 // May the leader start a probe now? Everyone near, healthy and stocked; nothing else special going on
 function probe_ready() {
 	const P = CFG.probe, now = Date.now();
-	if (!P?.enabled || is_follower() || is_merchant() || state.probe || now - (state.probe_at || 0) < P.every_min * 60_000) return false;
+	if (!P?.enabled || is_follower() || is_merchant() || (in_party_cfg() && leader_name() !== character.name) || state.probe || now - (state.probe_at || 0) < P.every_min * 60_000) return false;
 	if (state.directive?.boss || event_live() || errand_busy() || state.recovering || character.rip) return false;
 	const all = partners();
 	if (partners_near().length < all.length || character.hp < character.max_hp * 0.8) return false;
@@ -683,7 +683,7 @@ function probe_ready() {
 function probe_why() {
 	const P = CFG.probe, now = Date.now();
 	if (!P?.enabled) return "off";
-	if (is_follower()) return "only the leader probes";
+	if (is_follower() || (in_party_cfg() && leader_name() !== character.name)) return "only the leader probes";
 	if (state.probe) return null;
 	if (now - (state.probe_at || 0) < P.every_min * 60_000) return `next check in ${mins((state.probe_at || 0) + P.every_min * 60_000)}`;
 	if (state.directive?.boss) return "boss fight";
@@ -1125,7 +1125,7 @@ function my_ledger(h = CFG.spend.window_h) {
 	}
 	return out;
 }
-const cats_text = (cats) => Object.entries(cats || {}).sort((a, b) => b[1] - a[1]).map(([c, g]) => `${c} ${fmt_k(g)}`).join(", ") || "nothing";
+const cats_text = (cats) => Object.entries(cats || {}).sort((a, b) => b[1] - a[1]).map(([c, g]) => `${c} ${fmt_k(g)}`).join(", ") || "no breakdown: spent before v20.0 recorded categories";
 function party_ledger() {
 	const L = my_ledger(), out = { ...L, cats: { ...L.cats }, who: [character.name] };
 	const seen = new Set([character.name]);
@@ -2933,6 +2933,13 @@ function refresh_directive() {
 	// don't pick the spot — the same rule that keeps them from being "mutual" when together
 	const chain = split_now() ? [boss_directive, hunt_directive, oq] : [boss_directive, hunt_directive, oq, gq, () => g];
 	for (const f of chain) if (!mine) mine = f();
+	// v22.1: while split, one fighter per hunt/quest monster is enough — every party kill counts for every member's hunt
+	// and chest items go to a random member wherever they are (server). The partner with the earlier name keeps it;
+	// the rest pick the best-xp spot (a boss still gathers everyone).
+	if (mine && !mine.boss && split_now() && partners().some((p) => p.name < character.name && p.pack?.mtype === mine.monster)) {
+		state.dir_dup = { monster: mine.monster, by: partners().find((p) => p.name < character.name && p.pack?.mtype === mine.monster).name, at: now };
+		mine = null;
+	} else state.dir_dup = null;
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
@@ -3722,7 +3729,7 @@ function report_facts() {
 		F("compound", "self", `compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
 			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""), !gs.length && !paused.length);
 	}
-	if (CFG.probe?.enabled && !M_ && !is_follower()) {
+	if (CFG.probe?.enabled && !M_ && (!in_party_cfg() || leader_name() === character.name)) {
 		const P = state.probe, last = [...hist.ev].reverse().find((e) => e.type === "probe");
 		const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
 		const why_ = P ? null : probe_why(), none = state.probe_none && Date.now() - state.probe_none.at < 2 * 3600_000 ? state.probe_none : null;
@@ -3738,6 +3745,7 @@ function report_facts() {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
 		F("gold", "party", `gold: us ${character.gold.toLocaleString()} / ${golds.map((x) => `${x.name} ${x.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((now - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > now ? `, next allowed in ${mins(next)}` : ""}`);
 	}
+	if (state.dir_dup && split_now() && !M_) F("dir_dup", "self", `${state.dir_dup.monster} left to ${state.dir_dup.by} (party kills count for every hunt; loot is shared) — farming the best spot instead`);
 	if (state.dir_held && state.dir_lock && !M_) F("dir_held", "self", `committed to ${state.directive?.monster} for ${mins(state.dir_lock.until)} more; then: ${state.dir_held.monster} (${state.dir_held.reason})`);
 	if (!is_follower() && partners().length && !M_) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
@@ -3962,8 +3970,8 @@ function party_header_lines() {
 	out.push(`leader: ${lead}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
 	if (CFG.party.split?.enabled) {
 		const sp = lead === character.name ? !!state.split_on : !!state.partners[lead]?.split;
-		const due = (state.probe_at || 0) + (CFG.probe?.every_min || 0) * 60_000;
-		out.push(sp ? `party: farming separately${CFG.probe?.enabled ? ` (regroup for a probe in ${mins(due)})` : ""} — ${fighters.map((f) => `${f.name} @ ${f.pack ? f.pack.mtype : "?"}`).join(", ")}`
+		const pa = lead === character.name ? state.probe_at : state.partners[lead]?.probe_at, due = (pa || 0) + (CFG.probe?.every_min || 0) * 60_000;
+		out.push(sp ? `party: farming separately${CFG.probe?.enabled && pa ? ` (regroup for a probe in ${mins(due)})` : ""} — ${fighters.map((f) => `${f.name} @ ${f.pack ? f.pack.mtype : "?"}`).join(", ")}`
 			: `party: together${lead === character.name && state.regroup_since ? ` (regrouping for a probe, ${ago(state.regroup_since)})` : ""}`);
 	}
 	const M = is_merchant() ? { name: character.name, gold: character.gold, map: character.map, esize: character.esize, serving: state.serving } : merchant_hb();
@@ -4073,7 +4081,7 @@ function split_decide() {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
