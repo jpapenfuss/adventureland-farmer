@@ -53,7 +53,8 @@
 //   potions or bag space, collects their bankable/sellable items, casts mluck (level 40+), fetches bank upgrades for
 //   them, and runs the town work (sell, bank, compound, upgrade projects, exchange). The richest near fighter keeps
 //   its gold at CFG.merchant.float. Merchants get no kill XP; it levels by donating gold (donate: 3.2-4.8 XP per gold
-//   on the server) until donate.to_level (40 = mluck).
+//   on the server) until donate.to_level (40 = mluck). Every 10 min it checks Ponty's secondhand stock for fighter
+//   upgrades and compound-set completions. At level 30+ it casts massproduction before each upgrade/compound.
 //
 // Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
 //
@@ -70,7 +71,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "14.3";
+const VERSION = "14.4";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -144,6 +145,12 @@ const CFG = {
 	elixir_auto: true,
 	elixir_buy: "elixirluck",  // Liquid Luck: 240k for 12h of +16 luck (the only elixir an NPC sells)
 	elixir_buy_min_gold: 5_000_000,
+	// Secondhands (Ponty, main): items players sold to NPCs, resold at 2x item value (3x cash-shop items). The merchant
+	// checks every secondhand_every_ms and buys anything a fighter would wear as an upgrade, or that completes a compound
+	// set, within secondhand_max_price and never below gold_reserve.
+	secondhand_auto: true,
+	secondhand_every_ms: 600_000,
+	secondhand_max_price: 2_000_000,
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
 	exchange_auto: true,
@@ -802,6 +809,10 @@ function class_skills(t) {
 			break;
 		case "priest":
 			if (party_heal()) return true; // heal shares the attack cooldown
+			// dark blessing (level 70): +25% damage for every member within 600px for 8s, 60s cooldown: on a target
+			// worth it (5+ of our hits) with someone else near
+			if (G.skills.darkblessing && can_use("darkblessing") && !character.s?.darkblessing && t.hp > character.attack * 5 &&
+				partners_near(G.skills.darkblessing.range || 600).length) fire("darkblessing");
 			// absorb: pull every monster on a squishy member (not the tank) below 70% HP onto us, while we're healthy
 			if (can_use("absorb") && character.hp > character.max_hp * 0.6) {
 				const ents = Object.values(parent.entities || {});
@@ -819,6 +830,8 @@ function class_skills(t) {
 			if (G.skills.mshield && can_use("mshield") && (ms ? character.mp < 250 || character.hp > character.max_hp * 0.85
 				: character.hp < character.max_hp * 0.5 && character.mp > 400)) fire("mshield");
 			if (character.hp < character.max_hp * 0.5 && can_use("selfheal")) fire("selfheal");
+			else if (G.skills.purify && t.hp >= 1500 && character.mp > (G.skills.purify.mp || 360) + 200 && can_use("purify")) fire("purify", t);
+			// purify (level 60): 2000 pure damage (ignores armour) every 24s, on targets with that much HP left
 			else if (t.hp > character.attack * 2 && can_use("smash")) fire("smash", t);
 			break;
 		}
@@ -831,6 +844,7 @@ function class_skills(t) {
 			const ratio = G.skills.burst?.ratio || 0.555;
 			if (G.skills.burst && can_use("burst") && character.mp >= character.max_mp * 0.9 && t.hp >= character.mp * ratio * 0.6 &&
 				pot_count("mp") >= CFG.pot_min) return fire("burst", t), true;
+			if (cburst()) return true;
 			if (!can_use("energize")) break;
 			// the party member lowest on mana (below 40%) within range, else ourselves below 50%. A priest's heals run
 			// on mana, so in a party this mostly keeps the healer going.
@@ -846,6 +860,29 @@ function class_skills(t) {
 			break;
 	}
 	return false;
+}
+// Mage 75+: cburst splits MP across up to 12 monsters in range (damage = MP x ratio each). Only monsters already in our
+// fight: hitting a party member, or the pack's type and safe for us (it aggroes everything it hits). Each target gets
+// what it needs to die (lowest HP first) until the MP above 25% is spent; worth it from 3 targets.
+function cburst() {
+	const sk = G.skills.cburst;
+	if (!sk || !can_use("cburst") || character.mp < character.max_mp * 0.5) return false;
+	const party = party_names(), want = state.pack?.mtype;
+	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
+	const hits = Object.values(parent.entities || {}).filter((e) => e.type === "monster" && valid(e) && distance(character, e) < character.range &&
+		((e.target && party.has(e.target)) || (e.mtype === want && !e.target && live_ok(e)))).sort((a, b) => a.hp - b.hp);
+	if (hits.length < 3) return false;
+	let budget = character.mp - character.max_mp * 0.25;
+	const targets = [];
+	for (const e of hits.slice(0, 12)) {
+		const need = Math.ceil(e.hp / ((sk.ratio || 0.5) * dm((e.resistance || 0) - (character.rpiercing || 0))) * 1.1);
+		const mp = Math.min(need, Math.floor(budget));
+		if (mp < 50) break;
+		targets.push([e.id, mp]);
+		budget -= mp;
+	}
+	if (targets.length < 3 || !can_spend(1, RESERVE.skill)) return false;
+	return fire("cburst", targets);
 }
 function fight(t, steer = true) {
 	if (get_targeted_monster() !== t) change_target(t);
@@ -1102,6 +1139,12 @@ function input_slots(a, from, n) {
 	if (n === 1) { const k = find_slot(a.name, from); return k >= 0 ? [k] : null; }
 	return find_slots(a.name, from, n);
 }
+// Merchant 30+: massproduction halves the next upgrade/compound (a one-use buff that lasts 10s): cast it right before
+async function mass_production() {
+	if (character.ctype !== "merchant" || character.s?.massproduction || !G.skills.massproduction || !can_use("massproduction")) return;
+	await T(use_skill("massproduction"), 3000).catch(() => {});
+	await until(() => !!character.s?.massproduction, 1500);
+}
 // Lower odds are accepted when a failure can't cost anything irreplaceable:
 //  - NPCs sell the item (failure costs gold): min_chance_rebuyable;
 //  - another copy at the same level or higher remains (bags or worn): min_chance_spare.
@@ -1150,6 +1193,7 @@ async function run_upgrade(a, row) {
 	await wait_budget(1, RESERVE.errand);
 	const preview = await T(upgrade(k, find_slot(scroll, 0), null, true)); // last arg true = preview only: {chance}
 	if (!preview || !(preview.chance >= chance_floor(a.name, CFG.min_upgrade_chance, k, from))) throw { reason: "low_chance", chance: preview?.chance };
+	await mass_production();
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(upgrade(k, find_slot(scroll, 0)), 60_000); // the server takes 500·L·√L ms (+7: ~9s, +9: 13.5s)
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
@@ -1169,6 +1213,7 @@ async function run_compound(a, row, floor) {
 	await wait_budget(1, RESERVE.errand);
 	const preview = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0), null, true));
 	if (!preview || !(preview.chance >= (floor ?? chance_floor(a.name, CFG.min_compound_chance)))) throw { reason: "low_chance", chance: preview?.chance };
+	await mass_production();
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)), 40_000); // the server takes 10s to combine
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
@@ -2057,7 +2102,7 @@ async function run_stat(a) {
 		if (k < 0) throw { reason: "input_missing" };
 		if (sk < 0) throw { reason: "scroll_missing" };
 		await wait_budget(1, RESERVE.errand);
-		const r = await T(upgrade(k, sk));
+		const r = await T(upgrade(k, sk), 30_000);
 		game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : why(r)}`, C.ok);
 		return r;
 	} finally {
@@ -2738,6 +2783,51 @@ async function serve(f) {
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
 	} finally { state.serving = null; }
 }
+// ---- Secondhands (Ponty) ----
+const shop_price = (it) => {
+	const f = typeof calculate_item_value === "function" ? calculate_item_value : parent?.calculate_item_value;
+	const v = f ? f(it) : (G.items[it.name]?.g || 0) * 0.6;
+	return Math.ceil(v * (G.items[it.name]?.cash ? 3 : 2) * (it.q || 1));
+};
+// Worth buying: an upgrade for a fighter, or the last copy a compound set (bags + bank) is missing
+function secondhand_reason(it, groups) {
+	if (!it || !G.items[it.name]) return null;
+	const m = gear_takers().slice(1).filter((x) => x.ctype !== "merchant").find((x) => gear_gain(it, x.ctype, x.g));
+	if (m) return `upgrade for ${m.name}`;
+	const g = G.items[it.name].compound && !it.p && (it.level || 0) < CFG.compound_max_level &&
+		groups[compound_key(it.name, it.level || 0)];
+	if (g && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
+	return null;
+}
+let secondhand_at = 0;
+async function task_secondhands() {
+	const ref = G.maps.main?.ref?.secondhands;
+	if (!ref) return 0;
+	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) await go({ map: "main", x: ref.x, y: ref.y + 40 });
+	parent.socket.emit("secondhands");
+	await sleep_ms(1500); // the list arrives as a "secondhands" event; the client keeps it in parent.secondhands
+	const list = [...(parent.secondhands || [])];
+	// compound counts by name:level across bags + bank (spares only), to spot sets one copy short
+	const groups = {}, needed = needed_slots();
+	const count = (it, where) => { const k = compound_key(it.name, it.level || 0); (groups[k] = groups[k] || { bags: 0, bank: 0 })[where]++; };
+	character.items.forEach((it, k) => { if (compound_spare(it, k, needed)) count(it, "bags"); });
+	for (const it of state.bank_gear || []) if (compound_spare(it, -1, needed)) count(it, "bank");
+	let n = 0;
+	for (const it of list) {
+		const why_buy = secondhand_reason(it, groups), price = shop_price(it);
+		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3) continue;
+		await wait_budget(1, RESERVE.errand);
+		const before = character.esize;
+		parent.socket.emit("sbuy", { rid: it.rid });
+		await until(() => character.esize < before, 3000);
+		if (character.esize < before) {
+			n++;
+			game_log(`secondhands: bought ${it.name}+${it.level || 0} for ${fmt_k(price)} (${why_buy})`, C.ok);
+			if (why_buy.startsWith("completes")) count(it, "bags");
+		}
+	}
+	return n;
+}
 // Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
 let donate_at = 0;
 function merchant_donate() {
@@ -2764,6 +2854,10 @@ function merchant_tick() {
 		return void errand("serve", () => serve(f));
 	}
 	merchant_donate();
+	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5) {
+		secondhand_at = Date.now();
+		return void errand("secondhands", () => task_secondhands());
+	}
 	// idle: wait near the town spawn (bank, shops and upgrade NPCs are close)
 	const home = G.maps.main?.spawns?.[0] || [0, 0];
 	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) travel({ map: "main", x: home[0], y: home[1] });

@@ -1178,5 +1178,48 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("donate_at = 0; state.donated = null; merchant_donate()", ctx);
 	assert(!emits.length, "no donations at to_level");
 	ctx.parent.socket.emit = () => {};
+	// 58) level-gated skills: purify, dark blessing, cburst (only monsters in our fight), massproduction
+	ctx.G.skills.purify = { mp: 360 }; ctx.G.skills.darkblessing = { range: 600, mp: 900 }; ctx.G.skills.cburst = { ratio: 0.5, mp: 80 };
+	ctx.G.skills.massproduction = { mp: 20 };
+	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", hp: 1000, max_hp: 1000, mp: 900, max_mp: 1000, s: {}, x: 0, y: 0, map: "main", rip: false });
+	used.length = 0;
+	vm.runInContext("inflight.purify = false; class_skills({ hp: 3000, s: {} })", ctx);
+	assert(used.some(([s]) => s === "purify"), `paladin purifies a big target (${JSON.stringify(used)})`);
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", hp: 2500, max_hp: 2500, mp: 3000, max_mp: 3000, attack: 180, s: {} });
+	vm.runInContext("state.partners = {}", ctx); hb("Torlis", { ...tor, x: 40, y: 0 });
+	used.length = 0;
+	vm.runInContext("class_skills({ hp: 5000, s: { cursed: true } })", ctx);
+	assert(used.some(([s]) => s === "darkblessing"), `priest casts dark blessing with a member near (${JSON.stringify(used)})`);
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", hp: 900, max_hp: 900, mp: 2000, max_mp: 2000, range: 200, rpiercing: 0, s: {}, x: 0, y: 0 });
+	vm.runInContext("party_names = () => new Set(['Sanala', 'Torlis', 'Aspernari'])", ctx);
+	for (const [i, x] of [[1, 50], [2, 60], [3, 70]]) ctx.parent.entities["c" + i] = { id: "c" + i, type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x, y: 0, target: "Torlis", resistance: 0 };
+	ctx.parent.entities.far = { id: "far", type: "monster", mtype: "bee", visible: true, hp: 100, max_hp: 100, x: 60, y: 0, target: null, resistance: 0 };
+	const cb = []; ctx.use_skill = (s, tg) => (cb.push([s, tg]), Promise.resolve());
+	vm.runInContext("inflight.cburst = false; cburst()", ctx);
+	assert(cb.length === 1 && cb[0][0] === "cburst" && cb[0][1].length === 3 && cb[0][1].every(([id, mp]) => id !== "far" && mp >= 200),
+		`cburst hits the 3 monsters on the party with killing MP, not the stray bee (${JSON.stringify(cb)})`);
+	for (const id of ["c1", "c2", "c3", "far"]) delete ctx.parent.entities[id];
+	ctx.use_skill = (s, tg) => (used.push([s, tg && tg.name]), Promise.resolve());
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 30, mp: 100, max_mp: 100, s: {} });
+	used.length = 0;
+	ctx.use_skill = (s) => { used.push([s]); character.s.massproduction = { ms: 10000 }; return Promise.resolve(); };
+	await vm.runInContext("mass_production()", ctx);
+	assert(used.length === 1 && used[0][0] === "massproduction", "merchant casts massproduction before an upgrade/compound");
+	character.s = {};
+
+	// 59) secondhands: the merchant buys a fighter's upgrade and a compound set's missing copy, nothing else
+	ctx.G.maps.main.ref = { secondhands: { x: 100, y: -50 } };
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 30, gold: 3e6, x: 100, y: -40, map: "main", esize: 30, rip: false });
+	character.items = Array(42).fill(null); character.items[0] = { name: "ringx", level: 0 }; character.items[1] = { name: "ringx", level: 0 };
+	character.slots = {};
+	vm.runInContext("state.partners = {}; state.bank_gear = []; state.needs = new Map(); cmp_cache = null", ctx);
+	hb("Torlis", { ...tor, x: 40, y: 0, v: V, esize: 10, gear: { w: { helmet: 3, ring1: 1e9, ring2: 1e9 }, dh: false, off: false } });
+	ctx.parent.secondhands = [{ name: "helm3", level: 0, rid: "a" }, { name: "ringx", level: 0, rid: "b" }, { name: "beewings", q: 5, rid: "c" }];
+	const sb = [];
+	ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { sb.push(d.rid); character.esize--; } };
+	await vm.runInContext("task_secondhands()", ctx);
+	assert(JSON.stringify(sb) === '["a","b"]', `bought Torlis's helmet upgrade and the 3rd ringx, not the bee wings (${JSON.stringify(sb)})`);
+	ctx.parent.socket.emit = () => {}; character.items = Array(42).fill(null); ctx.distance = dist_save;
 	console.log("ALL PASS");
 })();
