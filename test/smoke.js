@@ -42,7 +42,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.travel.commit_min = 0", ctx); // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -970,7 +970,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items[5] = { name: "hB", level: 0 }; // +12%: clears the normal 5% margin, not the guide's 20%
 	vm.runInContext("state.guide_equip.helmet = Date.now(); state.guide = { rows: [{ id: 'upgrade:helmet:hA:0:', kind: 'upgrade' }] }; my_gear_cache = null", ctx); eq.length = 0;
 	await vm.runInContext("equip_upgrades()", ctx);
-	assert(!eq.length, "a slot the guide is working on keeps its item against a marginal upgrade");
+	assert(JSON.stringify(eq) === '[["hB","helmet"]]', "v19.7: a guide-owned slot takes any upgrade past the normal margin (override 0)");
+	eq.length = 0; character.slots = { helmet: { name: "hA", level: 0 } }; vm.runInContext("CFG.gear_guide_override = 0.2; my_gear_cache = null", ctx);
+	await vm.runInContext("equip_upgrades()", ctx);
+	assert(!eq.length, "with gear_guide_override set, a guide-owned slot keeps its item against a marginal upgrade");
+	vm.runInContext("CFG.gear_guide_override = 0", ctx);
 	character.items[5] = { name: "hC", level: 0 }; eq.length = 0; // +40%
 	vm.runInContext("my_gear_cache = null", ctx);
 	await vm.runInContext("equip_upgrades()", ctx);
@@ -1908,8 +1912,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin" });
 	character.slots = { helmet: { name: "hA", level: 0 } }; character.items = Array(42).fill(null);
 	vm.runInContext("state.bank_gear = [{ name: 'hC', level: 0 }]; state.guide = null; my_gear_cache = null", ctx);
-	const gc87 = vm.runInContext("gear_check()", ctx);
+	const gc87 = vm.runInContext("gear_check('solo')", ctx);
 	assert(/^helmet\s+hA\+0 \d+ pts \| best owned: hC\+0 \d+ pts \(bank\) — UPGRADE/m.test(gc87), `gear_check lists the bank helmet as an upgrade:\n${gc87.split("\n").slice(0, 6).join("\n")}`);
+	// party-wide gear_check asks the others for their gear lines
+	{
+		const cm_s = ctx.send_cm, sent87 = []; ctx.send_cm = (to, m) => (sent87.push([to.join(), m.kind]), Promise.resolve());
+		vm.runInContext("gather = null; gear_check()", ctx);
+		assert(sent87.length === 1 && sent87[0][1] === "gear" && /Aspernari/.test(sent87[0][0]), `gear_check() asks every other character (${JSON.stringify(sent87)})`);
+		vm.runInContext("gather = null", ctx); ctx.send_cm = cm_s;
+	}
 	character.slots = {}; vm.runInContext("state.bank_gear = []", ctx);
 	// 88) probing: picks a monster just over the limit that beats the best xp/s; guarded start; raised flee; endings
 	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 1000, attack: 100, frequency: 1,
@@ -2139,6 +2150,58 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Sanala", ctype: "mage", gold: 61000 });
 	assert(vm.runInContext("gold_ok(1000)", ctx), "a fighter isn't held to the merchant's float");
 	vm.runInContext("hist.buckets = globalThis.__hb2", ctx);
+	// 101) v19.7 gear: two-handers vs mainhand+offhand; guide equip never lowers a slot; wanted gear kept; worn swaps
+	{
+		ctx.G.classes.mage = { ...(ctx.G.classes.mage || {}), main_stat: "int", mainhand: { wand: {} }, doublehand: { staff: {} }, offhand: { source: {} } };
+		ctx.G.items.wnd = { type: "weapon", wtype: "wand", attack: 20 }; ctx.G.items.src = { type: "source", int: 10 };
+		ctx.G.items.stf = { type: "weapon", wtype: "staff", attack: 40 }; ctx.G.items.stf2 = { type: "weapon", wtype: "staff", attack: 25 };
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, esize: 30 });
+		vm.runInContext("state.partners = {}; state.merchant = null; state.guide = null; state.guide_equip = {}; state.gear_skip = {}; my_gear_cache = null; state.needs = new Map(); gear_busy = false; state.errand = null", ctx);
+		character.slots = { mainhand: { name: "wnd", level: 0 }, offhand: { name: "src", level: 0 } };
+		// wand 20 + source 12 (int 10 × 1.2) = 32: a 25-attack staff loses, a 40-attack staff wins
+		assert(!vm.runInContext("gear_gain({ name: 'stf2', level: 0 }, 'mage', my_gear())", ctx), "a staff weaker than wand+source isn't an upgrade");
+		const r101 = vm.runInContext("gear_gain({ name: 'stf', level: 0 }, 'mage', my_gear())", ctx);
+		assert(r101 && r101.slot === "mainhand" && Math.round(r101.gain) === 8, `a staff is judged against wand + source (${JSON.stringify(r101)})`);
+		const eq101 = []; const eq_s = ctx.equip, uq_s = ctx.unequip;
+		ctx.equip = (k, slot) => (eq101.push(["equip", character.items[k].name, slot]), Promise.resolve());
+		ctx.unequip = (slot) => (eq101.push(["unequip", slot]), Promise.resolve());
+		character.items = Array(42).fill(null); character.items[3] = { name: "stf", level: 0 };
+		await vm.runInContext("equip_upgrades()", ctx);
+		assert(JSON.stringify(eq101) === '[["unequip","offhand"],["equip","stf","mainhand"]]', `two-hander: offhand off, staff on (${JSON.stringify(eq101)})`);
+		// guide equip step with a worse piece is refused
+		ctx.G.items.hlow = { type: "helmet", armor: 10 }; ctx.G.items.hhigh = { type: "helmet", armor: 100 };
+		character.slots = { helmet: { name: "hhigh", level: 0 } }; character.items[3] = { name: "hlow", level: 0 };
+		vm.runInContext("my_gear_cache = null", ctx);
+		let err101 = null;
+		try { await vm.runInContext("__run_row_real({ id: 'equip:helmet:hlow:0:', kind: 'equip', action: { kind: 'equip', name: 'hlow', level: 0, slot: 'helmet' } })", ctx); } catch (e) { err101 = e; }
+		assert(err101 && err101.reason === "worse_than_worn", `guide can't swap in a worse helmet (${JSON.stringify(err101)})`);
+		// a piece that's an upgrade for a member is kept (not banked/sold)
+		ctx.G.items.plate = { type: "chest", armor: 200 };
+		character.items[4] = { name: "plate", level: 0 };
+		hb("Torlis", { ...tor, x: 30, y: 0, gear: { w: { chest: 0 }, own: {} } });
+		assert(vm.runInContext("bag_class(character.items[4])", ctx) === "keep" && vm.runInContext("keep_reason(character.items[4], 4, needed_slots(), compound_slots(needed_slots()))", ctx) === "for party",
+			"a piece Torlis would wear is kept for him");
+		// mutual swap: our ring is better for Torlis, his for us → we start (Sanala < Torlis)
+		ctx.G.items.rint = { type: "ring", int: 30 }; ctx.G.items.rstr = { type: "ring", str: 30 };
+		character.slots = { ring1: { name: "rstr", level: 0 } }; character.items = Array(42).fill(null);
+		vm.runInContext("my_gear_cache = null; swap_at = 0; gear_busy = false", ctx);
+		hb("Torlis", { ...tor, ctype: "paladin", x: 30, y: 0, esize: 20, gear: { w: { ring1: 6 }, own: {} }, worn: { ring1: { name: "rint", level: 0 } } });
+		const sw = []; const si_s = ctx.send_item;
+		ctx.unequip = (slot) => { const it = character.slots[slot]; character.slots[slot] = null; character.items[0] = it; sw.push(["unequip", slot]); return Promise.resolve(); };
+		ctx.send_item = (to, k, q) => (sw.push(["send", to, character.items[k].name]), Promise.resolve());
+		ctx.G.classes.paladin = { ...(ctx.G.classes.paladin || {}), main_stat: "str" };
+		await vm.runInContext("swap_worn()", ctx);
+		assert(JSON.stringify(sw) === '[["unequip","ring1"],["send","Torlis","rstr"]]', `mutual swap: our str ring goes to Torlis (${JSON.stringify(sw)})`);
+		// no swap when only one side gains
+		sw.length = 0; character.slots = { ring1: { name: "rint", level: 0 } }; character.items = Array(42).fill(null);
+		vm.runInContext("my_gear_cache = null; swap_at = 0", ctx);
+		hb("Torlis", { ...tor, ctype: "paladin", x: 30, y: 0, esize: 20, gear: { w: { ring1: 36 }, own: {} }, worn: { ring1: { name: "rstr", level: 0 } } });
+		await vm.runInContext("swap_worn()", ctx);
+		assert(sw.length === 0, "no swap when both already wear their best");
+		ctx.equip = eq_s; ctx.unequip = uq_s; ctx.send_item = si_s;
+		character.slots = {}; character.items = Array(42).fill(null);
+		vm.runInContext("state.partners = {}; my_gear_cache = null", ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

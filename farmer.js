@@ -1,4 +1,4 @@
-const VERSION = "19.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -63,7 +63,8 @@ const CFG = {
 	gear_margin: 0.05,         // ...and by 5% (avoids swapping for noise)
 	gear_guide_respect_h: 12,  // after the guide equips a slot it owns it this long — but only while it still has a
 	                           //   live step (not paused) for that slot; an idle guide doesn't block the slot
-	gear_guide_override: 0.2,  // even a guide-owned slot takes an item scoring this much (20%) better than what's worn
+	gear_guide_override: 0,    // extra margin a guide-owned slot demands (v19.7: 0 — the best-scoring item is worn; a
+	                           //   guide equip step that would lower a slot's score is skipped instead)
 	gear_share_range: 300,     // px; hand a spare to a party member this close (server limit: same map, 400px)
 	// Points per unit of each stat. main_stat = the class's own (str/dex/int: each point is ~1 attack and some HP/MP);
 	// the other two main stats count off_stat. Defensive stats count × tank_mult for tank classes.
@@ -1487,19 +1488,21 @@ function slots_for(name, ctype, g) {
 	const def = G.items[name], cls = G.classes[ctype] || {};
 	if (!def || !GEAR.has(def.type) || (def.class && !def.class.includes(ctype))) return [];
 	if (def.type === "weapon") {
-		if (cls.mainhand?.[def.wtype]) return ["mainhand"];
-		return cls.doublehand?.[def.wtype] && (!g.off || g.dh) ? ["mainhand"] : [];
+		// v19.7: a two-hander is judged even with an offhand worn (it then has to beat mainhand + offhand together)
+		return cls.mainhand?.[def.wtype] || cls.doublehand?.[def.wtype] ? ["mainhand"] : [];
 	}
 	if (OFFHAND_TYPES.has(def.type)) return cls.offhand?.[def.type] && !g.dh ? ["offhand"] : [];
 	return SLOT_OF[def.type] || [];
 }
 // Best slot for an item and how much it beats what's there; null unless it clears gear_min_gain and gear_margin
+const is_2h = (name, ctype) => { const d = G.items[name]; return d?.type === "weapon" && !!G.classes[ctype]?.doublehand?.[d.wtype] && !G.classes[ctype]?.mainhand?.[d.wtype]; };
 function gear_gain(item, ctype, g) {
 	if (!item || !g?.w) return null;
 	const score = gear_score(item, ctype);
 	let best = null;
 	for (const s of slots_for(item.name, ctype, g)) {
-		const cur = g.w[s] ?? 0, gain = score - cur;
+		// a two-hander replaces the offhand too: it must beat both
+		const cur = (g.w[s] ?? 0) + (s === "mainhand" && is_2h(item.name, ctype) && !g.dh ? g.w.offhand ?? 0 : 0), gain = score - cur;
 		// a slot the guide is actively working on only takes a clearly better item (gear_guide_override)
 		const margin = g.own?.[s] ? Math.max(CFG.gear_margin, CFG.gear_guide_override) : CFG.gear_margin;
 		if (gain >= CFG.gear_min_gain && gain >= cur * margin && (!best || gain > best.gain)) best = { slot: s, gain, score };
@@ -1513,11 +1516,15 @@ function gear_takers() {
 	return out;
 }
 const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m) => gear_gain(item, m.ctype, m.g));
+// An upgrade for us (not refused by the server) or for a fighter: such a piece is never banked, sold or listed
+const wanted_by_member = (item) => CFG.gear_auto && gear_takers().some((m, i) => (i > 0 || !equip_paused(item)) && gear_gain(item, m.ctype, m.g));
 // Gear in the bank that beats what we wear: one per slot (the best), as task_bank fetch entries
 function bank_upgrades() {
 	if (!CFG.gear_auto || !CFG.bank) return [];
 	const g = my_gear(), by = {};
-	const takers = is_merchant() ? gear_takers().slice(1) : []; // the merchant fetches fighters' upgrades and delivers them
+	// the merchant fetches fighters' upgrades and delivers them; with no merchant online, fighters fetch each other's
+	// (share_gear hands them over when near)
+	const takers = is_merchant() || !merchant_recent() ? gear_takers().slice(1) : [];
 	for (const it of state.bank_gear || []) {
 		const r = (!equip_paused(it) && gear_gain(it, character.ctype, g)) || takers.map((m) => gear_gain(it, m.ctype, m.g)).find(Boolean);
 		if (r && (!by[r.slot] || r.gain > by[r.slot].gain)) by[r.slot] = { name: it.name, level: it.level, key: `gear:${it.name}:${it.level}`, gain: r.gain };
@@ -1541,6 +1548,11 @@ async function equip_upgrades() {
 	if (!best || !can_spend(EMIT_COST.equip, RESERVE.errand)) return false;
 	gear_busy = true;
 	try {
+		// a two-hander over an offhand: take the offhand off first (needs a free bag slot)
+		if (best.slot === "mainhand" && is_2h(best.it.name, character.ctype) && character.slots?.offhand) {
+			if (character.esize < 1) return false;
+			await T(unequip("offhand"));
+		}
 		await T(equip(best.k, best.slot));
 		game_log(`gear: ${best.it.name}+${best.it.level || 0} → ${best.slot} (+${best.gain.toFixed(0)} pts)`, C.ok);
 		return true;
@@ -1578,7 +1590,47 @@ async function share_gear() {
 	}
 	return false;
 }
-setInterval(() => { equip_upgrades().then((did) => did || drink_elixir()).then((did) => did || share_gear()).catch(() => {}); }, 5_000);
+// Worn pieces per slot (heartbeat), so members can spot swaps that help both
+function worn_items() {
+	const out = {}, sl = character.slots || {};
+	for (const s of GEAR_SLOTS) if (sl[s]) out[s] = { name: sl[s].name, level: sl[s].level || 0, p: sl[s].p, stat_type: sl[s].stat_type };
+	return out;
+}
+// v19.7: a worn piece of ours that's an upgrade for a member near while its piece in the same slot is an upgrade for
+// us: take ours off and send it. The member wears it (equip_upgrades), its old piece drops into its bags and
+// share_gear sends it back, and we wear that. Both must gain by the usual margins (no one gets worse). The member
+// with the alphabetically first name starts, so the two don't both send at once.
+let swap_at = 0;
+async function swap_worn() {
+	if (!CFG.gear_auto || gear_busy || character.rip || is_merchant() || errand_busy() || typeof send_item !== "function" || typeof unequip !== "function") return false;
+	if (Date.now() - swap_at < 60_000 || character.esize < 1) return false;
+	const mine = my_gear(), sl = character.slots || {};
+	for (const p of partners_near(CFG.gear_share_range)) {
+		if (!p.worn || !p.gear?.w || character.name > p.name || (p.esize ?? 1) < 1) continue;
+		for (const s of GEAR_SLOTS) {
+			if (s === "mainhand" || s === "offhand") continue; // weapons/offhands are class-bound
+			const X = sl[s], Y = p.worn[s];
+			if (!X || !Y || X.l || X.b || (X.name === Y.name && (X.level || 0) === Y.level)) continue;
+			if (!slots_for(Y.name, character.ctype, mine).includes(s) || !slots_for(X.name, p.ctype, p.gear).includes(s)) continue;
+			const ours = gear_score(Y) - (mine.w[s] || 0), theirs = gear_score(X, p.ctype) - (p.gear.w[s] || 0);
+			const ok = (gain, cur) => gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin;
+			if (!ok(ours, mine.w[s] || 0) || !ok(theirs, p.gear.w[s] || 0)) continue;
+			swap_at = Date.now();
+			gear_busy = true;
+			try {
+				await T(unequip(s));
+				const k = character.items.findIndex((i) => i && i.name === X.name && (i.level || 0) === (X.level || 0) && !i.l);
+				if (k < 0) return false;
+				await T(send_item(p.name, k, 1));
+				game_log(`gear: swap — gave our ${s} ${X.name}+${X.level || 0} to ${p.name} (+${Math.round(theirs)} for it), its ${Y.name}+${Y.level} comes back (+${Math.round(ours)} for us)`, C.ok);
+				log_ev("gear_swap", { with: p.name, slot: s, gave: `${X.name}+${X.level || 0}`, get: `${Y.name}+${Y.level}` });
+				return true;
+			} catch (e) { game_log(`gear: swap with ${p.name}: ${why(e)}`, C.dim); return false; } finally { gear_busy = false; }
+		}
+	}
+	return false;
+}
+setInterval(() => { equip_upgrades().then((did) => did || drink_elixir()).then((did) => did || share_gear()).then((did) => did || swap_worn()).catch(() => {}); }, 5_000);
 // A computer (or supercomputer) in the bags lets shop/upgrade/compound/craft/exchange work from anywhere
 const has_computer = () => character.items.some((i) => i && (i.name === "computer" || i.name === "supercomputer"));
 // First unlocked bag slot holding name at exactly this upgrade level (-1 if none); find_slots: n of them or null
@@ -2062,7 +2114,8 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
-		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && gear_gain(item, character.ctype, my_gear()))) return "keep"; // never store what we fetched within the hour (except compound copies the merchant now handles)
+		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && gear_gain(item, character.ctype, my_gear())) ||
+		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -2077,6 +2130,7 @@ function keep_reason(item, k, needed, cmp) {
 	if (BAG_TYPES.has(def.type) || item.name === CFG.hp_pot || item.name === CFG.mp_pot) return "supplies";
 	if (needed.has(k)) return state.upg && item.name === state.upg.name ? "upgrade" : "guide/quest";
 	if (Date.now() - (state.fetched[item.name] || 0) < 3600_000) return "fetched";
+	if (GEAR.has(def.type) && wanted_by_member(item)) return "for party";
 	return CFG.bank ? "other" : "no-bank";
 }
 // Bag slot indices whose item matches f
@@ -2969,6 +3023,9 @@ async function run_row(row) {
 		case "equip": {
 			const k = a.num !== undefined && character.items[a.num]?.name === a.name ? a.num : find_slot(a.name, a.level);
 			if (k < 0) throw { reason: "input_missing" };
+			// v19.7: never wear something that scores lower than what's in the slot (the guide doesn't own the slot)
+			if (CFG.gear_auto && a.slot && character.slots?.[a.slot] && gear_score(character.items[k]) < (my_gear().w[a.slot] || 0))
+				throw { reason: "worse_than_worn", want: `${a.name}+${a.level || 0} ${Math.round(gear_score(character.items[k]))} < ${Math.round(my_gear().w[a.slot])} pts` };
 			await wait_budget(EMIT_COST.equip, RESERVE.errand);
 			game_log(`equip ${a.name} +${a.level || 0} → ${a.slot}`, C.ok);
 			if (a.slot) state.guide_equip[a.slot] = Date.now();
@@ -3598,7 +3655,13 @@ function report_lines(log = true, compact = false) {
 // why_not("bee"): is this monster farmable and safe for us, with the numbers behind the verdict
 // gear_check(): every slot — what's worn (score), the best piece in the bags or the bank (from the last visit) and
 // whether it would go on. Answers "is this item worth anything to me?".
-function gear_check() {
+// gear_check(): every character's slots in one window (like report()); gear_check("solo") only ours
+function gear_check(solo) {
+	const targets = party_names_all().filter((n) => n !== character.name);
+	if (solo === "solo" || !targets.length || typeof send_cm !== "function") return share_text(`gear_check ${character.name}`, gear_check_lines());
+	return party_gather("gear", targets, 0, gear_check_lines());
+}
+function gear_check_lines() {
 	const g = my_gear(), sl = character.slots || {}, L = [`— gear_check ${character.name} (${character.ctype} ${character.level}) —`];
 	const cand = {}; // slot -> best { name, level, score, where }
 	const look = (it, where) => {
@@ -3610,13 +3673,20 @@ function gear_check() {
 	for (const it of state.bank_gear || []) look(it, "bank");
 	for (const s of GEAR_SLOTS) {
 		const w = sl[s], c = cand[s], cur = g.w[s] || 0;
-		const verdict = !c ? "nothing better owned" : gear_gain(c, character.ctype, g) ? `UPGRADE +${Math.round(c.score - cur)} pts → equips` :
+		const verdict = !c ? "nothing better owned" : gear_gain(c, character.ctype, g) ? `UPGRADE +${Math.round(gear_gain(c, character.ctype, g).gain)} pts → equips${c.where === "bank" ? " once fetched" : ""}` :
 			c.score > cur ? `+${Math.round(c.score - cur)} pts, below the ${g.own?.[s] ? Math.round(CFG.gear_guide_override * 100) + "% guide" : Math.round(CFG.gear_margin * 100) + "%"} margin` : "worse";
 		L.push(`${s.padEnd(9)} ${w ? `${w.name}+${w.level || 0}` : "(empty)"} ${Math.round(cur)} pts${g.own?.[s] ? " [guide working on it]" : ""}` +
 			`${c ? ` | best owned: ${c.name}+${c.level} ${Math.round(c.score)} pts (${c.where})` : ""} — ${verdict}`);
 	}
 	if (!state.bank_gear?.length) L.push("(no bank snapshot yet: it's taken on the next bank visit)");
-	return share_text(`gear_check ${character.name}`, L);
+	// pieces in our bags that are upgrades for another member (handed over when near, merchant delivers)
+	const takers = gear_takers().slice(1);
+	for (const it of character.items) {
+		const m = it && GEAR.has(G.items[it.name]?.type) && takers.find((x) => gear_gain(it, x.ctype, x.g));
+		if (m) L.push(`holding ${it.name}+${it.level || 0} for ${m.name} (+${Math.round(gear_gain(it, m.ctype, m.g).gain)} pts its ${gear_gain(it, m.ctype, m.g).slot})`);
+	}
+	for (const k in state.gear_skip) if (k.startsWith("equip:") && skipped(k)) L.push(`refused by the server: ${k.slice(6)} — ${skip_why[k] || "?"} (retry in ${mins(state.gear_skip[k])})`);
+	return L;
 }
 // ---- selftest(): checks the assumptions the script makes about the live game client ----
 // Functions it calls, data it reads, events it listens to, storage, and a cm round trip to every other character
@@ -3708,7 +3778,7 @@ function report_reply(m) {
 	if (now - (report_reply_at[from] || 0) < 5000) return;
 	report_reply_at[from] = now;
 	const h = +m.message.hours || 0;
-	const lines = m.message.kind === "history" ? history_lines(h || 6) : [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
+	const lines = m.message.kind === "history" ? history_lines(h || 6) : m.message.kind === "gear" ? gear_check_lines() : [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
 	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, lines })).catch(() => {});
 }
 function report_collect(m) {
@@ -3723,8 +3793,8 @@ function report_finish(id) {
 	const members = (CFG.party.members || []).filter((n) => n !== character.name).sort();
 	const order = [character.name, ...members, ...(CFG.merchant?.name && CFG.merchant.name !== character.name ? [CFG.merchant.name] : [])];
 	const replied = [...g.want].filter((n) => g.got[n]).length;
-	const hist_k = g.kind === "history";
-	const out = [`══ party ${hist_k ? `history (${g.hours || 6}h)` : "report"} v${VERSION} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...(hist_k ? [] : party_header_lines())];
+	const hist_k = g.kind === "history" || g.kind === "gear";
+	const out = [`══ party ${g.kind === "history" ? `history (${g.hours || 6}h)` : g.kind === "gear" ? "gear_check" : "report"} v${VERSION} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...(hist_k ? [] : party_header_lines())];
 	for (const n of order) {
 		const v = g.got[n]?.v;
 		out.push("", `▌ ${n}${v && v !== VERSION ? ` (v${v} ≠ v${VERSION}: update it)` : ""}`);
@@ -3734,7 +3804,7 @@ function report_finish(id) {
 		else out.push("(no reply: offline, on another server, or running an older version)");
 	}
 	if (!hist_k) last_party_report = out;
-	return share_text(hist_k ? "party history" : "party report", out);
+	return share_text(g.kind === "gear" ? "party gear_check" : hist_k ? "party history" : "party report", out);
 }
 // Everything shared, once: roster, leader and its pack, gold, hunts, last hour per member, bosses, merchant, mutual goals
 function party_header_lines() {
@@ -3845,6 +3915,7 @@ function heartbeat() {
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
 		party: Object.keys(get_party() || {}), // who we're in a game party with (invites use it)
 		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
+		worn: CFG.gear_auto ? worn_items() : null, // swap_worn: what's in each slot
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
 		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
 		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing() };
@@ -4335,6 +4406,14 @@ async function stand_tick() {
 				return;
 			}
 			await T(open_stand(k), 3000).catch(() => {});
+			return;
+		}
+		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand
+		for (const slot in state.stand) {
+			const cur = sl[slot];
+			if (!cur || !GEAR.has(G.items[cur.name]?.type) || !wanted_by_member(cur)) continue;
+			await T(unequip(slot), 5000).then(() => game_log(`stand: took ${cur.name}+${cur.level || 0} down — an upgrade for the party`, C.ok)).catch(() => {});
+			delete state.stand[slot];
 			return;
 		}
 		// price cuts: re-list at the lower price
