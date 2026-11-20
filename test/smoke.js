@@ -2284,7 +2284,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Sanala", { ...san, level: 51, split: false });
 		vm.runInContext("state.split_fallback = 0", ctx);
 		assert(vm.runInContext("is_follower()", ctx), "regroup: the follower follows");
-		vm.runInContext("state.partners = {}; CFG.party.split.enabled = false; state.split_on = false", ctx);
+		// v21.1: while split, a pack's measurement counts our own kills, not the shared xp we receive
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51 });
+		vm.runInContext("state.partners = {}; state.split_on = true; state.measured = {}", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
+		vm.runInContext(`state.session = { key: "main:0,0,10,10", mtype: "goo", est: 0, xp: 9000, kx: 300, split: true, start: Date.now() - 100000 }; end_session()`, ctx);
+		assert(Math.round(vm.runInContext("state.measured['main:0,0,10,10']", ctx)) === 3, `split: own kills (300 xp / 100s = 3), not received xp 90 (${vm.runInContext("state.measured['main:0,0,10,10']", ctx)})`);
+		vm.runInContext(`state.session = { key: "main:0,0,10,11", mtype: "goo", est: 0, xp: 9000, kx: 300, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
+		assert(vm.runInContext("state.measured['main:0,0,10,11'] === undefined", ctx), "a measurement that spans a mode change is dropped");
+		vm.runInContext("state.partners = {}; CFG.party.split.enabled = false; state.split_on = false; state.measured = {}", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");

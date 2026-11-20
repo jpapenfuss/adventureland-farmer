@@ -1,4 +1,4 @@
-const VERSION = "21.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "21.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -822,7 +822,10 @@ function end_session() {
 	if (!s) return;
 	const secs = (Date.now() - s.start) / 1000;
 	if (secs < CFG.measure_min_s) return;
-	const rate = s.xp / secs, prev = state.measured[s.key];
+	// v21.1: while split, the xp we receive includes shares of partners' kills elsewhere (the server splits every
+	// party kill), which would make every spot look alike: measure our own kills there instead
+	if (s.split !== split_now()) return; // the mode changed mid-measurement: neither number is clean
+	const rate = (s.split ? s.kx : s.xp) / secs, prev = state.measured[s.key];
 	state.measured[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	if (s.est > 0) state.realism = state.realism * 0.7 + (rate / s.est) * 0.3; // slow-moving average of measured ÷ estimate
@@ -869,7 +872,14 @@ if (typeof character.on === "function") {
 		if (a?.mtype && G.monsters[a.mtype]) cal.cur[a.mtype] = (cal.cur[a.mtype] || 0) + d.damage;
 		if (pmring.hits.length > 200) pmring.hits.shift();
 	});
-	character.on("target_hit", (d) => { seen.target_hit++; if (d?.kill) { seen.kill++; bucket().kills++; } });
+	character.on("target_hit", (d) => {
+		seen.target_hit++;
+		if (!d?.kill) return;
+		seen.kill++; bucket().kills++;
+		// own kills, valued at the monster's base xp (what score_area estimates): the split-mode pack measurement
+		const mt = parent.entities?.[d.target]?.mtype || state.session?.mtype;
+		if (state.session && mt && G.monsters[mt]) state.session.kx = (state.session.kx || 0) + (G.monsters[mt].xp || 0);
+	});
 }
 function pm_sample() {
 	const t = get_targeted_monster();
@@ -1198,7 +1208,7 @@ setInterval(() => {
 	if (!p || character.rip) return;
 	const here = character.map === p.map && in_boundary(p.boundary, 300);
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, start: Date.now() };
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, split: split_now(), start: Date.now() };
 	if (state.session) {
 		state.session.xp += d;
 		if ((Date.now() - state.session.start) / 1000 > CFG.measure_min_s * 2) end_session();
