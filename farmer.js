@@ -1,4 +1,4 @@
-const VERSION = "17.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3239,6 +3239,8 @@ function selftest() {
 	const kb = Math.round((size(SAVE_KEY) + size(LOG_KEY) + size("farmer_report:" + character.name)) / 1024);
 	ok(kb < 1500, `saved data: ${kb} KB (state + history + stored report)`, true);
 	ok(Number.isFinite(character.cc), `call meter character.cc (${character.cc})`, true);
+	const fl = typeof window !== "undefined" ? window.farmer_loaded : null;
+	ok(true, fl ? `loaded via loader v${fl.loader} (${fl.how}) from ${fl.url}` : "pasted directly (no loader)");
 	for (const n of party_names_all().filter((x) => x !== character.name)) {
 		const P = n === CFG.merchant?.name ? state.merchant : state.partners[n];
 		ok(fresh(P), `${n}: ${fresh(P) ? `heartbeat ${Math.round((now - P.t) / 1000)}s ago, v${P.v}${P.v !== VERSION ? " ≠ ours" : ""}` : "no heartbeat in 10s"}`, true);
@@ -4318,6 +4320,9 @@ tick();
 //   pulls low-value items to sell or list. The richest fighter nearby keeps its gold at float. Its idle spot is a
 //   stand position that qualifies for Merrit's Market Parcels (square/aisle, spacing rules, 2 minutes still);
 //   routine supply trips wait until the stand has stood min_stay_ms.
+//
+// Install: paste loader.js (once) into each character's CODE slot. It fetches this file from the public GitHub repo
+//   (cached copy if GitHub is down); a release reaches a character when its code restarts (reload_farmer()).
 //
 // Diagnostics (CODE console, copyable text box): report() — this character at once, then the whole party in one
 //   box (same server; stored copies otherwise); report(6) adds 6h history each; party_report() re-opens it;
