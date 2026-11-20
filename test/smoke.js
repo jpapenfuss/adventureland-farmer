@@ -2041,7 +2041,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept");
 	// v18.7: a hunt monster far below the best xp/s we know isn't chased
 	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); state.best_score = 800", ctx);
-	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "bee hunt at 300 xp/s vs best 800: not chased; croc: chased");
+	assert(vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v18.8: hunt_min_xp off by default — a bee hunt is chased");
+	vm.runInContext("CFG.hunt_min_xp = 0.6", ctx);
+	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "hunt_min_xp 0.6: bee hunt at 300 xp/s vs best 800 not chased; croc chased");
+	vm.runInContext("CFG.hunt_min_xp = 0", ctx);
 	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_score = 0", ctx);
 	// v18.7 gold budget: party spending held under 90% of income
 	vm.runInContext(`globalThis.__hb = hist.buckets; hist.buckets = {}; state.partners = {}; state.merchant = null;
@@ -2066,6 +2069,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items[4] = { name: "gpants", level: 0 };
 	assert(vm.runInContext("gear_target() && gear_target().name", ctx) === "Torlis", "merchant holding a fighter's upgrade: a delivery trip to it");
 	character.items = Array(42).fill(null); vm.runInContext("state.partners = {}", ctx);
+	// 96) v18.8: the leader's town run doesn't drag followers to town; they hold its pack
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "main", x: 0, y: 0, rip: false, hp: 2500, max_hp: 2500 });
+	ctx.parent.entities = {};
+	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; smart_depth = 0; globalThis.__tv = travel; globalThis.__trav = []; travel = (p) => globalThis.__trav.push(p)", ctx);
+	hb("Sanala", { ...san, level: 51, x: 3000, y: 0, errand: "town", pack: { mtype: "snake", map: "main", boundary: [-100, -100, 100, 100] } });
+	vm.runInContext("follower_tick()", ctx);
+	assert(vm.runInContext("is_follower() && globalThis.__trav.length === 0", ctx), "leader in town: follower stays at the pack");
+	hb("Sanala", { ...san, level: 51, x: 3000, y: 0, errand: null, pack: { mtype: "snake", map: "main", boundary: [-100, -100, 100, 100] } });
+	vm.runInContext("follower_tick()", ctx);
+	assert(vm.runInContext("globalThis.__trav.length === 1", ctx), "leader not on an errand and far: follower follows it");
+	vm.runInContext("travel = globalThis.__tv; state.partners = {}", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

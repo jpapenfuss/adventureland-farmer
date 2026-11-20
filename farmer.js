@@ -1,4 +1,4 @@
-const VERSION = "18.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -138,8 +138,9 @@ const CFG = {
 	// donations) only while the party's spending over the last window_h stays under share × what it earned (loot,
 	// sales). Potions and other necessities are never held back, but they count as spending.
 	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1 },
-	// v18.7: a monster hunt is chased only if its monster gives at least this share of the best xp/s we know
-	hunt_min_xp: 0.6,
+	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
+	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
+	hunt_min_xp: 0,
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
@@ -2457,7 +2458,7 @@ function hunt_feasible(h) {
 	if (!h || !(h.c > 0)) return false;
 	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
 	const best = best_known_xps();
-	if (best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
+	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
 	if (!(h.ms > 0)) return true; // no expiry known
 	const kps = kills_per_s(h.id) * (1 + 0.6 * partners_near().length);
 	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
@@ -3046,7 +3047,8 @@ let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated a
 const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "forge", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in
-const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" : due.hunt ? "hunt" :
+// v18.8: a hunt to turn in / take is no longer urgent: it rides on the next trip (Daisy is in town)
+const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" :
 	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
 // Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
 // span: minutes covered (less than 60 right after an update)
@@ -3499,7 +3501,7 @@ function report_facts() {
 	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
 	const h = character.s.monsterhunt;
 	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
-	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	const tc = town_causes();
 	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
@@ -4464,7 +4466,11 @@ function follower_tick() {
 	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, probe: !!L.pack.probe } : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
-	const pos = partner_pos(L), lt = L.target && parent.entities[L.target];
+	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
+	// and back (every leader trip used to move the whole party)
+	const away = !!L.errand && !!state.pack;
+	const pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
+	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader
 	let t = i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : caller_target() || leader_t || choose_target(false) || follower_pick(pos);
