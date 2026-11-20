@@ -2152,9 +2152,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("hist.buckets = globalThis.__hb2", ctx);
 	// 101) v19.7 gear: two-handers vs mainhand+offhand; guide equip never lowers a slot; wanted gear kept; worn swaps
 	{
-		ctx.G.classes.mage = { ...(ctx.G.classes.mage || {}), main_stat: "int", mainhand: { wand: {} }, doublehand: { staff: {} }, offhand: { source: {} } };
+		// real class rules (design/classes.py): mage one-handers staff/wand/wblade, two-hander great_staff, offhand source
+		ctx.G.classes.mage = { ...(ctx.G.classes.mage || {}), main_stat: "int", mainhand: { staff: {}, wand: {}, wblade: {} }, doublehand: { great_staff: {} }, offhand: { source: {}, misc_offhand: {} } };
 		ctx.G.items.wnd = { type: "weapon", wtype: "wand", attack: 20 }; ctx.G.items.src = { type: "source", int: 10 };
-		ctx.G.items.stf = { type: "weapon", wtype: "staff", attack: 40 }; ctx.G.items.stf2 = { type: "weapon", wtype: "staff", attack: 25 };
+		ctx.G.items.stf = { type: "weapon", wtype: "great_staff", attack: 40 }; ctx.G.items.stf2 = { type: "weapon", wtype: "great_staff", attack: 25 };
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, esize: 30 });
 		vm.runInContext("state.partners = {}; state.merchant = null; state.guide = null; state.guide_equip = {}; state.gear_skip = {}; my_gear_cache = null; state.needs = new Map(); gear_busy = false; state.errand = null", ctx);
 		character.slots = { mainhand: { name: "wnd", level: 0 }, offhand: { name: "src", level: 0 } };

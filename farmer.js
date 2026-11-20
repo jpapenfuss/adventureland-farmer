@@ -1,4 +1,4 @@
-const VERSION = "20.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "20.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1081,7 +1081,8 @@ function deaths(n = 5) {
 }
 // ---- Gold budget (CFG.spend) ----
 // Our gross earned/spent over the last window_h (hour buckets), and the party's (heartbeats carry each member's)
-// Spending categories (v20.0): a purchase tags the gold that leaves in the next few seconds
+// Spending categories (v20.0): a purchase tags the gold that leaves in the next few seconds. Upgrades and compounds
+// cost no gold on the server (only their scrolls, tagged "scrolls"), so they aren't tagged (v20.1)
 let spend_tag = null; // { cat, until }
 const tag_spend = (cat) => (spend_tag = { cat, until: Date.now() + 5000 });
 function spend_cat_of(name) {
@@ -1835,7 +1836,6 @@ async function run_upgrade(a, row) {
 	if (!preview || !(preview.chance >= floor)) throw { reason: "low_chance", chance: preview?.chance };
 	await mass_production();
 	await wait_budget(1, RESERVE.errand);
-	tag_spend("upgrades");
 	const r = await T(upgrade(k, find_slot(scroll, 0), off), 60_000); // the server takes 500·L·√L ms (+7: ~9s, +9: 13.5s)
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	log_ev("upgrade", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
@@ -1857,7 +1857,6 @@ async function run_compound(a, row, floor) {
 	if (!preview || !(preview.chance >= (floor ?? chance_floor(a.name, CFG.min_compound_chance)))) throw { reason: "low_chance", chance: preview?.chance };
 	await mass_production();
 	await wait_budget(1, RESERVE.errand);
-	tag_spend("compounds");
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)), 40_000); // the server takes 10s to combine
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	log_ev("compound", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
@@ -3097,7 +3096,6 @@ async function run_stat(a) {
 		if (k < 0) throw { reason: "input_missing" };
 		if (sk < 0) throw { reason: "scroll_missing" };
 		await wait_budget(1, RESERVE.errand);
-		tag_spend("upgrades");
 		const r = await T(upgrade(k, sk), 30_000);
 		game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : why(r)}`, C.ok);
 		return r;
