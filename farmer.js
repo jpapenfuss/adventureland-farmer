@@ -1,4 +1,4 @@
-const VERSION = "24.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -20,10 +20,13 @@ const CFG = {
 	death_pack_cooldown_ms: 1_800_000, // 30 min: a pack we died at is skipped this long
 	repick_ms: 120_000,        // re-evaluate where to fight every 2 min (levels, gear and measurements change)
 	switch_margin: 1.15,       // change packs only if the new one scores 15% better (walking there isn't free)
+	near_pad: 450,             // px around the pack area a target may be picked from (and chased to)
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
 	flee_hp: 0.25,             // below 25% HP: teleport to town (use_town) and recover
+	flee_quiet_ms: 1200,       // ...channelling only once nothing has hit us for 1.2s (a hit cancels the 3s channel)
+	smash_mp_floor: 0.6,       // paladin: smash only with MP above 60% of max (+ its 380 cost): regen funds it, never potions
 	// Probing: the safety model only picks monsters it already calls safe, so it never learns about harder ones. Every
 	// every_min the leader may try the best-xp spot whose risk is just over the limit (up to max_over x) and that beats
 	// the best normal xp/s by min_gain, for `minutes`, with every member fleeing at flee_hp instead of 25%. A member
@@ -1088,6 +1091,7 @@ function watchdog() {
 	wd.pos = wd.pos.filter((p) => now - p.t <= 15 * 60_000);
 	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant()) {
 		wd.lost_since = null;
+		wd.pos = wd.pos.slice(-1); // v24.4: the clocks restart after; a town trip + walk back used to count as 10 min without a kill
 		return;
 	}
 	const since = (min) => wd.pos.filter((p) => now - p.t >= min * 60_000).pop(); // the sample ~min minutes ago
@@ -1398,7 +1402,7 @@ function party_names() {
 }
 // Self-defence first (monsters hitting us, then a party member); then the pack's own monster type; others only if
 // none of the pack's type is in view and they die within max_ttk_s.
-function choose_target(local_ok) {
+function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
 	let hitting = null, hd = Infinity;
 	for (const id in parent.entities) {
@@ -1409,12 +1413,18 @@ function choose_target(local_ok) {
 		if (d < hd) (hd = d), (hitting = e);
 	}
 	if (hitting) return hitting;
-	if (!local_ok) return null;
-	const want = state.pack?.mtype, cur = get_targeted_monster();
+	// v24.4: targets come from the pack area plus near_pad px only. Anything visible (700px) used to qualify inside the
+	// area, but once the chase crossed the 250px margin only attackers did: the leader walked out toward a monster, lost
+	// it, walked back, picked it again — without end. keep_cur: outside the margin, a target picked under this rule stays
+	const box = state.pack && character.map === state.pack.map && valid_boundary(state.pack.boundary) ? state.pack.boundary : null, P_ = CFG.near_pad;
+	const near_box = (e) => !box || in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_]);
+	const cur = get_targeted_monster();
+	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
+	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2; // tier 0 = the pack's own monster, 1 = anything else
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
-		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target))) continue;
+		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
 		const f = live_ok(e);
 		if (!f) continue;
 		const tier = e.mtype === want ? 0 : 1;
@@ -1478,8 +1488,9 @@ function approach(t) {
 async function travel(dest) {
 	if (walking() || Date.now() < (state.travel_block_until || 0)) return;
 	try { await go(dest); } catch (e) {
-		if (e && e.reason !== "interrupted") game_log("travel: " + why(e));
-		state.travel_block_until = Date.now() + 5000; // a failing path must not be retried every tick
+		// a failing path must not be retried every tick; an interrupted one (we stopped it to fight, or the watchdog did) isn't
+		// failing (v24.4: it was blocked 5s too, standing idle after the kill and undoing the watchdog's reset)
+		if (!e || e.reason !== "interrupted") { game_log("travel: " + why(e)); state.travel_block_until = Date.now() + 5000; }
 	}
 	state.last_target_at = Date.now();
 }
@@ -1517,7 +1528,8 @@ function class_skills(t) {
 					ents.some((m) => m.type === "monster" && m.target === e.name));
 				if (victim) fire("absorb", victim);
 			}
-			if (!t.s?.cursed && can_use("curse")) fire("curse", t);
+			// curse (400 MP, +20% damage taken for 5s): only on a target with 5+ of our party's hits left, and MP above half
+			if (!t.s?.cursed && t.hp > character.attack * 5 && character.mp > character.max_mp * 0.5 && can_use("curse")) fire("curse", t);
 			break;
 		case "paladin": {
 			// mana shield: below 50% HP with MP to spare, damage comes out of MP (1.5 dmg per MP until 200 MP left);
@@ -1528,7 +1540,11 @@ function class_skills(t) {
 			if (character.hp < character.max_hp * 0.5 && can_use("selfheal")) fire("selfheal");
 			else if (G.skills.purify && t.hp >= 1500 && character.mp > (G.skills.purify.mp || 360) + 200 && can_use("purify")) fire("purify", t);
 			// purify (level 60): 2000 pure damage (ignores armour) every 24s, on targets with that much HP left
-			else if (t.hp > character.attack * 2 && can_use("smash")) fire("smash", t);
+			// v24.4: smash is 0.36 x attack for 380 MP every 320ms (and needs a mace): unchecked, it emptied the bar in a
+			// second and sustain() refilled it with MP potions (~30/min). Only from MP above smash_mp_floor of max, so it
+			// spends natural regen and never potions, and keeps MP for mshield/selfheal/purify
+			else if (t.hp > character.attack * 2 && character.mp > character.max_mp * CFG.smash_mp_floor + (G.skills.smash?.mp || 380) &&
+				G.items[character.slots?.mainhand?.name]?.wtype === "mace" && can_use("smash")) fire("smash", t);
 			break;
 		}
 		case "warrior":
@@ -1547,7 +1563,9 @@ function class_skills(t) {
 			const range = G.skills.energize?.range || 320;
 			const low = others().map((n) => parent.entities?.[n]).filter((e) => e && !e.rip && valid(e) && e.max_mp &&
 				e.mp < e.max_mp * 0.4 && distance(character, e) < range).sort((a, b) => a.mp / a.max_mp - b.mp / b.max_mp)[0];
-			if (low && character.mp > character.max_mp * 0.3) fire("energize", low);
+			// v24.4: with no amount the server moves up to 10000 MP — all of ours. Give what they're missing, keeping 40%
+			const give = low ? Math.min(low.max_mp - low.mp, Math.floor(character.mp - character.max_mp * 0.4)) : 0;
+			if (low && give >= 100) fire("energize", low, give);
 			else if (character.mp < character.max_mp * 0.5) fire("energize", character);
 			break;
 		}
@@ -1605,11 +1623,16 @@ const pot_count = (kind) => character.items.reduce((n, i) => {
 	return n + (d && d.type === "pot" && (d.gives || []).some(([k, v]) => k === kind && v > 0) ? i.q || 1 : 0);
 }, 0);
 // Drink below 55% HP / 35% MP; otherwise use the free (slow) regen when topped up enough elsewhere
+// v24.4: no potion while channelling a town teleport (a drink cancels it); and the free regen only when nothing is on
+// us — it puts every potion on a 4s cooldown (server), twice a potion's own, which a hit at 60% HP can't afford
 function sustain() {
 	if (character.rip) return;
 	const hp = character.hp / character.max_hp, mp = character.mp / character.max_mp;
+	const calm = !get_nearest_monster({ target: character.name }) && hurt_ms() > 3000;
+	if (channeling()) return calm && hp < 0.9 ? fire("regen_hp") : undefined;
 	if (hp < 0.55 && pot_count("hp")) return fire("use_hp");
 	if (mp < 0.35 && pot_count("mp")) return fire("use_mp");
+	if (!calm) return;
 	if (mp < 0.9 && hp > 0.8) return fire("regen_mp");
 	if (hp < 0.9) return fire("regen_hp");
 }
@@ -3035,6 +3058,10 @@ function boss_directive() {
 // Leader/solo at a boss pack: fight it when in view, else walk to its last reported position
 function boss_tick(pack) {
 	const e = Object.values(parent.entities || {}).find((x) => x.type === "monster" && x.mtype === pack.mtype && x.visible && !x.dead);
+	// v24.4: something else hitting us on the way (or while we wait for the party) gets fought; we used to walk or stand
+	// there taking hits until flee HP
+	const hit = !e || !e.target ? choose_target(false) : null;
+	if (hit && hit.mtype !== pack.mtype && hit.target === character.name) { state.last_target_at = Date.now(); fight(hit, true); return true; }
 	if (e && !e.target && !boss_safe(pack.mtype, false)) { // judged with the whole party: wait for it before engaging
 		state.last_target_at = Date.now();
 		set_message(`BOSS ${pack.mtype}: waiting for the party (${partners_near().length}/${partners().length} here)`);
@@ -3661,7 +3688,9 @@ function town_check() {
 	if (errand_busy()) blockers.push(`errand ${state.errand}`);
 	if (attacked && !critical) blockers.push("under attack");
 	if (character.hp < character.max_hp * floor) blockers.push(`HP ${Math.round((character.hp / character.max_hp) * 100)}% < ${floor * 100}%`);
-	if (walking() && !errand_busy()) { stop("smart"); blockers.push("stopping a pack walk"); } // a patrol/pack trip yields to town
+	// a patrol/pack walk yields to town — only when nothing else holds the trip (v24.4: stopped every tick otherwise, and
+	// with HP under the floor the walk to the pack froze until regen)
+	if (!blockers.length && walking() && !errand_busy()) { stop("smart"); blockers.push("stopping a pack walk"); }
 	state.town_block = { what: what.join("+"), blockers, at: Date.now() };
 	if (blockers.length) {
 		if (critical && Date.now() - town_block_logged > 300_000) {
@@ -3692,6 +3721,15 @@ function town_check() {
 // Low-HP recovery: cancel any walk (it would block the channel), teleport to town (3s channel), fight back only if
 // hit, and stay out until recover_hp/recover_mp. use_town has no cooldown and fails while > 5 monsters target us, so
 // retries are spaced 1.5s apart; it's re-channelled only if something followed us below flee_hp.
+// v24.4: the 3s town channel is cancelled by every hit we take, every attack, heal or skill we cast and every potion
+// (drinking is an "equip" packet; server: player.c = {}). The old flee channelled and fought back in the same tick, and
+// sustain() drank within 2s, so the teleport almost never landed; and it only re-channelled below flee_hp, so one potion
+// above 25% left us "recovering" in place — a melee fighter shot from range stood still until it died. Now: while
+// anything is on us (or hit us in the last quiet_ms), fight it (walking to it if melee) and drink; once it's quiet,
+// channel, and do nothing that would cancel it until it lands; retry until we're home.
+const hurt_ms = () => { const h = pmring.hits[pmring.hits.length - 1]; return h ? Date.now() - h.t : Infinity; };
+const channeling = () => !!character.c?.town || Date.now() - (state.town_at || 0) < 700; // the server's update can lag our send
+const at_town_spot = () => { const sp = G.maps[character.map]?.spawns?.[0]; return !!sp && Math.hypot(character.x - sp[0], character.y - sp[1]) < 150; };
 function recover() {
 	if (!state.recovering) {
 		const pmf = postmortem();
@@ -3699,20 +3737,26 @@ function recover() {
 		bucket().flees++;
 		incident(pmf.killer && G.monsters[pmf.killer] ? pmf.killer : state.pack?.mtype, 0.8);
 		if (!state.pack?.probe) safety_tune("flee"); // a probe's flee is the probe's verdict, not the everyday limit's
-		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
+		// flee_pack: on_death reads the pack to cool it down and blame it; dying mid-flee used to find it already cleared
+		Object.assign(state, { recovering: true, fled: false, session: null, flee_pack: state.pack, pack: null });
 		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
 	}
 	const threat = get_nearest_monster({ target: character.name });
-	const channeling = !!character.c.town;
-	if (!channeling && Date.now() - (state.town_at || 0) > 1500 && (!state.fled || (threat && character.hp < character.max_hp * flee_at()))) {
-		if (walking() || is_moving(character)) stop("smart"), stop("move");
-		if (fire("use_town")) (state.fled = true), (state.town_at = Date.now());
+	const done = character.hp >= character.max_hp * CFG.recover_hp && character.mp >= character.max_mp * CFG.recover_mp;
+	if (done && !threat) {
+		Object.assign(state, { recovering: false, fled_home: false, flee_pack: null, last_target_at: Date.now() });
+		return void game_log("Recovered; resuming", C.ok);
 	}
-	if (!channeling && threat) { const t = choose_target(false); if (t) fight(t, false); }
-	if (character.hp >= character.max_hp * CFG.recover_hp && character.mp >= character.max_mp * CFG.recover_mp && !threat) {
-		state.recovering = false;
-		state.last_target_at = Date.now();
-		game_log("Recovered; resuming", C.ok);
+	if (channeling()) return void set_message("Teleporting to town…"); // nothing that would cancel it
+	if (threat || hurt_ms() < CFG.flee_quiet_ms) {
+		const t = choose_target(false); // what's hitting us (then a partner)
+		if (t) fight(t, true); // steer: a melee fighter walks to a ranged attacker; a ranged one kites
+	} else if (!done && !state.fled_home && Date.now() - (state.town_at || 0) > 1500) {
+		if (at_town_spot()) state.fled_home = true;
+		else {
+			if (walking() || is_moving(character)) stop("smart"), stop("move");
+			if (fire("use_town")) (state.fled = true), (state.town_at = Date.now());
+		}
 	}
 }
 // park(): finish the current errand, go to town and stand there (still fighting back). resume(): carry on.
@@ -5316,8 +5360,8 @@ function on_death() {
 	pmd.unexplained = !Object.keys(pmd.dmg10 || {}).length;
 	log_ev("death", pmd);
 	bucket().deaths++;
-	const killer = pmd.killer && G.monsters[pmd.killer] ? pmd.killer : state.pack?.mtype;
-	const p = state.pack;
+	const p = state.pack || state.flee_pack; // v24.4: a death mid-flee still blames (and cools down) the pack fled from
+	const killer = pmd.killer && G.monsters[pmd.killer] ? pmd.killer : p?.mtype;
 	if (!pmd.unexplained) safety_tune("death");
 	if (pmd.unexplained) game_log(`Died with no damage seen (script watching for ${pmd.watched_s}s) — not blaming ${p?.mtype || "the pack"}`, C.warn);
 	else if (p) {
@@ -5325,7 +5369,7 @@ function on_death() {
 		state.cooldown[pack_key(p)] = Date.now() + CFG.death_pack_cooldown_ms;
 		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}`);
 	}
-	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false });
+	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, flee_pack: null, fled_home: false });
 }
 // Main loop: one decision per tick (see the header for the order). Reschedules itself: 200ms normally, sooner when the
 // next attack is due (never under 50ms), 500ms when over the call budget, 1s while dead, 5s with nowhere to fight.
@@ -5380,7 +5424,7 @@ function tick() {
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
-			const t = (!i_am_tank() && caller_target()) || choose_target(in_area || !pack);
+			const t = (!i_am_tank() && caller_target()) || choose_target(in_area || !pack, true);
 			announce_target(t);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();

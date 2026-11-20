@@ -2779,6 +2779,99 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			drop_sources = S.drop_sources; kills_per_s = S.kills_per_s; CFG.hunt_min_xp = S.hmx; CFG.quest_crafts = S.qc; delete G.craft.qx115;
 			CFG.party.split.enabled = false; state.split_on = false; state.partners = {}; state.goals_cache = null; state.mode_ab = null; hist.ev = []`, ctx);
 	}
+	// 116) v24.4 combat review fixes: the flee channel survives; death mid-flee blames the pack; smash/curse/energize
+	// spend sensibly; targets stay near the pack; interrupted walks don't block travel; time away resets the watchdog
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 300, max_hp: 1000, mp: 1000, max_mp: 1000, map: "main", x: 0, y: 0, rip: false, c: {} });
+		const rec = [], sk = []; const us = ctx.use_skill, gnm = ctx.get_nearest_monster;
+		ctx.use_skill = (n, t, x) => (sk.push([n, t, x]), Promise.resolve());
+		vm.runInContext(`state.partners = {}; state.pack = null; globalThis.__f116 = { fight, choose_target }; globalThis.__fought = [];
+			fight = (t, steer) => globalThis.__fought.push([t.id, steer]); choose_target = () => globalThis.__thr || null;
+			Object.assign(state, { recovering: true, fled: false, fled_home: false, town_at: 0, flee_pack: null }); pmring.hits.length = 0;
+			for (const k in inflight) inflight[k] = false;`, ctx);
+		const T116 = { id: "x116", mtype: "goo", target: "Sanala" };
+		ctx.get_nearest_monster = (a) => (a && a.target === "Sanala" && ctx.__thr ? ctx.__thr : null);
+		ctx.__thr = T116;
+		vm.runInContext("recover()", ctx);
+		assert(vm.runInContext("globalThis.__fought.length === 1 && globalThis.__fought[0][1] === true", ctx) && !sk.some(([n]) => n === "use_town"),
+			"something on us: fight it (walking to it if needed), no channel (its hits would cancel it)");
+		ctx.__thr = null; vm.runInContext("pmring.hits.push({ t: Date.now() - 500, mtype: 'goo', dmg: 50 }); recover()", ctx);
+		assert(!sk.some(([n]) => n === "use_town"), "hit 0.5s ago: still not quiet enough to channel");
+		vm.runInContext("pmring.hits.length = 0; pmring.hits.push({ t: Date.now() - 5000, mtype: 'goo', dmg: 50 }); recover()", ctx);
+		assert(sk.filter(([n]) => n === "use_town").length === 1 && vm.runInContext("state.town_at > Date.now() - 1000", ctx), "quiet: channel");
+		character.c = { town: { ms: 3000 } }; character.items[0] = { name: "hpot1", q: 5 };
+		vm.runInContext("for (const k in inflight) inflight[k] = false; globalThis.__fought = []; sustain(); recover()", ctx);
+		assert(!sk.some(([n]) => n === "use_hp") && vm.runInContext("globalThis.__fought.length === 0", ctx), "channelling: no potion (it'd cancel), no fighting");
+		character.c = {};
+		vm.runInContext("for (const k in inflight) inflight[k] = false; state.town_at = Date.now() - 2000; recover()", ctx);
+		assert(sk.filter(([n]) => n === "use_town").length === 2, "a cancelled channel is retried at 30% HP (the old code only retried under flee_hp)");
+		vm.runInContext("for (const k in inflight) inflight[k] = false; G.maps.main.spawns = [[0, 0]]; state.town_at = Date.now() - 2000; recover()", ctx);
+		assert(sk.filter(([n]) => n === "use_town").length === 2 && vm.runInContext("state.fled_home", ctx), "at the town spot: no more channels");
+		vm.runInContext("delete G.maps.main.spawns", ctx);
+		// regen only when nothing's on us (it locks potions 4s)
+		character.hp = 700; ctx.__thr = T116; sk.length = 0;
+		vm.runInContext("for (const k in inflight) inflight[k] = false; sustain()", ctx);
+		assert(!sk.some(([n]) => n.startsWith("regen")), "attacked at 70%: no regen");
+		ctx.__thr = null; vm.runInContext("pmring.hits.length = 0; for (const k in inflight) inflight[k] = false; sustain()", ctx);
+		assert(sk.some(([n]) => n === "regen_hp"), "calm at 70%: regen");
+		character.items[0] = null;
+		// death mid-flee: the pack fled from is still blamed and cooled down
+		vm.runInContext(`state.pack = null; state.flee_pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.cooldown = {}; state.dead_handled = false;
+			pmring.hits.push({ t: Date.now(), mtype: 'goo', dmg: 500 }); on_death()`, ctx);
+		assert(vm.runInContext("state.cooldown['main:100,100,400,400'] > Date.now() && !state.flee_pack", ctx), "died while fleeing: the pack is cooled down");
+		vm.runInContext("pmring.hits.length = 0; state.dead_handled = false; state.danger = {}; state.cooldown = {}; state.safety_mult = 1; fight = globalThis.__f116.fight; choose_target = globalThis.__f116.choose_target", ctx);
+		// paladin smash: only from MP above the floor, only with a mace
+		Object.assign(character, { name: "Torlis", ctype: "paladin", hp: 1000, max_hp: 1000, mp: 900, max_mp: 1000, attack: 100, slots: { mainhand: { name: "mace116" } } });
+		vm.runInContext("globalThis.__pur = G.skills.purify; delete G.skills.purify; G.skills.smash = { mp: 380, cooldown: 320, wtype: 'mace' }; G.items.mace116 = { wtype: 'mace', type: 'weapon' }; G.items.blade116 = { wtype: 'sword', type: 'weapon' }", ctx);
+		const tgt = { id: "big116", mtype: "goo", hp: 5000, max_hp: 5000, s: {} };
+		sk.length = 0; ctx.__tgt = tgt;
+		vm.runInContext("for (const k in inflight) inflight[k] = false; class_skills(globalThis.__tgt)", ctx);
+		assert(!sk.some(([n]) => n === "smash"), "MP 900/1000 (under 60% + 380): no smash");
+		character.mp = 1000; vm.runInContext("for (const k in inflight) inflight[k] = false; class_skills(globalThis.__tgt)", ctx);
+		assert(sk.some(([n]) => n === "smash"), "MP full with a mace: smash");
+		sk.length = 0; character.slots = { mainhand: { name: "blade116" } };
+		vm.runInContext("for (const k in inflight) inflight[k] = false; class_skills(globalThis.__tgt)", ctx);
+		assert(!sk.some(([n]) => n === "smash"), "no mace: no smash (the server refuses it without a cooldown)");
+		vm.runInContext("delete G.skills.smash; delete G.items.mace116; delete G.items.blade116; if (globalThis.__pur) G.skills.purify = globalThis.__pur", ctx);
+		// mage energize: what the partner is missing, keeping 40% of ours
+		Object.assign(character, { name: "Sanala", ctype: "mage", mp: 1500, max_mp: 2300, slots: {} });
+		vm.runInContext("G.skills.energize = { range: 320, cooldown: 4000 }", ctx);
+		const asp116 = { id: "Aspernari", name: "Aspernari", type: "character", visible: true, mp: 100, max_mp: 2000, x: 10, y: 0 };
+		ctx.parent.entities.Aspernari = asp116; sk.length = 0;
+		vm.runInContext("for (const k in inflight) inflight[k] = false; class_skills({ id: 'z', hp: 1, s: {} })", ctx);
+		const en = sk.find(([n]) => n === "energize");
+		assert(en && en[1] === asp116 && en[2] === 580, `energize sends an amount: 1500 - 40% of 2300 = 580 MP (sent ${en && en[2]})`);
+		delete ctx.parent.entities.Aspernari; vm.runInContext("delete G.skills.energize", ctx);
+		// targets: only near the pack area; a picked one stays while chased past the margin
+		Object.assign(character, { hp: 1000, mp: 1000, x: 250, y: 250 });
+		vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.safe = { goo: { ttk: 1, xp: 10 } }; state.bad_ids = {}", ctx);
+		const far = { id: "far116", type: "monster", mtype: "goo", visible: true, x: 1500, y: 250, hp: 100, max_hp: 100, xp: 10 };
+		ctx.parent.entities.far116 = far;
+		assert(vm.runInContext("choose_target(true)", ctx) === null || vm.runInContext("choose_target(true)", ctx)?.id !== "far116", "a goo 1100px past the area isn't picked");
+		far.x = 700; // 300px past the edge: within near_pad
+		const picked = vm.runInContext("choose_target(true)", ctx);
+		ctx.get_targeted_monster = () => far;
+		const kept = vm.runInContext("choose_target(false, true)", ctx), notkept = vm.runInContext("choose_target(false)", ctx);
+		ctx.get_targeted_monster = () => null;
+		assert(picked?.id === "far116" && kept?.id === "far116" && notkept === null, `within near_pad: picked, and kept outside the margin (${picked?.id}, ${kept?.id}, ${notkept})`);
+		delete ctx.parent.entities.far116;
+		// travel: an interrupted walk doesn't block the next one
+		const smv = ctx.smart_move; ctx.smart_move = () => Promise.reject({ reason: "interrupted" });
+		vm.runInContext("state.travel_block_until = 0; globalThis.__tp = travel({ map: 'main', x: 5, y: 5 })", ctx);
+		await vm.runInContext("globalThis.__tp", ctx);
+		assert(vm.runInContext("!(state.travel_block_until > Date.now())", ctx), "interrupted walk: no 5s travel block");
+		ctx.smart_move = () => Promise.reject({ reason: "failed" });
+		vm.runInContext("globalThis.__tp = travel({ map: 'main', x: 5, y: 5 })", ctx);
+		await vm.runInContext("globalThis.__tp", ctx);
+		assert(vm.runInContext("state.travel_block_until > Date.now()", ctx), "a failing path still is");
+		ctx.smart_move = smv;
+		// watchdog: time away isn't time at the pack
+		vm.runInContext("wd.pos = [{ t: Date.now() - 600000, map: 'main', x: 0, y: 0, hits: 0, kills: 0, kc: 0 }]; state.recovering = true; watchdog()", ctx);
+		assert(vm.runInContext("wd.pos.length === 1 && wd.pos[0].t > Date.now() - 5000", ctx), "recovering: the watchdog's samples restart");
+		vm.runInContext("state.recovering = false; state.pack = null; state.travel_block_until = 0; wd.pos = []", ctx);
+		ctx.use_skill = us; ctx.get_nearest_monster = gnm;
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500, x: 0, y: 0, c: {}, slots: {} });
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
