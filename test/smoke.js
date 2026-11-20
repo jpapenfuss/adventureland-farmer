@@ -280,7 +280,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("quest_directive()", ctx) === null, "recipe too slow to finish is skipped");
 	vm.runInContext("CFG.quest_farm_max_h = 3", ctx);
 	// outlevelled: best pack gives 100x the bee pack's xp/s → no quest farming
-	vm.runInContext("state.best_score = 1e6", ctx);
+	vm.runInContext("(state.best_score = 1e6, state.best_solo = solo_now(), state.best_at = Date.now())", ctx);
 	assert(vm.runInContext("quest_directive()", ctx) === null, "outlevelled material farm skipped (opportunity cost)");
 	vm.runInContext("state.best_score = 0", ctx);
 	// stall: count doesn't move for quest_stall_min → recipe shelved
@@ -312,11 +312,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext(`state.guide_ignore = {}; state.gprog = null; state.guide_farm.until = Date.now() + 1e6`, ctx);
 	character.s.monsterhunt = { id: "goo", c: 5 };
 	const fp_save = ctx.fight_profile;
-	vm.runInContext(`state.guide_farm.monster = "bee"; state.directive = null; refresh_directive()`, ctx);
+	// (the xp floor off: this is about priority; v24.3 judges side goals against the computed best even before a pick)
+	vm.runInContext(`globalThis.__hmx = CFG.hunt_min_xp; CFG.hunt_min_xp = 0; state.guide_farm.monster = "bee"; state.directive = null; refresh_directive()`, ctx);
 	assert(vm.runInContext(`state.directive && /monster hunt/.test(state.directive.reason)`, ctx), `hunt outranks the guide row (${vm.runInContext("JSON.stringify(state.directive && state.directive.reason)", ctx)})`);
+	vm.runInContext("CFG.hunt_min_xp = globalThis.__hmx", ctx);
 	delete character.s.monsterhunt;
 	// outlevelled guide row skipped
-	vm.runInContext(`state.guide_farm.monster = "goo"; state.best_score = 1e9; state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
+	vm.runInContext(`state.guide_farm.monster = "goo"; (state.best_score = 1e9, state.best_solo = solo_now(), state.best_at = Date.now()); state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
 	assert(vm.runInContext(`!state.directive && !goals_list().some((g) => /guide/.test(g.reason))`, ctx), "outlevelled guide farm row skipped (not shared either)");
 	vm.runInContext(`state.best_score = 0`, ctx);
 	if (hunt_save) character.s.monsterhunt = hunt_save;
@@ -331,7 +333,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.guide_quests = {}; state.crafted = {}", ctx);
 	vm.runInContext("guide_refresh()", ctx);
 	assert(vm.runInContext(`is_guide_quest("wcap")`, ctx), "guide row naming wcap marks it a guide quest");
-	vm.runInContext("state.best_score = 1e6; CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
+	vm.runInContext("(state.best_score = 1e6, state.best_solo = solo_now(), state.best_at = Date.now()); CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
 	const g16 = vm.runInContext("quest_directive(true)", ctx);
 	assert(g16 && /guide quest wcap/.test(g16.reason), "guide quest farmed even when outlevelled and slow");
 	assert(vm.runInContext("quest_directive(false)", ctx) === null, "same recipe not offered as an own-choice quest");
@@ -1938,7 +1940,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.maps.main.monsters.push({ type: "edge", count: 6, boundary: [600, 600, 800, 800] }, { type: "wall", count: 6, boundary: [900, 900, 1000, 1000] }, { type: "meh", count: 6, boundary: [1100, 1100, 1200, 1200] });
 	const ro = (m) => vm.runInContext(`risk_over('${m}')`, ctx);
 	assert(ro("edge") > 1 && ro("edge") <= 2 && ro("wall") > 2, `risk ratios: edge x${ro("edge").toFixed(2)}, wall x${ro("wall").toFixed(2)}`);
-	vm.runInContext("state.best_score = 50", ctx);
+	vm.runInContext("(state.best_score = 50, state.best_solo = solo_now(), state.best_at = Date.now())", ctx);
 	assert(vm.runInContext("probe_ready()", ctx), "solo, healthy, stocked → a probe may start");
 	assert(vm.runInContext("probe_pick().mt", ctx) === "edge", "picks the over-limit monster that beats the best xp/s (not the wall, not the poor one)");
 	hb("Torlis", { ...tor, x: 900, y: 900, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
@@ -2061,10 +2063,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 95) v18.6: an unfinishable hunt is ignored; Ponty buys cap price per point; the merchant delivers held gear
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
 	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05; globalThis.__ms = state.measured; state.measured = {}; state.best_score = 0", ctx); // 3 kills/min
-	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 })", ctx),
-		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept");
+	assert(vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__h95 = !hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 }); CFG.hunt_min_xp = 0.7; globalThis.__h95", ctx),
+		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept (xp floor off: this is about expiry)");
 	// v18.7: a hunt monster far below the best xp/s we know isn't chased
-	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); state.best_score = 800", ctx);
+	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_score = 800, state.best_solo = solo_now(), state.best_at = Date.now())", ctx);
 	assert(!vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v23.5: hunt_min_xp 70% by default — a bee hunt at 300 vs best 800 isn't chased");
 	vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__ok0 = hunt_feasible({ id: 'bee', c: 10 }); CFG.hunt_min_xp = 0.6", ctx);
 	assert(vm.runInContext("globalThis.__ok0", ctx), "hunt_min_xp 0: chased");
@@ -2636,10 +2638,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
 		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
 		// side goals compare with this pick's best, not the best rate ever measured
-		vm.runInContext("state.best_score = 400; state.measured = { 'main:0,0,1,1': 2000 }", ctx);
+		vm.runInContext("(state.best_score = 400, state.best_solo = solo_now(), state.best_at = Date.now()); state.measured = { 'main:0,0,1,1': 2000 }", ctx);
 		assert(vm.runInContext("best_known_xps()", ctx) === 400, "a picker: its current best (400), not an old 2000 measurement");
-		vm.runInContext("state.best_score = 0", ctx);
-		assert(vm.runInContext("best_known_xps()", ctx) === 2000, "no pick (a follower): the best measured");
+		vm.runInContext("state.best_score = 0; state.best_ref = null", ctx);
+		assert(vm.runInContext("best_known_xps() === best_score_for(solo_now()) && best_known_xps() !== 400", ctx), "no fresh pick of our own (a follower): the best spot for how we fight now");
+		vm.runInContext("(state.best_score = 400, state.best_solo = !solo_now(), state.best_at = Date.now()); state.best_ref = null", ctx);
+		assert(vm.runInContext("best_known_xps() !== 400", ctx), "v24.3: a pick made in the other mode (a follower's last split pick) doesn't count");
+		vm.runInContext("(state.best_score = 400, state.best_solo = solo_now(), state.best_at = Date.now() - 700000); state.best_ref = null", ctx);
+		assert(vm.runInContext("best_known_xps() !== 400", ctx), "...nor one over 10 min old");
 		vm.runInContext("state.measured = {}; state.best_score = 0", ctx);
 	}
 	// 113) v24.0: split vs together is measured; the leader books its xp intake to the mode it's in and picks the better one
@@ -2717,6 +2723,61 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const sent114 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent114.push(m); return Promise.resolve(); };
 		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
 		assert(sent114.some((m) => m.k === "hb" && "b" in m), "the heartbeat carries the build commit");
+	}
+	// 115) v24.3 review fixes: quest goals carry the xp floor; hunts aren't double-counted together; safety by the fight's
+	// team; followers don't occupy; members copy the leader's measurements; a dropped probe isn't "held"; measurements age
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
+		vm.runInContext(`CFG.party.split.enabled = true; state.partners = {}; state.split_on = false; state.probe = null; state.recovering = false; hist.ev = [];
+			globalThis.__s115 = { mt_xps, quest_recipes, recipe_open, drop_sources, kills_per_s, hmx: CFG.hunt_min_xp, qc: CFG.quest_crafts };
+			CFG.quest_crafts = true; quest_recipes = () => ["qx115"]; recipe_open = () => true; drop_sources = () => [["goo", 0.5]]; kills_per_s = () => 1;
+			G.craft.qx115 = { items: [[5, "spores115", 0]] };`, ctx);
+		// #1: the leader's shared pick uses members' goal lists, so the floor applies there too
+		vm.runInContext("(state.best_score = 1000, state.best_solo = solo_now(), state.best_at = Date.now()); mt_xps = () => 100; state.goals_cache = null", ctx);
+		assert(vm.runInContext("!goals_list().some((g) => /qx115/.test(g.reason))", ctx), "a quest monster at 10% of the best xp/s isn't on the goal list");
+		vm.runInContext("mt_xps = () => 800; state.goals_cache = null", ctx);
+		assert(vm.runInContext("goals_list().some((g) => /qx115/.test(g.reason))", ctx), "at 80% it is");
+		vm.runInContext("kills_per_s = () => 0.0001; state.goals_cache = null", ctx);
+		assert(vm.runInContext("!goals_list().some((g) => /qx115/.test(g.reason))", ctx), "...unless finishing takes over quest_farm_max_h");
+		// #7: together, the hunt rate is already the party's
+		vm.runInContext("CFG.hunt_min_xp = 0; kills_per_s = () => 0.05", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 30, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: -30, y: 0 });
+		assert(vm.runInContext("!split_now() && partners_near().length === 2 && !hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
+			"together: 100 kills at the party's 0.05/s (2000s) don't fit in 30 min — not x2.2 for the members near");
+		// #5: safety by who the fight is judged with
+		vm.runInContext("state.split_on = true; state.safety_mult = 1.5", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 30, y: 0, safety_mult: 1 });
+		assert(vm.runInContext("Math.abs(safety_now({ solo: true }) - 0.525) < 1e-9 && Math.abs(safety_now({ solo: false, team: 'all' }) - 0.35) < 1e-9", ctx),
+			"split: a solo fight uses our 1.5x; a fight judged for the regrouped party uses the party's lowest");
+		vm.runInContext("state.safety_mult = 1", ctx);
+		// #8: a member following us isn't on a spot of its own
+		hb("Aspernari", { ...asp, level: 58, x: -30, y: 0, follows: true, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+		assert(vm.runInContext("split_now() && !occupied('main:0,0,400,400')", ctx), "a follower sending our spot doesn't make it occupied");
+		hb("Aspernari", { ...asp, level: 58, x: -30, y: 0, follows: false, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+		assert(vm.runInContext("occupied('main:0,0,400,400')", ctx), "one farming it is");
+		// #10: a measurement's weight halves every meas_half_h
+		vm.runInContext("state.split_on = false; state.measured['main:9,9,9,9'] = 100; state.meas_at['p:main:9,9,9,9'] = Date.now() - CFG.meas_half_h * 3600000", ctx);
+		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300, false)", ctx) - 200) < 0.5, "12h old: half measured (100), half estimate (300)");
+		vm.runInContext("state.meas_at['p:main:9,9,9,9'] = Date.now()", ctx);
+		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300, false)", ctx) - 100) < 0.5, "fresh: the measurement");
+		vm.runInContext("delete state.measured['main:9,9,9,9']; state.meas_at = {}", ctx);
+		// #3: a member copies the leader's measurements and probe clock; a probe it started stops being its own
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60 });
+		vm.runInContext("state.partners = {}; state.mode_ab = null; state.probe_at = 0; state.probe = { mtype: 'edge', start: Date.now() - 120000, until: Date.now() + 1e6, ratio: 1.3 }", ctx);
+		const ab115 = { split: { xp: 5, s: 10 }, together: { xp: 1, s: 1 }, at: Date.now(), mode: "split", since: Date.now() };
+		hb("Sanala", { ...san, level: 51, split: true, probe_at: 12345, ab: ab115 });
+		assert(vm.runInContext("leader_name() === 'Sanala' && state.mode_ab && state.mode_ab.split.s === 10 && state.probe_at === 12345", ctx), "a member keeps the leader's measurements and probe clock");
+		vm.runInContext("lead_lost()", ctx);
+		assert(vm.runInContext("!state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'dropped')", ctx), "no longer leading: the probe is dropped, not later closed as held");
+		// #2: the leader's own flee ends a probe as failed
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000 });
+		vm.runInContext("state.partners = {}; state.probe = { mtype: 'edge', start: Date.now() - 120000, until: Date.now() + 1e6, ratio: 1.3 }; state.recovering = true; probe_check()", ctx);
+		assert(vm.runInContext("!state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'fail' && e.why === 'flee')", ctx), "our flee: probe failed");
+		assert(/state\.recovering \|\| character\.hp < character\.max_hp \* flee_at\(\)\) \{\s*state\.dead_handled = false;\s*recover\(\);\s*probe_check\(\);/.test(src)
+			&& /else if \(character\.rip\) \{\s*probe_check\(\);/.test(src), "...and the recovery and death branches run probe_check");
+		vm.runInContext(`state.recovering = false; const S = globalThis.__s115; mt_xps = S.mt_xps; quest_recipes = S.quest_recipes; recipe_open = S.recipe_open;
+			drop_sources = S.drop_sources; kills_per_s = S.kills_per_s; CFG.hunt_min_xp = S.hmx; CFG.quest_crafts = S.qc; delete G.craft.qx115;
+			CFG.party.split.enabled = false; state.split_on = false; state.partners = {}; state.goals_cache = null; state.mode_ab = null; hist.ev = []`, ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");

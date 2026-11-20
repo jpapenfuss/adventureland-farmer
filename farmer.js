@@ -1,4 +1,4 @@
-const VERSION = "24.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -21,6 +21,7 @@ const CFG = {
 	repick_ms: 120_000,        // re-evaluate where to fight every 2 min (levels, gear and measurements change)
 	switch_margin: 1.15,       // change packs only if the new one scores 15% better (walking there isn't free)
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
+	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
 	flee_hp: 0.25,             // below 25% HP: teleport to town (use_town) and recover
 	// Probing: the safety model only picks monsters it already calls safe, so it never learns about harder ones. Every
@@ -342,6 +343,7 @@ const state = {
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
 	measured_solo: {},       // pack key -> measured xp/s farming it alone (split) (saved)
+	meas_at: {},             // "p:"/"s:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
 	danger_at: {},           // monster id -> last death/flee (fading pauses for an hour after one) (saved)
@@ -571,12 +573,15 @@ const heal_mult = (f) => (!f.solo && (f.team === "all" ? partners() : partners_n
 // The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max. Together, the
 // leader picks for everyone, so the party's lowest multiplier counts (v23.6: a follower's death reset only its own, and
 // the leader kept choosing the spot that killed it); split, each its own.
-const safety_now = () => {
+// v24.3: f (a fight_math result) says who the fight is judged with: alone → our own; with the party ("all" or the members
+// near) → the party's lowest, whatever mode we're in now. A boss or probe judged for the regrouped party used the split
+// fighter's own multiplier, then failed at the party's once regrouped, and the party flipped every 15s.
+const safety_now = (f) => {
 	let m = state.safety_mult || 1;
-	if (in_party_cfg() && !split_now()) for (const p of partners_any()) if (p.safety_mult > 0) m = Math.min(m, p.safety_mult);
+	if (in_party_cfg() && (f ? !f.solo : !split_now())) for (const p of partners_any()) if (p.safety_mult > 0) m = Math.min(m, p.safety_mult);
 	return Math.min(CFG.safety * m, CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
 };
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype) * heal_mult(f);
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mtype) * heal_mult(f);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover(pool = partners_near(300)) {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
@@ -695,10 +700,23 @@ function resolve_area(monster, map, boundary, count) {
 function score_area(t, pack, area) {
 	const f = state.safe[t];
 	const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-	return { est, score: meas()[pack_key(area)] ?? est * state.realism };
+	return { est, score: meas_aged(pack_key(area), est * state.realism) };
+}
+// v24.3: a measurement's weight halves every CFG.meas_half_h hours since it was taken, the rest going to the estimate.
+// Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
+// spot out of every pick for good, since it was never visited again to re-measure it.
+function meas_aged(key, est, split = split_now()) {
+	const v = meas(split)[key];
+	if (v === undefined) return est;
+	const at = state.meas_at[(split ? "s:" : "p:") + key];
+	if (!at || !(CFG.meas_half_h > 0)) return v;
+	const w = Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000));
+	return v * w + est * (1 - w);
 }
 // Split: a partner with an earlier name farms this spot (v23.2)
-const occupied = (key) => split_now() && partners().some((m) => m.name < character.name && m.pack && valid_boundary(m.pack.boundary) && pack_key(m.pack) === key);
+// v24.3: a member that's following us (nothing it can farm alone) isn't on a spot of its own: it sends ours, and the
+// leader scored its own spot x occupied_mult and dropped its own hunt as "theirs"
+const occupied = (key) => split_now() && partners().some((m) => m.name < character.name && !m.follows && m.pack && valid_boundary(m.pack.boundary) && pack_key(m.pack) === key);
 // Measured xp/s per spot, one table per mode (v23.1): a spot farmed by the whole party kills ~n times as fast as by one
 // fighter alone, so the two can't share a table. Split = farming alone; together = the party's rate.
 const meas = (split = split_now()) => (split ? state.measured_solo : state.measured);
@@ -725,7 +743,7 @@ function set_pack(p, label) {
 function risk_over(mt, team = solo_now()) {
 	const m = G.monsters[mt], f = m && fight_math(m, true, team);
 	if (!f) return Infinity;
-	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mt) * heal_mult(f);
+	const limit = (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mt) * heal_mult(f);
 	return fight_risk(f) / Math.max(1, limit);
 }
 const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower() && leader_hb()?.pack?.probe)) ? CFG.probe.flee_hp : CFG.flee_hp);
@@ -773,8 +791,11 @@ function probe_pick(team = solo_now(), ref = state.best_score) {
 		each_area((pack, area) => {
 			if (pack.type !== mt || (!pack.grow && (expected_respawn(mt, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 			if ((state.cooldown[pack_key(area)] || 0) > now) return;
-			const est = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
+			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
+			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
+			const raw = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
+			const est = meas(team === true)[pack_key(area)] ?? raw * state.realism;
+			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
 	return best;
@@ -790,7 +811,7 @@ function best_score_for(team) {
 		const f = prof[t];
 		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-		best = Math.max(best, tab[pack_key(area)] ?? est * state.realism);
+		best = Math.max(best, meas_aged(pack_key(area), est * state.realism, team === true));
 	});
 	return best;
 }
@@ -840,6 +861,7 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.best_score = best ? best.score : 0;
+	state.best_solo = solo_now(); state.best_at = now;
 	if (probe_ready()) {
 		state.probe_at = now;
 		const pb = probe_pick();
@@ -850,7 +872,7 @@ function pick_pack() {
 			state.safe[pb.mt] = prof;
 			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
 			state.probe_none = null;
-			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.est, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
+			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.raw, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
 				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s (flee at ${CFG.probe.flee_hp * 100}%)`);
 		}
 	}
@@ -915,6 +937,7 @@ function end_session() {
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
 	const tab = meas(s.split), prev = tab[s.key];
 	tab[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
+	state.meas_at[(s.split ? "s:" : "p:") + s.key] = Date.now();
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	if (s.est > 0) state.realism = state.realism * 0.7 + (rate / s.est) * 0.3; // slow-moving average of measured ÷ estimate
 	game_log(`${s.key}: ${rate.toFixed(1)} xp/s over ${secs.toFixed(0)}s`, C.dim);
@@ -2778,7 +2801,8 @@ function quest_directive(guide_only) {
 		const f = fight_profile(pickm.monster);
 		// xp/s at that pack (items/s ÷ chance per kill = kills/s; × xp per kill); 1e-9 avoids dividing by zero
 		const qxp = meas()[pack_key(pickm)] ?? (f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
-		if (!guided && state.best_score > 0 && qxp < CFG.quest_farm_min_xp * state.best_score) continue;
+		const bk = best_known_xps();
+		if (!guided && bk > 0 && qxp < CFG.quest_farm_min_xp * bk) continue;
 		const sk = id + ":" + pickm.item, now = Date.now();
 		if (!state.qprog || state.qprog.key !== sk || pickm.have > state.qprog.have) state.qprog = { key: sk, have: pickm.have, t: now };
 		else if (now - state.qprog.t > Math.max(CFG.quest_stall_min * 60_000, 3000 / Math.max(pickm.ips, 1e-9))) { // or 3 expected drops' time
@@ -2824,7 +2848,18 @@ function mt_xps(mt) {
 // The best xp/s we know of: this pick's best, or the best measured pack
 // v23.6: this pick's best (safe and not cooling down now); only a member that doesn't pick (a follower) falls back to the
 // best rate measured — the max over every measured spot included ones now unsafe or on cooldown and raised the bar
-const best_known_xps = () => (state.best_score > 0 ? state.best_score : Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite)));
+// v24.3: our own pick's best counts only if it was made in the mode we're in now, in the last 10 min. A follower never
+// picks, so it kept the solo best of its last split-mode pick and judged party-rate side goals against it (a hunt at
+// 28% of the party's best passed). Otherwise: the best spot for how we fight now, computed (cached 60s).
+const best_known_xps = () => {
+	const now = Date.now(), solo = solo_now();
+	if (state.best_score > 0 && state.best_solo === solo && now - (state.best_at || 0) < 600_000) return state.best_score;
+	const c = state.best_ref;
+	if (c && c.solo === solo && now - c.at < 60_000) return c.v;
+	const v = best_score_for(solo) || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
+	state.best_ref = { solo, at: now, v };
+	return v;
+};
 function hunt_feasible(h) {
 	if (!h || !(h.c > 0)) return false;
 	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
@@ -2833,7 +2868,9 @@ function hunt_feasible(h) {
 	if (!(h.ms > 0)) return true; // no expiry known
 	// party kills count wherever they happen (server: monster_hunt_logic for every member): while split, the members
 	// farming that monster anywhere; together, the members near
-	const helpers = split_now() ? partners().filter((p) => p.pack?.mtype === h.id).length : partners_near().length;
+	// v24.3: together, kills_per_s is already the party's rate (party table, or an estimate with the members near); adding
+	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
+	const helpers = split_now() ? partners().filter((p) => p.pack?.mtype === h.id).length : 0;
 	const kps = kills_per_s(h.id) * (1 + 0.6 * helpers);
 	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
 }
@@ -2867,13 +2904,21 @@ function goals_list() {
 	const h = character.s.monsterhunt;
 	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
 	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
+	// v24.3: own-quest goals get quest_directive's rules here too (at least quest_farm_min_xp of the best xp/s, done within
+	// quest_farm_max_h): this list goes to the leader, whose shared pick (mutual goals, turns) used it unfiltered and
+	// took the party to low-xp quest monsters the floor was meant to keep it off
+	const bk = best_known_xps();
 	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
 		if (!recipe_open(id)) continue;
+		const guided = is_guide_quest(id);
 		for (const [q, n, l] of G.craft[id].items) {
 			const have = owned_in_bags_or_bank(n, l);
 			if (l || GEAR.has(G.items[n]?.type) || have >= q) continue;
-			for (const [mt, rate] of drop_sources(n)) if (farmable_type(mt))
-				out.push({ monster: mt, w: is_guide_quest(id) ? W.guide_quest : W.quest, reason: `${id}: ${n} ${have}/${q}`, eta_h: eta(q - have, rate, mt) });
+			for (const [mt, rate] of drop_sources(n)) if (farmable_type(mt)) {
+				const eh = eta(q - have, rate, mt);
+				if (!guided && (eh > CFG.quest_farm_max_h || (bk > 0 && mt_xps(mt) < CFG.quest_farm_min_xp * bk))) continue;
+				out.push({ monster: mt, w: guided ? W.guide_quest : W.quest, reason: `${id}: ${n} ${have}/${q}`, eta_h: eh });
+			}
 		}
 	}
 	state.goals_cache = { at: now, list: out };
@@ -2962,7 +3007,7 @@ function boss_safe(name, team = "all") {
 	const m = G.monsters[name];
 	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true, team); // their side of the fight only
 	if (!f) return false;
-	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * safety_now() * heal_mult(f)) return false;
+	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * safety_now(f) * heal_mult(f)) return false;
 	const squish = Math.min(character.max_hp, ...(team === "all" ? partners() : partners_near()).map((p) => p.max_hp || Infinity));
 	return f.their_dps / (m.frequency || 1) <= squish * CFG.boss.one_hit;
 }
@@ -3078,7 +3123,7 @@ function live_guide_farm() {
 	const g = state.guide_farm, now = Date.now();
 	if (!g || !(g.until > now) || (state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now) return null;
 	const f = fight_profile(g.monster), gxp = f ? kills_per_s(g.monster) * f.xp : null;
-	if (gxp !== null && state.best_score > 0 && gxp < CFG.guide_farm_min_xp * state.best_score) return null;
+	if (gxp !== null && best_known_xps() > 0 && gxp < CFG.guide_farm_min_xp * best_known_xps()) return null;
 	return g;
 }
 // Decide the farm directive: hunt > own quests > guide quests > guide farm row (CFG.goal_w order).
@@ -3110,8 +3155,9 @@ function refresh_directive() {
 	// v22.1: while split, one fighter per hunt/quest monster is enough — every party kill counts for every member's hunt
 	// and chest items go to a random member wherever they are (server). The partner with the earlier name keeps it;
 	// the rest pick the best-xp spot (a boss still gathers everyone).
-	if (mine && !mine.boss && split_now() && partners().some((p) => p.name < character.name && p.pack?.mtype === mine.monster)) {
-		state.dir_dup = { monster: mine.monster, by: partners().find((p) => p.name < character.name && p.pack?.mtype === mine.monster).name, at: now };
+	const dup = (p) => p.name < character.name && !p.follows && p.pack?.mtype === mine.monster;
+	if (mine && !mine.boss && split_now() && partners().some(dup)) {
+		state.dir_dup = { monster: mine.monster, by: partners().find(dup).name, at: now };
 		mine = null;
 	} else state.dir_dup = null;
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
@@ -3693,7 +3739,7 @@ const SAVE_KEY = "farmer_v9:" + character.name; // historical name — don't cha
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), meas_v: 3, measured: state.measured, measured_solo: state.measured_solo, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), meas_v: 3, measured: state.measured, measured_solo: state.measured_solo, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -3714,6 +3760,9 @@ function load_state() {
 	if (d.meas_v === 3) {
 		Object.assign(state.measured, d.measured || {});
 		Object.assign(state.measured_solo, d.measured_solo || {});
+		// measurements saved before v24.3 have no time: they start ageing now
+		const t0 = Date.now();
+		for (const [pre, tab] of [["p:", state.measured], ["s:", state.measured_solo]]) for (const k in tab) state.meas_at[pre + k] = d.meas_at?.[pre + k] || t0;
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
 	Object.assign(state.danger, d.danger || {});
@@ -3778,7 +3827,7 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, measured_solo: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, measured_solo: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
@@ -4237,7 +4286,7 @@ function why_not(mtype) {
 	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
-	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype) * heal_mult(f);
+	const limit = (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mtype) * heal_mult(f);
 	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
 		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
 	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
@@ -4295,7 +4344,7 @@ const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_
 // everyone to arrive, then is skipped for this round.
 function split_decide() {
 	const S_ = CFG.party.split, P = CFG.probe, now = Date.now();
-	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void ((state.split_on = false), (state.was_leader = false));
+	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void lead_lost();
 	// v23.2: just became the leader (levels crossed, the old one went offline): carry on its split decision and probe
 	// clock from its heartbeat instead of starting over (a regroup and a probe check on every handover)
 	if (!state.was_leader) {
@@ -4334,6 +4383,16 @@ function split_decide() {
 		log_ev(on ? "split" : "regroup", { why: on ? mode_why() : why_ });
 		game_log(on ? `party: farming separately${mode_why() ? ` (${mode_why()})` : ""}` : `party: together (${why_})`, C.info);
 		state.last_pick = 0;
+	}
+}
+// Not leading (now): the split flag is the leader's to send, and a probe we started is ours no more — it would later
+// be closed as "held" (v24.3). Also called from the follower branch, which never reaches split_decide.
+function lead_lost() {
+	state.split_on = false; state.was_leader = false;
+	if (state.probe && in_party_cfg() && leader_name() !== character.name) {
+		const P = state.probe;
+		log_ev("probe", { mtype: P.mtype, mins: Math.round((Date.now() - P.start) / 60_000), result: "dropped", why: "leader changed", ratio: null, n: 0, over: +(P.ratio || 0).toFixed(2) });
+		state.probe = null;
 	}
 }
 // ---- Split vs together, measured (CFG.party.split.ab, v24.0) ----
@@ -4386,7 +4445,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, follows: is_follower(), safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -4437,6 +4496,14 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	const first = !fresh(state.partners[m.name]);
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
 	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one party-wide clock
+	// v24.3: every member keeps a copy of the leader's split/together measurements and probe clock, so a new leader
+	// (levels crossed, or the old one went offline) carries on with them; the old leader's heartbeats stop carrying
+	// them the moment it stops leading, so reading them at handover found nothing
+	if (m.name === leader_name() && m.name !== character.name) {
+		const ab = m.message.ab;
+		if (ab?.split && ab?.together) state.mode_ab = JSON.parse(JSON.stringify(ab));
+		if (m.message.probe_at > (state.probe_at || 0)) state.probe_at = m.message.probe_at;
+	}
 	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, C.info);
 	if (first && other_build(m.message.v, m.message.b)) game_log(`party: ${m.name} runs ${build_txt(m.message.v, m.message.b)}, we run ${build_txt(VERSION, BUILD)} - load the same version on every character`, C.warn);
 });
@@ -5268,6 +5335,7 @@ function tick() {
 		meter_socket();
 		if (spent() > BUDGET.soft) wait = 500;
 		else if (character.rip) {
+			probe_check(); // v24.3: a probe ends as failed when the leader dies or flees, not "held" after recovering
 			on_death();
 			if (Date.now() >= next_respawn && can_spend(1, RESERVE.potion)) {
 				next_respawn = Date.now() + 5000; // retry every 5s; a "cant_respawn" reply says exactly how long to wait
@@ -5277,6 +5345,7 @@ function tick() {
 		} else if (state.recovering || character.hp < character.max_hp * flee_at()) {
 			state.dead_handled = false;
 			recover();
+			probe_check();
 			loot_chests();
 			set_message(`Recovering ${((character.hp / character.max_hp) * 100).toFixed(0)}%`);
 			wait = 250; // recovery reacts faster (re-channel, heals)
@@ -5296,6 +5365,7 @@ function tick() {
 				return;
 			}
 			if (is_follower()) {
+				lead_lost();
 				follower_tick();
 				loot_chests();
 				const L = leader_hb();
