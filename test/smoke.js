@@ -1173,13 +1173,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("merchant_handoff()", ctx);
 	assert(JSON.stringify(golds) === '[["DoWhatNow",999900]]' && gave.length === 1 && gave[0][1] === "gslime", `richest tops up the merchant and hands loot (${JSON.stringify(golds)} ${JSON.stringify(gave)})`);
 	assert(vm.runInContext("town_due().min_free", ctx) === 3, "fighters' own town threshold drops while the merchant is online");
-	// a fighter under 3M (but keeping 1M after sending) still tops the merchant up; one that would drop under 1M doesn't
-	character.gold = 2.9e6; golds.length = 0; vm.runInContext("merchant_gold_at = 0; handoff_busy = false", ctx);
-	await vm.runInContext("merchant_handoff()", ctx);
-	assert(JSON.stringify(golds) === '[["DoWhatNow",999900]]', `2.9M fighter tops the merchant up (${JSON.stringify(golds)})`);
-	character.gold = 1.5e6; golds.length = 0; vm.runInContext("merchant_gold_at = 0; handoff_busy = false", ctx);
-	await vm.runInContext("merchant_handoff()", ctx);
-	assert(golds.length === 0, "a fighter that would drop under float_keep doesn't send");
 	vm.runInContext("state.merchant = null", ctx);
 	const rep_ok = (() => { try { vm.runInContext("report()", ctx); return true; } catch (e) { console.error(e); return false; } })();
 	assert(rep_ok, "report() runs with every new section");
@@ -1722,14 +1715,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("bag_class(character.items[4])", ctx) === "bank", "a fetched compound copy isn't held: it goes to the merchant");
 	vm.runInContext("state.merchant.t = Date.now() - 11 * 60000; cmp_cache = null", ctx);
 	assert(!vm.runInContext("merchant_does_it()", ctx), "after 10 min of silence the fighter takes over");
-	// merchant compound fails on gold → 10-min pause and a funding request
+	// merchant under its potion float: no compound is attempted and no gold is requested from the fighters
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 40000, esize: 30, map: "main" });
 	vm.runInContext("state.merchant = null; state.gear_skip = {}; state.fund_need = 0; state.fetched = {}; cmp_cache = null; state.stand = {}; stand_cache = null", ctx);
 	const rc_save = vm.runInContext("run_compound", ctx);
-	vm.runInContext("run_compound = () => Promise.reject({ reason: 'gold_reserve' })", ctx);
+	let rc_calls = 0;
+	ctx.run_compound = () => (rc_calls++, Promise.reject({ reason: 'gold_reserve' }));
+	await vm.runInContext("task_compound()", ctx);
+	assert(rc_calls === 0 && vm.runInContext("state.fund_need", ctx) === 0 && /gold budget/.test(vm.runInContext("town_reason.compound || ''", ctx)), `v19.6: broke merchant doesn't compound or ask for funding (${rc_calls} calls, fund ${vm.runInContext("state.fund_need", ctx)})`);
+	// merchant above the float whose compound is still refused on gold: 10-min pause, still no funding request
+	character.gold = 5e6; vm.runInContext("cmp_cache = null", ctx);
 	await vm.runInContext("task_compound()", ctx);
 	const until77 = vm.runInContext("state.gear_skip['cmp:ringx:0']", ctx) - Date.now();
-	assert(until77 > 0 && until77 <= 600_000 && vm.runInContext("state.fund_need", ctx) > 0, `broke compound: 10-min pause + funding request (${Math.round(until77 / 60000)}m, ${vm.runInContext("state.fund_need", ctx)})`);
+	assert(until77 > 0 && until77 <= 600_000 && vm.runInContext("state.fund_need", ctx) === 0, `refused compound: 10-min pause, no funding request (${Math.round(until77 / 60000)}m, ${vm.runInContext("state.fund_need", ctx)})`);
 	ctx.__rc = rc_save; vm.runInContext("run_compound = __rc; state.fund_need = 0; state.gear_skip = {}", ctx);
 	character.items = Array(42).fill(null);
 	// 78) Merrit: a stand spot in the square/aisle, clear of fixed NPCs and other stands; routine trips wait 2.5 min
@@ -2132,6 +2130,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		boss_directive = () => ({ monster: "franky", map: "main", boundary: [0,0,10,10], boss: true, reason: "boss" }); refresh_directive()`, ctx);
 	assert(vm.runInContext("state.directive.monster === 'franky'", ctx), "a boss overrides the commitment");
 	vm.runInContext("pick_shared = globalThis.__ps; hunt_directive = globalThis.__hd; boss_directive = globalThis.__bd; state.partners = {}; state.directive = null; state.dir_lock = null; CFG.travel.commit_min = 0", ctx);
+	// 100) v19.6: the merchant's optional spending leaves its potion float (donate.keep); fighters aren't affected
+	vm.runInContext("globalThis.__hb2 = hist.buckets; hist.buckets = {}; state.partners = {}", ctx);
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 400000 });
+	assert(vm.runInContext("gold_ok(50000) && !gold_ok(150000)", ctx), "merchant at 400k: a 50k extra is fine, a 150k one would dip under the 300k float");
+	character.gold = 61000;
+	assert(!vm.runInContext("gold_ok(1000)", ctx), "merchant under its float buys no extras");
+	Object.assign(character, { name: "Sanala", ctype: "mage", gold: 61000 });
+	assert(vm.runInContext("gold_ok(1000)", ctx), "a fighter isn't held to the merchant's float");
+	vm.runInContext("hist.buckets = globalThis.__hb2", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

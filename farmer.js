@@ -1,4 +1,4 @@
-const VERSION = "19.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -192,7 +192,6 @@ const CFG = {
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
-		float_keep: 1_000_000, // ...as long as the sender keeps at least this much afterwards
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
 		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
 		guide_gap_ms: 1_800_000, // ...and walk to town for guide steps alone at most every 30 min
@@ -1073,7 +1072,9 @@ function gold_room() {
 	if (L.s < CFG.spend.min_data_h * 3600 * L.who.length) return Infinity;
 	return Math.floor(CFG.spend.share * L.earn - L.spend);
 }
-const gold_ok = (cost) => (cost || 0) <= gold_room();
+// The merchant's optional spending (Ponty, compound scrolls, crafting, upgrade steps) also has to leave it
+// merchant.donate.keep (its potion float); nobody refills it, so when it's below that it simply stops buying extras
+const gold_ok = (cost) => (cost || 0) <= gold_room() && (!is_merchant() || character.gold - (cost || 0) >= CFG.merchant.donate.keep);
 // v18.9: gear names in our bags (heartbeats share them) and whether anyone in the party already holds a piece —
 // so tokens/Ponty never buy a copy another character is already carrying (Sanala bought mparmor for Aspernari while
 // the merchant held two)
@@ -1807,10 +1808,8 @@ async function task_compound() {
 				skip(g.key, untouched ? 6 * 3600_000 : 600_000, untouched ? `refused: ${why(r)}` : "last compound failed");
 			}
 		} catch (e) {
-			const broke = why(e) === "gold_reserve" || why(e) === "buy_cost";
 			// only verdicts about the items themselves are worth a 6h pause; walking/transient failures retry in 10 min
 			const item_verdict = ["low_chance", "not_combinable", "mismatch"].includes(why(e));
-			if (broke && is_merchant()) state.fund_need = Math.max(state.fund_need || 0, (G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 10_000) * 3 + CFG.gold_reserve);
 			skip(g.key, item_verdict ? 6 * 3600_000 : 600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
 			town_reason.compound = `${g.name}+${g.level}: ${why(e)}`;
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
@@ -1897,8 +1896,10 @@ async function task_upgrade() {
 			state.upg = null;
 			break;
 		}
-		// the merchant asks for funding when the next step (scroll, and a copy if none is held) is beyond its gold
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
+		// over the party's gold budget: don't ask the fighters for gold we then couldn't spend (v19.6)
+		if (step > gold_room()) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
+		// the merchant asks for funding when the next step (scroll, and a copy if none is held) is beyond its gold
 		if (is_merchant() && character.gold - CFG.merchant.donate.keep < step) {
 			state.fund_need = Math.min(P.cost, step * 3);
 			game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
@@ -4436,11 +4437,10 @@ async function merchant_handoff() {
 			state.fund_sent_at = Date.now();
 			await send_own_gold(M.name, Math.round(M.fund)).then(() => game_log(`merchant: funded its project with ${fmt_k(M.fund)}`, C.ok)).catch(() => {});
 		}
-		const topup = Math.round(CFG.merchant.float - M.gold);
-		if (richest.name === character.name && topup > 0 && character.gold - topup >= CFG.merchant.float_keep &&
+		if (richest.name === character.name && M.gold < CFG.merchant.float && character.gold > CFG.merchant.float * 3 &&
 			Date.now() - merchant_gold_at > 1800_000 && typeof send_gold === "function") {
 			merchant_gold_at = Date.now();
-			const g = topup;
+			const g = Math.round(CFG.merchant.float - M.gold);
 			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
