@@ -57,7 +57,8 @@
 //   on the server) until donate.to_level (40 = mluck). Every 10 min it checks Ponty's secondhand stock for fighter
 //   upgrades and compound-set completions. At level 30+ it casts massproduction before each upgrade/compound.
 //
-// Diagnostics: report() and why_not("monster") in the CODE console (copyable text box). park()/resume(), forget().
+// Diagnostics: report(), history(hours), deaths(n) and why_not("monster") in the CODE console (copyable text box).
+//   park()/resume(), forget().
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
 //   - call cost: > 200 per rolling 4s disconnects; move 2.5, equip 4, unequip 7; character.cc = the server's total.
@@ -72,7 +73,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "14.5";
+const VERSION = "15.0";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -114,6 +115,8 @@ const CFG = {
 	need_copies_compound: 4,   // copies of a compoundable item the guide is working on (3 per compound + 1)
 	keep: ["computer", "supercomputer", "tracker", "elixirluck", "lostearring"], // never sold or banked
 	// --- own gear (scored by stats, independent of the guide) ---------------------------------------------------------
+	history_max: 1500,         // events kept in the persistent log (history(), deaths()); ~300KB per character
+	history_hours: 48,         // hourly time/xp/gold buckets kept
 	gear_auto: true,           // equip bag/bank items that score higher than what's worn; hand spares to party members
 	gear_min_gain: 3,          // an item must beat the worn one by this many points...
 	gear_margin: 0.05,         // ...and by 5% (avoids swapping for noise)
@@ -559,6 +562,7 @@ function score_area(t, pack, area) {
 function set_pack(p, label) {
 	if (!state.pack || !p || pack_key(state.pack) !== pack_key(p)) {
 		if (p) game_log(label, C.info);
+		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || "best xp/s" });
 		state.waypoints = p ? make_waypoints(p.boundary) : [];
 		state.wp = 0;
 		end_session();
@@ -636,11 +640,146 @@ function end_session() {
 	if (secs < CFG.measure_min_s) return;
 	const rate = s.xp / secs, prev = state.measured[s.key];
 	state.measured[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
+	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	if (s.est > 0) state.realism = state.realism * 0.7 + (rate / s.est) * 0.3; // slow-moving average of measured ÷ estimate
 	game_log(`${s.key}: ${rate.toFixed(1)} xp/s over ${secs.toFixed(0)}s`, C.dim);
 }
 // Every second: count xp toward the current pack's measurement while we're there (300px slack) and not walking or on
 // an errand. A measurement closes after 2 × measure_min_s so the picker keeps getting fresh numbers.
+// =====================================================================
+// History (v15): a persistent event log + hourly buckets, and death/flee post-mortems. Saved under its own key with
+// save_state (every 60s and on_destroy). history(h) / deaths(n) print it as copyable text.
+// =====================================================================
+const LOG_KEY = "farmer_log:" + character.name;
+const hist = { ev: [], buckets: {}, dirty: false };
+(() => {
+	const d = typeof get === "function" ? get(LOG_KEY) : null;
+	if (d && d.v === 1) { hist.ev = Array.isArray(d.ev) ? d.ev : []; hist.buckets = d.buckets || {}; }
+})();
+function log_ev(type, data = {}) {
+	hist.ev.push({ t: Date.now(), type, ...data });
+	if (hist.ev.length > CFG.history_max) hist.ev.splice(0, hist.ev.length - CFG.history_max);
+	hist.dirty = true;
+}
+function save_hist() {
+	if (!hist.dirty || typeof set !== "function") return;
+	const keep = Date.now() - CFG.history_hours * 3600_000;
+	for (const k in hist.buckets) if (+k < keep) delete hist.buckets[k];
+	if (set(LOG_KEY, { v: 1, ev: hist.ev, buckets: hist.buckets })) hist.dirty = false;
+}
+const hour_of = (t) => Math.floor(t / 3600_000) * 3600_000;
+function bucket(t = Date.now()) {
+	const k = hour_of(t);
+	return (hist.buckets[k] = hist.buckets[k] || { time: {}, xp: 0, gold: 0, kills: 0, deaths: 0, flees: 0 });
+}
+// Last 20s, one sample per second (filled by the 1s interval), and hits taken with the attacker's type
+const pm = { ring: [], hits: [] };
+if (typeof character.on === "function") {
+	character.on("hit", (d) => {
+		if (!d || !(d.damage > 0)) return;
+		const a = parent.entities?.[d.actor];
+		pm.hits.push({ t: Date.now(), mtype: a?.mtype || (a ? a.ctype || "player" : "?"), dmg: d.damage });
+		if (pm.hits.length > 200) pm.hits.shift();
+	});
+	character.on("target_hit", (d) => { if (d?.kill) bucket().kills++; });
+}
+function pm_sample() {
+	const t = get_targeted_monster();
+	const attackers = Object.values(parent.entities || {}).filter((e) => e.type === "monster" && e.target === character.name)
+		.slice(0, 6).map((e) => ({ mtype: e.mtype, hp: e.hp }));
+	pm.ring.push({ t: Date.now(), hp: character.hp, mp: character.mp, target: t ? `${t.mtype}:${t.hp}` : null, attackers });
+	if (pm.ring.length > 20) pm.ring.shift();
+}
+// What killed / nearly killed us: damage by attacker type over the last 10s, HP over the last 20s, and what the fight
+// model predicted for the main culprit (risk over one kill vs the HP it was judged against)
+function postmortem() {
+	const now = Date.now(), by = {};
+	for (const h of pm.hits) if (now - h.t < 10_000) by[h.mtype] = (by[h.mtype] || 0) + h.dmg;
+	const killer = Object.entries(by).sort((a, b) => b[1] - a[1])[0]?.[0] || state.pack?.mtype || null;
+	const f = killer && G.monsters[killer] ? fight_math(G.monsters[killer]) : null;
+	return { killer, dmg10: by, hp: pm.ring.map((r) => r.hp), max_hp: character.max_hp, pack: state.pack?.mtype || null,
+		map: character.map, x: Math.round(character.x), y: Math.round(character.y), tank: !!tank_cover(),
+		priest: partners_near().some((p) => p.ctype === "priest"), pots: { hp: pot_count("hp"), mp: pot_count("mp") },
+		predicted: f ? Math.round(fight_risk(f)) : null, pool: f ? Math.round(f.hp_pool) : null,
+		danger: killer ? +(state.danger[killer] || 1).toFixed(2) : null, last: pm.ring.slice(-6) };
+}
+// Where this second went
+function time_class() {
+	if (character.rip) return "dead";
+	if (state.recovering) return "recover";
+	if (errand_busy()) return state.errand === "town" ? "town" : "errand";
+	if (walking() || character.moving) return "walk";
+	if (Date.now() - (state.last_target_at || 0) < 3000 && get_targeted_monster()) return "fight";
+	return "idle";
+}
+let err_seen = {};
+function log_error(msg) {
+	const k = String(msg).slice(0, 80);
+	if (Date.now() - (err_seen[k] || 0) < 60_000) return;
+	err_seen[k] = Date.now();
+	log_ev("error", { msg: k });
+}
+const ago = (t) => { const m = Math.round((Date.now() - t) / 60_000); return m < 60 ? `${m}m` : `${(m / 60).toFixed(1)}h`; };
+const sum_obj = (o) => Object.values(o || {}).reduce((a, b) => a + b, 0);
+function last_hour() {
+	const now = Date.now(), ev = hist.ev.filter((e) => now - e.t < 3600_000);
+	const b = hist.buckets[hour_of(now)] || {}, pb = hist.buckets[hour_of(now) - 3600_000] || {};
+	const frac = (now % 3600_000) / 3600_000; // blend the current and previous hour into a trailing 60 min
+	return { dead: ev.filter((e) => e.type === "death").length, fled: ev.filter((e) => e.type === "flee").length,
+		xph: Math.round((b.xp || 0) + (pb.xp || 0) * (1 - frac)), town: ev.filter((e) => e.type === "town").length };
+}
+function history(hours = 6) {
+	const now = Date.now(), from = now - hours * 3600_000, ev = hist.ev.filter((e) => e.t >= from);
+	const L = [`— history ${character.name} v${VERSION}, last ${hours}h (${ev.length} events) —`];
+	const tot = {};
+	const hrs = Object.keys(hist.buckets).map(Number).filter((k) => k + 3600_000 > from).sort((a, b) => b - a);
+	for (const k of hrs) for (const [c, n] of Object.entries(hist.buckets[k].time)) tot[c] = (tot[c] || 0) + n;
+	const T_ = sum_obj(tot) || 1;
+	L.push(`time: ${Object.entries(tot).sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c} ${Math.round((n / T_) * 100)}%`).join(", ") || "no data yet"}`);
+	L.push("hour   xp      gold    kills deaths flees");
+	for (const k of hrs) {
+		const b = hist.buckets[k];
+		L.push(`${new Date(k).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}  ${fmt_k(Math.round(b.xp)).padEnd(7)} ${fmt_k(Math.round(b.gold)).padEnd(7)} ${String(b.kills).padEnd(5)} ${String(b.deaths).padEnd(6)} ${b.flees}`);
+	}
+	const rates = {};
+	for (const e of ev) if (e.type === "rate") (rates[e.pack] = rates[e.pack] || []).push(e.xp_s);
+	const top = Object.entries(rates).map(([k, v]) => [k, v.reduce((a, b) => a + b, 0) / v.length, v.length]).sort((a, b) => b[1] - a[1]).slice(0, 6);
+	L.push(`packs (measured xp/s): ${top.map(([k, r, n]) => `${k} ${r.toFixed(0)} (${n}x)`).join(", ") || "none measured"}`);
+	for (const e of ev.filter((x) => x.type === "death" || x.type === "flee").slice(-10))
+		L.push(`${e.type.toUpperCase()} ${ago(e.t)} ago: ${e.killer || "?"} @ ${e.map} | hp ${e.hp?.[0] ?? "?"}→${e.hp?.[e.hp.length - 1] ?? "?"}/${e.max_hp} | ` +
+			`10s dmg ${Object.entries(e.dmg10 || {}).map(([m, d]) => `${m} ${Math.round(d)}`).join(", ") || "none seen"} | predicted ${e.predicted ?? "?"} of ${e.pool ?? "?"} hp` +
+			`${e.tank ? " | tank near" : ""}${e.priest ? " | priest near" : ""} | pots ${e.pots?.hp}/${e.pots?.mp}`);
+	const towns = ev.filter((e) => e.type === "town"), why_t = {};
+	for (const e of towns) for (const w of (e.due || "").split("+").filter(Boolean)) why_t[w] = (why_t[w] || 0) + 1;
+	L.push(`town trips: ${towns.length}${towns.length ? ` (${Object.entries(why_t).map(([w, n]) => `${w} ${n}`).join(", ")}; avg ${Math.round(towns.reduce((a, e) => a + (e.secs || 0), 0) / towns.length)}s)` : ""}`);
+	for (const kind of ["upgrade", "compound"]) {
+		const xs = ev.filter((e) => e.type === kind);
+		if (xs.length) L.push(`${kind}s: ${xs.filter((e) => e.ok).length} ok / ${xs.filter((e) => !e.ok).length} failed — ${xs.slice(-4).map((e) => `${e.item}+${e.from}${e.ok ? "✓" : "✗"}`).join(" ")}`);
+	}
+	const buys = ev.filter((e) => e.type === "buy");
+	if (buys.length) L.push(`buys: ${buys.slice(-6).map((e) => `${e.item} (${e.src}${e.price ? " " + fmt_k(e.price) : ""})`).join(", ")}`);
+	const serves = ev.filter((e) => e.type === "serve");
+	if (serves.length) L.push(`merchant trips: ${serves.length} — ${serves.slice(-4).map((e) => `${e.who} ${e.secs}s`).join(", ")}`);
+	const bosses = ev.filter((e) => e.type === "boss");
+	if (bosses.length) L.push(`bosses: ${bosses.slice(-4).map((e) => `${e.name} ${ago(e.t)} ago`).join(", ")}`);
+	const gold = ev.filter((e) => e.type === "gold");
+	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
+	const errs = ev.filter((e) => e.type === "error");
+	if (errs.length) L.push(`errors: ${errs.slice(-3).map((e) => `${ago(e.t)}: ${e.msg}`).join(" | ")}`);
+	return share_text(`history ${character.name}`, L);
+}
+function deaths(n = 5) {
+	const xs = hist.ev.filter((e) => e.type === "death" || e.type === "flee").slice(-n);
+	const L = [`— last ${xs.length} deaths/flees, ${character.name} —`];
+	for (const e of xs) {
+		L.push(`${e.type.toUpperCase()} ${new Date(e.t).toLocaleString()} @ ${e.map} ${e.x},${e.y} fighting ${e.pack || "?"}; main damage: ${e.killer || "?"}`);
+		L.push(`  predicted ${e.predicted ?? "?"} dmg per kill vs ${e.pool ?? "?"} hp (danger x${e.danger ?? 1}); tank ${e.tank ? "yes" : "no"}, priest ${e.priest ? "yes" : "no"}, pots ${e.pots?.hp}/${e.pots?.mp}`);
+		L.push(`  damage last 10s: ${Object.entries(e.dmg10 || {}).map(([m, d]) => `${m} ${Math.round(d)}`).join(", ") || "none seen"}`);
+		L.push(`  hp, 1/s: ${(e.hp || []).join(" ")}`);
+		for (const r of e.last || []) L.push(`  ${new Date(r.t).toLocaleTimeString()} hp ${r.hp} mp ${r.mp} target ${r.target || "-"} attackers ${r.attackers.map((a) => `${a.mtype}(${a.hp})`).join(" ") || "-"}`);
+	}
+	return share_text(`deaths ${character.name}`, L);
+}
 // Per-hour rates over the last hour (report, heartbeat): a sample of cumulative xp and gold every minute
 // adj = gold moved between our own characters (sent: +, received: −), so transfers don't count as earnings/spending
 const stats = { xp: 0, adj: 0, samples: [] };
@@ -648,6 +787,7 @@ const stats = { xp: 0, adj: 0, samples: [] };
 function send_own_gold(name, g) {
 	return T(send_gold(name, g)).then((r) => {
 		stats.adj += g;
+		log_ev("gold", { to: name, g });
 		if (typeof send_cm === "function") Promise.resolve(send_cm([name], { k: "gold", g })).catch(() => {});
 		return r;
 	});
@@ -663,13 +803,22 @@ function rates() {
 	return { xph: Math.round((stats.xp - a.xp) / h), gph: Math.round((character.gold + stats.adj - a.gold) / h), mins: Math.round(h * 60) };
 }
 const fmt_k = (n) => (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.abs(n) >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
+let gold_prev = null;
 setInterval(() => {
 	const d = xp_delta(), p = state.pack;
 	stats.xp += d;
+	const b = bucket(), cls = time_class();
+	b.time[cls] = (b.time[cls] || 0) + 1;
+	b.xp += d;
+	const g = character.gold + stats.adj;
+	if (gold_prev !== null) b.gold += g - gold_prev;
+	gold_prev = g;
+	hist.dirty = true;
+	if (!character.rip) pm_sample();
 	if (!p || character.rip) return;
 	const here = character.map === p.map && in_boundary(p.boundary, 300);
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), est: p.est, xp: 0, start: Date.now() };
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, start: Date.now() };
 	if (state.session) {
 		state.session.xp += d;
 		if ((Date.now() - state.session.start) / 1000 > CFG.measure_min_s * 2) end_session();
@@ -1207,6 +1356,7 @@ async function run_upgrade(a, row) {
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(upgrade(k, find_slot(scroll, 0)), 60_000); // the server takes 500·L·√L ms (+7: ~9s, +9: 13.5s)
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
+	log_ev("upgrade", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
 	return r;
 }
 // One compound step: three copies at level `from` + a compound scroll (cscroll0/1/2 by grade) → one at from+1.
@@ -1227,6 +1377,7 @@ async function run_compound(a, row, floor) {
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)), 40_000); // the server takes 10s to combine
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
+	log_ev("compound", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
 	return r;
 }
 
@@ -1432,6 +1583,7 @@ async function task_exchange() {
 			const r = await T(exchange(k2), 30_000); // the exchange roll takes several seconds
 			n++;
 			game_log(`exchange ${it.name} → ${r?.reward || "?"}`, C.ok);
+			log_ev("exchange", { item: it.name, reward: r?.reward || null });
 		} catch (e) {
 			skip("exch:" + it.name, 6 * 3600_000, why(e));
 			game_log(`exchange ${it.name}: ${why(e)}; retrying in 6h`, C.dim);
@@ -2332,6 +2484,7 @@ function town_run(due) {
 			return n;
 		};
 		let did = 0;
+		const town_t0 = Date.now();
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (!skipped("town:tokens") && token_pick()) did += (await step("tokens", task_tokens)) || 0; // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
@@ -2369,6 +2522,7 @@ function town_run(due) {
 		// the bank visit may have fetched the missing copies of a group: compound now, while still in town
 		if (compound_groups().some((g) => g.bags.length >= 3)) did += (await step("compound", task_compound)) || 0;
 		state.last_pick = 0; // re-evaluate where to fight
+		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000) });
 		return did;
 	});
 }
@@ -2423,6 +2577,8 @@ function town_check() {
 // retries are spaced 1.5s apart; it's re-channelled only if something followed us below flee_hp.
 function recover() {
 	if (!state.recovering) {
+		log_ev("flee", postmortem());
+		bucket().flees++;
 		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
 		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
 	}
@@ -2502,8 +2658,8 @@ function load_state() {
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
-setInterval(save_state, 60_000);
-function on_destroy() { save_state(); } // the game calls this just before the code is stopped or reloaded
+setInterval(() => { save_state(); save_hist(); }, 60_000);
+function on_destroy() { save_state(); save_hist(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
 function forget() { Object.assign(state, { measured: {}, danger: {}, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
@@ -2544,6 +2700,10 @@ function report() {
 		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
 		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
 		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""} | bank upgrades: ${bank_upgrades().map((u) => u.name + "+" + u.level).join(", ") || "none"} | for party: ${held_for.join(", ") || "none"}`);
+	}
+	{
+		const h = last_hour(), ph = partners().filter((x) => x.h1).map((x) => `${x.name} ${x.h1.dead}d/${x.h1.fled}f`);
+		L(`last hour: ${h.dead} deaths, ${h.fled} flees, ${h.town} town trips${ph.length ? " | " + ph.join(", ") : ""} — history() / deaths() for details`);
 	}
 	{
 		const r = rates(), pr = partners().filter((x) => x.rates).map((x) => `${x.name} ${fmt_k(x.rates.xph)} xp/h ${fmt_k(x.rates.gph)} g/h`);
@@ -2696,7 +2856,7 @@ function heartbeat() {
 		party: Object.keys(get_party() || {}), // who we're in a game party with (invites use it)
 		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
-		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), // merchant service, report
+		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
 		mp: character.mp, max_mp: character.max_mp,
 		want: state.directive && !state.directive.for_partner
 			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
@@ -2711,6 +2871,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	}
 	if (m && m.message?.k === "gold" && ((CFG.party.members || []).includes(m.name) || m.name === CFG.merchant?.name)) {
 		stats.adj -= +m.message.g || 0; // a transfer from one of ours: not income
+		log_ev("gold", { from: m.name, g: +m.message.g || 0 });
 		return;
 	}
 	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) return void (state.merchant = { ...m.message, name: m.name, t: Date.now() });
@@ -2827,6 +2988,7 @@ function mluck_near() {
 // One service trip: stock potions, walk to the fighter (it moves: re-aim up to 4 times), hand potions to every fighter
 // near, then wait for their items
 async function serve(f) {
+	const serve_t0 = Date.now();
 	state.serving = f.name;
 	try {
 		const M = CFG.merchant;
@@ -2847,6 +3009,7 @@ async function serve(f) {
 			await sleep_ms(1000);
 		}
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
+		log_ev("serve", { who: f.name, secs: Math.round((Date.now() - serve_t0) / 1000), free: character.esize });
 	} finally { state.serving = null; }
 }
 // ---- Monster tokens (CFG.token_auto) ----
@@ -2876,6 +3039,7 @@ async function task_tokens() {
 			await T(exchange_buy("monstertoken", b.name));
 			n++;
 			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
+			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", 3600_000, why(e)); break; }
 	}
@@ -2921,6 +3085,7 @@ async function task_secondhands() {
 		if (character.esize < before) {
 			n++;
 			game_log(`secondhands: bought ${it.name}+${it.level || 0} for ${fmt_k(price)} (${why_buy})`, C.ok);
+			log_ev("buy", { item: `${it.name}+${it.level || 0}`, src: "secondhands", price });
 			if (why_buy.startsWith("completes")) count(it, "bags");
 		}
 	}
@@ -3136,6 +3301,8 @@ let next_respawn = 0;
 function on_death() {
 	if (state.dead_handled) return;
 	state.dead_handled = true;
+	log_ev("death", postmortem());
+	bucket().deaths++;
 	const p = state.pack;
 	if (p) {
 		state.danger[p.mtype] = (state.danger[p.mtype] || 1) * 0.6;
@@ -3217,7 +3384,7 @@ function tick() {
 				set_message(`${errand_busy() ? state.errand + " | " : ""}${pack.mtype} (${src}) ${live}xp/s | ${character.esize} free`);
 			}
 		}
-	} catch (e) { game_log("tick: " + e); }
+	} catch (e) { game_log("tick: " + e); log_error("tick: " + e); }
 	setTimeout(tick, wait);
 }
 
