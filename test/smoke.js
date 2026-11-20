@@ -1423,5 +1423,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) === "regroup", "lost follower regroups via town");
 	vm.runInContext("state.errand = null; state.pack = null; wd.pos = []; wd.acts = []; hist.ev = []", ctx);
 	ctx.stop = (a) => calls.push("stop:" + a);
+	// 67) bank housekeeping: free-slot count, purge filter, purged items sold
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 20, gold: 2e6, map: "bank", x: 0, y: 0, rip: false, esize: 30 });
+	character.items = Array(42).fill(null); character.slots = {};
+	const fullpack = Array(42).fill(null).map((_, i) => (i < 40 ? { name: "cheapthing", q: 1 } : null));
+	fullpack[0] = { name: "beewings", q: 50 }; fullpack[1] = { name: "gem0", q: 1 }; fullpack[2] = { name: "goldring", level: 0 };
+	character.bank = { items0: fullpack };
+	vm.runInContext("state.needs = new Map(); state.partners = {}; state.purge = {}; state.stand = {}; cmp_cache = null; stand_cache = null; recipe_inputs = null; G.craft = { wcap: { items: [[20, 'beewings']] } }; remember_bank()", ctx);
+	assert(vm.runInContext("state.bank_free.free === 2 && state.bank_free.total === 42", ctx), "counts the bank's free slots");
+	assert(!vm.runInContext("purge_ok({ name: 'beewings', q: 50 })", ctx) && !vm.runInContext("purge_ok({ name: 'gem0', q: 1 })", ctx) && vm.runInContext("purge_ok({ name: 'cheapthing', q: 1 })", ctx),
+		"never purges recipe materials or exchangeables; junk is fair game");
+	const got67 = []; ctx.bank_retrieve = (p, n) => { got67.push(n); const k = character.items.findIndex((i) => !i); character.items[k] = character.bank[p][n]; character.bank[p][n] = null; return Promise.resolve(); };
+	ctx.bank_packs = { items0: ["bank", 0, 0] };
+	const n67 = await vm.runInContext("bank_purge()", ctx);
+	assert(n67 === 10 && !got67.includes(0) && !got67.includes(1), `pulls 10 low-value items, not quest/exchange ones (${got67})`);
+	const k67 = character.items.findIndex((i) => i && i.name === "cheapthing");
+	assert(vm.runInContext(`bag_class(character.items[${k67}])`, ctx) === "sell", "purged junk is classed sell");
+	character.bank = undefined; character.items = Array(42).fill(null);
+	vm.runInContext("state.purge = {}; state.bank_free = null; recipe_inputs = null", ctx);
 	console.log("ALL PASS");
 })();

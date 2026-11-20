@@ -74,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.5";
+const VERSION = "15.6";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -228,6 +228,11 @@ const CFG = {
 		// markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value
 		// (above the NPC's 0.6x). Worth listing: value >= min_value, gear at +3 or more, a higher grade, or titled.
 		// Stand trades also give merchant XP. The stand is closed before every walk (speed 10 while open).
+		// Bank housekeeping: when the bank's free slots drop below purge_below of its size, each merchant bank visit
+		// pulls up to purge_n of the least valuable items nobody needs; worth >= stand.min_value goes on the stand,
+		// the rest is sold to an NPC. Never recipe materials (anyone's quests), exchangeables, tokens, gear a member
+		// would wear, compound-set copies, keep or locked items.
+		purge_below: 0.1, purge_n: 10,
 		stand: { enabled: true, min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
 		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
 		// stand gives 1% of a level per 3h, negligible). Levels 1→40 take ~3M XP, i.e. ~0.7-1M gold.
@@ -326,6 +331,8 @@ const state = {
 	bank_gear: [],           // gear seen in the bank at the last visit: [{ name, level, p, stat_type }] (saved, max 400)
 	guide_equip: {},         // slot -> when the guide last equipped it (gear_guide_respect_h) (saved)
 	gear_sent: {},           // "name:level>member" -> when we last tried to hand it over (retry after 10 min)
+	bank_free: null,         // { free, total, at }: bank slots at the last visit (saved)
+	purge: {},               // "name:level" -> when the merchant pulled it from the bank to sell/list (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
@@ -1767,6 +1774,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (!item) return "empty";
 	if ((held_cmp || compound_slots(needed)).has(character.items.indexOf(item))) return "keep"; // waiting to be compounded
 	if (is_merchant() && stand_hold().has(character.items.indexOf(item))) return "keep"; // stock for the stand
+	if (is_merchant() && Date.now() - (state.purge[`${item.name}:${item.level || 0}`] || 0) < 86_400_000 && !item.l) return "sell"; // bank purge
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
@@ -1833,6 +1841,9 @@ function remember_bank() {
 	if (!character.bank) return;
 	const seen = {};
 	const gear = [];
+	let free = 0, total = 0;
+	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) { total++; if (!i) free++; }
+	if (total) state.bank_free = { free, total, at: Date.now() };
 	for (const k in character.bank) if (k.startsWith("items")) for (const i of character.bank[k] || []) if (i) {
 		seen[i.name] = (seen[i.name] || 0) + (i.q || 1);
 		if ((GEAR.has(G.items[i.name]?.type) || G.items[i.name]?.type === "elixir") && gear.length < 400) gear.push({ name: i.name, level: i.level || 0, p: i.p, stat_type: i.stat_type });
@@ -1908,6 +1919,7 @@ async function task_bank(fetch_names) {
 		}
 		if (!found) game_log(`bank: ${name} not on this floor (${character.map}); not trying again for 2h`, C.dim);
 	}
+	if (is_merchant()) got += await bank_purge();
 	remember_bank();
 	game_log(`Bank: stored ${stored}, retrieved ${got}; ${character.esize} slots free`, C.ok);
 	return stored + got;
@@ -2628,7 +2640,8 @@ function town_due(relaxed = false) {
 		exchange: exchange_pick() >= 0,
 		elixir: elixir_buy_due(),
 		guide: !!next_guide_row(state.guide),
-		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch)),
+		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch) ||
+			(is_merchant() && plan.sell.some((k) => state.purge[`${character.items[k]?.name}:${character.items[k]?.level || 0}`]))),
 		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
 		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) || plan.fetch.length > 0),
 		plan, min_free, pot_min, relaxed,
@@ -2791,6 +2804,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
+		bank_free: state.bank_free, purge: state.purge,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2818,6 +2832,8 @@ function load_state() {
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.donated) state.donated = d.donated;
 	if (d.stand) state.stand = d.stand;
+	if (d.bank_free) state.bank_free = d.bank_free;
+	Object.assign(state.purge, d.purge || {});
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -2888,6 +2904,8 @@ function report() {
 		const f = merchant_job();
 		const D = CFG.merchant.donate;
 		if (D) L(`xp: level ${character.level}${character.level < D.to_level ? `, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && Date.now() - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)` : " (donations done)"}`);
+		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[`${i.name}:${i.level || 0}`]).length;
+		if (bf) L(`bank: ${bf.free} of ${bf.total} free (seen ${ago(bf.at)} ago)${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
 		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && Date.now() - e.t < 86_400_000);
 		L(`stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length} for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}`);
 		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
@@ -3271,6 +3289,35 @@ async function task_secondhands() {
 		}
 	}
 	return n;
+}
+// ---- Bank housekeeping (merchant) ----
+let recipe_inputs = null; // every item any crafting recipe uses (anyone's quests): never purged
+function purge_ok(it) {
+	const d = it && G.items[it.name];
+	if (!recipe_inputs) { recipe_inputs = new Set(); for (const id in G.craft || {}) for (const [, n] of G.craft[id].items || []) recipe_inputs.add(n); }
+	if (!d || it.l || it.b || d.e || d.type === "token" || d.type === "stand" || CFG.keep.includes(it.name) || state.needs.has(it.name) ||
+		recipe_inputs.has(it.name) || gear_wanted_by(it)) return false;
+	if (d.compound && compound_groups().some((g) => g.name === it.name && g.level === (it.level || 0))) return false;
+	return true;
+}
+// In the bank with it nearly full: pull the least valuable purgeable items (this floor's packs)
+async function bank_purge() {
+	const M = CFG.merchant, bf = state.bank_free;
+	if (!bf || bf.free >= bf.total * M.purge_below || character.esize < M.purge_n + 4) return 0;
+	const packs = bank_packs_list(), cands = [];
+	for (const p in character.bank) {
+		if (!p.startsWith("items") || (packs[p] && packs[p][0] !== character.map)) continue;
+		(character.bank[p] || []).forEach((it, n) => { if (it && purge_ok(it)) cands.push({ p, n, it, v: unit_value(it) * (it.q || 1) }); });
+	}
+	cands.sort((a, b) => a.v - b.v);
+	let got = 0;
+	for (const c of cands.slice(0, M.purge_n)) {
+		await wait_budget(1, RESERVE.bulk);
+		await T(bank_retrieve(c.p, c.n)).then(() => { got++; state.purge[`${c.it.name}:${c.it.level || 0}`] = Date.now(); }).catch(() => {});
+		await sleep_ms(PACE_MS);
+	}
+	if (got) { game_log(`bank: ${bf.free}/${bf.total} free — pulled ${got} low-value items to sell/list`, C.info); log_ev("purge", { n: got, free: bf.free, total: bf.total }); }
+	return got;
 }
 // ---- Stand (CFG.merchant.stand) ----
 const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
