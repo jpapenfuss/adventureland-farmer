@@ -1173,6 +1173,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("merchant_handoff()", ctx);
 	assert(JSON.stringify(golds) === '[["DoWhatNow",999900]]' && gave.length === 1 && gave[0][1] === "gslime", `richest tops up the merchant and hands loot (${JSON.stringify(golds)} ${JSON.stringify(gave)})`);
 	assert(vm.runInContext("town_due().min_free", ctx) === 3, "fighters' own town threshold drops while the merchant is online");
+	// a fighter under 3M (but keeping 1M after sending) still tops the merchant up; one that would drop under 1M doesn't
+	character.gold = 2.9e6; golds.length = 0; vm.runInContext("merchant_gold_at = 0; handoff_busy = false", ctx);
+	await vm.runInContext("merchant_handoff()", ctx);
+	assert(JSON.stringify(golds) === '[["DoWhatNow",999900]]', `2.9M fighter tops the merchant up (${JSON.stringify(golds)})`);
+	character.gold = 1.5e6; golds.length = 0; vm.runInContext("merchant_gold_at = 0; handoff_busy = false", ctx);
+	await vm.runInContext("merchant_handoff()", ctx);
+	assert(golds.length === 0, "a fighter that would drop under float_keep doesn't send");
 	vm.runInContext("state.merchant = null", ctx);
 	const rep_ok = (() => { try { vm.runInContext("report()", ctx); return true; } catch (e) { console.error(e); return false; } })();
 	assert(rep_ok, "report() runs with every new section");

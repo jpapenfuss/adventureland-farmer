@@ -1,4 +1,4 @@
-const VERSION = "19.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -192,6 +192,7 @@ const CFG = {
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
+		float_keep: 1_000_000, // ...as long as the sender keeps at least this much afterwards
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
 		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
 		guide_gap_ms: 1_800_000, // ...and walk to town for guide steps alone at most every 30 min
@@ -4435,10 +4436,11 @@ async function merchant_handoff() {
 			state.fund_sent_at = Date.now();
 			await send_own_gold(M.name, Math.round(M.fund)).then(() => game_log(`merchant: funded its project with ${fmt_k(M.fund)}`, C.ok)).catch(() => {});
 		}
-		if (richest.name === character.name && M.gold < CFG.merchant.float && character.gold > CFG.merchant.float * 3 &&
+		const topup = Math.round(CFG.merchant.float - M.gold);
+		if (richest.name === character.name && topup > 0 && character.gold - topup >= CFG.merchant.float_keep &&
 			Date.now() - merchant_gold_at > 1800_000 && typeof send_gold === "function") {
 			merchant_gold_at = Date.now();
-			const g = Math.round(CFG.merchant.float - M.gold);
+			const g = topup;
 			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
