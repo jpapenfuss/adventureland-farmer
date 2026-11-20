@@ -955,10 +955,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.needs = new Map(); state.guide_equip = {}", ctx);
 	await vm.runInContext("equip_upgrades()", ctx);
 	assert(JSON.stringify(eq) === '[["helm2","helmet"]]', `better bag helmet equipped (${JSON.stringify(eq)})`);
-	vm.runInContext("state.guide_equip.helmet = Date.now()", ctx); eq.length = 0;
+	// guide-owned slot (recently equipped AND a live guide step for it): only a 20%+ better item goes in
+	ctx.G.items.hA = { type: "helmet", armor: 100 }; ctx.G.items.hB = { type: "helmet", armor: 112 }; ctx.G.items.hC = { type: "helmet", armor: 140 };
+	const slots46 = character.slots; character.slots = { helmet: { name: "hA", level: 0 } };
+	character.items[5] = { name: "hB", level: 0 }; // +12%: clears the normal 5% margin, not the guide's 20%
+	vm.runInContext("state.guide_equip.helmet = Date.now(); state.guide = { rows: [{ id: 'upgrade:helmet:hA:0:', kind: 'upgrade' }] }; my_gear_cache = null", ctx); eq.length = 0;
 	await vm.runInContext("equip_upgrades()", ctx);
-	assert(!eq.length, "a slot the guide just equipped is left alone");
-	vm.runInContext("state.guide_equip = {}", ctx);
+	assert(!eq.length, "a slot the guide is working on keeps its item against a marginal upgrade");
+	character.items[5] = { name: "hC", level: 0 }; eq.length = 0; // +40%
+	vm.runInContext("my_gear_cache = null", ctx);
+	await vm.runInContext("equip_upgrades()", ctx);
+	assert(JSON.stringify(eq) === '[["hC","helmet"]]', "...but takes a clearly (20%+) better one");
+	vm.runInContext("state.guide = { rows: [] }; my_gear_cache = null", ctx); eq.length = 0; character.items[5] = { name: "hB", level: 0 };
+	await vm.runInContext("equip_upgrades()", ctx);
+	assert(JSON.stringify(eq) === '[["hB","helmet"]]', "no live guide step for the slot → normal margin applies");
+	vm.runInContext("state.guide_equip = {}; state.guide = null; my_gear_cache = null", ctx); character.slots = slots46; character.items[5] = { name: "helm2", level: 0 };
 	// hand-me-down: Aspernari wears helm3, so helm2 is a spare; Torlis wears helm1 → gets helm2
 	Object.assign(character, { name: "Aspernari", ...asp, x: 0, y: 0 });
 	character.slots = { helmet: { name: "helm3", level: 0 } };
@@ -1863,6 +1874,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("smart_depth = 1", ctx);
 	assert(vm.runInContext("time_class()", ctx) === "walk", "a smart_move counts as walking");
 	vm.runInContext("smart_depth = 0", ctx); ctx.get_targeted_monster = gtm86; character.moving = false;
+	// 87) gear_check(): worn vs best owned per slot, with a verdict
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin" });
+	character.slots = { helmet: { name: "hA", level: 0 } }; character.items = Array(42).fill(null);
+	vm.runInContext("state.bank_gear = [{ name: 'hC', level: 0 }]; state.guide = null; my_gear_cache = null", ctx);
+	const gc87 = vm.runInContext("gear_check()", ctx);
+	assert(/^helmet\s+hA\+0 \d+ pts \| best owned: hC\+0 \d+ pts \(bank\) — UPGRADE/m.test(gc87), `gear_check lists the bank helmet as an upgrade:\n${gc87.split("\n").slice(0, 6).join("\n")}`);
+	character.slots = {}; vm.runInContext("state.bank_gear = []", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

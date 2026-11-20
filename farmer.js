@@ -1,4 +1,4 @@
-const VERSION = "17.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -54,7 +54,9 @@ const CFG = {
 	gear_auto: true,           // equip bag/bank items that score higher than what's worn; hand spares to party members
 	gear_min_gain: 3,          // an item must beat the worn one by this many points...
 	gear_margin: 0.05,         // ...and by 5% (avoids swapping for noise)
-	gear_guide_respect_h: 12,  // after the guide equips a slot, leave that slot to the guide this long
+	gear_guide_respect_h: 12,  // after the guide equips a slot it owns it this long — but only while it still has a
+	                           //   live step (not paused) for that slot; an idle guide doesn't block the slot
+	gear_guide_override: 0.2,  // even a guide-owned slot takes an item scoring this much (20%) better than what's worn
 	gear_share_range: 300,     // px; hand a spare to a party member this close (server limit: same map, 400px)
 	// Points per unit of each stat. main_stat = the class's own (str/dex/int: each point is ~1 attack and some HP/MP);
 	// the other two main stats count off_stat. Defensive stats count × tank_mult for tank classes.
@@ -1286,15 +1288,20 @@ function gear_score(item, ctype = character.ctype) {
 // What a member (us, or a partner from its heartbeat) wears: slot -> score; slots the guide owns right now count as
 // unbeatable (1e9); dh = mainhand is two-handed, off = offhand occupied
 let my_gear_cache = null; // { at, key, g }: bag_plan judges every bag item against it, so memo it for 1s
+// Does the guide have a live (not paused) gear step for this slot? Row ids are "kind:slot:item:level:stat".
+function guide_plans_slot(slot) {
+	return (state.guide?.rows || []).some((r) => CFG.gear_actions.includes(r.kind) && !skipped(r.id) &&
+		(r.action?.slot || String(r.id || "").split(":")[1]) === slot);
+}
 function my_gear() {
 	const now = Date.now(), sl = character.slots || {};
-	const owned = (s) => now - (state.guide_equip[s] || 0) < CFG.gear_guide_respect_h * 3600_000;
+	const owned = (s) => now - (state.guide_equip[s] || 0) < CFG.gear_guide_respect_h * 3600_000 && guide_plans_slot(s);
 	const key = GEAR_SLOTS.map((s) => (sl[s] ? sl[s].name + (sl[s].level || 0) : "") + (owned(s) ? "!" : "")).join();
 	if (my_gear_cache && now - my_gear_cache.at < 1000 && my_gear_cache.key === key) return my_gear_cache.g;
-	const w = {};
-	for (const s of GEAR_SLOTS) w[s] = owned(s) ? 1e9 : gear_score(sl[s]);
+	const w = {}, own = {};
+	for (const s of GEAR_SLOTS) { w[s] = gear_score(sl[s]); if (owned(s)) own[s] = true; }
 	const mh = sl.mainhand && G.items[sl.mainhand.name];
-	const g = { w, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), off: !!sl.offhand };
+	const g = { w, own, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), off: !!sl.offhand };
 	my_gear_cache = { at: now, key, g };
 	return g;
 }
@@ -1316,7 +1323,9 @@ function gear_gain(item, ctype, g) {
 	let best = null;
 	for (const s of slots_for(item.name, ctype, g)) {
 		const cur = g.w[s] ?? 0, gain = score - cur;
-		if (gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin && (!best || gain > best.gain)) best = { slot: s, gain, score };
+		// a slot the guide is actively working on only takes a clearly better item (gear_guide_override)
+		const margin = g.own?.[s] ? Math.max(CFG.gear_margin, CFG.gear_guide_override) : CFG.gear_margin;
+		if (gain >= CFG.gear_min_gain && gain >= cur * margin && (!best || gain > best.gain)) best = { slot: s, gain, score };
 	}
 	return best;
 }
@@ -3082,10 +3091,11 @@ function report_facts() {
 	}
 	if (CFG.gear_auto) {
 		const g = my_gear(), total = Object.values(g.w).filter((v) => v < 1e9).reduce((a, b) => a + b, 0);
+		const owns = Object.keys(g.own || {});
 		const takers = gear_takers().slice(1);
 		const held_for = character.items.map((it) => { const m = it && takers.find((x) => gear_gain(it, x.ctype, x.g)); return m && `${it.name}→${m.name}`; }).filter(Boolean);
-		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9), bu = bank_upgrades().map((u) => u.name + "+" + u.level);
-		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
+		const locked = owns, bu = bank_upgrades().map((u) => u.name + "+" + u.level);
+		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide working on ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
 	}
 	{
 		const acts = wd.acts.filter((a) => now - a.t < 3600_000);
@@ -3206,6 +3216,28 @@ function report_lines(log = true, compact = false) {
 	return lines;
 }
 // why_not("bee"): is this monster farmable and safe for us, with the numbers behind the verdict
+// gear_check(): every slot — what's worn (score), the best piece in the bags or the bank (from the last visit) and
+// whether it would go on. Answers "is this item worth anything to me?".
+function gear_check() {
+	const g = my_gear(), sl = character.slots || {}, L = [`— gear_check ${character.name} (${character.ctype} ${character.level}) —`];
+	const cand = {}; // slot -> best { name, level, score, where }
+	const look = (it, where) => {
+		if (!it || !G.items[it.name] || !GEAR.has(G.items[it.name].type)) return;
+		const sc = gear_score(it);
+		for (const s of slots_for(it.name, character.ctype, g)) if (!cand[s] || sc > cand[s].score) cand[s] = { name: it.name, level: it.level || 0, score: sc, where };
+	};
+	character.items.forEach((it) => look(it, "bags"));
+	for (const it of state.bank_gear || []) look(it, "bank");
+	for (const s of GEAR_SLOTS) {
+		const w = sl[s], c = cand[s], cur = g.w[s] || 0;
+		const verdict = !c ? "nothing better owned" : gear_gain(c, character.ctype, g) ? `UPGRADE +${Math.round(c.score - cur)} pts → equips` :
+			c.score > cur ? `+${Math.round(c.score - cur)} pts, below the ${g.own?.[s] ? Math.round(CFG.gear_guide_override * 100) + "% guide" : Math.round(CFG.gear_margin * 100) + "%"} margin` : "worse";
+		L.push(`${s.padEnd(9)} ${w ? `${w.name}+${w.level || 0}` : "(empty)"} ${Math.round(cur)} pts${g.own?.[s] ? " [guide working on it]" : ""}` +
+			`${c ? ` | best owned: ${c.name}+${c.level} ${Math.round(c.score)} pts (${c.where})` : ""} — ${verdict}`);
+	}
+	if (!state.bank_gear?.length) L.push("(no bank snapshot yet: it's taken on the next bank visit)");
+	return share_text(`gear_check ${character.name}`, L);
+}
 // ---- selftest(): checks the assumptions the script makes about the live game client ----
 // Functions it calls, data it reads, events it listens to, storage, and a cm round trip to every other character
 // (results after 4s). Run it after loading a new version; anything ✗ is a feature that can't work in this client.
@@ -4326,7 +4358,7 @@ tick();
 //
 // Diagnostics (CODE console, copyable text box): report() — this character at once, then the whole party in one
 //   box (same server; stored copies otherwise); report(6) adds 6h history each; party_report() re-opens it;
-//   history(hours), deaths(n), why_not("monster"); selftest() (checks the client: functions, data, events, storage,
+//   history(hours), deaths(n), why_not("monster"); gear_check() (every slot: worn vs best owned); selftest() (checks the client: functions, data, events, storage,
 //   cm round trips); park()/resume(); forget().
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
