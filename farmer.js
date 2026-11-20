@@ -1,8 +1,11 @@
-const VERSION = "23.4"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
 	safety: 0.35,              // a fight may cost at most this fraction of max HP (expected damage taken over one kill).
+	// v23.5: the limit tunes itself: every step_h with no death or flee it rises x up (to at most max); a flee lowers it
+	// x down; a death resets it to safety. It used to be fixed, so days without a scratch never moved the party up.
+	safety_tune: { enabled: true, step_h: 2, up: 1.15, down: 0.85, max: 0.6 },
 	                           //   0.35 leaves room for a second mob joining in or an unlucky streak before flee_hp.
 	kite_margin: 25,           // px kept beyond a monster's attack range when kiting (covers latency and its step size)
 	kite_slack: 4,             // a mob we can kite still counts 1/kite_slack of its damage: kiting isn't perfect
@@ -150,7 +153,8 @@ const CFG = {
 	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1 },
 	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
 	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
-	hunt_min_xp: 0,
+	hunt_min_xp: 0.7,          // v23.5: 70% (was off since v18.8, when measured rates still included time lost to town
+	                           //   trips; they're kills at the spot now). A hunt's tokens aren't worth a third of our xp.
 	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
 	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
@@ -189,7 +193,8 @@ const CFG = {
 	quest_farm_max_h: 3,       // own quests: skip if finishing would take longer than 3h at our kill rate
 	quest_park_h: 12,          // v18.1: a quest (guide ones too) that would take > 12h to farm is parked: its materials
 	quest_unpark_h: 8,         //   stop being held (they're banked, never sold) until the estimate drops under 8h
-	quest_farm_min_xp: 0.25,   // own quests: skip while that pack gives < 25% of the best pack's xp/s (outlevelled)
+	quest_farm_min_xp: 0.7,    // own quests: skip while that pack gives < 70% of the best pack's xp/s (v23.5: was 25% —
+	                           //   the party farmed minimush for Cole's newbie gloves at a fraction of croc's xp)
 	quest_stall_min: 60,       // a material that hasn't dropped in 60 min of farming pauses its recipe/row...
 	quest_shelve_h: 2,         // ...for 2h, then it's retried (nothing the guide asks for is dropped for good)
 	guide_quest_keep_h: 24,    // keep working a guide quest for 24h after the guide last listed it (its HUD shows
@@ -554,7 +559,9 @@ function calib_factor(mtype) {
 const danger_of = (mtype) => calib_factor(mtype) * (state.danger[mtype] || 1);
 // A priest among the members the verdict counted heals us through it (none when judged alone)
 const heal_mult = (f) => (!f.solo && (f.team === "all" ? partners() : partners_near()).some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype) * heal_mult(f);
+// The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max
+const safety_now = () => Math.min(CFG.safety * (state.safety_mult || 1), CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype) * heal_mult(f);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover(pool = partners_near(300)) {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
@@ -703,7 +710,7 @@ function set_pack(p, label) {
 function risk_over(mt, team = solo_now()) {
 	const m = G.monsters[mt], f = m && fight_math(m, true, team);
 	if (!f) return Infinity;
-	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mt) * heal_mult(f);
+	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mt) * heal_mult(f);
 	return fight_risk(f) / Math.max(1, limit);
 }
 const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower() && leader_hb()?.pack?.probe)) ? CFG.probe.flee_hp : CFG.flee_hp);
@@ -1003,6 +1010,25 @@ setInterval(() => {
 		if (Math.abs(1 - state.danger[mt]) < 0.01) delete state.danger[mt];
 	}
 }, 60_000);
+// Self-tuning safety (CFG.safety_tune): up a step after every step_h without a death or flee; down on a flee; reset on
+// a death. Checked every minute; the clock restarts on every change.
+function safety_tune(ev) {
+	const T_ = CFG.safety_tune, now = Date.now();
+	if (!T_?.enabled || is_merchant()) return;
+	const was = safety_now();
+	if (!state.safety_at) state.safety_at = now;
+	if (ev === "death") state.safety_mult = 1;
+	else if (ev === "flee") state.safety_mult = Math.max(1, (state.safety_mult || 1) * T_.down);
+	else if (now - state.safety_at >= T_.step_h * 3600_000 && safety_now() < T_.max) state.safety_mult = (state.safety_mult || 1) * T_.up;
+	else return;
+	state.safety_at = now;
+	if (safety_now() !== was) {
+		log_ev("safety", { to: +safety_now().toFixed(3), why: ev || "calm" });
+		game_log(`safety limit ${Math.round(was * 100)}% → ${Math.round(safety_now() * 100)}% of HP per kill (${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
+		state.last_pick = 0;
+	}
+}
+setInterval(() => { try { safety_tune(); } catch (e) {} }, 60_000);
 function incident(mt, mult) {
 	if (!mt || !G.monsters[mt]) return;
 	state.danger[mt] = (state.danger[mt] || 1) * mult;
@@ -2916,7 +2942,7 @@ function boss_safe(name, team = "all") {
 	const m = G.monsters[name];
 	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true, team); // their side of the fight only
 	if (!f) return false;
-	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * CFG.safety * heal_mult(f)) return false;
+	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * safety_now() * heal_mult(f)) return false;
 	const squish = Math.min(character.max_hp, ...(team === "all" ? partners() : partners_near()).map((p) => p.max_hp || Infinity));
 	return f.their_dps / (m.frequency || 1) <= squish * CFG.boss.one_hit;
 }
@@ -3603,6 +3629,7 @@ function recover() {
 		log_ev("flee", pmf);
 		bucket().flees++;
 		incident(pmf.killer && G.monsters[pmf.killer] ? pmf.killer : state.pack?.mtype, 0.8);
+		if (!state.pack?.probe) safety_tune("flee"); // a probe's flee is the probe's verdict, not the everyday limit's
 		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
 		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
 	}
@@ -3651,7 +3678,7 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0,
+		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -3698,6 +3725,7 @@ function load_state() {
 	if (d.mspot) state.mspot = d.mspot;
 	if (d.parcel_at) state.parcel_at = d.parcel_at;
 	if (d.owe > 0) state.owe = d.owe; // potion bills not paid yet (v23.0)
+	if (d.safety_mult > 0) { state.safety_mult = d.safety_mult; state.safety_at = d.safety_at || 0; } // v23.5
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -3902,7 +3930,7 @@ function report_facts() {
 			(none && !P ? ` | last check ${ago(none.at)} ago${none.dry ? " (before regrouping)" : ""}: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
 			(last ? ` | last probe: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""));
 	}
-	if (p && !p.boss && !M_) F("safety", "self", `safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
+	if (p && !p.boss && !M_) F("safety", "self", `safety limit ${Math.round(safety_now() * 100)}% of HP per kill${(state.safety_mult || 1) > 1 ? ` (raised from ${Math.round(CFG.safety * 100)}%; next step ${mins((state.safety_at || Date.now()) + CFG.safety_tune.step_h * 3600_000)})` : ""} | at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
 	if (state.guide_farm && !M_) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
 	if (CFG.spend?.enabled) F("budget", "party", budget_text());
 	const golds = partners().filter((x) => Number.isFinite(x.gold));
@@ -4177,7 +4205,7 @@ function why_not(mtype) {
 	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
-	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype);
+	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype) * heal_mult(f);
 	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
 		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
 	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
@@ -5138,6 +5166,7 @@ function on_death() {
 	bucket().deaths++;
 	const killer = pmd.killer && G.monsters[pmd.killer] ? pmd.killer : state.pack?.mtype;
 	const p = state.pack;
+	if (!pmd.unexplained) safety_tune("death");
 	if (pmd.unexplained) game_log(`Died with no damage seen (script watching for ${pmd.watched_s}s) — not blaming ${p?.mtype || "the pack"}`, C.warn);
 	else if (p) {
 		incident(killer || p.mtype, 0.6);

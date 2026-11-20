@@ -2065,10 +2065,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept");
 	// v18.7: a hunt monster far below the best xp/s we know isn't chased
 	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); state.best_score = 800", ctx);
-	assert(vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v18.8: hunt_min_xp off by default — a bee hunt is chased");
-	vm.runInContext("CFG.hunt_min_xp = 0.6", ctx);
+	assert(!vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v23.5: hunt_min_xp 70% by default — a bee hunt at 300 vs best 800 isn't chased");
+	vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__ok0 = hunt_feasible({ id: 'bee', c: 10 }); CFG.hunt_min_xp = 0.6", ctx);
+	assert(vm.runInContext("globalThis.__ok0", ctx), "hunt_min_xp 0: chased");
 	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "hunt_min_xp 0.6: bee hunt at 300 xp/s vs best 800 not chased; croc chased");
-	vm.runInContext("CFG.hunt_min_xp = 0", ctx);
+	vm.runInContext("CFG.hunt_min_xp = 0.7", ctx); // back to the default
 	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_score = 0", ctx);
 	// v18.7 gold budget: party spending held under 90% of income
 	vm.runInContext(`globalThis.__hb = hist.buckets; hist.buckets = {}; state.partners = {}; state.merchant = null;
@@ -2599,6 +2600,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("gear_score({ name: 'xorb', level: 0 })", ctx) === 60 && vm.runInContext("gear_score({ name: 'xorb', level: 0 }, 'merchant')", ctx) === 0, "an orb with +5 xp: 60 points for a fighter, 0 for the merchant");
 		vm.runInContext("state.partners = {}", ctx);
 		assert(Math.abs(vm.runInContext("xp_weight('mage')", ctx) - 4) < 1e-9, "alone: 4 points per xp");
+	}
+	// 111) v23.5: self-tuning safety limit; side goals need 70% of the best xp/s
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51 });
+		vm.runInContext("state.safety_mult = 1; state.safety_at = Date.now() - 2.1 * 3600000; hist.ev = []", ctx);
+		vm.runInContext("safety_tune()", ctx);
+		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.35 * 1.15) < 1e-9, `2h calm → 35% x 1.15 (${vm.runInContext("safety_now()", ctx)})`);
+		vm.runInContext("safety_tune()", ctx);
+		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.35 * 1.15) < 1e-9, "not again until another step_h");
+		vm.runInContext("state.safety_mult = 10; ", ctx);
+		assert(vm.runInContext("safety_now()", ctx) === 0.6, "capped at safety_tune.max");
+		vm.runInContext("state.safety_mult = 1.5; safety_tune('flee')", ctx);
+		assert(Math.abs(vm.runInContext("state.safety_mult", ctx) - 1.5 * 0.85) < 1e-9, "a flee lowers it a step");
+		vm.runInContext("safety_tune('death')", ctx);
+		assert(vm.runInContext("state.safety_mult", ctx) === 1 && vm.runInContext("safety_now()", ctx) === 0.35, "a death resets it");
+		vm.runInContext("state.safety_mult = 1; state.safety_at = 0; hist.ev = []", ctx);
+		assert(vm.runInContext("CFG.quest_farm_min_xp === 0.7 && CFG.hunt_min_xp === 0.7", ctx), "side goals: 70% of the best xp/s");
 	}
 	all_done = true;
 	console.log("ALL PASS");
