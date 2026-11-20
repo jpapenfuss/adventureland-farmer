@@ -629,7 +629,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.guide_farm = null; state.directive = null; state.guide_quests = {}; state.crafted = { wcap: 1 }", ctx);
 	character.s = {};
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null,
-		attack: 180, frequency: 0.75, damage_type: "magical", hunt: { id: "tortoise", c: 20 } } });
+		attack: 180, frequency: 0.75, damage_type: "magical", hunt: { id: "tortoise", c: 20 },
+		goals: [{ monster: "tortoise", w: 4, reason: "monster hunt 20 left", eta_h: 0.5 }] } });
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari: monster hunt/.test(state.directive.reason)", ctx),
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
@@ -641,9 +642,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.esize = 15; character.hp = character.max_hp; character.s = {};
 	ctx.get_nearest_monster = () => null; ctx.quantity = () => 100;
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical" } });
-	const d33a = vm.runInContext("town_due(partner()?.errand === 'town')", ctx);
+	const d33a = vm.runInContext("town_due(partners()[0]?.errand === 'town')", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
-	const d33b = vm.runInContext("town_due(partner()?.errand === 'town')", ctx);
+	const d33b = vm.runInContext("town_due(partners()[0]?.errand === 'town')", ctx);
 	assert(!d33a.bank && d33b.bank && d33b.relaxed, `bank trip only when the partner is already in town (${d33a.bank}, ${d33b.bank})`);
 
 	// 34) a dead partner: the follower stays a follower (holds), the leader holds too
@@ -703,19 +704,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext(`state.turn = null; state.guide_ignore = {}; state.gprog = null;
 		state.guide_farm = { monster: "goo", map: "main", boundary: [-100,-100,100,100], count: 5, reason: "guide hunt_farm", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
-		want: { monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, reason: "guide quest wgloves: spores 0/20", guide_safe: false } } });
+		goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'goo' && state.turn.who === 'Torlis'", ctx), "first turn: leader's own goal");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.for_partner && /Aspernari: guide quest wgloves/.test(state.directive.reason)", ctx),
 		`second turn: partner's goal (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
-	// a goal worked for the partner isn't re-shared as our own want
-	let sent37;
-	ctx.send_cm = (to, m) => ((sent37 = m), Promise.resolve());
-	vm.runInContext("heartbeat()", ctx);
-	assert(sent37 && sent37.want === null, "partner's goal not echoed back as our want");
-	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive(); heartbeat()", ctx);
-	assert(sent37.want && sent37.want.monster === "goo", "own goal shared as want on our own turn");
 
 	// 38) mutual goals win: Torlis's guide row is goo; Aspernari's goals include tortoise (hunt) and minimush (quest).
 	//     Torlis also needs a minimush drop → minimush is mutual and beats both lists' top items.

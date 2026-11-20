@@ -74,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.6";
+const VERSION = "15.7";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2102,15 +2102,6 @@ function hunt_directive() {
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
 }
-// The server credits a monster-hunt kill to every party member (monster_hunt_logic runs per member), so the leader
-// can work its partner's hunt too — a follower never picks where to fight, so its hunts otherwise just expire.
-function partner_hunt_directive() {
-	if (!CFG.auto_monster_hunt || is_follower()) return null;
-	const p = partners().find((m) => m.hunt?.c > 0 && fight_profile(m.hunt.id)), h = p?.hunt;
-	if (!h) return null;
-	const best = resolve_area(h.id);
-	return best && { monster: h.id, ...best, reason: `${p.name}'s monster hunt ${h.c} left`, guide_safe: false, for_partner: true };
-}
 // Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
 function kills_per_s(mt) {
 	const f = fight_profile(mt);
@@ -2153,12 +2144,7 @@ function goals_list() {
 // (us, then the others in name order) with their top goal. Only monsters the group can fight are considered.
 function pick_shared(mine) {
 	const now = Date.now(), me = character.name;
-	const members = [{ name: me, goals: goals_list() }, ...partners().map((p) => {
-		const goals = [...(p.goals || [])];
-		if (p.hunt?.c > 0 && !p.goals) goals.push({ monster: p.hunt.id, w: CFG.goal_w.hunt, reason: `monster hunt ${p.hunt.c} left` }); // older versions
-		if (p.want && !p.goals) goals.push({ ...p.want, w: CFG.goal_w.guide_farm });                                             // send only these
-		return { name: p.name, goals };
-	})];
+	const members = [{ name: me, goals: goals_list() }, ...partners().map((p) => ({ name: p.name, goals: [...(p.goals || [])] }))];
 	const by = new Map(); // monster -> { w: {member: weight}, eta: {member: hours}, src, why, too_slow }
 	for (const m of members) for (const g of m.goals) {
 		const e = by.get(g.monster) || { monster: g.monster, w: {}, eta: {}, src: null, why: [], too_slow: [] };
@@ -2194,14 +2180,6 @@ function pick_shared(mine) {
 	if (state.turn.who === me) return mine;
 	const t = top(state.turn.who);
 	return to_dir(t, `${state.turn.who}: ${t.why.find((w) => w.startsWith(state.turn.who + ":"))?.slice(state.turn.who.length + 2) || t.monster}`);
-}
-// The partner's own top farming goal, if the pair can fight it (partners on older versions only send this, not goals)
-function partner_want() {
-	const p = partners().find((m) => m.want), w = p?.want;
-	if (!w || is_follower() || !G.monsters[w.monster]) return null;
-	if (!fight_profile(w.monster) && !(w.guide_safe && farmable_type(w.monster))) return null;
-	const area = resolve_area(w.monster, w.map, w.boundary, w.count);
-	return area && { monster: w.monster, ...area, reason: `${p.name}: ${w.reason}`, guide_safe: false, for_partner: true };
 }
 // Visit Daisy when we have no hunt or a finished one (h.c = kills left)
 const hunt_due = () => {
@@ -3020,9 +2998,6 @@ function partners_near(maxd = 400) {
 		return Math.hypot(pos.x - character.x, pos.y - character.y) <= maxd;
 	});
 }
-const partner_near = (maxd) => partners_near(maxd)[0] || null; // any one (kept for older call sites/tests)
-const partner = () => partners()[0] || null;
-const partner_any = () => partners_any()[0] || null;
 // Leader: CFG.party.leader if set (and online), else the lowest level online (dead members count: a dead leader is
 // still the leader, so followers hold position instead of wandering off). Ties: alphabetical, so all agree.
 function leader_name() {
@@ -3054,10 +3029,7 @@ function heartbeat() {
 		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
 		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
-		mp: character.mp, max_mp: character.max_mp,
-		want: state.directive && !state.directive.for_partner
-			? { monster: state.directive.monster, map: state.directive.map, boundary: state.directive.boundary, count: state.directive.count,
-				reason: state.directive.reason, guide_safe: !!state.directive.guide_safe } : null };
+		mp: character.mp, max_mp: character.max_mp };
 	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
 	Promise.resolve(send_cm(to, msg)).catch(() => {});
 }
@@ -3477,7 +3449,7 @@ let gold_inflight = false;
 function gold_balance() {
 	const G_ = CFG.party.gold;
 	if (!G_?.enabled || !in_party_cfg() || gold_inflight || character.rip || typeof send_gold !== "function") return null;
-	const known = partners().filter((m) => Number.isFinite(m.gold)); // members on older versions don't report gold
+	const known = partners().filter((m) => Number.isFinite(m.gold)); // gold not heard yet (first beat) → skip them
 	if (!known.length || known.some((m) => m.gold > character.gold)) return null; // not the richest: someone else acts
 	const p = known.sort((a, b) => a.gold - b.gold)[0];              // the poorest
 	const rich = character.gold, poor = p.gold;
@@ -3562,7 +3534,7 @@ function follower_pick(pos) {
 	return e && e.mtype === mt && Math.hypot(e.x - pos.x, e.y - pos.y) <= CFG.party.wait_radius ? e : null;
 }
 // Follower whose leader is dead: grind whatever it can SOLO near where it is (wait_radius), drift back when idle.
-// Solo safety: partner_near() is null while the partner is dead, so fight_math leaves out its damage and heals.
+// Solo safety: partners_near() leaves out dead members, so fight_math leaves out its damage and heals.
 function hold_grind() {
 	if (!state.hold || state.hold.map !== character.map) {
 		state.hold = { map: character.map, x: character.x, y: character.y };
