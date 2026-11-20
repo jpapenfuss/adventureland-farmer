@@ -76,7 +76,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "16.1";
+const VERSION = "16.2";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2888,14 +2888,20 @@ function share_text(title, lines) {
 	return text;
 }
 // report(): one-screen summary of what the bot is doing and why (also as copyable text)
-function report_lines(log = true) {
+// compact: for party reports — leaves out what the party header shows once (roster, gold, hunts, bosses, merchant,
+// last hour, rates) and lines with nothing to say (done quests, idle features, normal safety)
+function report_lines(log = true, compact = false) {
 	const lines = [];
 	const L = (s, c = C.note) => { lines.push(s); if (log) game_log(s, c); };
-	const p = state.pack, d = state.directive;
-	L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, C.title);
+	const p = state.pack, d = state.directive, full = !compact, M_ = is_merchant();
+	if (full) L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, C.title);
 	if (is_merchant()) L(`merchant mode: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
 	else L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
-	if (in_party_cfg()) {
+	if (compact && !M_) {
+		const near = partners_near().map((p) => p.name);
+		L(`near: ${near.join(", ") || "nobody (solo safety)"}${leader_name() === character.name ? " | LEADER" : ""}`);
+	}
+	if (full && in_party_cfg()) {
 		const near = partners_near().map((p) => p.name);
 		L(`party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"} | near: ${near.join(", ") || "nobody (solo safety)"}`);
 		for (const n of others()) {
@@ -2908,17 +2914,18 @@ function report_lines(log = true) {
 		const g = my_gear(), total = Object.values(g.w).filter((v) => v < 1e9).reduce((a, b) => a + b, 0);
 		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
 		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
-		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""} | bank upgrades: ${bank_upgrades().map((u) => u.name + "+" + u.level).join(", ") || "none"} | for party: ${held_for.join(", ") || "none"}`);
+		const bu = bank_upgrades().map((u) => u.name + "+" + u.level);
+		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""}` + (full || bu.length ? ` | bank upgrades: ${bu.join(", ") || "none"}` : "") + (full || held_for.length ? ` | for party: ${held_for.join(", ") || "none"}` : ""));
 	}
 	{
 		const acts = wd.acts.filter((a) => Date.now() - a.t < 3600_000);
 		if (acts.length) L(`watchdog: ${acts.length} intervention(s) in 1h (last: ${acts[acts.length - 1].kind} ${ago(acts[acts.length - 1].t)} ago)`);
 	}
-	{
+	if (full) {
 		const h = last_hour(), ph = partners().filter((x) => x.h1).map((x) => `${x.name} ${x.h1.dead}d/${x.h1.fled}f`);
 		L(`last hour: ${h.dead} deaths, ${h.fled} flees, ${h.town} town trips${ph.length ? " | " + ph.join(", ") : ""} — history() / deaths() for details`);
 	}
-	{
+	if (full) {
 		const r = rates(), pr = partners().filter((x) => x.rates).map((x) => `${x.name} ${fmt_k(x.rates.xph)} xp/h ${fmt_k(x.rates.gph)} g/h`);
 		L(`rates (last ${r ? r.mins : 0} min, transfers between us excluded): us ${r ? `${fmt_k(r.xph)} xp/h, ${fmt_k(r.gph)} gold/h` : "collecting (15 min)"}${pr.length ? " | " + pr.join(" | ") : ""}`);
 	}
@@ -2931,37 +2938,37 @@ function report_lines(log = true) {
 		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && Date.now() - e.t < 86_400_000);
 		L(`stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length} for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}`);
 		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
-	} else if (CFG.merchant?.name) {
+	} else if (full && CFG.merchant?.name) {
 		const M = merchant_hb();
 		L(`merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
 	}
-	if (CFG.boss?.enabled && !is_merchant()) {
+	if (full && CFG.boss?.enabled && !is_merchant()) {
 		const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
 		L(`bosses: ${live.length ? live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ") : "none live on this server"}`);
 	}
-	if (CFG.token_auto && !is_merchant()) {
+	if (CFG.token_auto && !is_merchant() && (full || held_any("monstertoken") > 0)) {
 		const b = token_pick();
 		L(`tokens: ${held_any("monstertoken")}${b ? ` → next: ${b.name} (${b.price}) for ${b.for}` : ""}`);
 	}
-	if (CFG.upgrade_auto) {
+	if (CFG.upgrade_auto && (full || state.upg)) {
 		const P = state.upg;
 		L(`upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})` : merchant_does_it() ? "left to the merchant" : "no project"}`);
 	}
-	if (CFG.elixir_auto && character.ctype !== "merchant") {
+	if (CFG.elixir_auto && character.ctype !== "merchant" && (full || elixir_active() || best_elixir() || bank_elixir() || character.gold >= CFG.elixir_buy_min_gold)) {
 		const e = character.slots?.elixir;
 		L(`elixir: ${elixir_active() ? `${e.name}${e.expires ? ` until ${new Date(e.expires).toLocaleTimeString()}` : ""}` : best_elixir() ? "about to drink " + best_elixir().name : bank_elixir() ? "fetching " + bank_elixir().name + " from the bank" : character.gold >= CFG.elixir_buy_min_gold ? "buying " + CFG.elixir_buy : `none (buys ${CFG.elixir_buy} at ${fmt_k(CFG.elixir_buy_min_gold)} gold)`}`);
 	}
-	if (CFG.compound_auto) {
+	if (CFG.compound_auto && (full || compound_groups().length || Object.keys(state.gear_skip).some((k) => k.startsWith("cmp:") && skipped(k)))) {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
 		L(`compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
 			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""));
 	}
-	if (p && !p.boss && !is_merchant()) L(`safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`);
-	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
-	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
+	if (p && !p.boss && !is_merchant() && (full || danger_of(p.mtype) < 1)) L(`safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`);
+	if (d && (full || !is_follower())) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
+	if (state.guide_farm && full) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
 	const golds = partners().filter((p) => Number.isFinite(p.gold));
-	if (golds.length && CFG.party.gold?.enabled) {
+	if (full && golds.length && CFG.party.gold?.enabled) {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
 		L(`gold: us ${character.gold.toLocaleString()} / ${golds.map((p) => `${p.name} ${p.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((Date.now() - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > Date.now() ? `, next allowed in ${mins(next)}` : ""}`);
 	}
@@ -2970,21 +2977,23 @@ function report_lines(log = true) {
 		else if (state.turn) L(`no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}`);
 		if (state.shared?.too_slow.length) L(`too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
-	if (is_follower()) L(`my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
-	for (const P of partners()) if (P.hunt?.c > 0)
+	if (is_follower() && !M_) L(`my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
+	if (full) for (const P of partners()) if (P.hunt?.c > 0)
 		L(`${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left${is_follower() || is_merchant() ? "" : fight_profile(P.hunt.id) ? " (we can farm it)" : " (not safe for us)"}`);
-	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	if (full || (!M_ && !in_party_cfg())) L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	L(`town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
 	if (state.town_block?.blockers.length) L(`town blocked (${Math.round((Date.now() - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	for (const r of state.guide?.rows || []) {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded (set before this version)"}` : r.affordable === false ? "unaffordable" : "next";
+		if (compact && (r.kind === "farm" || !CFG.gear_actions.includes(r.kind))) continue; // farm rows / not automated: noise here
 		L(`guide ${r.id}: ${st}`);
 	}
-	for (const id of quest_recipes()) {
+	if (!(compact && M_)) for (const id of quest_recipes()) {
 		const r = G.craft[id];
 		const inputs = r.items.map(([q, n, l]) => `${n}${l ? "+" + l : ""} ${held(n, l)}${state.bank_seen[n] ? `(+${state.bank_seen[n]} bank)` : ""}/${q}`).join(", ");
 		const st = !recipe_wanted(id) ? "done" : skipped("qc:" + id) ? `paused ${mins(state.gear_skip["qc:" + id])}` : has_inputs(r) ? "READY to craft" : "collecting";
+		if (compact && st === "done") continue;
 		L(`quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`);
 	}
 	const plan = bag_plan(), kept = {}, why_k = {}, nd = needed_slots(), cm = compound_slots(nd);
@@ -3000,8 +3009,10 @@ function report_lines(log = true) {
 		`${plan.fetch.length ? ` | to fetch: ${Object.entries(fetch_names).map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ")}` : ""}`);
 	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
 	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
-	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
-	L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
+	if (full) {
+		L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
+		L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
+	} else L(`at ${character.map} ${Math.round(character.x)},${Math.round(character.y)} | calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
 	return lines;
 }
 // why_not("bee"): is this monster farmable and safe for us, with the numbers behind the verdict
@@ -3018,7 +3029,8 @@ function report(hours = 0) {
 	const targets = party_names_all().filter((n) => n !== character.name);
 	if (!targets.length || typeof send_cm !== "function") return text;
 	const id = `${Date.now()}:${character.name}`;
-	gather = { id, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: hours > 0 ? [...mine, ...history_lines(hours)] : mine } }, at: Date.now() };
+	const own = report_lines(false, true);
+	gather = { id, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: hours > 0 ? [...own, ...history_lines(hours)] : own } }, at: Date.now() };
 	Promise.resolve(send_cm(targets, { k: "rreq", id, hours })).catch(() => {});
 	game_log(`report: collecting from ${targets.join(", ")} (up to 6s)…`, C.info);
 	setTimeout(() => report_finish(id), 6000);
@@ -3029,7 +3041,7 @@ function report_reply(m) {
 	if (now - (report_reply_at[from] || 0) < 5000) return;
 	report_reply_at[from] = now;
 	const h = +m.message.hours || 0;
-	const lines = [...report_lines(false), ...(h > 0 ? history_lines(h) : [])];
+	const lines = [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
 	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, lines })).catch(() => {});
 }
 function report_collect(m) {
@@ -3044,9 +3056,10 @@ function report_finish(id) {
 	const members = (CFG.party.members || []).filter((n) => n !== character.name).sort();
 	const order = [character.name, ...members, ...(CFG.merchant?.name && CFG.merchant.name !== character.name ? [CFG.merchant.name] : [])];
 	const replied = [...g.want].filter((n) => g.got[n]).length;
-	const out = [`══ party report ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`];
+	const out = [`══ party report v${VERSION} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...party_header_lines()];
 	for (const n of order) {
-		out.push("", `▌ ${n}`);
+		const v = g.got[n]?.v;
+		out.push("", `▌ ${n}${v && v !== VERSION ? ` (v${v} ≠ v${VERSION}: update it)` : ""}`);
 		if (g.got[n]) { out.push(...g.got[n].lines); continue; }
 		const stored = typeof get === "function" ? get("farmer_report:" + n) : null;
 		if (stored && Array.isArray(stored.lines)) out.push(`(no reply — stored copy, ${ago(stored.at)} old, v${stored.v})`, ...stored.lines);
@@ -3054,6 +3067,31 @@ function report_finish(id) {
 	}
 	last_party_report = out;
 	return share_text("party report", out);
+}
+// Everything shared, once: roster, leader and its pack, gold, hunts, last hour per member, bosses, merchant, mutual goals
+function party_header_lines() {
+	const out = [], me_f = in_party_cfg();
+	const fighters = [...(me_f ? [{ name: character.name, ctype: character.ctype, level: character.level, map: character.map, errand: errand_busy() ? state.errand : null,
+		rip: !!character.rip, gold: character.gold, hunt: character.s?.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
+		h1: last_hour(), rates: rates(), pack: state.pack ? { mtype: state.pack.mtype, map: state.pack.map, directive: state.pack.directive } : null }] : []),
+		...partners_any()].sort((a, b) => (a.name < b.name ? -1 : 1));
+	if (!fighters.length) return out;
+	out.push(`roster: ${fighters.map((f) => `${f.name} ${f.ctype} ${f.level} @${f.map}${f.errand ? " (" + f.errand + ")" : ""}${f.rip ? " DEAD" : ""}`).join(" | ")}`);
+	const lead = CFG.party.leader && fighters.some((f) => f.name === CFG.party.leader) ? CFG.party.leader
+		: [...fighters].sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1))[0].name;
+	const lp = fighters.find((f) => f.name === lead)?.pack;
+	out.push(`leader: ${lead}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
+	const M = is_merchant() ? { name: character.name, gold: character.gold, map: character.map, esize: character.esize, serving: state.serving } : merchant_hb();
+	out.push(`gold: ${[...fighters, ...(M ? [M] : [])].map((f) => `${f.name} ${fmt_k(f.gold || 0)}`).join(" / ")}`);
+	const hunts = {};
+	for (const f of fighters) if (f.hunt?.c > 0) (hunts[`${f.hunt.id}`] = hunts[f.hunt.id] || []).push(`${f.name} ${f.hunt.c}`);
+	if (Object.keys(hunts).length) out.push(`hunts: ${Object.entries(hunts).map(([id, xs]) => `${id} (${xs.join(", ")})`).join(" | ")}`);
+	out.push(`last hour: ${fighters.map((f) => `${f.name} ${f.h1 ? `${f.h1.dead}d/${f.h1.fled}f/${f.h1.town}town` : "?"}${f.rates ? ` ${fmt_k(f.rates.xph)}xp/h` : ""}`).join(" | ")}`);
+	const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
+	if (live.length) out.push(`bosses: ${live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ")}`);
+	if (CFG.merchant?.name) out.push(`merchant ${CFG.merchant.name}: ${M ? `${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free` : "offline (fighters do their own town runs)"}`);
+	if (lead === character.name && state.shared?.mutual.length) out.push(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
+	return out;
 }
 const party_report = () => (last_party_report ? share_text("party report", last_party_report) : "no party report yet: run report()");
 // Stored copy for party reports when cm can't reach us (other server, same browser)

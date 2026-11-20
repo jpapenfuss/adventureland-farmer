@@ -1462,7 +1462,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Torlis", message: { k: "rreq", id: "x1", hours: 2 } });
 	handlers.cm({ name: "Torlis", message: { k: "rreq", id: "x2", hours: 2 } });
 	const reps = cm68.filter(([, k]) => k === "rrep");
-	assert(reps.length === 1 && reps[0][0] === "Torlis" && reps[0][2].lines.some((l) => /— report v/.test(l)) && reps[0][2].lines.some((l) => /— history Sanala/.test(l)),
+	assert(reps.length === 1 && reps[0][0] === "Torlis" && reps[0][2].lines.some((l) => /^at main .* per 4s/.test(l)) && !reps[0][2].lines.some((l) => /^gold: us/.test(l)) && reps[0][2].lines.some((l) => /— history Sanala/.test(l)),
 		`replies once with report + history lines (${reps.length})`);
 	// collector: stale id ignored; Aspernari + Torlis reply, DoWhatNow silent but has a stored copy
 	handlers.cm({ name: "Torlis", message: { k: "rrep", id: "old", v: "15.9", lines: ["STALE"] } });
@@ -1517,5 +1517,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.merchant = null; state.last_town = Date.now() - 60000", ctx);
 	assert(vm.runInContext("town_due().guide", ctx), "merchant offline: guide steps go as before");
 	vm.runInContext("state.guide = null; delete character.s.monsterhunt", ctx); character.items = Array(42).fill(null);
+	// 71) compact party report: one shared header (roster, leader, gold, hunts, last hour, merchant); sections without
+	// the shared lines, done quests, idle features or "not automated" guide rows; a full solo report keeps them
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 50, gold: 3e6, map: "main", x: 0, y: 0, rip: false, hp: 900, max_hp: 900, s: { monsterhunt: { id: "armadillo", c: 43 } } });
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400], directive: 'monster hunt 43 left' }; state.crafted = { wcap: 1 }", ctx);
+	hb("Torlis", { ...tor, gold: 2.7e6, hunt: { id: "armadillo", c: 43 }, h1: { dead: 0, fled: 1, town: 2, xph: 0 } });
+	hb("Aspernari", { ...asp, gold: 7.7e6, hunt: { id: "armadillo", c: 43 }, h1: { dead: 0, fled: 0, town: 3, xph: 0 } });
+	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0, esize: 9, gold: 1e6 }", ctx);
+	const hdr = vm.runInContext("party_header_lines()", ctx).join("\n");
+	assert(/^roster: Aspernari priest .*\| Sanala mage 50 .*\| Torlis paladin/m.test(hdr) && /^leader: /m.test(hdr) && /^gold: Aspernari 7\.7M \/ Sanala 3\.0M \/ Torlis 2\.7M \/ DoWhatNow 1\.0M/m.test(hdr) &&
+		/^hunts: armadillo \(Aspernari 43, Sanala 43, Torlis 43\)/m.test(hdr) && /Torlis 0d\/1f\/2town/.test(hdr) && /^merchant DoWhatNow: in main, 9 free/m.test(hdr), `party header:\n${hdr}`);
+	const cmp71 = vm.runInContext("report_lines(false, true)", ctx).join("\n"), full71 = vm.runInContext("report_lines(false)", ctx).join("\n");
+	if (process.env.SHOW) console.log("HEADER\n" + hdr + "\nSECTION\n" + cmp71);
+	assert(!/^gold: us/m.test(cmp71) && !/'s hunt:/.test(cmp71) && !/^quest wcap.*done/m.test(cmp71) && !/^tokens:/m.test(cmp71) && !/^— report/m.test(cmp71) && /^gear:/m.test(cmp71) && /^bags:/m.test(cmp71),
+		`compact section drops shared/idle lines:\n${cmp71}`);
+	assert(/^gold: us/m.test(full71) && /^tokens:/m.test(full71) && full71.split("\n").length > cmp71.split("\n").length, "the full report keeps everything");
+	vm.runInContext("state.merchant = null; state.pack = null", ctx); delete character.s.monsterhunt;
 	console.log("ALL PASS");
 })();
