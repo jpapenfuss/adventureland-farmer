@@ -74,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.7";
+const VERSION = "15.8";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -469,8 +469,8 @@ function fight_math(m, use_tank = true) {
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0); // heal per s
 	let our_dps = hit * land * character.frequency - heal_dps;
 	for (const P of partners_near()) if (P.attack && P.frequency) { // every nearby member shoots the same target
-		const pm = P.damage_type === "magical";
-		our_dps += P.attack * dm(((pm ? m.resistance : m.armor) || 0) - ((pm ? P.rpiercing : P.apiercing) || 0)) * (pm ? 1 : 1 - pct(m.evasion)) * P.frequency;
+		const pmring = P.damage_type === "magical";
+		our_dps += P.attack * dm(((pmring ? m.resistance : m.armor) || 0) - ((pmring ? P.rpiercing : P.apiercing) || 0)) * (pmring ? 1 : 1 - pct(m.evasion)) * P.frequency;
 	}
 	if (!(our_dps > 0)) return null;
 	const ttk = (m.hp || m.max_hp) / our_dps;
@@ -717,14 +717,14 @@ function bucket(t = Date.now()) {
 	return (hist.buckets[k] = hist.buckets[k] || { time: {}, xp: 0, gold: 0, kills: 0, deaths: 0, flees: 0 });
 }
 // Last 20s, one sample per second (filled by the 1s interval), and hits taken with the attacker's type
-const pm = { ring: [], hits: [] };
+const pmring = { ring: [], hits: [] };
 if (typeof character.on === "function") {
 	character.on("hit", (d) => {
 		if (!d || !(d.damage > 0)) return;
 		const a = parent.entities?.[d.actor];
-		pm.hits.push({ t: Date.now(), mtype: a?.mtype || (a ? a.ctype || "player" : "?"), dmg: d.damage });
+		pmring.hits.push({ t: Date.now(), mtype: a?.mtype || (a ? a.ctype || "player" : "?"), dmg: d.damage });
 		if (a?.mtype && G.monsters[a.mtype]) cal.cur[a.mtype] = (cal.cur[a.mtype] || 0) + d.damage;
-		if (pm.hits.length > 200) pm.hits.shift();
+		if (pmring.hits.length > 200) pmring.hits.shift();
 	});
 	character.on("target_hit", (d) => { if (d?.kill) bucket().kills++; });
 }
@@ -732,21 +732,21 @@ function pm_sample() {
 	const t = get_targeted_monster();
 	const attackers = Object.values(parent.entities || {}).filter((e) => e.type === "monster" && e.target === character.name)
 		.slice(0, 6).map((e) => ({ mtype: e.mtype, hp: e.hp }));
-	pm.ring.push({ t: Date.now(), hp: character.hp, mp: character.mp, target: t ? `${t.mtype}:${t.hp}` : null, attackers });
-	if (pm.ring.length > 20) pm.ring.shift();
+	pmring.ring.push({ t: Date.now(), hp: character.hp, mp: character.mp, target: t ? `${t.mtype}:${t.hp}` : null, attackers });
+	if (pmring.ring.length > 20) pmring.ring.shift();
 }
 // What killed / nearly killed us: damage by attacker type over the last 10s, HP over the last 20s, and what the fight
 // model predicted for the main culprit (risk over one kill vs the HP it was judged against)
 function postmortem() {
 	const now = Date.now(), by = {};
-	for (const h of pm.hits) if (now - h.t < 10_000) by[h.mtype] = (by[h.mtype] || 0) + h.dmg;
+	for (const h of pmring.hits) if (now - h.t < 10_000) by[h.mtype] = (by[h.mtype] || 0) + h.dmg;
 	const killer = Object.entries(by).sort((a, b) => b[1] - a[1])[0]?.[0] || state.pack?.mtype || null;
 	const f = killer && G.monsters[killer] ? fight_math(G.monsters[killer]) : null;
-	return { killer, dmg10: by, hp: pm.ring.map((r) => r.hp), max_hp: character.max_hp, pack: state.pack?.mtype || null,
+	return { killer, dmg10: by, hp: pmring.ring.map((r) => r.hp), max_hp: character.max_hp, pack: state.pack?.mtype || null,
 		map: character.map, x: Math.round(character.x), y: Math.round(character.y), tank: !!tank_cover(),
 		priest: partners_near().some((p) => p.ctype === "priest"), pots: { hp: pot_count("hp"), mp: pot_count("mp") },
 		predicted: f ? Math.round(fight_risk(f)) : null, pool: f ? Math.round(f.hp_pool) : null,
-		danger: killer ? +danger_of(killer).toFixed(2) : null, last: pm.ring.slice(-6) };
+		danger: killer ? +danger_of(killer).toFixed(2) : null, last: pmring.ring.slice(-6) };
 }
 function calib_text(mt) {
 	const c = state.calib[mt];
