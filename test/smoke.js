@@ -1338,5 +1338,30 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("stand_close()", ctx);
 	assert(closes.length === 1 && !character.stand, "stand closed before a trip");
 	character.items = Array(42).fill(null); character.slots = {}; vm.runInContext("state.stand = {}", ctx);
+	// 64) melee stays engaged: no drift back to the leader while on a target near it; walks break off for a fight
+	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", range: 25, x: 160, y: 0, map: "main", rip: false, moving: false, hp: 3000, max_hp: 3000, s: {} });
+	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; smart_depth = 0; last_move = 0", ctx);
+	hb("Sanala", { ...san, level: 1, x: 0, y: 0, target: "m64" }); hb("Aspernari", { ...asp, x: 0, y: 30 });
+	ctx.parent.entities.m64 = { id: "m64", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x: 175, y: 0, target: "Sanala" };
+	const mv64 = []; ctx.move = (x, y) => mv64.push([Math.round(x), Math.round(y)]);
+	const at64 = []; ctx.attack = (e) => (at64.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
+	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
+	assert(!mv64.length && at64.includes("m64"), `in reach of the leader's target (attacking the leader): stays and attacks (${JSON.stringify(mv64)} ${at64})`);
+	// target far from the leader: not engaged, drifts back
+	ctx.parent.entities.m64.x = 900; mv64.length = 0;
+	vm.runInContext("last_move = 0; follower_tick()", ctx);
+	assert(mv64.length && mv64[0][0] < 160, `target beyond the leash: drifts back to the leader (${JSON.stringify(mv64)})`);
+	// walking (smart_move) with a target near: the walk is stopped so approach() can run
+	ctx.parent.entities.m64.x = 260;
+	const stops64 = []; ctx.stop = (w) => stops64.push(w);
+	vm.runInContext("smart_depth = 1; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }", ctx);
+	vm.runInContext("fight(parent.entities.m64, true)", ctx);
+	assert(stops64.includes("smart"), `a walk is broken off for a fight 100px away (${stops64})`);
+	stops64.length = 0;
+	vm.runInContext("state.errand = 'town'; state.errand_at = Date.now(); fight(parent.entities.m64, true); state.errand = null", ctx);
+	assert(!stops64.length, "never during an errand (town)");
+	vm.runInContext("smart_depth = 0; state.pack = null", ctx);
+	delete ctx.parent.entities.m64; ctx.distance = dist_save; ctx.stop = (a) => calls.push("stop:" + a);
 	console.log("ALL PASS");
 })();

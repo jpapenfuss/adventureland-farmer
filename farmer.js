@@ -74,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.2";
+const VERSION = "15.3";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1105,8 +1105,20 @@ function cburst() {
 	if (targets.length < 3 || !can_spend(1, RESERVE.skill)) return false;
 	return fire("cburst", targets);
 }
+// A walk (smart_move) in progress blocks approach(): stop it when a fight is right here — a target within 300px (on the
+// way to a boss: only one attacking one of us). Never during errands.
+// travel() treats the resulting "interrupted" as normal (no retry block).
+function break_walk_for(t) {
+	if (!walking() || !t || distance(character, t) > 300) return false;
+	if (errand_busy()) return false; // a town walk interrupted would fail (and pause) that errand step
+	const attacking_us = !!t.target && party_names().has(t.target);
+	if (!attacking_us && state.pack?.boss) return false; // on the way to a boss: only stop for attackers
+	try { stop("smart"); } catch (e) {}
+	return true;
+}
 function fight(t, steer = true) {
 	if (get_targeted_monster() !== t) change_target(t);
+	if (steer) break_walk_for(t);
 	if (steer && !walking() && !kite(t) && !errand_busy()) approach(t);
 	else if (!steer && !walking()) kite(t);
 	if (hold_for_tank(t)) { if (character.ctype === "priest") party_heal(); return; }
@@ -3379,19 +3391,21 @@ function follower_tick() {
 	let t = L.target && parent.entities[L.target];
 	const pos = partner_pos(L);
 	if (!(t && valid(t) && t.type === "monster")) t = choose_target(false) || follower_pick(pos);
-	let engaging = false;
+	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
+	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
+	// attacking it, and only hit what wandered into range
+	const engaged = !!t && pos.map === character.map && Math.hypot(t.x - pos.x, t.y - pos.y) <= CFG.party.wait_radius;
 	if (t) {
 		if (get_targeted_monster() !== t) change_target(t);
-		// close in on targets out of reach (melee always needs this) as long as they're within wait_radius of the
-		// leader; kiting (ranged, when the target is on us) takes precedence
-		if (!walking() && !errand_busy() && !kite(t) && distance(character, t) > standoff(t).reach &&
-			pos.map === character.map && Math.hypot(t.x - pos.x, t.y - pos.y) <= CFG.party.wait_radius) { approach(t); engaging = true; }
+		if (engaged) break_walk_for(t);
+		// close in on targets out of reach; kiting (ranged, when the target is on us) takes precedence
+		if (engaged && !walking() && !errand_busy() && !kite(t) && distance(character, t) > standoff(t).reach) approach(t);
 		if (!hold_for_tank(t) && !class_skills(t) && can_attack(t)) fire("attack", t);
 	}
-	if (engaging || walking() || errand_busy()) return;
+	if (engaged || walking() || errand_busy()) return;
 	const d = pos.map === character.map ? Math.hypot(pos.x - character.x, pos.y - character.y) : Infinity;
 	if (d > CFG.party.follow_far) travel(pos);
-	else if (d > CFG.party.follow && !(t && t.target === character.name && distance(character, t) <= standoff(t).reach)) {
+	else if (d > CFG.party.follow) {
 		const ang = Math.atan2(character.y - pos.y, character.x - pos.x);
 		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
 		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);
