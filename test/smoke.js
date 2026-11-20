@@ -741,8 +741,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.mutual", ctx), `mutual goal (minimush) chosen (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
-	// no overlap → turns between the two tops
+	// v18.0: an overlap of guide-farm rows only (1+1 < a hunt's weight) isn't mutual: turns, not "guide goo" for both
 	ctx.G.craft = {};
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+		goals: [{ monster: "tortoise", w: 4, reason: "monster hunt 20 left" }, { monster: "goo", w: 1, reason: "guide goo" }] } });
+	vm.runInContext("state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
+	assert(vm.runInContext("!state.directive.mutual", ctx), `guide-only overlap isn't mutual (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
+	// no overlap → turns between the two tops
 	vm.runInContext("state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'goo' && !state.directive.mutual", ctx), "no overlap: our own goal on our turn");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
@@ -1567,7 +1574,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items[1] = { name: "tracker", q: 1 };
 	assert(vm.runInContext("token_pick() && token_pick().name", ctx) === "mphat", "tracker held → tokens go to gear again");
 	assert(vm.runInContext("bag_class(character.items[1])", ctx) === "keep", "the tracker is never banked or sold");
-	// merchant lacks one: only the alphabetically first eligible fighter buys it
+	// merchant lacks one: only the alphabetically first eligible fighter buys it (opt-in since v18.0)
+	vm.runInContext("CFG.hold_buy_for_merchant = true", ctx);
 	character.items[0].q = 6;
 	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 50, y: 0, esize: 20, gold: 1e6, need: ['tracker'] }", ctx);
 	hb("Aspernari", { ...asp, tokens: 9, need: [] });
@@ -1820,7 +1828,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	hb("Torlis", { ...tor, tokens: 0, need: ["tracker"] });
 	assert(vm.runInContext("hold_for_merchant()", ctx) === null, "no copy bought for the merchant while a fighter lacks one");
 	hb("Torlis", { ...tor, tokens: 0, need: [] });
-	assert(vm.runInContext("hold_for_merchant() && hold_for_merchant().for", ctx) === "DoWhatNow", "once every fighter has one, the merchant's copy is bought");
+	assert(vm.runInContext("hold_for_merchant() && hold_for_merchant().for", ctx) === "DoWhatNow", "once every fighter has one, the merchant's copy is bought (opt-in)");
+	vm.runInContext("CFG.hold_buy_for_merchant = false", ctx);
+	assert(vm.runInContext("hold_for_merchant()", ctx) === null, "default: nobody buys the merchant a tracker");
 	character.items = Array(42).fill(null); ctx.distance = dist_save;
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
 	// 83) audit: only gear/materials/gems are ever listed or purged; only boxes/chests/gems exchanged; recipe inputs
@@ -1925,6 +1935,34 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("is_follower() && flee_at() === 0.55", ctx), "followers flee at 55% while the leader probes");
 	vm.runInContext("state.pack = null; state.probe = null; state.partners = {}; state.gear_skip = {}; G.maps.main.monsters = G.maps.main.monsters.filter((p) => !['edge','wall','meh'].includes(p.type))", ctx);
 	character.items = Array(42).fill(null);
+	// 89) v18.0: the merchant never spends tokens (hands them to the fighter with the fewest); a town task that is due but
+	// achieves nothing pauses itself (town:<task>) instead of tripping the loop brake; guide-only overlaps aren't mutual
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: 0, rip: false, esize: 30 });
+	character.items = Array(42).fill(null); character.items[3] = { name: "monstertoken", q: 5 };
+	vm.runInContext("state.partners = {}; state.merchant = null; state.gear_skip = {}; state.hold_for = {}; state.bank_seen = {}", ctx);
+	assert(vm.runInContext("token_pick()", ctx) === null, "merchant: token_pick never buys");
+	hb("Sanala", { ...san, x: 30, y: 0, tokens: 6, need: [] });
+	hb("Torlis", { ...tor, x: 30, y: 10, tokens: 2, need: [] });
+	assert(vm.runInContext("merchant_job() && merchant_job().name", ctx) === "Torlis", "merchant holding tokens: a delivery to the fighter with the fewest");
+	const g89 = []; ctx.send_item = (to, k, q) => { g89.push([to, character.items[k].name, q]); character.items[k] = null; return Promise.resolve(); };
+	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	await vm.runInContext("give_tokens()", ctx);
+	assert(JSON.stringify(g89) === '[["Torlis","monstertoken",5]]', `leftover tokens → Torlis (fewest) (${JSON.stringify(g89)})`);
+	ctx.distance = dist_save;
+	// stuck compound: due, task returns 0 → town:compound paused with the reason, no longer due
+	vm.runInContext(`state.partners = {}; state.gear_skip = {}; state.town_runs = [];
+		globalThis.__cg = compound_groups; globalThis.__tc = task_compound;
+		compound_groups = () => [{ name: "intamulet", level: 0, key: "cmp:intamulet:0", bags: [1, 2, 3], bank: 0 }];
+		task_compound = async () => { town_reason.compound = "intamulet+0: input_missing"; return 0; };`, ctx);
+	assert(vm.runInContext("town_due().compound", ctx), "compound due before the run");
+	vm.runInContext("state.errand = null; smart_depth = 0; town_run(town_due())", ctx);
+	for (let i = 0; i < 2000 && vm.runInContext("state.errand", ctx); i++) await new Promise((r) => setImmediate(r));
+	assert(vm.runInContext("skipped('town:compound') && !town_due().compound && !skipped('town:loop')", ctx), "compound that achieved nothing → town:compound paused, not due, no loop brake");
+	const rep89 = vm.runInContext("report_lines(false)", ctx).join("\n");
+	assert(/town:compound paused .*input_missing/.test(rep89), `report lists the town:compound pause with its reason:\n${rep89}`);
+	vm.runInContext("compound_groups = globalThis.__cg; task_compound = globalThis.__tc; state.gear_skip = {}; cmp_cache = null", ctx);
+	character.items = Array(42).fill(null);
+	vm.runInContext("state.partners = {}", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

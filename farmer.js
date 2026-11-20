@@ -1,4 +1,4 @@
-const VERSION = "17.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -49,6 +49,7 @@ const CFG = {
 	// else bought with the named token at its shop (the Tracktrix: 4 monster tokens at Daisy). The merchant never earns
 	// tokens, so one fighter buys its copy and hands it over on a supply run.
 	hold: { tracker: "monstertoken" },
+	hold_buy_for_merchant: false, // v18.0: the merchant doesn't fight; nobody buys it a Tracktrix
 	// --- own gear (scored by stats, independent of the guide) ---------------------------------------------------------
 	// Watchdog (v15.5): every 30s, catch silent stalls the timeouts miss. frozen: moved < 20px and gained no xp for
 	// frozen_min → stop the walk, cool the pack, re-pick. noprog: leader/solo with a pack but no xp for noprog_min →
@@ -120,7 +121,7 @@ const CFG = {
 	// checks every secondhand_every_ms and buys anything a fighter would wear as an upgrade, or that completes a compound
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
-	secondhand_every_ms: 600_000,
+	secondhand_every_ms: 1_800_000,
 	secondhand_max_price: 2_000_000,
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
@@ -1712,6 +1713,7 @@ async function task_compound() {
 			const item_verdict = ["low_chance", "not_combinable", "mismatch"].includes(why(e));
 			if (broke && is_merchant()) state.fund_need = Math.max(state.fund_need || 0, (G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 10_000) * 3 + CFG.gold_reserve);
 			skip(g.key, item_verdict ? 6 * 3600_000 : 600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
+			town_reason.compound = `${g.name}+${g.level}: ${why(e)}`;
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
 		}
 	}
@@ -2377,7 +2379,8 @@ function pick_shared(mine) {
 		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.w[me], mutual: names(e).length > 1 };
 	};
 	const cands = [...by.values()].filter((e) => names(e).length && ok(e));
-	const mutual = cands.filter((e) => names(e).length >= 2).sort((a, b) => weight(b) / (1 + hours(b)) - weight(a) / (1 + hours(a)));
+	// mutual only when the combined weight reaches a hunt's: two guide-farm rows (1+1) don't override members' hunts
+	const mutual = cands.filter((e) => names(e).length >= 2 && weight(e) >= CFG.goal_w.hunt).sort((a, b) => weight(b) / (1 + hours(b)) - weight(a) / (1 + hours(a)));
 	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${hours(e).toFixed(1)}h (${e.why.join("; ")})`),
 		too_slow: [...by.values()].flatMap((e) => e.too_slow.map((w) => `${e.monster}: ${w}`)), at: now };
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
@@ -2880,6 +2883,9 @@ const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // restock potions below pot_min × sync_factor
 // What a town run would do now (see TOWN_TASKS). sell/bank only when bags are short (or, with a computer, once
 // sell_batch junk items pile up); bank also when needed items wait in the bank.
+// Town tasks that came due but achieved nothing pause 15 min (town:<task>), so one stuck task can't drive the loop brake
+const compound_town_due = () => !skipped("town:compound") && compound_groups().some((g) => g.bags.length >= 3);
+const forge_town_due = () => { if (skipped("town:forge")) return false; const c = craft_pick(); return !!c && craft_inputs_in_bags(c.id); };
 function town_due(relaxed = false) {
 	const plan = bag_plan();
 	let min_free = relaxed ? CFG.bag_min_free * CFG.party.sync_factor : CFG.bag_min_free;
@@ -2893,11 +2899,11 @@ function town_due(relaxed = false) {
 	const due = {
 		hunt: hunt_due(),
 		craft: !!next_quest_craft(),
-		compound: compound_groups().some((g) => g.bags.length >= 3),
-		upgrade: upgrade_due(),
-		forge: (() => { const c = craft_pick(); return !!c && craft_inputs_in_bags(c.id); })(),
+		compound: compound_town_due(),
+		upgrade: !skipped("town:upgrade") && upgrade_due(),
+		forge: forge_town_due(),
 		tokens: !skipped("town:tokens") && !!token_pick(),
-		exchange: exchange_pick() >= 0,
+		exchange: !skipped("town:exchange") && exchange_pick() >= 0,
 		elixir: elixir_buy_due(),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch) ||
@@ -2919,7 +2925,7 @@ function town_run(due) {
 		// code would then start a walk and interrupt this run's smart_move)
 		const step = async (label, fn) => { state.errand_at = Date.now(); try { return await fn(); } catch (e) { town_reason[label] = town_reason[label] || why(e); game_log(`${label}: ${why(e)}`, C.dim); } };
 		// step: run one task, record why it failed (for report()), never let one failure end the run.
-		// A bag/potion task that achieves nothing (bank full, item on another bank floor, no gold) pauses 15 min,
+		// A task that achieves nothing (bank full, item on another bank floor, no gold) pauses 15 min,
 		// so an unfixable condition can't send us to town every town_min_gap_ms
 		const bag_step = async (key, fn) => {
 			delete town_reason[key];
@@ -2930,7 +2936,7 @@ function town_run(due) {
 		let did = 0;
 		const town_t0 = Date.now();
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
-		if (!skipped("town:tokens") && token_pick()) did += (await step("tokens", task_tokens)) || 0; // Daisy: next to the hunt
+		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
 		// Guide steps: keep going while the next row is local (no walking); rows that walk count toward the cap;
 		// a failed row is paused and we move on to the next one instead of ending the run
@@ -2945,10 +2951,10 @@ function town_run(due) {
 			else if (++fails >= 5) break;
 		}
 		guide_refresh(); // needs may have changed (crafted, upgraded) before deciding what to bank
-		if (due.compound || compound_groups().some((g) => g.bags.length >= 3)) did += (await step("compound", task_compound)) || 0;
-		if (upgrade_due()) did += (await step("upgrade", task_upgrade)) || 0;
-		did += (await step("forge", task_craft_power)) || 0;
-		if (exchange_pick() >= 0) did += (await step("exchange", task_exchange)) || 0;
+		if (compound_town_due()) did += await bag_step("compound", task_compound);
+		if (!skipped("town:upgrade") && upgrade_due()) did += await bag_step("upgrade", task_upgrade);
+		if (forge_town_due()) did += await bag_step("forge", task_craft_power);
+		if (!skipped("town:exchange") && exchange_pick() >= 0) did += await bag_step("exchange", task_exchange);
 		if (elixir_buy_due()) did += await bag_step("elixir", task_elixir);
 		// Still in the bank after the guide's retrieves: store/fetch now, before walking anywhere else
 		let banked = false;
@@ -2965,7 +2971,7 @@ function town_run(due) {
 		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < (due.min_free || CFG.bag_min_free) || on_bank_floor()) && after.bank.length || after.fetch.length))
 			did += await bag_step("bank", () => task_bank(after.fetch));
 		// the bank visit may have fetched the missing copies of a group: compound now, while still in town
-		if (compound_groups().some((g) => g.bags.length >= 3)) did += (await step("compound", task_compound)) || 0;
+		if (compound_town_due()) did += await bag_step("compound", task_compound);
 		state.last_pick = 0; // re-evaluate where to fight
 		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000) });
 		return did;
@@ -3293,7 +3299,7 @@ function report_facts() {
 	F("bags", "self", `bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}${kept.keep ? ` (${Object.entries(why_k).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(", ")})` : ""}, bank ${kept.bank || 0}, sell ${kept.sell || 0}` +
 		`${plan.fetch.length ? ` | to fetch: ${Object.entries(fetch_names).map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ")}` : ""}`);
 	if (Object.keys(fetched_n).length) F("fetched", "self", `  fetched (kept 1h): ${Object.entries(fetched_n).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(", ")}`);
-	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) F("pause:" + k, "self", `${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
+	for (const k of Object.keys(state.gear_skip).filter((x) => x.startsWith("town:")).sort()) if (skipped(k)) F("pause:" + k, "self", `${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
 	if (bank_is_full()) F("bank_full", "self", `bank marked full ${Math.round((now - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
 	F("footer", "self", `level ${character.level} ${character.ctype} | ${fmt_k(character.gold)} gold | at ${character.map} ${Math.round(character.x)},${Math.round(character.y)} | calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
 	return out;
@@ -3658,13 +3664,17 @@ setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }
 // The fighter most in need of a visit: fewest free slots, then fewest potions
 // We hold something that completes a fighter's missing must-hold item: the item itself, or its tokens
 const can_supply_hold = (p) => (p.need || []).some((n) => held_any(n) > 0 || (hold_price(n) && held_any(CFG.hold[n]) > 0));
+// Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
+let token_trip_at = 0;
+const token_target = () => (is_merchant() && held_any("monstertoken") > 0 && Date.now() - token_trip_at > 1_800_000 ?
+	partners().filter((p) => fresh(p) && p.ctype !== "merchant" && !p.rip).sort((a, b) => (a.tokens || 0) - (b.tokens || 0))[0] : null) || null;
 function merchant_job() {
 	const M = CFG.merchant;
 	const need = (p) => (p.esize ?? 99) < M.serve_free || (p.pots && (p.pots.hp < M.serve_pots || p.pots.mp < M.serve_pots));
 	const urgent = partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
 		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0];
 	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
-	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || null;
+	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target();
 }
 // Bag slot of a potion of this kind, preferring the configured tier, never the last self_pots
 function pot_slot(kind) {
@@ -3715,6 +3725,16 @@ async function give_tokens() {
 				.catch((e) => game_log(`merchant: tokens to ${f.name}: ${why(e)}`, C.dim));
 		}
 	}
+	// the rest: the merchant never spends tokens; the near fighter holding the fewest gets them (it spends them on gear)
+	for (const cur of new Set(["monstertoken", ...Object.values(CFG.hold || {})])) {
+		const k = character.items.findIndex((i) => i && i.name === cur && !i.l);
+		const f = partners_near(350).filter((x) => x.ctype !== "merchant").sort((a, b) => (a.tokens || 0) - (b.tokens || 0))[0];
+		if (k < 0 || !f) continue;
+		const q = character.items[k].q || 1;
+		await wait_budget(1, RESERVE.errand);
+		await T(send_item(f.name, k, q)).then(() => { f.tokens = (f.tokens || 0) + q; game_log(`merchant: ${q} ${cur} → ${f.name} (merchant doesn't spend tokens)`, C.ok); log_ev("give", { to: f.name, item: cur, q }); })
+			.catch((e) => game_log(`merchant: tokens to ${f.name}: ${why(e)}`, C.dim));
+	}
 }
 function mluck_near() {
 	if (!G.skills.mluck || !can_use("mluck")) return;
@@ -3742,6 +3762,7 @@ async function serve(f) {
 		}
 		for (const p of partners_near(350)) await give_pots(p);
 		await give_tokens();
+		token_trip_at = Date.now();
 		const end = Date.now() + M.wait_ms;
 		while (Date.now() < end && character.esize > 2 && !character.rip) {
 			if (state.errand) state.errand_at = Date.now();
@@ -3765,7 +3786,7 @@ const token_reserve = () => hold_missing().filter((n) => !(state.bank_seen[n] > 
 // its own copy and can afford another, so exactly one copy gets bought
 function hold_for_merchant() {
 	const M = merchant_hb();
-	if (!M || !Array.isArray(M.need) || is_merchant()) return null;
+	if (!CFG.hold_buy_for_merchant || !M || !Array.isArray(M.need) || is_merchant()) return null;
 	for (const n of M.need) {
 		const price = hold_price(n), cur = CFG.hold[n];
 		if (hold_missing().includes(n) || partners().some((f) => (f.need || []).includes(n))) continue; // fighters first
@@ -3779,7 +3800,7 @@ function hold_for_merchant() {
 }
 function token_pick() {
 	const have = held_any("monstertoken"), shop = G.tokens?.monstertoken || {};
-	if (!CFG.token_auto || have <= 0 || character.esize < 2) return null;
+	if (!CFG.token_auto || have <= 0 || character.esize < 2 || is_merchant()) return null; // the merchant hands its tokens to fighters
 	// must-hold items first: ours, then the merchant's
 	for (const n of hold_missing()) {
 		const price = hold_price(n);
@@ -3863,6 +3884,7 @@ async function task_secondhands() {
 			if (why_buy.startsWith("completes")) count(it, "bags");
 		}
 	}
+	try { if (typeof parent.hide_modal === "function") parent.hide_modal(); } catch (e) {} // the list opens Ponty's window: close it
 	return n;
 }
 // ---- Bank housekeeping (merchant) ----
