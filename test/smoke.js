@@ -1994,8 +1994,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("smart_depth = 0; town_check()", ctx);
 	assert(vm.runInContext("globalThis.__runs === 2", ctx), "deferrable work goes once the soft gap has passed and we've arrived");
 	vm.runInContext("town_due = globalThis.__td; town_run = globalThis.__tr; state.last_town = 0; state.town_end_at = 0", ctx);
-	vm.runInContext("hist.ev.push({ t: Date.now(), type: 'town', due: 'guide+bank' }, { t: Date.now(), type: 'town', due: 'guide' })", ctx);
-	assert(vm.runInContext("JSON.stringify(town_causes().by.slice(0, 1))", ctx) === '[["guide",2]]', "town_causes counts trips per task");
+	vm.runInContext("hist.ev.push({ t: Date.now(), type: 'town', due: 'guide+bank', trig: 'deferrable', v: VERSION }, { t: Date.now(), type: 'town', due: 'guide', trig: 'potions', v: VERSION }, { t: Date.now(), type: 'town', due: 'guide', v: '0.1' })", ctx);
+	const tc90 = vm.runInContext("town_causes()", ctx);
+	assert(JSON.stringify(tc90.by.slice(0, 1)) === '[["guide",2]]' && tc90.n === 2 && tc90.older === 1 && tc90.trig.length === 2, `town_causes: this version's trips, triggers, older ones apart (${JSON.stringify(tc90)})`);
 	// 91) quests too slow to farm park (materials no longer held); a better estimate unparks them
 	ctx.G.items.crabclaw = { type: "material", s: true };
 	ctx.G.craft.wattire_t = { items: [[200, "crabclaw"]], cost: 0, quest: "mcollector" };
@@ -2033,6 +2034,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(JSON.stringify(logged94) === '["Monster hunt: 20x bee"]' && ctx.parent.add_log.farmer_orig === add94, `cm log lines hidden, others kept, no double wrap (${JSON.stringify(logged94)})`);
 	vm.runInContext("globalThis.__ql = CFG.quiet_logs; CFG.quiet_logs = []; quiet_logs(); CFG.quiet_logs = globalThis.__ql", ctx);
 	assert(ctx.parent.add_log === add94, "quiet_logs = [] restores the game's own add_log");
+	// 95) v18.6: an unfinishable hunt is ignored; Ponty buys cap price per point; the merchant delivers held gear
+	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
+	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05", ctx); // 3 kills/min
+	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 })", ctx),
+		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept");
+	vm.runInContext("kills_per_s = globalThis.__kps", ctx);
+	ctx.G.items.gpants = { type: "pants", armor: 60, g: 1000 };
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: 0, rip: false });
+	character.items = Array(42).fill(null); character.slots = {};
+	hb("Torlis", { ...tor, x: 900, y: 900, gear: { w: { pants: 0 }, own: {} } });
+	const sp_save = ctx.calculate_item_value; ctx.calculate_item_value = () => 1e9;
+	assert(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) === null, "an upgrade priced far above its points isn't bought");
+	ctx.calculate_item_value = () => 100;
+	assert(/upgrade for Torlis/.test(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) || ""), "a cheap upgrade for a fighter is bought");
+	ctx.calculate_item_value = sp_save;
+	character.items[4] = { name: "gpants", level: 0 };
+	assert(vm.runInContext("gear_target() && gear_target().name", ctx) === "Torlis", "merchant holding a fighter's upgrade: a delivery trip to it");
+	character.items = Array(42).fill(null); vm.runInContext("state.partners = {}", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

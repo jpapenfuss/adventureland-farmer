@@ -1,4 +1,4 @@
-const VERSION = "18.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -122,7 +122,8 @@ const CFG = {
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
 	secondhand_every_ms: 1_800_000,
-	secondhand_max_price: 2_000_000,
+	secondhand_max_price: 500_000,     // v18.6: was 2M (it paid 936k for +0 pants)
+	secondhand_gold_per_pt: 15_000,    // ...and an upgrade may cost at most this per gear point it adds
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
 	exchange_auto: true,
@@ -789,6 +790,7 @@ function log_ev(type, data = {}) {
 	if (hist.ev.length > CFG.history_max) hist.ev.splice(0, hist.ev.length - CFG.history_max);
 	hist.dirty = true;
 }
+log_ev("loaded", { v: VERSION }); // trip/time stats per version count from here
 function save_hist() {
 	if (!hist.dirty || typeof set !== "function") return;
 	const keep = Date.now() - CFG.history_hours * 3600_000;
@@ -1444,7 +1446,7 @@ function gear_gain(item, ctype, g) {
 // Members that could use an item more than what they wear (us first); version-matched partners only
 function gear_takers() {
 	const out = [{ name: character.name, ctype: character.ctype, g: my_gear() }];
-	for (const p of partners()) if (p.gear && p.v === VERSION) out.push({ name: p.name, ctype: p.ctype, g: p.gear, esize: p.esize, p });
+	for (const p of partners()) if (p.gear?.w) out.push({ name: p.name, ctype: p.ctype, g: p.gear, esize: p.esize, p });
 	return out;
 }
 const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m) => gear_gain(item, m.ctype, m.g));
@@ -2391,9 +2393,18 @@ function quest_directive(guide_only) {
 // Material count for a recipe: bags at that level, plus the bank's last-seen count for +0 materials
 const owned_in_bags_or_bank = (n, l) => held(n, l) + (l ? 0 : state.bank_seen[n] || 0);
 // Farm our own monster hunt's target if we can fight it safely
+// A hunt that can't be finished before it expires (h.ms left) isn't worth chasing: let it lapse and take a new one
+// (v18.6: a 417-bee hunt pulled the party onto bees at half the xp/s of croc for hours). Party kills count, so the
+// party's rate is estimated as ours × (1 + 0.6 per member near).
+function hunt_feasible(h) {
+	if (!h || !(h.c > 0)) return false;
+	if (!(h.ms > 0)) return true; // no expiry known
+	const kps = kills_per_s(h.id) * (1 + 0.6 * partners_near().length);
+	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
+}
 function hunt_directive() {
 	const h = character.s.monsterhunt;
-	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id)) return null;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
 }
@@ -2420,7 +2431,7 @@ function goals_list() {
 	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
 	const h = character.s.monsterhunt;
 	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
-	if (CFG.auto_monster_hunt && h?.c > 0) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
+	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
 	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
 		if (!recipe_open(id)) continue;
 		for (const [q, n, l] of G.craft[id].items) {
@@ -2971,13 +2982,21 @@ let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated a
 const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "forge", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in
-const town_urgent = (due) => character.esize <= 3 || !!due.restock || !!due.hunt ||
-	(due.plan.free < due.min_free && (!!due.sell || (!!due.bank && due.plan.bank.length > 0)));
-// Town trips in the last hour and what they were for
+const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" : due.hunt ? "hunt" :
+	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
+// Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
+// span: minutes covered (less than 60 right after an update)
 function town_causes(ms = 3600_000) {
-	const ev = hist.ev.filter((e) => e.type === "town" && Date.now() - e.t < ms), by = {};
-	for (const e of ev) for (const w of (e.due || "").split("+").filter(Boolean)) by[w] = (by[w] || 0) + 1;
-	return { n: ev.length, by: Object.entries(by).sort((a, b) => b[1] - a[1]) };
+	const all = hist.ev.filter((e) => e.type === "town" && Date.now() - e.t < ms);
+	const ev = all.filter((e) => e.v === VERSION), by = {}, trig = {};
+	for (const e of ev) {
+		for (const w of (e.due || "").split("+").filter(Boolean)) by[w] = (by[w] || 0) + 1;
+		const t = e.trig || "?"; trig[t] = (trig[t] || 0) + 1;
+	}
+	const first = hist.ev.find((e) => e.v === VERSION && e.type === "loaded")?.t;
+	const span = Math.round(Math.min(ms, Date.now() - (first && first > Date.now() - ms ? first : Date.now() - ms)) / 60_000);
+	const sort = (o) => Object.entries(o).sort((a, b) => b[1] - a[1]);
+	return { n: ev.length, older: all.length - ev.length, span, by: sort(by), trig: sort(trig) };
 }
 // relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
 // restock potions below pot_min × sync_factor
@@ -3083,7 +3102,7 @@ async function town_body(due) {
 		// the bank visit may have fetched the missing copies of a group: compound now, while still in town
 		if (compound_town_due()) did += await bag_step("compound", task_compound);
 		state.last_pick = 0; // re-evaluate where to fight
-		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000) });
+		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000), trig: state.town_trig || "?", v: VERSION });
 		return did;
 	}
 }
@@ -3138,6 +3157,7 @@ function town_check() {
 	}
 	state.town_runs.push(Date.now());
 	state.last_town = Date.now();
+	state.town_trig = town_urgent(due) || (due.relaxed ? "joined a member's trip" : "deferrable");
 	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + in_town.join(", ") : ""})`, C.dim);
 	town_run(due);
 }
@@ -3414,11 +3434,12 @@ function report_facts() {
 	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
 	const h = character.s.monsterhunt;
 	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
-	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	const tc = town_causes();
-	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}` +
-		` | trips 1h: ${tc.n}${tc.n ? ` (${tc.by.map(([w, n]) => `${w} ${n}`).join(", ")})` : ""}`);
+	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
+	F("trips", "self", `trips v${VERSION} (last ${tc.span}m): ${tc.n}${tc.n ? ` — triggered by ${tc.trig.map(([w, n]) => `${w} ${n}`).join(", ")}; work due on them: ${tc.by.map(([w, n]) => `${w} ${n}`).join(", ")}` : ""}` +
+		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	for (const r of state.guide?.rows || []) {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded"}` : r.affordable === false ? "unaffordable" : "next";
@@ -3817,6 +3838,21 @@ setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }
 // The fighter most in need of a visit: fewest free slots, then fewest potions
 // We hold something that completes a fighter's missing must-hold item: the item itself, or its tokens
 const can_supply_hold = (p) => (p.need || []).some((n) => held_any(n) > 0 || (hold_price(n) && held_any(CFG.hold[n]) > 0));
+// Gear in the merchant's bags that's an upgrade for a fighter (bought at Ponty, fetched from the bank): deliver it
+// (share_gear hands it over once near); one trip per piece per 20 min (v18.6)
+const gear_trip_at = {};
+function gear_target() {
+	if (!is_merchant() || !CFG.gear_auto) return null;
+	const needed = needed_slots(), now = Date.now();
+	for (const it of character.items) {
+		if (!it || it.l || it.b || !GEAR.has(G.items[it.name]?.type)) continue;
+		const key = `${it.name}:${it.level || 0}`;
+		if (now - (gear_trip_at[key] || 0) < 1_200_000 || needed.has(character.items.indexOf(it))) continue;
+		const to = gear_takers().slice(1).filter((m) => m.ctype !== "merchant" && fresh(m.p) && !m.p.rip).find((m) => gear_gain(it, m.ctype, m.g));
+		if (to) return to.p; // serve() marks the pieces it carries
+	}
+	return null;
+}
 // Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
 let token_trip_at = 0;
 const token_target = () => (is_merchant() && held_any("monstertoken") > 0 && Date.now() - token_trip_at > 1_800_000 ?
@@ -3827,7 +3863,7 @@ function merchant_job() {
 	const urgent = partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
 		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0];
 	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
-	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target();
+	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || gear_target();
 }
 // Bag slot of a potion of this kind, preferring the configured tier, never the last self_pots
 function pot_slot(kind) {
@@ -3902,6 +3938,7 @@ async function serve(f) {
 	await stand_close();
 	const serve_t0 = Date.now();
 	state.serving = f.name;
+	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type)) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
 	try {
 		const M = CFG.merchant;
 		await task_restock(M.pot_carry, M.pot_carry + M.self_pots).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
@@ -4000,8 +4037,11 @@ const shop_price = (it) => {
 // Worth buying: an upgrade for a fighter, or the last copy a compound set (bags + bank) is missing
 function secondhand_reason(it, groups) {
 	if (!it || !G.items[it.name]) return null;
-	const m = gear_takers().slice(1).filter((x) => x.ctype !== "merchant").find((x) => gear_gain(it, x.ctype, x.g));
-	if (m) return `upgrade for ${m.name}`;
+	const price = shop_price(it);
+	for (const x of gear_takers().slice(1).filter((x) => x.ctype !== "merchant")) {
+		const r = gear_gain(it, x.ctype, x.g);
+		if (r && price <= r.gain * CFG.secondhand_gold_per_pt) return `upgrade for ${x.name} (+${Math.round(r.gain)} pts)`;
+	}
 	const g = G.items[it.name].compound && !it.p && (it.level || 0) < CFG.compound_max_level &&
 		groups[compound_key(it.name, it.level || 0)];
 	if (g && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
