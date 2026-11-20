@@ -1160,5 +1160,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("inflight.attack = false; change_target(null); follower_tick()", ctx);
 	assert(!atk55.includes("g55"), "...but not one beyond wait_radius of the leader");
 	delete ctx.parent.entities.g55; ctx.distance = dist_save;
+	// 56) transfers between our characters don't count as income/spending
+	ctx.send_cm = () => Promise.resolve();
+	vm.runInContext("stats.adj = 0", ctx);
+	await vm.runInContext("send_own_gold('Torlis', 5000)", ctx);
+	handlers.cm({ name: "Sanala", message: { k: "gold", g: 2000 } });
+	assert(vm.runInContext("stats.adj", ctx) === 3000, "sent +5000 / received −2000 tracked as transfers");
 	console.log("ALL PASS");
 })();

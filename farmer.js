@@ -69,7 +69,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "14.1";
+const VERSION = "14.2";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -616,16 +616,25 @@ function end_session() {
 // Every second: count xp toward the current pack's measurement while we're there (300px slack) and not walking or on
 // an errand. A measurement closes after 2 × measure_min_s so the picker keeps getting fresh numbers.
 // Per-hour rates over the last hour (report, heartbeat): a sample of cumulative xp and gold every minute
-const stats = { xp: 0, samples: [] };
+// adj = gold moved between our own characters (sent: +, received: −), so transfers don't count as earnings/spending
+const stats = { xp: 0, adj: 0, samples: [] };
+// Send gold to one of our characters and tell it, so both sides leave the transfer out of their gold/h
+function send_own_gold(name, g) {
+	return T(send_gold(name, g)).then((r) => {
+		stats.adj += g;
+		if (typeof send_cm === "function") Promise.resolve(send_cm([name], { k: "gold", g })).catch(() => {});
+		return r;
+	});
+}
 setInterval(() => {
-	stats.samples.push({ t: Date.now(), xp: stats.xp, gold: character.gold });
+	stats.samples.push({ t: Date.now(), xp: stats.xp, gold: character.gold + stats.adj });
 	if (stats.samples.length > 61) stats.samples.shift();
 }, 60_000);
 function rates() {
 	const a = stats.samples[0], now = Date.now();
-	if (!a || now - a.t < 120_000) return null; // under 2 minutes of data
+	if (!a || now - a.t < 900_000) return null; // under 15 minutes of data: one sale or purchase would swamp the rate
 	const h = (now - a.t) / 3600_000;
-	return { xph: Math.round((stats.xp - a.xp) / h), gph: Math.round((character.gold - a.gold) / h), mins: Math.round(h * 60) };
+	return { xph: Math.round((stats.xp - a.xp) / h), gph: Math.round((character.gold + stats.adj - a.gold) / h), mins: Math.round(h * 60) };
 }
 const fmt_k = (n) => (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.abs(n) >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
 setInterval(() => {
@@ -2406,7 +2415,8 @@ function report() {
 	const L = (s, c = C.note) => { lines.push(s); game_log(s, c); };
 	const p = state.pack, d = state.directive;
 	L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, C.title);
-	L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
+	if (is_merchant()) L(`merchant mode: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
+	else L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
 	if (in_party_cfg()) {
 		const near = partners_near().map((p) => p.name);
 		L(`party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"} | near: ${near.join(", ") || "nobody (solo safety)"}`);
@@ -2424,7 +2434,7 @@ function report() {
 	}
 	{
 		const r = rates(), pr = partners().filter((x) => x.rates).map((x) => `${x.name} ${fmt_k(x.rates.xph)} xp/h ${fmt_k(x.rates.gph)} g/h`);
-		L(`rates (last ${r ? r.mins : 0} min): us ${r ? `${fmt_k(r.xph)} xp/h, ${fmt_k(r.gph)} gold/h` : "collecting"}${pr.length ? " | " + pr.join(" | ") : ""}`);
+		L(`rates (last ${r ? r.mins : 0} min, transfers between us excluded): us ${r ? `${fmt_k(r.xph)} xp/h, ${fmt_k(r.gph)} gold/h` : "collecting (15 min)"}${pr.length ? " | " + pr.join(" | ") : ""}`);
 	}
 	if (is_merchant()) {
 		const f = merchant_job();
@@ -2461,7 +2471,7 @@ function report() {
 	}
 	if (is_follower()) L(`my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
 	for (const P of partners()) if (P.hunt?.c > 0)
-		L(`${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left${is_follower() ? "" : fight_profile(P.hunt.id) ? " (we can farm it)" : " (not safe for us)"}`);
+		L(`${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left${is_follower() || is_merchant() ? "" : fight_profile(P.hunt.id) ? " (we can farm it)" : " (not safe for us)"}`);
 	L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	L(`town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
@@ -2574,6 +2584,10 @@ function heartbeat() {
 if (typeof character.on === "function") character.on("cm", (m) => {
 	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
 		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
+		return;
+	}
+	if (m && m.message?.k === "gold" && ((CFG.party.members || []).includes(m.name) || m.name === CFG.merchant?.name)) {
+		stats.adj -= +m.message.g || 0; // a transfer from one of ours: not income
 		return;
 	}
 	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) return void (state.merchant = { ...m.message, name: m.name, t: Date.now() });
@@ -2742,7 +2756,7 @@ async function merchant_handoff() {
 			Date.now() - merchant_gold_at > 1800_000 && typeof send_gold === "function") {
 			merchant_gold_at = Date.now();
 			const g = Math.round(CFG.merchant.float - M.gold);
-			await T(send_gold(M.name, g)).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
+			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
 		const needed = needed_slots(), cmp = compound_slots(needed);
@@ -2773,7 +2787,7 @@ function gold_balance() {
 	if (pos.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > 350 || on_bank_floor() || p.map.startsWith("bank")) return "not together";
 	const amount = Math.floor(rich * G_.give);
 	gold_inflight = true;
-	Promise.resolve(T(send_gold(p.name, amount)))
+	Promise.resolve(send_own_gold(p.name, amount))
 		.then(() => {
 			state.gold_xfer_at = Date.now();
 			save_state();
