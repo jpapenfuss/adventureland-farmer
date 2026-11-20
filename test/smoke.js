@@ -2618,6 +2618,30 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.safety_mult = 1; state.safety_at = 0; hist.ev = []", ctx);
 		assert(vm.runInContext("CFG.quest_farm_min_xp === 0.7 && CFG.hunt_min_xp === 0.7", ctx), "side goals: 70% of the best xp/s");
 	}
+	// 112) v23.6: party-wide safety when together; a hunt alone doesn't start a trip; side goals vs this pick's best
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false, esize: 30 });
+		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.split_on = false; state.safety_mult = 1.5", ctx);
+		hb("Torlis", { ...tor, level: 60, safety_mult: 1 }); // Torlis died: his limit is back to 35%
+		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.35) < 1e-9, "together: the party's lowest limit (35%)");
+		vm.runInContext("state.split_on = true", ctx);
+		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.525) < 1e-9, "split: our own (35% x 1.5)");
+		vm.runInContext("state.split_on = false; CFG.party.split.enabled = false; state.safety_mult = 1; state.partners = {}", ctx);
+		// a hunt alone waits for another trip
+		vm.runInContext(`globalThis.__td3 = town_due; globalThis.__tr3 = town_run; globalThis.__runs3 = 0; smart_depth = 0; state.errand = null;
+			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {};
+			town_due = () => ({ hunt: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()`, ctx);
+		assert(vm.runInContext("globalThis.__runs3 === 0 && /hunt alone/.test(state.town_block.blockers.join())", ctx), "a hunt alone: no trip");
+		vm.runInContext("town_due = () => ({ hunt: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
+		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
+		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
+		// side goals compare with this pick's best, not the best rate ever measured
+		vm.runInContext("state.best_score = 400; state.measured = { 'main:0,0,1,1': 2000 }", ctx);
+		assert(vm.runInContext("best_known_xps()", ctx) === 400, "a picker: its current best (400), not an old 2000 measurement");
+		vm.runInContext("state.best_score = 0", ctx);
+		assert(vm.runInContext("best_known_xps()", ctx) === 2000, "no pick (a follower): the best measured");
+		vm.runInContext("state.measured = {}; state.best_score = 0", ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

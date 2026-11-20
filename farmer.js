@@ -1,4 +1,4 @@
-const VERSION = "23.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -559,8 +559,14 @@ function calib_factor(mtype) {
 const danger_of = (mtype) => calib_factor(mtype) * (state.danger[mtype] || 1);
 // A priest among the members the verdict counted heals us through it (none when judged alone)
 const heal_mult = (f) => (!f.solo && (f.team === "all" ? partners() : partners_near()).some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
-// The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max
-const safety_now = () => Math.min(CFG.safety * (state.safety_mult || 1), CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
+// The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max. Together, the
+// leader picks for everyone, so the party's lowest multiplier counts (v23.6: a follower's death reset only its own, and
+// the leader kept choosing the spot that killed it); split, each its own.
+const safety_now = () => {
+	let m = state.safety_mult || 1;
+	if (in_party_cfg() && !split_now()) for (const p of partners_any()) if (p.safety_mult > 0) m = Math.min(m, p.safety_mult);
+	return Math.min(CFG.safety * m, CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
+};
 const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype) * heal_mult(f);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover(pool = partners_near(300)) {
@@ -1015,16 +1021,16 @@ setInterval(() => {
 function safety_tune(ev) {
 	const T_ = CFG.safety_tune, now = Date.now();
 	if (!T_?.enabled || is_merchant()) return;
-	const was = safety_now();
+	const own = () => Math.min(CFG.safety * (state.safety_mult || 1), T_.max), was = own();
 	if (!state.safety_at) state.safety_at = now;
 	if (ev === "death") state.safety_mult = 1;
 	else if (ev === "flee") state.safety_mult = Math.max(1, (state.safety_mult || 1) * T_.down);
-	else if (now - state.safety_at >= T_.step_h * 3600_000 && safety_now() < T_.max) state.safety_mult = (state.safety_mult || 1) * T_.up;
+	else if (now - state.safety_at >= T_.step_h * 3600_000 && own() < T_.max) state.safety_mult = (state.safety_mult || 1) * T_.up;
 	else return;
 	state.safety_at = now;
-	if (safety_now() !== was) {
-		log_ev("safety", { to: +safety_now().toFixed(3), why: ev || "calm" });
-		game_log(`safety limit ${Math.round(was * 100)}% → ${Math.round(safety_now() * 100)}% of HP per kill (${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
+	if (own() !== was) {
+		log_ev("safety", { to: +own().toFixed(3), why: ev || "calm" });
+		game_log(`safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP per kill (${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
 		state.last_pick = 0;
 	}
 }
@@ -2804,7 +2810,9 @@ function mt_xps(mt) {
 	return f ? kills_per_s(mt) * (f.xp || G.monsters[mt]?.xp || 0) : 0;
 }
 // The best xp/s we know of: this pick's best, or the best measured pack
-const best_known_xps = () => Math.max(state.best_score || 0, ...Object.values(meas() || {}).filter(Number.isFinite), 0);
+// v23.6: this pick's best (safe and not cooling down now); only a member that doesn't pick (a follower) falls back to the
+// best rate measured — the max over every measured spot included ones now unsafe or on cooldown and raised the bar
+const best_known_xps = () => (state.best_score > 0 ? state.best_score : Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite)));
 function hunt_feasible(h) {
 	if (!h || !(h.c > 0)) return false;
 	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
@@ -3573,6 +3581,9 @@ function town_check() {
 	const due = town_due(in_town.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
 	if (!what.length) return void (state.town_block = null);
+	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
+	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
+	if (what.every((k) => k === "hunt")) return void (state.town_block = { what: "hunt", blockers: ["a hunt alone waits for the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (!is_merchant() && !town_urgent(due)) {
@@ -4301,7 +4312,7 @@ function split_decide() {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
