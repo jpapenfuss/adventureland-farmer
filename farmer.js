@@ -73,7 +73,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.0";
+const VERSION = "15.1";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -290,7 +290,10 @@ const state = {
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s, averaged (saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
-	danger: {},              // monster id -> safety multiplier, × 0.6 each time it kills us (saved)
+	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
+	danger_at: {},           // monster id -> last death/flee (fading pauses for an hour after one) (saved)
+	calib: {},               // monster id -> { ratio, n, act, pred }: actual ÷ predicted damage per fight (EMA) (saved)
+	calib_all: { ratio: 1, n: 0 }, // the same over every monster: the default for monsters with few fights (saved)
 	session: null,           // current xp measurement: { key, est, xp, start }
 	bad_ids: {},             // entity id -> until: targets that took no damage (immune/healing)
 	prog: null,              // { id, hp, t }: damage progress on the current target
@@ -460,7 +463,17 @@ function fight_math(m, use_tank = true) {
 	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * (state.danger[mtype] || 1) *
+// Safety multiplier for a monster: calibration (how its fights went vs the model) × incidents (deaths/flees, fading)
+// Calibrated after 20 fights: 1 / ratio, clamped 0.4-1.5 (a monster that hits half as hard as predicted earns ×1.5).
+// Fewer fights: the all-monster ratio, more cautiously (0.6-1.2).
+function calib_factor(mtype) {
+	const c = state.calib[mtype], g = state.calib_all;
+	if (c && c.n >= 20) return Math.min(1.5, Math.max(0.4, 1 / Math.max(c.ratio, 0.3)));
+	if (g && g.n >= 20) return Math.min(1.2, Math.max(0.6, 1 / Math.max(g.ratio, 0.3)));
+	return 1;
+}
+const danger_of = (mtype) => calib_factor(mtype) * (state.danger[mtype] || 1);
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype) *
 	(partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover() {
@@ -679,6 +692,7 @@ if (typeof character.on === "function") {
 		if (!d || !(d.damage > 0)) return;
 		const a = parent.entities?.[d.actor];
 		pm.hits.push({ t: Date.now(), mtype: a?.mtype || (a ? a.ctype || "player" : "?"), dmg: d.damage });
+		if (a?.mtype && G.monsters[a.mtype]) cal.cur[a.mtype] = (cal.cur[a.mtype] || 0) + d.damage;
 		if (pm.hits.length > 200) pm.hits.shift();
 	});
 	character.on("target_hit", (d) => { if (d?.kill) bucket().kills++; });
@@ -701,7 +715,48 @@ function postmortem() {
 		map: character.map, x: Math.round(character.x), y: Math.round(character.y), tank: !!tank_cover(),
 		priest: partners_near().some((p) => p.ctype === "priest"), pots: { hp: pot_count("hp"), mp: pot_count("mp") },
 		predicted: f ? Math.round(fight_risk(f)) : null, pool: f ? Math.round(f.hp_pool) : null,
-		danger: killer ? +(state.danger[killer] || 1).toFixed(2) : null, last: pm.ring.slice(-6) };
+		danger: killer ? +danger_of(killer).toFixed(2) : null, last: pm.ring.slice(-6) };
+}
+function calib_text(mt) {
+	const c = state.calib[mt];
+	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < 20 ? ", needs 20" : ""})`
+		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet${state.calib_all.n >= 20 ? `; all monsters: ratio ${state.calib_all.ratio.toFixed(2)}` : ""})`;
+}
+// ---- Calibration (v15.1): damage actually taken per fight vs the model's prediction ----
+// Hits are summed per attacker type; a fight with type M ends when our target of type M dies or we switch away from
+// it, and its damage is compared with fight_risk for M (expected damage over one kill).
+const cal = { cur: {}, tgt: null };
+function calib_record(mt) {
+	const m = G.monsters[mt], f = m && fight_math(m);
+	const pred = f ? fight_risk(f) : 0, act = cal.cur[mt] || 0;
+	cal.cur[mt] = 0;
+	// under tank cover we take little damage by design: such fights say nothing about fighting it without the tank
+	if (!(pred > 1) || tank_cover()) return;
+	const r = Math.min(act / pred, 5); // one freak fight can't swing it more than 5x
+	const c = (state.calib[mt] = state.calib[mt] || { ratio: 1, n: 0, act: 0, pred: 0 });
+	const a = c.n < 10 ? 1 / (c.n + 1) : 0.1; // plain average for the first 10, then EMA
+	c.ratio += (r - c.ratio) * a; c.act += (act - c.act) * a; c.pred += (pred - c.pred) * a; c.n++;
+	const g = state.calib_all, ga = g.n < 50 ? 1 / (g.n + 1) : 0.02;
+	g.ratio += (r - g.ratio) * ga; g.n++;
+}
+function calib_tick() {
+	const t = get_targeted_monster(), e = cal.tgt && parent.entities?.[cal.tgt.id];
+	if (cal.tgt && (!e || e.dead || !t || t.id !== cal.tgt.id)) { calib_record(cal.tgt.mtype); cal.tgt = null; }
+	if (t && t.type === "monster" && G.monsters[t.mtype] && !cal.tgt) cal.tgt = { id: t.id, mtype: t.mtype };
+}
+// Incidents fade: 10% of the way back to 1 per hour, starting an hour after the last one
+setInterval(() => {
+	const now = Date.now(), k = 1 - Math.pow(0.9, 1 / 60); // per minute
+	for (const mt in state.danger) {
+		if (now - (state.danger_at[mt] || 0) < 3600_000) continue;
+		state.danger[mt] += (1 - state.danger[mt]) * k;
+		if (Math.abs(1 - state.danger[mt]) < 0.01) delete state.danger[mt];
+	}
+}, 60_000);
+function incident(mt, mult) {
+	if (!mt || !G.monsters[mt]) return;
+	state.danger[mt] = (state.danger[mt] || 1) * mult;
+	state.danger_at[mt] = Date.now();
 }
 // Where this second went
 function time_class() {
@@ -814,7 +869,7 @@ setInterval(() => {
 	if (gold_prev !== null) b.gold += g - gold_prev;
 	gold_prev = g;
 	hist.dirty = true;
-	if (!character.rip) pm_sample();
+	if (!character.rip) { pm_sample(); calib_tick(); }
 	if (!p || character.rip) return;
 	const here = character.map === p.map && in_boundary(p.boundary, 300);
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
@@ -2577,8 +2632,10 @@ function town_check() {
 // retries are spaced 1.5s apart; it's re-channelled only if something followed us below flee_hp.
 function recover() {
 	if (!state.recovering) {
-		log_ev("flee", postmortem());
+		const pmf = postmortem();
+		log_ev("flee", pmf);
 		bucket().flees++;
+		incident(pmf.killer && G.monsters[pmf.killer] ? pmf.killer : state.pack?.mtype, 0.8);
 		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
 		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
 	}
@@ -2620,6 +2677,7 @@ function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
 	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
+		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
@@ -2633,6 +2691,9 @@ function load_state() {
 	Object.assign(state.measured, d.measured || {});
 	if (d.realism > 0) state.realism = d.realism;
 	Object.assign(state.danger, d.danger || {});
+	Object.assign(state.danger_at, d.danger_at || {});
+	Object.assign(state.calib, d.calib || {});
+	if (d.calib_all?.n) state.calib_all = d.calib_all;
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.gear_skip, live(d.gear_skip));
 	Object.assign(state.crafted, d.crafted || {});
@@ -2661,7 +2722,7 @@ load_state();
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, danger: {}, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
@@ -2739,6 +2800,7 @@ function report() {
 		L(`compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
 			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""));
 	}
+	if (p && !p.boss && !is_merchant()) L(`safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`);
 	if (d) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
 	if (state.guide_farm) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
 	const h = character.s.monsterhunt;
@@ -2789,9 +2851,10 @@ function why_not(mtype) {
 	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
-	const limit = character.max_hp * CFG.safety * (state.danger[mtype] || 1);
+	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype);
 	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
-		`${f.kiteable ? " (kiteable)" : ""}${state.danger[mtype] ? ` (died to it: x${state.danger[mtype].toFixed(2)})` : ""}`);
+		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
+	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
 	const areas = [];
 	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
 	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
@@ -3301,13 +3364,15 @@ let next_respawn = 0;
 function on_death() {
 	if (state.dead_handled) return;
 	state.dead_handled = true;
-	log_ev("death", postmortem());
+	const pmd = postmortem();
+	log_ev("death", pmd);
 	bucket().deaths++;
+	const killer = pmd.killer && G.monsters[pmd.killer] ? pmd.killer : state.pack?.mtype;
 	const p = state.pack;
 	if (p) {
-		state.danger[p.mtype] = (state.danger[p.mtype] || 1) * 0.6;
+		incident(killer || p.mtype, 0.6);
 		state.cooldown[pack_key(p)] = Date.now() + CFG.death_pack_cooldown_ms;
-		game_log(`Died at ${p.mtype}; safety for it now x${state.danger[p.mtype].toFixed(2)}`);
+		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}`);
 	}
 	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false });
 }
