@@ -76,7 +76,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.9";
+const VERSION = "16.0";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -225,6 +225,7 @@ const CFG = {
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
 		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
+		guide_gap_ms: 1_800_000, // ...and walk to town for guide steps alone at most every 30 min
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
 		// Stand: while idle at home the merchant lists spare valuables for other players (16 trade slots) at
 		// markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value
@@ -334,6 +335,7 @@ const state = {
 	guide_equip: {},         // slot -> when the guide last equipped it (gear_guide_respect_h) (saved)
 	gear_sent: {},           // "name:level>member" -> when we last tried to hand it over (retry after 10 min)
 	bank_free: null,         // { free, total, at }: bank slots at the last visit (saved)
+	row_fails: {},           // guide row id -> consecutive failures (pause backoff) (saved)
 	purge: {},               // "name:level" -> when the merchant pulled it from the bank to sell/list (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
@@ -1558,7 +1560,8 @@ function compound_spare(it, k, needed) {
 }
 let cmp_cache = null; // { key, at, list }: keyed by bags + bank snapshot + pauses; bag_class asks once per item
 function compound_groups(needed) {
-	if (!CFG.compound_auto) return [];
+	// while the merchant is online it compounds for everyone (shared bank); fighters hand it their spares instead
+	if (!CFG.compound_auto || (!is_merchant() && merchant_does_it())) return [];
 	const key = character.items.map((i) => (i ? `${i.name}${i.level || 0}${i.l ? "l" : ""}` : "")).join() + "|" +
 		(state.bank_gear || []).length + "|" + Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k)).join();
 	if (cmp_cache && cmp_cache.key === key && Date.now() - cmp_cache.at < 2000) return cmp_cache.list;
@@ -1577,10 +1580,20 @@ function compound_groups(needed) {
 	return list;
 }
 // Bank copies to fetch so a group reaches 3 in the bags (task_bank entries; one attempt per copy per 2h)
+// Bank copies to fetch for up to compound_per_run whole sets in one bank visit (cheapest level first), within the free
+// bag slots minus 6 for loot. Keys get a 10-min retry guard (bag_plan), not the 2h one: a successful fetch lowers the
+// bank count anyway.
 function compound_fetches(groups) {
 	const out = [];
-	for (const g of groups) for (let i = 0; i < Math.min(g.bank, 3 - Math.min(3, g.bags.length)); i++)
-		out.push({ name: g.name, level: g.level, key: `${g.key}:${i}` });
+	let room = Math.max(0, character.esize - 6), sets = CFG.compound_per_run;
+	for (const g of groups) {
+		if (sets <= 0 || room <= 0) break;
+		const n_sets = Math.min(sets, Math.floor((g.bags.length + g.bank) / 3));
+		const copies = Math.min(g.bank, room, Math.max(0, n_sets * 3 - g.bags.length));
+		for (let i = 0; i < copies; i++) out.push({ name: g.name, level: g.level, key: `${g.key}:${i}` });
+		room -= copies;
+		sets -= Math.floor((g.bags.length + copies) / 3);
+	}
 	return out;
 }
 // Bag slots held for a group: the copies that, with the bank's, make up complete sets of three
@@ -1785,6 +1798,19 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
+// Why bag_class says "keep" (report only; mirrors bag_class's keep branches in order)
+function keep_reason(item, k, needed, cmp) {
+	const def = G.items[item.name];
+	if (cmp.has(k)) return "compound";
+	if (is_merchant() && stand_hold().has(k)) return "stand";
+	if (item.l || item.b) return "locked";
+	if (!def) return "unknown";
+	if (CFG.keep.includes(item.name)) return "keep-list";
+	if (BAG_TYPES.has(def.type) || item.name === CFG.hp_pot || item.name === CFG.mp_pot) return "supplies";
+	if (needed.has(k)) return state.upg && item.name === state.upg.name ? "upgrade" : "guide/quest";
+	if (Date.now() - (state.fetched[item.name] || 0) < 3600_000) return "fetched";
+	return CFG.bank ? "other" : "no-bank";
+}
 // Bag slot indices whose item matches f
 const slots_where = (f) => character.items.map((it, i) => (f(it) ? i : -1)).filter((i) => i >= 0);
 // What a bank/sell visit would do now: slots to sell, slots to bank, item names to fetch from the bank, free slots
@@ -1806,7 +1832,7 @@ function bag_plan() {
 			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
 	}
 	for (const u of [...bank_upgrades(), ...compound_fetches(compound_groups())])
-		if (Date.now() - (state.fetch_try[u.key] || 0) > 2 * 3600_000) fetch.push(u);
+		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
 	return { sell, bank, fetch, free: character.esize };
 }
 // Nearest NPC with a shop on this map (any shop buys anything), else one on main
@@ -2582,9 +2608,13 @@ async function guide_step(row) {
 	try {
 		await run_row(row);
 		await sleep_ms(500); // let the result's update arrive before the guide is re-read
+		delete state.row_fails[row.id];
 		return true;
 	} catch (e) {
-		skip(row.id, e?.reason === "low_chance" ? 1_800_000 : 300_000, why(e) + (e?.chance !== undefined ? ` ${(e.chance * 100).toFixed(0)}%` : "") + (e?.want ? ` ${e.want}` : ""));
+		// repeated failures back off: 5, 15, 45 min ... up to 6h (low odds: at least 30 min)
+		const n = (state.row_fails[row.id] = (state.row_fails[row.id] || 0) + 1);
+		const ms = Math.min(6 * 3600_000, 300_000 * Math.pow(3, n - 1));
+		skip(row.id, e?.reason === "low_chance" ? Math.max(1_800_000, ms) : ms, why(e) + (e?.chance !== undefined ? ` ${(e.chance * 100).toFixed(0)}%` : "") + (e?.want ? ` ${e.want}` : "") + (n > 1 ? ` (failure #${n})` : ""));
 		game_log(`guide: skip ${row.id} (${why(e)}${e?.chance !== undefined ? " " + (e.chance * 100).toFixed(0) + "%" : ""}${e?.want ? " " + e.want : ""})`, C.dim);
 		return false;
 	}
@@ -2612,7 +2642,7 @@ function town_due(relaxed = false) {
 		bags_warned = Date.now();
 		game_log("Bags full and everything in them is marked keep — run report() to see why", C.bad);
 	}
-	return {
+	const due = {
 		hunt: hunt_due(),
 		craft: !!next_quest_craft(),
 		compound: compound_groups().some((g) => g.bags.length >= 3),
@@ -2627,6 +2657,11 @@ function town_due(relaxed = false) {
 		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) || plan.fetch.length > 0),
 		plan, min_free, pot_min, relaxed,
 	};
+	// merchant online: a fighter doesn't walk to town for guide steps alone more than once per guide_gap_ms; they're
+	// done on the next trip that happens for another reason
+	if (merchant_hb() && !is_merchant() && due.guide && !due_tasks(due).some((k) => k !== "guide") &&
+		Date.now() - (state.last_town || 0) < CFG.merchant.guide_gap_ms) due.guide = false;
+	return due;
 }
 function town_run(due) {
 	return errand("town", async () => {
@@ -2785,7 +2820,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
-		bank_free: state.bank_free, purge: state.purge,
+		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -2815,6 +2850,7 @@ function load_state() {
 	if (d.stand) state.stand = d.stand;
 	if (d.bank_free) state.bank_free = d.bank_free;
 	Object.assign(state.purge, d.purge || {});
+	Object.assign(state.row_fails, d.row_fails || {});
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -2946,9 +2982,17 @@ function report_lines(log = true) {
 		const st = !recipe_wanted(id) ? "done" : skipped("qc:" + id) ? `paused ${mins(state.gear_skip["qc:" + id])}` : has_inputs(r) ? "READY to craft" : "collecting";
 		L(`quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`);
 	}
-	const plan = bag_plan(), kept = {};
-	character.items.forEach((i) => { if (i) kept[bag_class(i)] = (kept[bag_class(i)] || 0) + 1; });
-	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}, bank ${kept.bank || 0}, sell ${kept.sell || 0}${plan.fetch.length ? ` | to fetch: ${plan.fetch.join(", ")}` : ""}`);
+	const plan = bag_plan(), kept = {}, why_k = {}, nd = needed_slots(), cm = compound_slots(nd);
+	character.items.forEach((i, k) => {
+		if (!i) return;
+		const c = bag_class(i, nd, cm);
+		kept[c] = (kept[c] || 0) + 1;
+		if (c === "keep") { const r = keep_reason(i, k, nd, cm); why_k[r] = (why_k[r] || 0) + 1; }
+	});
+	const fetch_names = {};
+	for (const f of plan.fetch) { const n = f.name ? `${f.name}${f.level ? "+" + f.level : ""}` : f; fetch_names[n] = (fetch_names[n] || 0) + 1; }
+	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}${kept.keep ? ` (${Object.entries(why_k).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(", ")})` : ""}, bank ${kept.bank || 0}, sell ${kept.sell || 0}` +
+		`${plan.fetch.length ? ` | to fetch: ${Object.entries(fetch_names).map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ")}` : ""}`);
 	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
 	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
 	L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);

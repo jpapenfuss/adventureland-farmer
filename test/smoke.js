@@ -1475,5 +1475,47 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		/stored copy, 10m old/.test(out68) && /merchant stored line/.test(out68), `combined in order, stale ignored, stored copy for the silent one:\n${out68}`);
 	assert(vm.runInContext("party_report()", ctx) === out68, "party_report() re-opens the last one");
 	ctx.get = () => null; ctx.send_cm = () => Promise.resolve();
+	// 69) v16.0: batch compound fetches; merchant sole compounder; guide row backoff; guide-only trips wait; keep reasons
+	ctx.G.items.ringx = ctx.G.items.ringx || { type: "ring", compound: { attack: 1 }, attack: 2 };
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, gold: 2e6, map: "main", x: 0, y: 0, rip: false, esize: 30, s: {} });
+	character.items = Array(42).fill(null); character.slots = {}; character.items[5] = { name: "ringx", level: 0 };
+	vm.runInContext("state.partners = {}; state.merchant = null; state.needs = new Map(); state.gear_skip = {}; state.fetch_try = {}; state.stand = {}; cmp_cache = null; stand_cache = null; state.bank_gear = Array.from({ length: 40 }, () => ({ name: 'ringx', level: 0 }))", ctx);
+	const cf = vm.runInContext("compound_fetches(compound_groups())", ctx);
+	assert(cf.length === 17, `40 in the bank + 1 in bags → fetch 17 copies for 6 sets (${cf.length})`);
+	vm.runInContext("for (const f of compound_fetches(compound_groups())) state.fetch_try[f.key] = Date.now() - 11 * 60000", ctx);
+	assert(vm.runInContext("bag_plan().fetch.filter((f) => f.key && f.key.startsWith('cmp:')).length", ctx) === 17, "compound fetch keys retry after 10 min, not 2h");
+	// a fighter while the merchant is online: no compound groups; its spare is bankable (handed to the merchant)
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30 });
+	character.slots = { ring1: { name: "ringx", level: 0 }, ring2: { name: "ringx", level: 0 } };
+	character.items[6] = { name: "ringx", level: 0 }; character.items[7] = { name: "ringx", level: 0 };
+	vm.runInContext("cmp_cache = null; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 1e6 }", ctx);
+	assert(vm.runInContext("compound_groups().length", ctx) === 0 && vm.runInContext("bag_class(character.items[6])", ctx) === "bank", "fighter leaves compounding to the online merchant");
+	vm.runInContext("state.merchant = null; cmp_cache = null", ctx);
+	assert(vm.runInContext("compound_groups().length", ctx) > 0, "merchant offline: fighter compounds as before");
+	// guide row backoff
+	const g69 = [];
+	vm.runInContext("state.row_fails = {}; run_row = () => Promise.reject({ reason: 'input_missing' })", ctx);
+	for (let i = 0; i < 3; i++) { vm.runInContext("delete state.gear_skip.r69", ctx); await vm.runInContext("guide_step({ id: 'r69', kind: 'buy' })", ctx); g69.push(Math.round((vm.runInContext("state.gear_skip.r69", ctx) - Date.now()) / 60000)); }
+	assert(JSON.stringify(g69) === "[5,15,45]", `failing guide row pauses 5, 15, 45 min (${g69})`);
+	vm.runInContext("run_row = () => Promise.resolve(); delete state.gear_skip.r69", ctx);
+	await vm.runInContext("guide_step({ id: 'r69', kind: 'buy' })", ctx);
+	assert(vm.runInContext("!state.row_fails.r69", ctx), "success resets the failure count");
+	// keep reasons in the bags line
+	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 50 }; character.items[1] = { name: "computer" };
+	const r69 = vm.runInContext("report_lines(false).find((l) => l.startsWith('bags:'))", ctx);
+	assert(/keep 2 \(/.test(r69) && /supplies 1/.test(r69) && /keep-list 1/.test(r69), `bags line explains keep (${r69})`);
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("state.bank_gear = []; state.fetch_try = {}; cmp_cache = null", ctx);
+	// 70) merchant online: a guide step alone doesn't send a fighter to town within guide_gap_ms of the last run
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30, rip: false, s: { monsterhunt: { id: "goo", c: 5 } } });
+	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 300 }; character.items[1] = { name: "mpot1", q: 300 };
+	vm.runInContext("state.guide = { rows: [{ id: 'g70', kind: 'buy', action: {} }] }; state.gear_skip = {}; state.needs = new Map(); state.fetch_try = {}; state.bank_gear = []; cmp_cache = null; state.upg = null; state.upg_pick_at = Date.now()", ctx);
+	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 1e6 }; state.last_town = Date.now() - 60000", ctx);
+	assert(!vm.runInContext("town_due().guide", ctx), "guide alone waits while the merchant is online");
+	vm.runInContext("state.last_town = Date.now() - 31 * 60000", ctx);
+	assert(vm.runInContext("town_due().guide", ctx), "...but goes once guide_gap_ms has passed");
+	vm.runInContext("state.merchant = null; state.last_town = Date.now() - 60000", ctx);
+	assert(vm.runInContext("town_due().guide", ctx), "merchant offline: guide steps go as before");
+	vm.runInContext("state.guide = null; delete character.s.monsterhunt", ctx); character.items = Array(42).fill(null);
 	console.log("ALL PASS");
 })();
