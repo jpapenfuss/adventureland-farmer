@@ -43,6 +43,10 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
+// A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
+// not exit 0 silently
+let all_done = false;
+process.on("exit", (code) => { if (!all_done && code === 0) { console.error("FAIL: test run ended early (a promise never settled)"); process.exitCode = 1; } });
 const assert = (c, m) => { if (!c) { console.error("FAIL:", m, "\nlog:", log); process.exit(1); } console.log("ok -", m); };
 
 // 1) tick wait is never NaN (next_skill.attack unset), with a target present
@@ -1594,5 +1598,79 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.S = { goobrawl: { end: "x" } };
 	assert(vm.runInContext("event_live()", ctx) === null, "the merchant never joins events");
 	ctx.parent.S = {};
+	// 74) selftest: lists functions/data/events/storage and pings the others; replies arrive as pongs
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", rip: false });
+	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
+	const pings = []; ctx.send_cm = (to, m) => (pings.push([to.join(), m.k, m.id]), Promise.resolve());
+	ctx.set = (k, v) => ((ctx.__st = ctx.__st || {}), (ctx.__st[k] = JSON.stringify(v)), true); ctx.get = (k) => (ctx.__st && k in ctx.__st ? JSON.parse(ctx.__st[k]) : null);
+	const st74 = vm.runInContext("selftest()", ctx);
+	assert(/game functions:/.test(st74) && /storage write\/read/.test(st74) && /✓ storage/.test(st74) && pings.some(([to, k]) => k === "ping" && /Torlis/.test(to)), `selftest checks + pings (${st74.split("\n").slice(0, 3).join(" | ")})`);
+	const pid = pings.find(([, k]) => k === "ping")[2];
+	handlers.cm({ name: "Torlis", message: { k: "pong", id: pid, v: "16.6" } });
+	let modal74 = ""; ctx.parent.show_modal = (h) => (modal74 = h);
+	vm.runInContext("selftest_finish(st_run ? [] : [], ['Torlis', 'Aspernari'])", ctx);
+	assert(/✓ cm round trip Torlis/.test(modal74) && /✗ cm round trip Aspernari/.test(modal74), "pong recorded, silent member flagged");
+	// a ping gets a pong
+	pings.length = 0;
+	handlers.cm({ name: "Aspernari", message: { k: "ping", id: "p1" } });
+	assert(pings.some(([to, k, id]) => to === "Aspernari" && k === "pong" && id === "p1"), "answers pings");
+
+	// 75) high upgrades: weapon slot may target +9 (scroll2), others stop at scroll0/1 levels; offering lifts odds
+	ctx.G.items.scroll2 = { type: "uscroll", g: 1600000 };
+	ctx.G.items.wbow = { type: "weapon", wtype: "bow", attack: 20, upgrade: { attack: 10 }, g: 5000, grades: [3, 6] };
+	ctx.G.items.lhelm = { type: "helmet", armor: 5, upgrade: { armor: 6 }, g: 2000, grades: [3, 6] };
+	ctx.G.classes.ranger = { damage_type: "physical", mainhand: { bow: {} } };
+	const ig_save = ctx.item_grade; ctx.item_grade = (it) => ((it.level || 0) >= 6 ? 2 : (it.level || 0) >= 3 ? 1 : 0);
+	assert(vm.runInContext("upgrade_target('wbow')", ctx) === 6 && vm.runInContext("upgrade_target('wbow', true)", ctx) === 9, "normal target stops before scroll2; high goes to +9");
+	// offering lifts a too-low preview over the floor
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", gold: 5e6, esize: 30, map: "main" });
+	character.items = Array(42).fill(null);
+	character.items[0] = { name: "computer" }; character.items[1] = { name: "scroll2", q: 3 }; character.items[2] = { name: "wbow", level: 6 }; character.items[3] = { name: "offeringp", q: 1 };
+	ctx.G.items.offeringp = { type: "offering", grade: 1, g: 480000 };
+	ctx.G.npcs.weaponsmith = { items: ["wbow"] }; const fn75 = ctx.find_npc; ctx.find_npc = () => ({ map: "main", x: 0, y: 0 }); // NPC-sold: 55% floor applies
+	const up75 = [];
+	ctx.upgrade = (k, sk, off, preview) => { if (preview) return Promise.resolve({ chance: off != null ? 0.62 : 0.4 }); up75.push(off); return Promise.resolve({ success: true }); };
+	await vm.runInContext("run_upgrade({ name: 'wbow' }, { request: { name: 'wbow', level: 7 } })", ctx);
+	assert(JSON.stringify(up75) === "[3]", `40% preview < 55% floor → the Primling (62%) is used (${JSON.stringify(up75)})`);
+	ctx.upgrade = (k, sk, off, preview) => Promise.resolve(preview ? { chance: 0.4 } : { success: true });
+	character.items[3] = null; character.items[2] = { name: "wbow", level: 6 };
+	let threw75 = null; await vm.runInContext("run_upgrade({ name: 'wbow' }, { request: { name: 'wbow', level: 7 } })", ctx).catch((e) => (threw75 = e));
+	assert(threw75 && threw75.reason === "low_chance", "without an offering a 40% scroll2 step is refused");
+	ctx.item_grade = ig_save; ctx.find_npc = fn75;
+	// merchant funding: a project step beyond its gold → fund request in the heartbeat; the richest fighter near sends it
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 302000, map: "main", x: 0, y: 0, esize: 30 }); // 2k spare < the 6k first step
+	character.items = Array(42).fill(null);
+	vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
+	await vm.runInContext("task_upgrade()", ctx);
+	const fund75 = vm.runInContext("state.fund_need", ctx);
+	assert(fund75 > 0 && !vm.runInContext("upgrade_due()", ctx), `merchant waits for funding (${fund75})`);
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", gold: 7.7e6, x: 0, y: 0 });
+	vm.runInContext(`state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 40, y: 0, esize: 30, gold: 2e6, fund: ${fund75} }; state.fund_sent_at = 0; state.partners = {}; handoff_busy = false; merchant_gold_at = Date.now(); state.hold_for = {}`, ctx);
+	const g75 = []; ctx.send_gold = (to, g) => (g75.push([to, g]), Promise.resolve());
+	await vm.runInContext("merchant_handoff()", ctx);
+	assert(g75.length === 1 && g75[0][0] === "DoWhatNow" && g75[0][1] === Math.round(fund75), `richest fighter funds the project (${JSON.stringify(g75)})`);
+	vm.runInContext("state.merchant = null; state.upg = null; state.fund_need = 0", ctx);
+
+	// 76) crafting for power: a non-quest recipe of plain materials whose output a member wears as an upgrade
+	ctx.G.items.cloth = { type: "material", s: true }; ctx.G.items.silkhat = { type: "helmet", armor: 90, g: 1000 };
+	ctx.G.items.questhat = { type: "helmet", armor: 200 };
+	ctx.G.craft = { silkhat: { items: [[5, "cloth"]], cost: 1000 }, questhat: { quest: "mcollector", items: [[5, "cloth"]] } };
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", gold: 3e6, esize: 30, map: "main" });
+	character.items = Array(42).fill(null); character.slots = { helmet: { name: "helm1", level: 0 } };
+	vm.runInContext("state.needs = new Map(); state.bank_seen = { cloth: 5 }; state.bank_gear = []; state.fetch_try = {}; state.gear_skip = {}; state.guide_equip = {}; craft_cache = null; quest_inputs = null", ctx);
+	assert(vm.runInContext("craft_pick()", ctx) === null, "cloth is a quest recipe input → never spent on other crafts");
+	ctx.G.craft = { silkhat: { items: [[5, "cloth"]], cost: 1000 } };
+	vm.runInContext("craft_cache = null; quest_inputs = null", ctx);
+	const c76 = vm.runInContext("craft_pick()", ctx);
+	assert(c76 && c76.id === "silkhat" && c76.for === "Torlis", `picks the silk hat for Torlis (${JSON.stringify(c76)})`);
+	assert(vm.runInContext("bag_plan().fetch.some((f) => f.key === 'craft:cloth')", ctx), "fetches the inputs from the bank");
+	character.items[0] = { name: "cloth", q: 5 };
+	const crafted76 = []; ctx.auto_craft = (id) => (crafted76.push(id), Promise.resolve({ success: true }));
+	vm.runInContext("craft_cache = null", ctx);
+	await vm.runInContext("task_craft_power()", ctx);
+	assert(JSON.stringify(crafted76) === '["silkhat"]', `crafts it once inputs are in the bags (${crafted76})`);
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("G.craft = {}; craft_cache = null; quest_inputs = null; state.bank_seen = {}", ctx);
+	all_done = true;
 	console.log("ALL PASS");
 })();
