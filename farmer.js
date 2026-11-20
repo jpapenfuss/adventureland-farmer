@@ -1,4 +1,4 @@
-const VERSION = "17.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2365,13 +2365,21 @@ function boss_tick(pack) {
 	return true;
 }
 // ---- Server events (CFG.events) ----
+// parent.S comes in two shapes: one key per live event/boss ({ goobrawl: {...}, snowman: { live, map, x, y } }), or
+// (current live servers) { schedule, event_flags, event_ends, ... }. ev_info(name) reads either.
+function ev_info(name) {
+	const S_ = (typeof parent !== "undefined" && parent.S) || {};
+	if (S_[name]) return S_[name];
+	const flag = S_.event_flags?.[name], end = S_.event_ends?.[name];
+	if (flag || (end && Date.parse(end) > Date.now())) return { live: true, end };
+	return null;
+}
 // The event to be at: live in the server's event list, and safe for us (its safe_from monster passes fight_math)
 function event_live() {
 	if (is_merchant() || character.rip) return null;
-	const S_ = (typeof parent !== "undefined" && parent.S) || {};
 	for (const name in CFG.events || {}) {
 		const ev = CFG.events[name];
-		if (!ev.on || !S_[name]) continue;
+		if (!ev.on || !ev_info(name)) continue;
 		const sf = ev.safe_from && G.monsters[ev.safe_from];
 		if (sf && !safe_enough(fight_math(sf), ev.safe_from)) continue;
 		return name;
@@ -2380,7 +2388,7 @@ function event_live() {
 }
 // Are we at the event? goobrawl: on its map; others: within 800px of the event's reported position
 function event_here(name) {
-	const ev = CFG.events[name], e = parent.S?.[name];
+	const ev = CFG.events[name], e = ev_info(name);
 	if (ev.map) return character.map === ev.map;
 	return !!e && e.map === character.map && Number.isFinite(e.x) && Math.hypot(e.x - character.x, e.y - character.y) < 800;
 }
@@ -2415,7 +2423,7 @@ function event_tick() {
 		fight(t, true);
 		set_message(`event ${name}: ${t.mtype} ${t.hp}/${t.max_hp}`);
 	} else {
-		const e = parent.S?.[name];
+		const e = ev_info(name);
 		if (!walking() && Number.isFinite(e?.x) && e.map === character.map) move_to(e.x, e.y, 1000);
 		set_message(`event ${name}: waiting for spawns`);
 	}
@@ -3198,7 +3206,7 @@ function report_lines(log = true, compact = false) {
 // ---- selftest(): checks the assumptions the script makes about the live game client ----
 // Functions it calls, data it reads, events it listens to, storage, and a cm round trip to every other character
 // (results after 4s). Run it after loading a new version; anything ✗ is a feature that can't work in this client.
-let st_run = null;
+const st_runs = {}; // run id -> { at, pong }: each selftest() keeps its own (two quick runs used to share one)
 function selftest() {
 	const R = [], now = Date.now(), mins_up = Math.max(1, Math.round((now - seen.since) / 60_000));
 	const ok = (c, m, warn) => R.push(`${c ? "✓" : warn ? "!" : "✗"} ${m}`);
@@ -3235,15 +3243,16 @@ function selftest() {
 	ok(true, `cm received: ${Object.entries(seen.cm).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}`);
 	const others_ = party_names_all().filter((x) => x !== character.name);
 	if (!others_.length || typeof send_cm !== "function") return share_text("selftest", [`— selftest ${character.name} v${VERSION} —`, ...R]);
-	st_run = { id: `${now}:${character.name}`, at: now, pong: {} };
-	Promise.resolve(send_cm(others_, { k: "ping", id: st_run.id })).catch(() => {});
+	const id = `${now}:${character.name}`;
+	st_runs[id] = { at: now, pong: {} };
+	Promise.resolve(send_cm(others_, { k: "ping", id })).catch(() => {});
 	game_log("selftest: pinging " + others_.join(", ") + " (4s)…", C.info);
-	setTimeout(() => selftest_finish(R, others_), 4000);
+	setTimeout(() => selftest_finish(R, others_, id), 4000);
 	return R.join("\n");
 }
-function selftest_finish(R, others_) {
-	const run = st_run;
-	st_run = null;
+function selftest_finish(R, others_, id) {
+	const run = st_runs[id];
+	delete st_runs[id];
 	for (const n of others_) {
 		const p = run?.pong[n];
 		R.push(`${p ? "✓" : "✗"} cm round trip ${n}: ${p ? `${p.ms} ms, v${p.v}` : "no reply in 4s (other server, offline, or older version)"}`);
@@ -3423,7 +3432,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	if (m?.message?.k) seen.cm[m.message.k] = (seen.cm[m.message.k] || 0) + 1;
 	if (m && (m.message?.k === "ping" || m.message?.k === "pong") && party_names_all().includes(m.name)) {
 		if (m.message.k === "ping") Promise.resolve(send_cm([m.name], { k: "pong", id: m.message.id, v: VERSION })).catch(() => {});
-		else if (st_run && m.message.id === st_run.id) st_run.pong[m.name] = { v: m.message.v, ms: Date.now() - st_run.at };
+		else if (st_runs[m.message.id]) st_runs[m.message.id].pong[m.name] = { v: m.message.v, ms: Date.now() - st_runs[m.message.id].at };
 		return;
 	}
 	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
@@ -3520,11 +3529,15 @@ function merchant_beat() {
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
 // The fighter most in need of a visit: fewest free slots, then fewest potions
+// We hold something that completes a fighter's missing must-hold item: the item itself, or its tokens
+const can_supply_hold = (p) => (p.need || []).some((n) => held_any(n) > 0 || (hold_price(n) && held_any(CFG.hold[n]) > 0));
 function merchant_job() {
 	const M = CFG.merchant;
 	const need = (p) => (p.esize ?? 99) < M.serve_free || (p.pots && (p.pots.hp < M.serve_pots || p.pots.mp < M.serve_pots));
-	return partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
-		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0] || null;
+	const urgent = partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
+		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0];
+	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
+	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || null;
 }
 // Bag slot of a potion of this kind, preferring the configured tier, never the last self_pots
 function pot_slot(kind) {
