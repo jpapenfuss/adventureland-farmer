@@ -1,4 +1,4 @@
-const VERSION = "24.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -312,7 +312,7 @@ function recipe_input(name) {
 // Failures that say nothing about the item or goal (walks, distance, timing, bank, money): retry soon instead of
 // pausing for hours. Everything else (low odds, not combinable, invalid...) is a real verdict.
 const TRANSIENT = new Set(["interrupted", "walk_timeout", "timeout", "distance", "bank_not_loaded", "no_space", "gold_reserve",
-	"buy_cost", "scroll_missing", "no_scroll", "inputs_not_ready", "player_gone", "cant_in_bank", "no_mp", "not_found", "failed"]);
+	"buy_cost", "scroll_missing", "no_scroll", "inputs_not_ready", "player_gone", "cant_in_bank", "no_mp", "not_found", "failed", "fleeing"]);
 const pause_ms = (e, long) => (TRANSIENT.has(why(e)) ? 600_000 : long);
 const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "tracker", "token", "misc", "throw",
 	"booster", "skill_item", "bank_key", "spawner", "placeholder", "computer"]);
@@ -470,13 +470,21 @@ async function wait_budget(cost, reserve) { while (!can_spend(cost, reserve)) aw
 // → "Path found!") forever, which would hang an errand (e.g. in front of the locked bank_b door).
 let smart_depth = 0; // number of go() walks in flight; > 0 means "walking" (nothing else may steer)
 async function go(dest, ms = CFG.walk_timeout_ms) {
+	// v24.8: no walks while fleeing — an errand's next step started one each time recover() stopped the last, and moving
+	// cancelled the town channel until the errand ran out of steps
+	if (state.recovering) throw { reason: "fleeing" };
 	smart_depth++;
-	let timer;
+	let timer, timed_out = false;
 	try {
 		return await Promise.race([smart_move(dest), new Promise((_, rej) => (timer = setTimeout(() => {
+			timed_out = true;
 			try { stop("smart"); } catch (e) {}
 			rej({ reason: "walk_timeout", dest: typeof dest === "string" ? dest : dest.map });
 		}, ms)))]);
+	} catch (e) {
+		// v24.8: stop("smart") rejects the walk with "interrupted" first, which won the race: a timeout looked like an interruption
+		if (timed_out) throw { reason: "walk_timeout", dest: typeof dest === "string" ? dest : dest.map };
+		throw e;
 	} finally { clearTimeout(timer); smart_depth--; }
 }
 const walking = () => smart_depth > 0;
@@ -1430,6 +1438,18 @@ function party_names() {
 }
 // Self-defence first (monsters hitting us, then a party member); then the pack's own monster type; others only if
 // none of the pack's type is in view and they die within max_ttk_s.
+// v24.8: the nearest monster attacking us (not one ignored as immune): self-defence comes before the tank's call —
+// a mage kept shooting the tank's target, and stepped toward it, while another monster hit it unkited
+function hit_on_me() {
+	let best = null, bd = Infinity;
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (!e || e.type !== "monster" || !e.visible || e.dead || e.target !== character.name || (state.bad_ids[e.id] || 0) > Date.now()) continue;
+		const d = distance(character, e);
+		if (d < bd) (bd = d), (best = e);
+	}
+	return best;
+}
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
 	let hitting = null, hd = Infinity;
@@ -1518,7 +1538,14 @@ async function travel(dest) {
 	try { await go(dest); } catch (e) {
 		// a failing path must not be retried every tick; an interrupted one (we stopped it to fight, or the watchdog did) isn't
 		// failing (v24.4: it was blocked 5s too, standing idle after the kill and undoing the watchdog's reset)
-		if (!e || e.reason !== "interrupted") { game_log("travel: " + why(e)); state.travel_block_until = Date.now() + 5000; }
+		if (!e || e.reason !== "interrupted") {
+			game_log("travel: " + why(e)); state.travel_block_until = Date.now() + 5000;
+			// v24.8: an unreachable waypoint is skipped (it was retried forever, and each failure counted as activity, so
+			// the idle give-up never fired)
+			const W = state.waypoints, w = W.length ? W[state.wp % W.length] : null;
+			if (w && dest && dest.x === w.x && dest.y === w.y) state.wp = (state.wp + 1) % W.length;
+			return;
+		}
 	}
 	state.last_target_at = Date.now();
 }
@@ -1533,6 +1560,8 @@ function can_use(skill) {
 	const s = G.skills[skill];
 	return s && character.level >= (s.level || 0) && !is_on_cooldown(skill) && character.mp >= (s.mp || 0);
 }
+// v24.8: in range for a skill (the server refuses "too_far" without a cooldown, so out of range it was re-sent every reply)
+const in_reach = (t, skill) => (typeof is_in_range === "function" ? is_in_range(t, skill) : distance(character, t) <= (G.skills[skill]?.range || character.range));
 // Class skills, used alongside attacks. Returns true when the skill replaces this tick's attack (priest heals share
 // the attack cooldown). Thresholds: ranger marks targets worth >3 of its attacks; paladin self-heals below 50% HP
 // and smashes targets worth >2 attacks; mage energizes below 50% MP.
@@ -1557,7 +1586,7 @@ function class_skills(t) {
 				if (victim) fire("absorb", victim);
 			}
 			// curse (400 MP, +20% damage taken for 5s): only on a target with 5+ of our party's hits left, and MP above half
-			if (!t.s?.cursed && t.hp > character.attack * 5 && character.mp > character.max_mp * 0.5 && can_use("curse")) fire("curse", t);
+			if (!t.s?.cursed && t.hp > character.attack * 5 && character.mp > character.max_mp * 0.5 && can_use("curse") && in_reach(t, "curse")) fire("curse", t);
 			break;
 		case "paladin": {
 			// mana shield: below 50% HP with MP to spare, damage comes out of MP (1.5 dmg per MP until 200 MP left);
@@ -1572,7 +1601,7 @@ function class_skills(t) {
 			// second and sustain() refilled it with MP potions (~30/min). Only from MP above smash_mp_floor of max, so it
 			// spends natural regen and never potions, and keeps MP for mshield/selfheal/purify
 			else if (t.hp > character.attack * 2 && character.mp > character.max_mp * CFG.smash_mp_floor + (G.skills.smash?.mp || 380) &&
-				G.items[character.slots?.mainhand?.name]?.wtype === "mace" && can_use("smash")) fire("smash", t);
+				G.items[character.slots?.mainhand?.name]?.wtype === "mace" && can_use("smash") && in_reach(t, "smash")) fire("smash", t);
 			break;
 		}
 		case "warrior":
@@ -1583,7 +1612,7 @@ function class_skills(t) {
 			// full and carry MP potions to refill
 			const ratio = G.skills.burst?.ratio || 0.555;
 			if (G.skills.burst && can_use("burst") && character.mp >= character.max_mp * 0.9 && t.hp >= character.mp * ratio * 0.6 &&
-				pot_count("mp") >= CFG.pot_min) return fire("burst", t), true;
+				pot_count("mp") >= CFG.pot_min && in_reach(t, "burst")) return fire("burst", t), true;
 			if (cburst()) return true;
 			if (!can_use("energize")) break;
 			// the party member lowest on mana (below 40%) within range, else ourselves below 50%. A priest's heals run
@@ -1594,7 +1623,9 @@ function class_skills(t) {
 			// v24.4: with no amount the server moves up to 10000 MP — all of ours. Give what they're missing, keeping 40%
 			const give = low ? Math.min(low.max_mp - low.mp, Math.floor(character.mp - character.max_mp * 0.4)) : 0;
 			if (low && give >= 100) fire("energize", low, give);
-			else if (character.mp < character.max_mp * 0.5) fire("energize", character);
+			// v24.8: on ourselves it moves no MP (server: same object) — the old "refill below 50%" did nothing but spend
+			// the cooldown; its side effect, high attack speed, is the point: whenever no partner needs mana
+			else if (!low) fire("energize", character);
 			break;
 		}
 		case "rogue":
@@ -3853,6 +3884,10 @@ function recover() {
 	if (threat || hurt_ms() < CFG.flee_quiet_ms) {
 		const t = choose_target(false); // what's hitting us (then a partner)
 		if (t) fight(t, true); // steer: a melee fighter walks to a ranged attacker; a ranged one kites
+		else if (threat && Number.isFinite(threat.x)) { // v24.8: one we ignore as immune: step away from it (stood still before)
+			const a = Math.atan2(character.y - threat.y, character.x - threat.x), x = character.x + Math.cos(a) * 120, y = character.y + Math.sin(a) * 120;
+			if (can_move_to(x, y)) move_to(x, y, 300);
+		}
 	} else if (!done && !state.fled_home && Date.now() - (state.town_at || 0) > 1500) {
 		if (at_town_spot()) state.fled_home = true;
 		else {
@@ -5380,19 +5415,23 @@ function follower_tick() {
 	const L = leader_hb();
 	if (L.rip) return void hold_grind(); // leader dead: grind what we can solo here until it walks back
 	state.hold = null;
-	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, probe: !!L.pack.probe } : null;
+	// v24.8: a fleeing leader sends no pack: keep ours and hold it (as on its errands) instead of walking to its town spot
+	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, probe: !!L.pack.probe }
+		: L.recovering && state.pack ? state.pack : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
 	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
 	// and back (every leader trip used to move the whole party)
-	const away = !!L.errand && !!state.pack;
+	const away = (!!L.errand || !!L.recovering) && !!state.pack;
 	const pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader
 	const easy = CFG.party.spread && !away && state.pack && !state.pack.probe && spread_ok(state.pack.mtype);
-	let t = easy ? choose_target(false) || spread_pick(pos, L) || leader_t
-		: i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : caller_target() || leader_t || choose_target(false) || follower_pick(pos);
+	// v24.8: what's hitting us first, always; spread: then a free monster, before one already on a partner (it was
+	// choose_target first, which piled everyone onto the priest's monster)
+	let t = easy ? hit_on_me() || spread_pick(pos, L) || choose_target(false) || leader_t
+		: i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : hit_on_me() || caller_target() || leader_t || choose_target(false) || follower_pick(pos);
 	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
@@ -5581,13 +5620,18 @@ function tick() {
 				return;
 			}
 			split_decide();
-			duo_check();
+			// v24.8: together, with the party waiting at our pack while we're on an errand or walking back: no re-judging it
+			// as if alone (duo_check, the periodic re-pick, town_body's reset) — that switched to a solo pack and moved them
+			const cp = state.pack, waiting = in_party_cfg() && !split_now() && !!cp && partners().length > 0 && !partners_near().length &&
+				partners().every((q) => q.pack && valid_boundary(q.pack.boundary) && pack_key(q.pack) === pack_key(cp));
+			if (!waiting) duo_check();
 			probe_check();
-			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
+			if (!state.pack || (!waiting && Date.now() - state.last_pick > CFG.repick_ms)) pick_pack();
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
-			const t = (!i_am_tank() && caller_target()) || choose_target(in_area || !pack, true);
+			const spread_on = CFG.party.spread && !!pack && !pack.probe && spread_ok(pack.mtype); // v24.8: easy content: our own targets
+			const t = hit_on_me() || (!i_am_tank() && !spread_on && caller_target()) || choose_target(in_area || !pack, true);
 			announce_target(t);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
@@ -5595,7 +5639,7 @@ function tick() {
 				wait = Math.min(Math.max(+(parent.next_skill?.attack || 0) - Date.now(), 50), 200); // wake for the next attack
 			} else if (!pack) {
 				set_message("No viable pack");
-				wait = 5000;
+				wait = get_nearest_monster({ target: character.name }) ? 250 : 2000; // v24.8: 5s let an attacker hit unanswered
 			} else if (!walking() && !errand_busy()) {
 				if (!in_area) {
 					if (!state.waypoints.length) state.waypoints = make_waypoints(pack.boundary);

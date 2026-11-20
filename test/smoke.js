@@ -1142,10 +1142,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 
 	// 53) class skills: burst at full MP on a big target; priest absorbs for a hurt non-tank; paladin mana shield
 	ctx.G.skills.burst = { ratio: 0.555 }; ctx.G.skills.absorb = { range: 240, mp: 200 }; ctx.G.skills.mshield = { mp: 0 };
+	const iir53 = ctx.is_in_range; ctx.is_in_range = () => true; // v24.8: skills check range; this target is in reach
 	used.length = 0;
 	character.mp = 1000; character.items[0] = { name: "mpot1", q: 100 };
 	vm.runInContext("class_skills({ hp: 5000, s: {} })", ctx);
 	assert(used.some(([s]) => s === "burst"), `mage bursts at full MP (${JSON.stringify(used)})`);
+	vm.runInContext("for (const k in inflight) inflight[k] = false", ctx); used.length = 0; ctx.is_in_range = () => false;
+	vm.runInContext("class_skills({ hp: 5000, s: {} })", ctx);
+	assert(!used.some(([s]) => s === "burst"), "v24.8: out of reach, no burst (the server refuses it without a cooldown)");
+	ctx.is_in_range = () => true; vm.runInContext("for (const k in inflight) inflight[k] = false", ctx);
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", hp: 2500, max_hp: 2500, mp: 2000, max_mp: 2000 });
 	ctx.parent.entities.Sanala = { id: "Sanala", name: "Sanala", type: "character", ctype: "mage", visible: true, hp: 300, max_hp: 900, x: 30, y: 0 };
 	ctx.parent.entities.m53 = { id: "m53", type: "monster", mtype: "goo", visible: true, target: "Sanala", hp: 10, max_hp: 10, x: 40, y: 0 };
@@ -1159,6 +1164,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(used.some(([s]) => s === "mshield"), `paladin raises mana shield at low HP (${JSON.stringify(used)})`);
 	character.s = {}; character.items = Array(42).fill(null);
 
+	ctx.is_in_range = iir53;
 	// 54) merchant: picks the neediest fighter, hands potions, keeps its own; fighters hand loot and top up its gold
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 5, hp: 500, max_hp: 500, mp: 100, max_mp: 100, x: 0, y: 0, map: "main", gold: 50000, rip: false, esize: 30 });
 	vm.runInContext("state.partners = {}", ctx);
@@ -2825,6 +2831,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		Object.assign(character, { name: "Torlis", ctype: "paladin", hp: 1000, max_hp: 1000, mp: 900, max_mp: 1000, attack: 100, slots: { mainhand: { name: "mace116" } } });
 		vm.runInContext("globalThis.__pur = G.skills.purify; delete G.skills.purify; G.skills.smash = { mp: 380, cooldown: 320, wtype: 'mace' }; G.items.mace116 = { wtype: 'mace', type: 'weapon' }; G.items.blade116 = { wtype: 'sword', type: 'weapon' }", ctx);
 		const tgt = { id: "big116", mtype: "goo", hp: 5000, max_hp: 5000, s: {} };
+		const iir116 = ctx.is_in_range; ctx.is_in_range = () => true;
 		sk.length = 0; ctx.__tgt = tgt;
 		vm.runInContext("for (const k in inflight) inflight[k] = false; class_skills(globalThis.__tgt)", ctx);
 		assert(!sk.some(([n]) => n === "smash"), "MP 900/1000 (under 60% + 380): no smash");
@@ -2834,6 +2841,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("for (const k in inflight) inflight[k] = false; class_skills(globalThis.__tgt)", ctx);
 		assert(!sk.some(([n]) => n === "smash"), "no mace: no smash (the server refuses it without a cooldown)");
 		vm.runInContext("delete G.skills.smash; delete G.items.mace116; delete G.items.blade116; if (globalThis.__pur) G.skills.purify = globalThis.__pur", ctx);
+		ctx.is_in_range = iir116;
 		// mage energize: what the partner is missing, keeping 40% of ours
 		Object.assign(character, { name: "Sanala", ctype: "mage", mp: 1500, max_mp: 2300, slots: {} });
 		vm.runInContext("G.skills.energize = { range: 320, cooldown: 4000 }", ctx);
@@ -3062,6 +3070,55 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.parked = false; CFG.party.split.enabled = false; state.mode_ab = null; state.partners = {}", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500 });
 		for (const k of ["ring119", "helm119", "staff119", "wand119", "intorb119", "strorb119", "amulet119"]) delete ctx.G.items[k];
+	}
+	// 120) v24.8 combat review fixes: self-defence first; no walks while fleeing; a walk timeout says so; an unreachable
+	// waypoint is skipped; an ignored attacker while fleeing is walked away from; followers hold the pack while the leader flees
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500, map: "main", x: 0, y: 0, rip: false, c: {} });
+		const dist0 = ctx.distance; ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		ctx.parent.entities.a120 = { id: "a120", type: "monster", mtype: "goo", visible: true, x: 50, y: 0, target: "Sanala" };
+		ctx.parent.entities.b120 = { id: "b120", type: "monster", mtype: "goo", visible: true, x: 20, y: 0, target: "Sanala" };
+		ctx.parent.entities.c120 = { id: "c120", type: "monster", mtype: "goo", visible: true, x: 5, y: 0, target: "Torlis" };
+		vm.runInContext("state.bad_ids = {}", ctx);
+		assert(vm.runInContext("hit_on_me()?.id", ctx) === "b120", "hit_on_me: the nearest monster attacking us (not a partner's)");
+		vm.runInContext("state.bad_ids.b120 = Date.now() + 60000", ctx);
+		assert(vm.runInContext("hit_on_me()?.id", ctx) === "a120", "...skipping one we ignore as immune");
+		assert(/hit_on_me\(\) \|\| \(!i_am_tank\(\) && !spread_on && caller_target\(\)\)/.test(src), "the leader defends itself before taking the tank's call");
+		for (const k of ["a120", "b120", "c120"]) delete ctx.parent.entities[k];
+		vm.runInContext("state.bad_ids = {}", ctx);
+		// no walks while fleeing
+		vm.runInContext("state.recovering = true; globalThis.__g120 = go({ map: 'main', x: 1, y: 1 }).then(() => 'ok', (e) => e.reason)", ctx);
+		assert(await vm.runInContext("globalThis.__g120", ctx) === "fleeing", "go() refuses while fleeing (an errand step would cancel the channel)");
+		vm.runInContext("state.recovering = false", ctx);
+		// a timeout is reported as one, even though stop() rejects the walk as "interrupted" first
+		const sm0 = ctx.smart_move, st0 = ctx.stop; let rej120 = null;
+		ctx.smart_move = () => new Promise((_, rej) => { rej120 = rej; });
+		ctx.stop = (a) => { if (a === "smart" && rej120) rej120({ reason: "interrupted" }); };
+		vm.runInContext("globalThis.__g120 = go({ map: 'main', x: 1, y: 1 }, 20).then(() => 'ok', (e) => e.reason)", ctx);
+		assert(await vm.runInContext("globalThis.__g120", ctx) === "walk_timeout", "a walk timeout comes back as walk_timeout");
+		// an unreachable waypoint is skipped, and the failure isn't activity
+		ctx.smart_move = () => Promise.reject({ reason: "failed" });
+		vm.runInContext("state.waypoints = [{ x: 1, y: 1 }, { x: 2, y: 2 }, { x: 3, y: 3 }]; state.wp = 1; state.travel_block_until = 0; state.last_target_at = 5; globalThis.__g120 = travel({ map: 'main', x: 2, y: 2 })", ctx);
+		await vm.runInContext("globalThis.__g120", ctx);
+		assert(vm.runInContext("state.wp === 2 && state.last_target_at === 5", ctx), "unreachable waypoint: next one, and the idle clock isn't reset");
+		ctx.smart_move = sm0; ctx.stop = st0;
+		vm.runInContext("state.waypoints = []; state.wp = 0; state.travel_block_until = 0; state.last_target_at = Date.now()", ctx);
+		// fleeing with only an ignored attacker on us: step away from it
+		const mv = []; const mv0 = ctx.move; ctx.move = (x, y) => (mv.push([x, y]), Promise.resolve());
+		ctx.parent.entities.i120 = { id: "i120", type: "monster", mtype: "goo", visible: true, x: 50, y: 0, target: "Sanala" };
+		const gnm0 = ctx.get_nearest_monster; ctx.get_nearest_monster = (a) => (a && a.target === "Sanala" ? ctx.parent.entities.i120 : null);
+		vm.runInContext("state.bad_ids = { i120: Date.now() + 60000 }; Object.assign(state, { recovering: true, fled_home: false, town_at: 0 }); last_move = 0; character.hp = 200; recover()", ctx);
+		assert(mv.length === 1 && mv[0][0] < 0, `stepped away from it (${JSON.stringify(mv)})`);
+		ctx.move = mv0; ctx.get_nearest_monster = gnm0; delete ctx.parent.entities.i120; ctx.distance = dist0;
+		vm.runInContext("state.bad_ids = {}; state.recovering = false; character.hp = 1000", ctx);
+		// followers hold the pack while the leader flees
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60, hp: 900, max_hp: 900 });
+		vm.runInContext("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }", ctx);
+		hb("Sanala", { ...san, level: 51, recovering: true, pack: null });
+		vm.runInContext("try { follower_tick(); } catch (e) {}", ctx);
+		assert(vm.runInContext("state.pack && state.pack.mtype === 'goo'", ctx), "leader fleeing (no pack sent): the follower keeps the pack");
+		vm.runInContext("state.partners = {}; state.pack = null", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
