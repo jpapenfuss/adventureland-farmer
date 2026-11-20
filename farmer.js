@@ -1,4 +1,4 @@
-const VERSION = "16.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "16.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1584,7 +1584,9 @@ async function task_compound() {
 				skip(g.key, untouched ? 6 * 3600_000 : 600_000, untouched ? `refused: ${why(r)}` : "last compound failed");
 			}
 		} catch (e) {
-			skip(g.key, 6 * 3600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`);
+			const broke = why(e) === "gold_reserve" || why(e) === "buy_cost";
+			if (broke && is_merchant()) state.fund_need = Math.max(state.fund_need || 0, (G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 10_000) * 3 + CFG.gold_reserve);
+			skip(g.key, broke ? 600_000 : 6 * 3600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
 		}
 	}
@@ -1827,7 +1829,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
-		Date.now() - (state.fetched[item.name] || 0) < 3600_000) return "keep"; // never store what we fetched within the hour
+		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && merchant_does_it()))) return "keep"; // never store what we fetched within the hour (except compound copies the merchant now handles)
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -1948,7 +1950,12 @@ async function task_bank(fetch_names) {
 	if (!(await floor_loaded("bank"))) {
 		log_error("bank didn't load (retrying once)");
 		try { await go({ map: "main" }); await go({ map: "bank" }); } catch (e) {}
-		if (!(await floor_loaded("bank"))) { town_reason.bank = "bank didn't load (twice)"; throw { reason: "bank_not_loaded" }; }
+		if (!(await floor_loaded("bank"))) {
+			const seen_b = `map ${character.map}, bank ${character.bank ? Object.keys(character.bank).join("/") || "empty" : "none"}`;
+			town_reason.bank = `bank didn't load (twice; ${seen_b})`;
+			log_error(`bank didn't load: ${seen_b}`);
+			throw { reason: "bank_not_loaded" };
+		}
 	}
 	let { stored, full } = await store_here();
 	// main floor full → other floors you've unlocked. bank_b/bank_u sit behind doors the server keeps locked until a
@@ -2737,7 +2744,7 @@ function town_due(relaxed = false) {
 	const plan = bag_plan();
 	let min_free = relaxed ? CFG.bag_min_free * CFG.party.sync_factor : CFG.bag_min_free;
 	let pot_min = relaxed ? CFG.pot_min * CFG.party.sync_factor : CFG.pot_min;
-	if (merchant_hb()) { min_free = Math.min(min_free, CFG.merchant.fighter_min_free); pot_min = Math.min(pot_min, CFG.merchant.fighter_pot_min); }
+	if (merchant_recent()) { min_free = Math.min(min_free, CFG.merchant.fighter_min_free); pot_min = Math.min(pot_min, CFG.merchant.fighter_pot_min); }
 	const short = plan.free < min_free;
 	if (plan.free === 0 && !plan.sell.length && !plan.bank.length && Date.now() - bags_warned > 600_000) {
 		bags_warned = Date.now();
@@ -2761,7 +2768,7 @@ function town_due(relaxed = false) {
 	};
 	// merchant online: a fighter doesn't walk to town for guide steps alone more than once per guide_gap_ms; they're
 	// done on the next trip that happens for another reason
-	if (merchant_hb() && !is_merchant() && due.guide && !due_tasks(due).some((k) => k !== "guide") &&
+	if (merchant_recent() && due.guide && !due_tasks(due).some((k) => k !== "guide") &&
 		Date.now() - (state.last_town || 0) < CFG.merchant.guide_gap_ms) due.guide = false;
 	return due;
 }
@@ -2959,7 +2966,7 @@ function load_state() {
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	// v14.1: compounds/upgrades that took longer than 10s were reported as "timeout" and paused 6-24h: retry them
-	for (const k in state.gear_skip) if (/timeout/.test(skip_why[k] || "") && /^(cmp:|upg:|upgrade:|compound:)/.test(k)) delete state.gear_skip[k];
+	for (const k in state.gear_skip) if (/timeout|gold_reserve|buy_cost/.test(skip_why[k] || "") && /^(cmp:|upg:|upgrade:|compound:)/.test(k)) delete state.gear_skip[k];
 	const off = now - (d.at || now);
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
@@ -3112,17 +3119,22 @@ function report_lines(log = true, compact = false) {
 		if (compact && st === "done") continue;
 		L(`quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`);
 	}
-	const plan = bag_plan(), kept = {}, why_k = {}, nd = needed_slots(), cm = compound_slots(nd);
+	const plan = bag_plan(), kept = {}, why_k = {}, fetched_n = {}, nd = needed_slots(), cm = compound_slots(nd);
 	character.items.forEach((i, k) => {
 		if (!i) return;
 		const c = bag_class(i, nd, cm);
 		kept[c] = (kept[c] || 0) + 1;
-		if (c === "keep") { const r = keep_reason(i, k, nd, cm); why_k[r] = (why_k[r] || 0) + 1; }
+		if (c === "keep") {
+			const r = keep_reason(i, k, nd, cm);
+			why_k[r] = (why_k[r] || 0) + 1;
+			if (r === "fetched") fetched_n[i.name] = (fetched_n[i.name] || 0) + 1;
+		}
 	});
 	const fetch_names = {};
 	for (const f of plan.fetch) { const n = f.name ? `${f.name}${f.level ? "+" + f.level : ""}` : f; fetch_names[n] = (fetch_names[n] || 0) + 1; }
 	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}${kept.keep ? ` (${Object.entries(why_k).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(", ")})` : ""}, bank ${kept.bank || 0}, sell ${kept.sell || 0}` +
 		`${plan.fetch.length ? ` | to fetch: ${Object.entries(fetch_names).map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ")}` : ""}`);
+	if (Object.keys(fetched_n).length) L(`  fetched (kept 1h): ${Object.entries(fetched_n).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(", ")}`);
 	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
 	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
 	if (full) {
@@ -3440,9 +3452,14 @@ setInterval(party_invite_tick, 10_000); // every 10s until everyone online is in
 const is_merchant = () => character.ctype === "merchant" && CFG.merchant?.name === character.name;
 const merchant_hb = () => (!is_merchant() && fresh(state.merchant) && state.merchant.name === CFG.merchant?.name ? state.merchant : null);
 // Upgrade projects: the merchant does them while it's online (fighters keep fighting)
-const merchant_does_it = () => !!merchant_hb();
+// Who does the shared work (compounding, upgrade/craft projects, town thresholds) must not flip with a single missed
+// heartbeat (the merchant skips beats when its call budget is tight): "merchant online" = heard within 10 minutes
+const merchant_recent = () => !is_merchant() && !!state.merchant && state.merchant.name === CFG.merchant?.name &&
+	Date.now() - state.merchant.t < 600_000 && !state.merchant.rip;
+const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
+	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
 	const msg = { k: "mhb", v: VERSION, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };

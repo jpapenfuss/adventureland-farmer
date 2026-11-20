@@ -1671,6 +1671,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(JSON.stringify(crafted76) === '["silkhat"]', `crafts it once inputs are in the bags (${crafted76})`);
 	character.items = Array(42).fill(null); character.slots = {};
 	vm.runInContext("G.craft = {}; craft_cache = null; quest_inputs = null; state.bank_seen = {}", ctx);
+	// 77) merchant online is sticky (10 min); fetched compound copies go to the merchant; a broke compound retries soon
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30, map: "main" });
+	character.items = Array(42).fill(null); character.slots = {};
+	character.items[4] = { name: "ringx", level: 0 }; character.items[5] = { name: "ringx", level: 0 }; character.items[6] = { name: "ringx", level: 0 };
+	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now() - 3 * 60000, map: 'main', x: 0, y: 0, esize: 30, gold: 1e6 }; state.fetched = { ringx: Date.now() }; state.needs = new Map(); cmp_cache = null; state.bank_gear = []", ctx);
+	assert(vm.runInContext("merchant_does_it() && compound_groups().length === 0", ctx), "a heartbeat 3 min old still counts: fighters don't compound");
+	assert(vm.runInContext("bag_class(character.items[4])", ctx) === "bank", "a fetched compound copy isn't held: it goes to the merchant");
+	vm.runInContext("state.merchant.t = Date.now() - 11 * 60000; cmp_cache = null", ctx);
+	assert(!vm.runInContext("merchant_does_it()", ctx), "after 10 min of silence the fighter takes over");
+	// merchant compound fails on gold → 10-min pause and a funding request
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 40000, esize: 30, map: "main" });
+	vm.runInContext("state.merchant = null; state.gear_skip = {}; state.fund_need = 0; state.fetched = {}; cmp_cache = null; state.stand = {}; stand_cache = null", ctx);
+	const rc_save = vm.runInContext("run_compound", ctx);
+	vm.runInContext("run_compound = () => Promise.reject({ reason: 'gold_reserve' })", ctx);
+	await vm.runInContext("task_compound()", ctx);
+	const until77 = vm.runInContext("state.gear_skip['cmp:ringx:0']", ctx) - Date.now();
+	assert(until77 > 0 && until77 <= 600_000 && vm.runInContext("state.fund_need", ctx) > 0, `broke compound: 10-min pause + funding request (${Math.round(until77 / 60000)}m, ${vm.runInContext("state.fund_need", ctx)})`);
+	ctx.__rc = rc_save; vm.runInContext("run_compound = __rc; state.fund_need = 0; state.gear_skip = {}", ctx);
+	character.items = Array(42).fill(null);
 	all_done = true;
 	console.log("ALL PASS");
 })();
