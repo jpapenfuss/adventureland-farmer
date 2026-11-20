@@ -41,6 +41,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 }
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
+vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; globalThis.__run_row_real = run_row", ctx); // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
@@ -2313,6 +2314,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.gprog = null; refresh_directive()", ctx);
 		vm.runInContext(`live_guide_farm = globalThis.__lgf; hunt_directive = globalThis.__hd2; quest_directive = globalThis.__qd; boss_directive = globalThis.__bd2;
 			CFG.party.split.enabled = false; state.partners = {}; state.directive = null`, ctx);
+	}
+	// 105) v22.0: guide off (the default) → no guide reads, rows, farm rows, guide quests or held inputs
+	{
+		let called = 0; const gp_s = ctx.get_progression;
+		ctx.get_progression = () => (called++, { ready: true, rows: [{ id: "upgrade:chest:coat:3:str", kind: "upgrade", action: { name: "coat" } }], plans: [] });
+		vm.runInContext("CFG.guide_enabled = false; state.guide_quests = { wattire: { first: Date.now(), last: Date.now() } }; guide_refresh()", ctx);
+		assert(called === 0 && vm.runInContext("state.guide === null && state.guide_farm === null && !next_guide_row(state.guide)", ctx), "guide off: not read, no rows, no farm row");
+		assert(vm.runInContext("!is_guide_quest('wattire') && !state.needs.has('coat')", ctx), "guide off: no guide quests, nothing held for it");
+		vm.runInContext("CFG.guide_enabled = true; state.guide_quests = {}", ctx); ctx.get_progression = gp_s;
 	}
 	all_done = true;
 	console.log("ALL PASS");

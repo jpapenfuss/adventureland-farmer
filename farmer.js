@@ -1,4 +1,4 @@
-const VERSION = "21.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "22.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -132,7 +132,11 @@ const CFG = {
 	exchange_auto: true,
 	exchange_skip: [],         // item names never exchanged
 	// --- town / Progression Guide ------------------------------------------------------------------------------------
-	gear: true,                // execute Progression Guide steps (upgrade, equip, craft, ...); false = only read it
+	// v22.0: the Progression Guide is ignored entirely (false): no guide steps (buys, upgrades, compounds, equips), no
+	// guide farm rows or guide quests as goals, nothing held in the bags for it. It chased +7 upgrades of cheap gear
+	// and kept the party on low-level farm rows. true restores all of it.
+	guide_enabled: false,
+	gear: true,                // (guide_enabled) execute Progression Guide steps (upgrade, equip, craft, ...); false = only read it
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
 	guide_steps_per_run: 5,    // guide steps that need walking, per town run (steps done in place don't count)
 	town_min_gap_ms: 20_000,   // at least 20s between town runs
@@ -2495,7 +2499,7 @@ const owned = (name) =>
 	character.items.reduce((n, i) => n + (i && i.name === name ? i.q || 1 : 0), 0) +
 	Object.values(character.slots || {}).filter((i) => i && i.name === name).length + (state.bank_seen[name] || 0);
 // Has the guide asked for this recipe within guide_quest_keep_h?
-const is_guide_quest = (id) => !!state.guide_quests[id] && Date.now() - (state.guide_quests[id].last || 0) < CFG.guide_quest_keep_h * 3600_000;
+const is_guide_quest = (id) => CFG.guide_enabled && !!state.guide_quests[id] && Date.now() - (state.guide_quests[id].last || 0) < CFG.guide_quest_keep_h * 3600_000;
 // Quest recipes to work on, in order: guide quests (in the order the guide asked), then own quests (quest_crafts /
 // quest_npcs). Skips outputs our class can't wear.
 function quest_recipes() {
@@ -3042,6 +3046,7 @@ function needed_slots() {
 // Read the Progression Guide: remember the quests it asks for and normalise its first farm row (state.guide_farm).
 // spendLimit tells the guide how much gold it may plan to spend (everything above gold_reserve).
 function read_guide() {
+	if (!CFG.guide_enabled) { state.guide = null; state.guide_farm = null; return null; }
 	if (typeof get_progression !== "function") return null;
 	let prog;
 	try { prog = get_progression({ spendLimit: Math.max(0, Math.min(character.gold - CFG.gold_reserve, gold_room())) }); } catch (e) { game_log("progression: " + e); return null; }
