@@ -2013,6 +2013,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.maps.main.monsters.push({ type: "tm", count: 4, boundary: [100, 100, 200, 200] }, { type: "tm", count: 6, boundary: [3000, 3000, 3100, 3100] });
 	Object.assign(character, { x: 0, y: 0, map: "main", speed: 55 });
 	assert(JSON.stringify(vm.runInContext("resolve_area('tm').boundary", ctx)) === "[100,100,200,200]", "near spawn (4) beats a far one (6) ~100s away");
+	vm.runInContext("state.pack = { mtype: 'tm', map: 'main', boundary: [3000, 3000, 3100, 3100], count: 6 }", ctx);
+	assert(JSON.stringify(vm.runInContext("resolve_area('tm').boundary", ctx)) === "[3000,3000,3100,3100]", "v19.1: already at a spawn of that monster → stay there");
+	vm.runInContext("state.pack = null", ctx);
 	assert(vm.runInContext("travel_s('main', [3000,3000,3100,3100])", ctx) > 90, "travel_s: ~4300px at 55px/s ≈ 100s");
 	vm.runInContext("G.maps.main.monsters = G.maps.main.monsters.filter((p) => p.type !== 'tm')", ctx);
 	// 93) a piece the server won't equip pauses 6h: not equipped again, not listed/fetched as a bank upgrade

@@ -1,4 +1,4 @@
-const VERSION = "19.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "19.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -602,6 +602,11 @@ function travel_s(map, boundary) {
 }
 function resolve_area(monster, map, boundary, count) {
 	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1 };
+	// v19.1: already at a spawn of this monster → stay (a hunt for the snakes we were farming on main sent the party
+	// across maps to halloween's bigger spawn)
+	const cur = state.pack;
+	if (cur && cur.mtype === monster && (!map || cur.map === map) && valid_boundary(cur.boundary) && G.maps[cur.map])
+		return { map: cur.map, boundary: cur.boundary.slice(0, 4), count: cur.count || 1 };
 	let best = null;
 	each_area((pack, area) => {
 		if (pack.type !== monster) return;
