@@ -42,7 +42,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; globalThis.__run_row_real = run_row", ctx); // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -2201,6 +2201,62 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.equip = eq_s; ctx.unequip = uq_s; ctx.send_item = si_s;
 		character.slots = {}; character.items = Array(42).fill(null);
 		vm.runInContext("state.partners = {}; my_gear_cache = null", ctx);
+	}
+	// 102) v20.0: spread on easy monsters; unexplained deaths; spending categories; probe reasons; gear leftovers
+	{
+		// spread: an easy pack → the follower takes its own goo, not the leader's
+		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", x: 0, y: 0, map: "main", rip: false, hp: 2500, max_hp: 2500, attack: 180, range: 200, s: {} });
+		vm.runInContext("CFG.party.spread = true; state.partners = {}; state.merchant = null; state.errand = null; state.spread_c = null; smart_depth = 0", ctx);
+		hb("Sanala", { ...san, level: 1, x: 40, y: 0, target: "gl", pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+		ctx.parent.entities = {
+			gl: { id: "gl", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 60, y: 0, target: null },
+			gm: { id: "gm", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 90, y: 20, target: null },
+		};
+		const at102 = []; const atk_s = ctx.attack; ctx.attack = (e) => (at102.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
+		vm.runInContext("inflight.attack = false; follower_tick()", ctx);
+		assert(at102.includes("gm") && !at102.includes("gl"), `easy pack: the follower takes its own goo, not the leader's (${at102})`);
+		ctx.attack = atk_s; ctx.parent.entities = {};
+		vm.runInContext("CFG.party.spread = false; state.partners = {}", ctx);
+		// a death with no damage seen doesn't blame the pack
+		vm.runInContext("pmring.hits = []; state.danger = {}; state.cooldown = {}; state.dead_handled = false; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		const d102 = vm.runInContext("hist.ev.filter((e) => e.type === 'death').pop()", ctx);
+		assert(d102 && d102.unexplained === true && !vm.runInContext("state.danger.tortoise", ctx), "death with no damage seen: logged unexplained, no safety cut");
+		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		assert(vm.runInContext("state.danger.tortoise < 1", ctx), "death with damage seen: the safety cut still applies");
+		vm.runInContext("state.danger = {}; state.cooldown = {}; state.pack = null", ctx);
+		// spending categories: the purchase tags the gold that leaves
+		vm.runInContext(`globalThis.__hb3 = hist.buckets; hist.buckets = {}; tag_spend("ponty"); { const b = bucket(); b.spend = 500; b.cats = { ponty: 500 }; }`, ctx);
+		assert(vm.runInContext("my_ledger().cats.ponty === 500 && /ponty 500/.test(cats_text(my_ledger().cats))", ctx), "ledger reports spending by category");
+		assert(vm.runInContext("spend_cat_of(CFG.hp_pot) === 'potions'", ctx), "potions categorised");
+		vm.runInContext("hist.buckets = globalThis.__hb3", ctx);
+		// probe status says why it isn't running
+		Object.assign(character, { name: "Sanala", ...san, level: 51, hp: 1000, max_hp: 1000 });
+		vm.runInContext("state.partners = {}; state.probe = null; state.probe_at = 0; state.errand = null", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 2000, y: 0, hp: 3000, max_hp: 3000 });
+		assert(/waiting for Torlis/.test(vm.runInContext("probe_why()", ctx)), `probe_why names who's missing (${vm.runInContext("probe_why()", ctx)})`);
+		vm.runInContext("state.partners = {}", ctx);
+		// gear: a guide-held input is worn only when 15%+ better
+		ctx.G.items.cA = { type: "chest", armor: 100 }; ctx.G.items.cB = { type: "chest", armor: 110 }; ctx.G.items.cC = { type: "chest", armor: 130 };
+		character.slots = { chest: { name: "cA", level: 0 } }; character.items = Array(42).fill(null); character.items[2] = { name: "cB", level: 0 };
+		const eq102 = []; const eq_s2 = ctx.equip; ctx.equip = (k, slot) => (eq102.push(character.items[k].name), Promise.resolve());
+		vm.runInContext("state.needs = new Map([['cB', 1], ['cC', 1]]); my_gear_cache = null; gear_busy = false; state.errand = null; state.gear_skip = {}", ctx);
+		await vm.runInContext("equip_upgrades()", ctx);
+		assert(!eq102.length, "a guide input only 10% better stays in the bags");
+		character.items[2] = { name: "cC", level: 0 }; vm.runInContext("my_gear_cache = null", ctx);
+		await vm.runInContext("equip_upgrades()", ctx);
+		assert(JSON.stringify(eq102) === '["cC"]', `a guide input 30% better is worn (${eq102})`);
+		ctx.equip = eq_s2; character.slots = {}; character.items = Array(42).fill(null);
+		vm.runInContext("state.needs = new Map(); my_gear_cache = null", ctx);
+		// bank snapshots: a newer one from another character is adopted, an older one isn't; off a bank floor ours isn't retaken
+		vm.runInContext("state.bank_at = Date.now() - 600000; state.bank_gear = [{ name: 'old', level: 0 }]; state.bank_seen = { old: 1 }", ctx);
+		handlers.cm({ name: "DoWhatNow", message: { k: "bank", at: Date.now() - 60000, seen: { fresh: 1 }, gear: [{ name: "fresh", level: 0 }] } });
+		assert(vm.runInContext("state.bank_gear[0].name === 'fresh' && state.bank_by === 'DoWhatNow'", ctx), "a newer bank snapshot from the merchant is adopted");
+		handlers.cm({ name: "Torlis", message: { k: "bank", at: Date.now() - 3600000, seen: { stale: 1 }, gear: [{ name: "stale", level: 0 }] } });
+		assert(vm.runInContext("state.bank_gear[0].name === 'fresh'", ctx), "an older snapshot is ignored");
+		character.map = "main"; character.bank = { items0: [{ name: "lingering", level: 0 }] };
+		vm.runInContext("remember_bank()", ctx);
+		assert(vm.runInContext("state.bank_gear[0].name === 'fresh'", ctx), "off a bank floor, a lingering character.bank doesn't overwrite the snapshot");
+		character.bank = undefined; vm.runInContext("state.bank_gear = []; state.bank_seen = {}; state.bank_at = 0; state.bank_by = null", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");

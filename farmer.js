@@ -1,4 +1,4 @@
-const VERSION = "19.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "20.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -65,6 +65,8 @@ const CFG = {
 	                           //   live step (not paused) for that slot; an idle guide doesn't block the slot
 	gear_guide_override: 0,    // extra margin a guide-owned slot demands (v19.7: 0 — the best-scoring item is worn; a
 	                           //   guide equip step that would lower a slot's score is skipped instead)
+	gear_input_gain: 0.15,     // v20.0: a copy the guide holds as an upgrade input is still worn if it beats the slot by 15%+
+	gear_swap_loss: 0.5,       // v20.0: a swap may cost the giver up to this share of what the receiver gains (party total up)
 	gear_share_range: 300,     // px; hand a spare to a party member this close (server limit: same map, 400px)
 	// Points per unit of each stat. main_stat = the class's own (str/dex/int: each point is ~1 attack and some HP/MP);
 	// the other two main stats count off_stat. Defensive stats count × tank_mult for tank classes.
@@ -242,6 +244,10 @@ const CFG = {
 		tank_first: true,
 		tank_hold_ms: 4000,       // leader's safety allowance × 2.5 while a priest partner is near (its heals offset damage)
 		wait_radius: 300,      // px; a follower whose leader is dead solo-grinds safe monsters within this radius
+		// v20.0: kill xp is split equally among an account's fighters in the party (server: share by owner), so
+		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
+		// their own (near the leader, not one a member is hitting) instead of the leader's target.
+		spread: true, spread_ttk: 3,
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
 		turn_min: 15,          // with no mutual goal, the leader alternates 15-min turns between its goal and its partner's
@@ -664,6 +670,27 @@ function probe_ready() {
 	if (pot_count("hp") < CFG.pot_min * 2 || pot_count("mp") < CFG.pot_min * 2) return false;
 	return all.every((p) => p.max_hp && p.hp >= p.max_hp * 0.8 && (p.pots?.hp ?? 0) >= CFG.pot_min * 2 && (p.pots?.mp ?? 0) >= CFG.pot_min * 2);
 }
+// Why probe_ready() says no right now (report; v20.0 — the probe line used to be hidden until a first probe ran)
+function probe_why() {
+	const P = CFG.probe, now = Date.now();
+	if (!P?.enabled) return "off";
+	if (is_follower()) return "only the leader probes";
+	if (state.probe) return null;
+	if (now - (state.probe_at || 0) < P.every_min * 60_000) return `next check in ${mins((state.probe_at || 0) + P.every_min * 60_000)}`;
+	if (state.directive?.boss) return "boss fight";
+	if (event_live()) return "event running";
+	if (errand_busy()) return `errand ${state.errand}`;
+	if (state.recovering || character.rip) return "recovering";
+	const all = partners(), near = partners_near();
+	if (near.length < all.length) return `waiting for ${all.filter((p) => !near.includes(p)).map((p) => p.name).join(", ")} to be near`;
+	if (character.hp < character.max_hp * 0.8) return "our HP under 80%";
+	if (pot_count("hp") < CFG.pot_min * 2 || pot_count("mp") < CFG.pot_min * 2) return `our potions under ${CFG.pot_min * 2}`;
+	const low = all.find((p) => !(p.max_hp && p.hp >= p.max_hp * 0.8));
+	if (low) return `${low.name} HP under 80%`;
+	const lp = all.find((p) => (p.pots?.hp ?? 0) < CFG.pot_min * 2 || (p.pots?.mp ?? 0) < CFG.pot_min * 2);
+	if (lp) return `${lp.name} potions under ${CFG.pot_min * 2}`;
+	return "ready (next pick)";
+}
 // Best-xp spot of a monster just past the limit that would beat the best normal spot by min_gain
 function probe_pick() {
 	const P = CFG.probe, now = Date.now();
@@ -727,11 +754,13 @@ function pick_pack() {
 	if (probe_ready()) {
 		state.probe_at = now;
 		const pb = probe_pick();
+		if (!pb) state.probe_none = { at: now, best: Math.round(state.best_score || 0) };
 		if (pb) {
 			const prof = { ttk: pb.ttk, xp: G.monsters[pb.mt].xp, probe: true };
 			state.probe = { mtype: pb.mt, start: now, until: now + CFG.probe.minutes * 60_000, ratio: pb.r, pred: pb.pred, prof };
 			state.safe[pb.mt] = prof;
 			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
+			state.probe_none = null;
 			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.est, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
 				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s (flee at ${CFG.probe.flee_hp * 100}%)`);
 		}
@@ -1011,7 +1040,7 @@ function history_lines(hours = 6) {
 	const top = Object.entries(rates).map(([k, v]) => [k, v.reduce((a, b) => a + b, 0) / v.length, v.length]).sort((a, b) => b[1] - a[1]).slice(0, 6);
 	L.push(`packs (measured xp/s): ${top.map(([k, r, n]) => `${k} ${r.toFixed(0)} (${n}x)`).join(", ") || "none measured"}`);
 	for (const e of ev.filter((x) => x.type === "death" || x.type === "flee").slice(-10))
-		L.push(`${e.type.toUpperCase()} ${ago(e.t)} ago: ${e.killer || "?"} @ ${e.map} | hp ${e.hp?.[0] ?? "?"}→${e.hp?.[e.hp.length - 1] ?? "?"}/${e.max_hp} | ` +
+		L.push(`${e.type.toUpperCase()}${e.unexplained ? " (unexplained: no damage seen" + (e.watched_s !== undefined ? `, script up ${e.watched_s}s` : "") + ")" : ""} ${ago(e.t)} ago: ${e.killer || "?"} @ ${e.map} | hp ${e.hp?.[0] ?? "?"}→${e.hp?.[e.hp.length - 1] ?? "?"}/${e.max_hp} | ` +
 			`10s dmg ${Object.entries(e.dmg10 || {}).map(([m, d]) => `${m} ${Math.round(d)}`).join(", ") || "none seen"} | predicted ${e.predicted ?? "?"} of ${e.pool ?? "?"} hp` +
 			`${e.tank ? " | tank near" : ""}${e.priest ? " | priest near" : ""} | pots ${e.pots?.hp}/${e.pots?.mp}`);
 	const towns = ev.filter((e) => e.type === "town"), why_t = {};
@@ -1027,6 +1056,7 @@ function history_lines(hours = 6) {
 	if (serves.length) L.push(`merchant trips: ${serves.length} — ${serves.slice(-4).map((e) => `${e.who} ${e.secs}s`).join(", ")}`);
 	const bosses = ev.filter((e) => e.type === "boss");
 	if (bosses.length) L.push(`bosses: ${bosses.slice(-4).map((e) => `${e.name} ${ago(e.t)} ago`).join(", ")}`);
+	{ const lg = my_ledger(Math.max(1, Math.ceil(hours))); L.push(`gold ${Math.ceil(hours)}h: earned ${fmt_k(lg.earn)}, spent ${fmt_k(lg.spend)} — ${cats_text(lg.cats)}`); }
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
 	const probes = ev.filter((e) => e.type === "probe");
@@ -1051,18 +1081,35 @@ function deaths(n = 5) {
 }
 // ---- Gold budget (CFG.spend) ----
 // Our gross earned/spent over the last window_h (hour buckets), and the party's (heartbeats carry each member's)
+// Spending categories (v20.0): a purchase tags the gold that leaves in the next few seconds
+let spend_tag = null; // { cat, until }
+const tag_spend = (cat) => (spend_tag = { cat, until: Date.now() + 5000 });
+function spend_cat_of(name) {
+	const d = G.items[name] || {};
+	if (name === CFG.hp_pot || name === CFG.mp_pot || d.type === "pot") return "potions";
+	if (["uscroll", "cscroll", "offering", "pscroll"].includes(d.type) || /scroll|offering/.test(name)) return "scrolls";
+	if (d.type === "elixir") return "elixirs";
+	if (GEAR.has(d.type)) return "gear buys";
+	return "other buys";
+}
 function my_ledger(h = CFG.spend.window_h) {
-	const from = hour_of(Date.now()) - (h - 1) * 3600_000, out = { earn: 0, spend: 0, s: 0 };
-	for (const k in hist.buckets) if (+k >= from) { const b = hist.buckets[k]; out.earn += b.earn || 0; out.spend += b.spend || 0; out.s += b.ls || 0; }
+	const from = hour_of(Date.now()) - (h - 1) * 3600_000, out = { earn: 0, spend: 0, s: 0, cats: {} };
+	for (const k in hist.buckets) if (+k >= from) {
+		const b = hist.buckets[k];
+		out.earn += b.earn || 0; out.spend += b.spend || 0; out.s += b.ls || 0;
+		for (const c in b.cats || {}) out.cats[c] = (out.cats[c] || 0) + b.cats[c];
+	}
 	return out;
 }
+const cats_text = (cats) => Object.entries(cats || {}).sort((a, b) => b[1] - a[1]).map(([c, g]) => `${c} ${fmt_k(g)}`).join(", ") || "nothing";
 function party_ledger() {
-	const L = my_ledger(), out = { ...L, who: [character.name] };
+	const L = my_ledger(), out = { ...L, cats: { ...L.cats }, who: [character.name] };
 	const seen = new Set([character.name]);
 	for (const p of [...partners_any(), ...(merchant_hb() ? [merchant_hb()] : [])]) {
 		if (!p || seen.has(p.name) || !p.ledger) continue;
 		seen.add(p.name);
 		out.earn += p.ledger.earn || 0; out.spend += p.ledger.spend || 0; out.s += p.ledger.s || 0; out.who.push(p.name);
+		for (const c in p.ledger.cats || {}) out.cats[c] = (out.cats[c] || 0) + p.ledger.cats[c];
 	}
 	return out;
 }
@@ -1087,7 +1134,7 @@ function party_holds(name) {
 }
 function budget_text() {
 	const L = party_ledger(), room = gold_room();
-	return `gold budget (${CFG.spend.window_h}h, ${L.who.length} chars): earned ${fmt_k(L.earn)}, spent ${fmt_k(L.spend)}` +
+	return `gold budget (${CFG.spend.window_h}h, ${L.who.length} chars): earned ${fmt_k(L.earn)}, spent ${fmt_k(L.spend)} (${cats_text(L.cats)})` +
 		(room === Infinity ? " — under an hour of records, no limit yet" : room > 0 ? ` — ${fmt_k(room)} left for upgrades/guide buys/compounds/Ponty` : " — optional spending paused (spent ≥ 90% of income)");
 }
 // Per-hour rates over the last hour (report, heartbeat): a sample of cumulative xp and gold every minute
@@ -1125,7 +1172,14 @@ setInterval(() => {
 		const dg = g - gold_prev;
 		b.gold += dg;
 		// gross ledger (transfers between our characters are already out via stats.adj); ls = seconds recorded
-		if (dg > 0) b.earn = (b.earn || 0) + dg; else if (dg < 0) b.spend = (b.spend || 0) - dg;
+		if (dg > 0) b.earn = (b.earn || 0) + dg;
+		else if (dg < 0) {
+			b.spend = (b.spend || 0) - dg;
+			// v20.0: what it went on (the purchase just made tags it; untagged losses count as "other")
+			const cat = spend_tag && Date.now() < spend_tag.until ? spend_tag.cat : "other";
+			b.cats = b.cats || {};
+			b.cats[cat] = (b.cats[cat] || 0) - dg;
+		}
 		b.ls = (b.ls || 0) + 1;
 	}
 	gold_prev = g;
@@ -1541,10 +1595,27 @@ async function equip_upgrades() {
 	const needed = needed_slots(), g = my_gear();
 	let best = null;
 	character.items.forEach((it, k) => {
-		if (!it || needed.has(k) || equip_paused(it)) return; // the guide is working on that copy (upgrade/compound input)
+		if (!it || equip_paused(it)) return;
 		const r = gear_gain(it, character.ctype, g);
+		// a copy the guide holds as an upgrade/compound input is worn only when clearly better (v20.0)
+		if (r && needed.has(k) && r.gain < (g.w[r.slot] || 0) * CFG.gear_input_gain) return;
 		if (r && (!best || r.gain > best.gain)) best = { ...r, k, it };
 	});
+	// (c) wearing a two-hander: a one-hander + offhand from the bags may beat it together (the offhand goes on next)
+	if (!best && g.dh) {
+		let one = null, off = null;
+		character.items.forEach((it, k) => {
+			if (!it || equip_paused(it) || needed.has(k)) return;
+			const d = G.items[it.name], cls = G.classes[character.ctype] || {};
+			if (!d) return;
+			const sc = gear_score(it);
+			if (d.type === "weapon" && cls.mainhand?.[d.wtype] && !is_2h(it.name, character.ctype) && (!one || sc > one.sc)) one = { k, it, sc };
+			if (OFFHAND_TYPES.has(d.type) && cls.offhand?.[d.type] && (!off || sc > off.sc)) off = { k, it, sc };
+		});
+		const cur = g.w.mainhand || 0, sum = (one?.sc || 0) + (off?.sc || 0);
+		if (one && off && character.esize >= 1 && sum - cur >= CFG.gear_min_gain && sum - cur >= cur * CFG.gear_margin)
+			best = { slot: "mainhand", gain: sum - cur, score: one.sc, k: one.k, it: one.it };
+	}
 	if (!best || !can_spend(EMIT_COST.equip, RESERVE.errand)) return false;
 	gear_busy = true;
 	try {
@@ -1568,7 +1639,11 @@ async function share_gear() {
 	if (!CFG.gear_auto || !(in_party_cfg() || is_merchant()) || gear_busy || character.rip || typeof send_item !== "function") return false;
 	const near = new Set(partners_near(CFG.gear_share_range).map((p) => p.name));
 	const takers = gear_takers().slice(1).filter((m) => near.has(m.name) && (m.esize ?? 1) > 0), now = Date.now();
-	if (!takers.length) return false;
+	// v20.0: the merchant (near, from its heartbeat) takes what no fighter would wear
+	const M = !is_merchant() && merchant_hb();
+	const Mt = M && M.gear?.w && (M.esize ?? 0) > 2 && M.map === character.map && Math.hypot((parent.entities?.[M.name] || M).x - character.x, (parent.entities?.[M.name] || M).y - character.y) <= CFG.gear_share_range
+		? { name: M.name, ctype: "merchant", g: M.gear } : null;
+	if (!takers.length && !Mt) return false;
 	const needed = needed_slots(), mine = my_gear();
 	for (let k = 0; k < character.items.length; k++) {
 		const it = character.items[k];
@@ -1578,6 +1653,7 @@ async function share_gear() {
 			const r = gear_gain(it, m.ctype, m.g);
 			if (r && (!to || r.gain > to.gain)) to = { ...r, m };
 		}
+		if (!to && Mt) { const r = gear_gain(it, "merchant", Mt.g); if (r) to = { ...r, m: Mt }; }
 		const key = `${it.name}:${it.level || 0}>${to?.m.name}`;
 		if (!to || now - (state.gear_sent[key] || 0) < 600_000 || !can_spend(1, RESERVE.errand)) continue;
 		state.gear_sent[key] = now;
@@ -1596,10 +1672,10 @@ function worn_items() {
 	for (const s of GEAR_SLOTS) if (sl[s]) out[s] = { name: sl[s].name, level: sl[s].level || 0, p: sl[s].p, stat_type: sl[s].stat_type };
 	return out;
 }
-// v19.7: a worn piece of ours that's an upgrade for a member near while its piece in the same slot is an upgrade for
-// us: take ours off and send it. The member wears it (equip_upgrades), its old piece drops into its bags and
-// share_gear sends it back, and we wear that. Both must gain by the usual margins (no one gets worse). The member
-// with the alphabetically first name starts, so the two don't both send at once.
+// v19.7/v20.0: a worn piece of ours that's an upgrade for a member near: take it off and send it. The member wears it
+// (equip_upgrades), its old piece drops into its bags and share_gear sends it back (our slot is empty), and we wear
+// that. The receiver gains by the usual margins; we may lose up to gear_swap_loss of its gain (the party total goes
+// up). The member with the alphabetically first name starts, so the two don't both send at once.
 let swap_at = 0;
 async function swap_worn() {
 	if (!CFG.gear_auto || gear_busy || character.rip || is_merchant() || errand_busy() || typeof send_item !== "function" || typeof unequip !== "function") return false;
@@ -1614,7 +1690,8 @@ async function swap_worn() {
 			if (!slots_for(Y.name, character.ctype, mine).includes(s) || !slots_for(X.name, p.ctype, p.gear).includes(s)) continue;
 			const ours = gear_score(Y) - (mine.w[s] || 0), theirs = gear_score(X, p.ctype) - (p.gear.w[s] || 0);
 			const ok = (gain, cur) => gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin;
-			if (!ok(ours, mine.w[s] || 0) || !ok(theirs, p.gear.w[s] || 0)) continue;
+			// the receiver must gain by the usual margins; we may lose up to gear_swap_loss of that, so the party gains
+			if (!ok(theirs, p.gear.w[s] || 0) || ours < -theirs * CFG.gear_swap_loss || !(ours + theirs >= 2 * CFG.gear_min_gain)) continue;
 			swap_at = Date.now();
 			gear_busy = true;
 			try {
@@ -1666,6 +1743,7 @@ async function buy_from_npc(name, qty, npc) {
 	if (!npc) throw { reason: "no_shop", name };
 	await go_npc(npc);
 	await wait_budget(1, RESERVE.errand);
+	tag_spend(spend_cat_of(name));
 	return T(buy(name, qty));
 }
 // Make sure one upgrade/compound scroll is in the bags (buy one; wait up to 3s for it to arrive)
@@ -1757,6 +1835,7 @@ async function run_upgrade(a, row) {
 	if (!preview || !(preview.chance >= floor)) throw { reason: "low_chance", chance: preview?.chance };
 	await mass_production();
 	await wait_budget(1, RESERVE.errand);
+	tag_spend("upgrades");
 	const r = await T(upgrade(k, find_slot(scroll, 0), off), 60_000); // the server takes 500·L·√L ms (+7: ~9s, +9: 13.5s)
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	log_ev("upgrade", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
@@ -1778,6 +1857,7 @@ async function run_compound(a, row, floor) {
 	if (!preview || !(preview.chance >= (floor ?? chance_floor(a.name, CFG.min_compound_chance)))) throw { reason: "low_chance", chance: preview?.chance };
 	await mass_production();
 	await wait_budget(1, RESERVE.errand);
+	tag_spend("compounds");
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)), 40_000); // the server takes 10s to combine
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
 	log_ev("compound", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
@@ -2021,6 +2101,7 @@ async function task_craft_power() {
 	if (character.esize < 1) return 0;
 	await go_npc(r.npc || "craftsman");
 	await wait_budget(1, RESERVE.errand);
+	tag_spend("crafting");
 	const res = await T(auto_craft(c.id)).catch((e) => ({ failed: true, reason: why(e) }));
 	const ok = res && !res.failed;
 	game_log(`craft ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts): ${ok ? "OK" : "FAILED " + (res?.reason || "")}`, ok ? C.ok : C.bad);
@@ -2199,8 +2280,12 @@ async function task_sell() {
 // bank pack id -> [floor map, unlock gold, unlock shells] (game data; the code iframe may only have it on parent)
 const bank_packs_list = () => (typeof bank_packs !== "undefined" && bank_packs) || parent.bank_packs || {};
 // Bank contents are only visible inside the bank: snapshot item counts every 2s while there (state.bank_seen)
+// v20.0: only while standing on a bank floor (character.bank lingers after leaving, so a stale copy used to overwrite
+// a fresher one). A changed snapshot is shared with the other characters (at most once a minute), who adopt it when
+// it's newer than theirs: the merchant banks most often, so fighters stop chasing pieces someone already took.
+let bank_hash = "", bank_sent_at = 0;
 function remember_bank() {
-	if (!character.bank) return;
+	if (!character.bank || !on_bank_floor()) return;
 	const seen = {};
 	const gear = [];
 	let free = 0, total = 0;
@@ -2212,6 +2297,22 @@ function remember_bank() {
 	}
 	state.bank_seen = seen;
 	state.bank_gear = gear;
+	state.bank_at = Date.now();
+	state.bank_by = character.name;
+	const h = JSON.stringify([seen, gear.map((i) => i.name + i.level)]);
+	if (h !== bank_hash && Date.now() - bank_sent_at > 60_000 && typeof send_cm === "function") {
+		bank_hash = h; bank_sent_at = Date.now();
+		const to = party_names_all().filter((n) => n !== character.name);
+		if (to.length) Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen, gear, free: state.bank_free })).catch(() => {});
+	}
+}
+// Another character's bank snapshot: adopt it if it's newer than ours
+function adopt_bank(m) {
+	const b = m.message;
+	if (!(b.at > (state.bank_at || 0)) || !b.seen || !Array.isArray(b.gear)) return;
+	Object.assign(state, { bank_seen: b.seen, bank_gear: b.gear, bank_at: b.at, bank_by: m.name });
+	if (b.free) state.bank_free = b.free;
+	cmp_cache = null;
 }
 setInterval(remember_bank, 2000);
 const town_reason = {}; // task -> why it achieved nothing (shown by report())
@@ -2329,6 +2430,7 @@ async function task_restock(pot_min = CFG.pot_min, pot_buy = CFG.pot_buy) {
 		const q = Math.min(want, Math.floor(budget / (G.items[p].g || 1)));
 		if (q <= 0) { town_reason.restock = `can't afford ${kind} potions (${character.gold} gold)`; continue; }
 		await wait_budget(1, RESERVE.errand);
+		tag_spend("potions");
 		await T(buy(p, q)).then(() => n++).catch((e) => game_log(`restock ${p}: ${why(e)}`));
 	}
 	return n;
@@ -2450,6 +2552,7 @@ async function quest_crafts() {
 			if (character.map !== loc.map || Math.hypot(character.x - loc.x, character.y - loc.y) > 250) await go({ map: loc.map, x: loc.x, y: loc.y + NPC_STAND_Y }); // walk if > 250px away
 		}
 		await wait_budget(1, RESERVE.errand);
+		tag_spend("crafting");
 		const res = await T(auto_craft(id)).catch((e) => e);
 		const ok = res && !res.failed && !res.reason;
 		game_log(`craft ${id} at ${G.npcs[r.quest]?.name || r.quest}: ${ok ? "OK" : "FAILED " + why(res)}`, ok ? C.ok : C.bad);
@@ -2961,6 +3064,7 @@ async function run_craft(a) {
 	if (character.esize < 1) throw { reason: "no_space" };
 	await go_npc(a.npc || recipe.quest || "craftsman");
 	await wait_budget(1, RESERVE.errand);
+	tag_spend("crafting");
 	const r = await T(auto_craft(a.recipe));
 	const ok = r && !r.failed;
 	game_log(`craft ${a.recipe}: ${ok ? "OK" : "FAILED"}`, ok ? C.ok : C.bad);
@@ -2993,6 +3097,7 @@ async function run_stat(a) {
 		if (k < 0) throw { reason: "input_missing" };
 		if (sk < 0) throw { reason: "scroll_missing" };
 		await wait_budget(1, RESERVE.errand);
+		tag_spend("upgrades");
 		const r = await T(upgrade(k, sk), 30_000);
 		game_log(`stat ${a.scroll} → ${a.name}: ${r?.stat || r?.success ? "OK" : why(r)}`, C.ok);
 		return r;
@@ -3376,7 +3481,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [],
-		bank_gear: state.bank_gear, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
+		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -3407,6 +3512,7 @@ function load_state() {
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
+	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.donated) state.donated = d.donated;
 	if (d.stand) state.stand = d.stand;
@@ -3534,7 +3640,7 @@ function report_facts() {
 		const f = merchant_job(), D = CFG.merchant.donate;
 		if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
 		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[`${i.name}:${i.level || 0}`]).length;
-		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(bf.at)} ago)${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
 		if (merrit_on()) {
 			const sp = state.mspot, st = state.stand_since ? Math.round((now - state.stand_since) / 1000) : 0;
 			const got = hist.ev.filter((e) => e.type === "parcel" && now - e.t < 86_400_000).reduce((a, e) => a + (e.n || 1), 0);
@@ -3586,8 +3692,10 @@ function report_facts() {
 	if (CFG.probe?.enabled && !M_ && !is_follower()) {
 		const P = state.probe, last = [...hist.ev].reverse().find((e) => e.type === "probe");
 		const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
-		F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : next > Date.now() ? `next considered in ${mins(next)}` : "due (needs everyone near, 80%+ HP, potions)"}` +
-			(last ? ` | last: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""), !P && !last);
+		const why_ = P ? null : probe_why(), none = state.probe_none && Date.now() - state.probe_none.at < 2 * 3600_000 ? state.probe_none : null;
+		F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : why_}` +
+			(none && !P ? ` | last check ${ago(none.at)} ago: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
+			(last ? ` | last probe: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""));
 	}
 	if (p && !p.boss && !M_) F("safety", "self", `safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
 	if (state.guide_farm && !M_) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
@@ -3933,6 +4041,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
 		return;
 	}
+	if (m && m.message?.k === "bank" && party_names_all().includes(m.name)) return void adopt_bank(m);
 	if (m && (m.message?.k === "rreq" || m.message?.k === "rrep") && party_names_all().includes(m.name)) {
 		if (m.message.k === "rreq") report_reply(m); else report_collect(m);
 		return;
@@ -4016,7 +4125,7 @@ const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
-	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
@@ -4256,6 +4365,7 @@ async function task_secondhands() {
 		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !gold_ok(price)) continue;
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;
+		tag_spend("ponty");
 		parent.socket.emit("sbuy", { rid: it.rid });
 		await until(() => character.esize < before, 3000);
 		if (character.esize < before) {
@@ -4452,6 +4562,7 @@ function merchant_donate() {
 	const day = state.donated && now - state.donated.since < 86_400_000 ? state.donated : (state.donated = { since: now, g: 0 });
 	const g = Math.floor(Math.min(character.gold - D.keep, D.chunk, D.per_day - day.g, gold_room()));
 	if (g < 100_000 || !can_spend(1, RESERVE.errand)) return false; // < 100k: the server's "low" donation, skip
+	tag_spend("donations");
 	parent.socket.emit("donate", { gold: g });
 	day.g += g;
 	save_state();
@@ -4601,7 +4712,9 @@ function follower_tick() {
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader
-	let t = i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : caller_target() || leader_t || choose_target(false) || follower_pick(pos);
+	const easy = CFG.party.spread && !away && state.pack && !state.pack.probe && spread_ok(state.pack.mtype);
+	let t = easy ? choose_target(false) || spread_pick(pos, L) || leader_t
+		: i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : caller_target() || leader_t || choose_target(false) || follower_pick(pos);
 	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
@@ -4622,6 +4735,28 @@ function follower_tick() {
 		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
 		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);
 	}
+}
+// Easy enough to split up on: we'd kill it alone within spread_ttk (solo safety and kill time from fight_profile)
+function spread_ok(mt) {
+	if (state.spread_c && state.spread_c.mt === mt && Date.now() - state.spread_c.at < 30_000) return state.spread_c.ok;
+	const f = fight_profile(mt), ok = !!f && f.ttk <= CFG.party.spread_ttk;
+	if (f) state.safe[mt] = f; else delete state.safe[mt]; // followers don't run pick_pack: live_ok reads this
+	state.spread_c = { mt, at: Date.now(), ok };
+	return ok;
+}
+// Our own monster of the pack's type near the leader that no member is already hitting (spread mode)
+function spread_pick(pos, L) {
+	const mt = state.pack?.mtype, taken = new Set([L?.target, ...partners().map((p) => p.target)].filter(Boolean));
+	if (!mt || pos.map !== character.map) return null;
+	let best = null, bd = Infinity;
+	for (const id in parent.entities) {
+		const e = parent.entities[id];
+		if (e.mtype !== mt || taken.has(e.id) || !farmable_entity(e) || !valid(e) || (e.target && e.target !== character.name)) continue;
+		if (Math.hypot(e.x - pos.x, e.y - pos.y) > CFG.party.wait_radius || !live_ok(e)) continue;
+		const d = distance(character, e);
+		if (d < bd && can_move_to(e)) (best = e), (bd = d);
+	}
+	return best;
 }
 // Follower with nothing to hit (the leader one-shots its targets, e.g. goos): take our own monster of the leader's
 // pack type within wait_radius of the leader. Followers don't run pick_pack, so its safety is checked here (30s cache).
@@ -4699,11 +4834,16 @@ function on_death() {
 	if (state.dead_handled) return;
 	state.dead_handled = true;
 	const pmd = postmortem();
+	// v20.0: a death with no damage seen in the last 10s (dead when the script started, or killed while it wasn't
+	// watching) is logged as unexplained and doesn't blame the pack: it used to cut the pack's safety ×0.6 on no evidence
+	pmd.watched_s = Math.round((Date.now() - seen.since) / 1000);
+	pmd.unexplained = !Object.keys(pmd.dmg10 || {}).length;
 	log_ev("death", pmd);
 	bucket().deaths++;
 	const killer = pmd.killer && G.monsters[pmd.killer] ? pmd.killer : state.pack?.mtype;
 	const p = state.pack;
-	if (p) {
+	if (pmd.unexplained) game_log(`Died with no damage seen (script watching for ${pmd.watched_s}s) — not blaming ${p?.mtype || "the pack"}`, C.warn);
+	else if (p) {
 		incident(killer || p.mtype, 0.6);
 		state.cooldown[pack_key(p)] = Date.now() + CFG.death_pack_cooldown_ms;
 		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}`);
