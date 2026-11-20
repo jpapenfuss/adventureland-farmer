@@ -2299,6 +2299,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.upg = { name: 'wshield', to: 7, for: 'Aspernari', slot: 'offhand', gain: 38, cost: 12000 }; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0 }", ctx);
 	assert(vm.runInContext("upgrade_due() === false && state.upg === null", ctx), "merchant online: the fighter's project is dropped");
 	vm.runInContext("state.merchant = null", ctx);
+	// v21.3: split → a guide farm row doesn't set the spot
+	{
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60, s: {} });
+		vm.runInContext(`CFG.party.split.enabled = true; state.partners = {}; state.directive = null; state.dir_lock = null; state.goals_cache = null;
+			globalThis.__lgf = live_guide_farm; globalThis.__hd2 = hunt_directive; globalThis.__qd = quest_directive; globalThis.__bd2 = boss_directive;
+			live_guide_farm = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], count: 5, reason: "guide bees", guide_safe: true });
+			hunt_directive = () => null; quest_directive = () => null; boss_directive = () => null;`, ctx);
+		hb("Sanala", { ...san, level: 51, split: true });
+		vm.runInContext("refresh_directive()", ctx);
+		assert(vm.runInContext("state.directive === null", ctx), `split: the guide farm row doesn't set the spot (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+		hb("Sanala", { ...san, level: 51, split: false });
+		vm.runInContext("state.gprog = null; refresh_directive()", ctx);
+		vm.runInContext(`live_guide_farm = globalThis.__lgf; hunt_directive = globalThis.__hd2; quest_directive = globalThis.__qd; boss_directive = globalThis.__bd2;
+			CFG.party.split.enabled = false; state.partners = {}; state.directive = null`, ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

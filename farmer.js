@@ -1,4 +1,4 @@
-const VERSION = "21.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "21.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2925,7 +2925,10 @@ function refresh_directive() {
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
 	let mine = null;
-	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
+	// v21.3: farming alone while split, guide quest materials and guide farm rows (weights 2 and 1, below a hunt's 4)
+	// don't pick the spot — the same rule that keeps them from being "mutual" when together
+	const chain = split_now() ? [boss_directive, hunt_directive, oq] : [boss_directive, hunt_directive, oq, gq, () => g];
+	for (const f of chain) if (!mine) mine = f();
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
