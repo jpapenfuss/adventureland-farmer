@@ -1,4 +1,4 @@
-const VERSION = "17.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -229,7 +229,7 @@ const RANGED = ["ranger", "mage", "priest"].includes(character.ctype); // classe
 // Item types that are equipment (sellable as junk, bankable as spares)
 const GEAR = new Set(["weapon", "shield", "helmet", "chest", "pants", "gloves", "shoes", "cape", "ring", "earring", "amulet", "belt", "orb", "source", "quiver", "misc_offhand"]);
 // Item types that always stay in the bags: consumables, scrolls, tools, keys
-const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "tracker", "misc", "throw",
+const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "tracker", "token", "misc", "throw",
 	"booster", "skill_item", "bank_key", "spawner", "placeholder", "computer"]);
 
 // Log colours (game_log's second argument)
@@ -1879,6 +1879,11 @@ function bag_plan() {
 		if (c) for (const [q, n] of G.craft[c.id].items || []) if (held_any(n) < q && (state.bank_seen[n] || 0) > 0 &&
 			Date.now() - (state.fetch_try["craft:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "craft:" + n });
 	}
+	if (is_merchant()) for (const n of Object.keys(CFG.hold || {})) {
+		const cur = CFG.hold[n];
+		if (partners().some((f) => (f.need || []).includes(n)) && (state.bank_seen[cur] || 0) > 0 && held_any(cur) === 0 &&
+			Date.now() - (state.fetch_try["give:" + cur] || 0) > 1_800_000) fetch.push({ name: cur, key: "give:" + cur });
+	}
 	for (const n of hold_missing()) if (state.bank_seen[n] > 0 && Date.now() - (state.fetch_try["hold:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "hold:" + n });
 	const bx = CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && bank_elixir();
 	if (bx) fetch.push({ name: bx.name, key: "elixir:" + bx.name });
@@ -3027,7 +3032,8 @@ function report_facts() {
 	else {
 		const at_pack = !!p && character.map === p.map && in_boundary(p.boundary, 600);
 		const why_ = p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack");
-		const tgt = p ? `${at_pack ? "" : "→ "}${p.mtype} @ ${p.map}${at_pack ? "" : ` (now at ${character.map})`}` : "nothing";
+		const where = p && !at_pack ? (character.map === p.map ? `${Math.round(Math.hypot(character.x - (p.boundary[0] + p.boundary[2]) / 2, character.y - (p.boundary[1] + p.boundary[3]) / 2))}px away` : `now at ${character.map}`) : "";
+		const tgt = p ? `${at_pack ? "" : "→ "}${p.mtype} @ ${p.map}${where ? ` (${where})` : ""}` : "nothing";
 		// a follower's reason is "following X"; the leader's directive is in the party header
 		F("doing", "self", `fighting: ${tgt}${is_follower() ? ` — ${why_}` : ""}`);
 		F("doing_why", "party", `  because ${why_}`, is_follower());
@@ -3527,6 +3533,23 @@ async function give_pots(f) {
 		if (f.pots) f.pots[kind] += q;
 	}
 }
+// Tokens the merchant holds (fighters used to hand them over as loot) go to fighters still missing a must-hold item
+// bought with them: the one closest to affording it first, just enough to complete it, the rest to the next
+async function give_tokens() {
+	for (const n of Object.keys(CFG.hold || {})) {
+		const cur = CFG.hold[n], price = hold_price(n);
+		if (!price) continue;
+		const lacking = partners_near(350).filter((f) => Array.isArray(f.need) && f.need.includes(n)).sort((a, b) => (b.tokens || 0) - (a.tokens || 0));
+		for (const f of lacking) {
+			const have = held_any(cur), k = character.items.findIndex((i) => i && i.name === cur && !i.l);
+			if (have <= 0 || k < 0) return;
+			const q = Math.min(have, character.items[k].q || 1, Math.max(1, price - (f.tokens || 0)));
+			await wait_budget(1, RESERVE.errand);
+			await T(send_item(f.name, k, q)).then(() => { f.tokens = (f.tokens || 0) + q; game_log(`merchant: ${q} ${cur} → ${f.name} (for its ${n})`, C.ok); log_ev("give", { to: f.name, item: cur, q }); })
+				.catch((e) => game_log(`merchant: tokens to ${f.name}: ${why(e)}`, C.dim));
+		}
+	}
+}
 function mluck_near() {
 	if (!G.skills.mluck || !can_use("mluck")) return;
 	const ents = [character, ...others().map((n) => parent.entities?.[n])];
@@ -3551,6 +3574,7 @@ async function serve(f) {
 			await go({ map: pos.map, x: pos.x, y: pos.y });
 		}
 		for (const p of partners_near(350)) await give_pots(p);
+		await give_tokens();
 		const end = Date.now() + M.wait_ms;
 		while (Date.now() < end && character.esize > 2 && !character.rip) {
 			mluck_near();
