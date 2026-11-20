@@ -8,7 +8,7 @@ const LOADER = "1"; // Adventure Land farmer loader: paste this (once) into each
 // still finds on_party_invite, on_destroy...; report(), history(), selftest() work from the console), and top-level
 // const/let stay private to the eval (so they can't clash with the runner's own globals).
 // =====================================================================
-const FARMER_URL = "https://raw.githubusercontent.com/OWNER/REPO/master/farmer.js"; // set to your repo
+const FARMER_URL = "https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/master/farmer.js";
 const FARMER_CACHE = "farmer_code"; // localStorage key: { text, version, at }
 
 function farmer_cached() {
