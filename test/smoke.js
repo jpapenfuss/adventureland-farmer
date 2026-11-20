@@ -2710,6 +2710,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext(`state.mode_ab && state.mode_ab.split.s === ${ab.split.s} && state.split_on`, ctx), "a new leader adopts the old leader's measurements");
 		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false; state.mode_ab = null; state.partners = {}; state.was_leader = false; hist.ev = []", ctx);
 	}
+	// 114) v24.2: builds are compared by version and, when both know it, commit
+	{
+		assert(vm.runInContext("other_build('1.0', null) && !other_build(VERSION, null) && !other_build(VERSION, 'abc1234')", ctx), "another version differs; the same version with no commit of our own to compare doesn't");
+		assert(vm.runInContext("build_txt('24.2', 'abc1234') === 'v24.2@abc1234' && build_txt('24.2', null) === 'v24.2'", ctx), "build text");
+		const sent114 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent114.push(m); return Promise.resolve(); };
+		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
+		assert(sent114.some((m) => m.k === "hb" && "b" in m), "the heartbeat carries the build commit");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

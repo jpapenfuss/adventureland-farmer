@@ -1,4 +1,4 @@
-const LOADER = "1"; // Adventure Land farmer loader: paste this (once) into each character's CODE slot; it runs the latest farmer.js
+const LOADER = "2"; // Adventure Land farmer loader: paste this (once) into each character's CODE slot; it runs the latest farmer.js
 // =====================================================================
 // Fetches farmer.js from the public GitHub repo below and runs it, so a release reaches every character by restarting
 // its code (no pasting). The last good download is cached in the browser; if GitHub is unreachable that copy runs.
@@ -7,40 +7,59 @@ const LOADER = "1"; // Adventure Land farmer loader: paste this (once) into each
 // with a global indirect eval instead. That behaves like pasted code: function declarations become globals (the game
 // still finds on_party_invite, on_destroy...; report(), history(), selftest() work from the console), and top-level
 // const/let stay private to the eval (so they can't clash with the runner's own globals).
+// v2: raw.githubusercontent.com serves a branch's file from a cache for up to 5 minutes (a ?t= query doesn't get past
+// it), so a reload right after a push could run the previous build. The loader now asks the GitHub API for the
+// branch's newest commit and fetches the file at that commit (never stale); the branch URL is only the fallback when
+// the API is unreachable or rate-limited (60 requests/hour per IP). The commit is shown in the load line and passed on
+// in window.farmer_loaded.sha, so two builds can't be mistaken for each other.
 // =====================================================================
-const FARMER_URL = "https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/master/farmer.js";
-const FARMER_CACHE = "farmer_code"; // localStorage key: { text, version, at }
+const FARMER_REPO = "jpapenfuss/adventureland-farmer", FARMER_BRANCH = "master";
+const FARMER_URL = `https://raw.githubusercontent.com/${FARMER_REPO}/${FARMER_BRANCH}/farmer.js`;
+const FARMER_CACHE = "farmer_code"; // localStorage key: { text, sha, at }
 
 function farmer_cached() {
 	try { return JSON.parse(window.localStorage.getItem(FARMER_CACHE) || "null"); } catch (e) { return null; }
 }
-function farmer_run(text, how) {
+function farmer_run(text, how, sha, url) {
 	const v = (text.match(/^const VERSION = "([^"]+)"/) || [])[1] || "?";
-	window.farmer_loaded = { version: v, how, url: FARMER_URL, loader: LOADER, at: Date.now() };
-	game_log(`farmer v${v} ${how}`, "#8f8");
+	window.farmer_loaded = { version: v, how, url, sha: sha || null, loader: LOADER, at: Date.now() };
+	game_log(`farmer v${v}${sha ? " @" + sha.slice(0, 7) : ""} ${how}`, "#8f8");
 	(0, eval)(text); // global indirect eval (see above)
 }
 const farmer_valid = (text) => typeof text === "string" && text.startsWith("const VERSION =") && text.length > 10_000;
-async function farmer_load() {
-	let text = null, err = null;
+async function farmer_get(url, headers) {
+	const ctl = typeof AbortController === "function" ? new AbortController() : null;
+	const timer = ctl && setTimeout(() => ctl.abort(), 10_000);
 	try {
-		const ctl = typeof AbortController === "function" ? new AbortController() : null;
-		const timer = ctl && setTimeout(() => ctl.abort(), 10_000);
-		const res = await fetch(`${FARMER_URL}?t=${Date.now()}`, { cache: "no-store", signal: ctl?.signal });
-		if (timer) clearTimeout(timer);
+		const res = await fetch(url, { cache: "no-store", signal: ctl?.signal, headers });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		text = await res.text();
-		if (!farmer_valid(text)) throw new Error("download doesn't look like farmer.js");
-	} catch (e) { err = e; text = null; }
+		return await res.text();
+	} finally { if (timer) clearTimeout(timer); }
+}
+async function farmer_load() {
+	let text = null, err = null, sha = null, url = FARMER_URL, how = "loaded from GitHub";
+	try { // the branch's newest commit, as a bare 40-hex string
+		const r = (await farmer_get(`https://api.github.com/repos/${FARMER_REPO}/commits/${FARMER_BRANCH}`, { Accept: "application/vnd.github.sha" })).trim();
+		if (/^[0-9a-f]{40}$/.test(r)) sha = r;
+	} catch (e) {}
+	for (const u of sha ? [`https://raw.githubusercontent.com/${FARMER_REPO}/${sha}/farmer.js`, FARMER_URL] : [FARMER_URL]) {
+		try {
+			text = await farmer_get(u === FARMER_URL ? `${u}?t=${Date.now()}` : u);
+			if (!farmer_valid(text)) throw new Error("download doesn't look like farmer.js");
+			url = u;
+			break;
+		} catch (e) { err = e; text = null; }
+	}
 	if (text) {
-		try { window.localStorage.setItem(FARMER_CACHE, JSON.stringify({ text, at: Date.now() })); } catch (e) { game_log("farmer: couldn't cache the download: " + e, "#fa0"); }
-		return farmer_run(text, "loaded from GitHub");
+		if (url === FARMER_URL) { sha = null; how = "loaded from GitHub (branch copy: may be up to 5 min behind the newest push)"; }
+		try { window.localStorage.setItem(FARMER_CACHE, JSON.stringify({ text, sha, at: Date.now() })); } catch (e) { game_log("farmer: couldn't cache the download: " + e, "#fa0"); }
+		return farmer_run(text, how, sha, url);
 	}
 	const c = farmer_cached();
 	if (c && farmer_valid(c.text)) {
 		const mins = Math.round((Date.now() - c.at) / 60_000);
 		game_log(`farmer: GitHub unreachable (${err && err.message}) — running the cached copy (${mins} min old)`, "#fa0");
-		return farmer_run(c.text, "loaded from cache");
+		return farmer_run(c.text, "loaded from cache", c.sha, "cache");
 	}
 	game_log(`farmer: can't load (${err && err.message}) and no cached copy — not running`, "#f55");
 	set_message("farmer load failed", "red");

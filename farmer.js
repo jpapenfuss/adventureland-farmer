@@ -1,4 +1,4 @@
-const VERSION = "24.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3761,13 +3761,18 @@ function load_state() {
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
+// v24.2: the commit this build came from (loader v2 passes it on); a version number alone can't tell two builds apart
+const BUILD = (() => { const s = typeof window !== "undefined" ? window.farmer_loaded?.sha : null; return typeof s === "string" ? s.slice(0, 7) : null; })();
+const build_txt = (v, b) => `v${v || "?"}${b ? "@" + b : ""}`;
+// Another member runs different code: another version, or the same version from another commit (when both know theirs)
+const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 // v19.2: say which version just started, how it was loaded, and what ran before (per character, in browser storage)
 (() => {
 	const key = "farmer_ver:" + character.name, prev = typeof get === "function" ? get(key) : null;
 	const fl = typeof window !== "undefined" ? window.farmer_loaded : null;
 	const how = fl ? (fl.how || "loaded") : "pasted";
 	const was = prev?.v ? (prev.v === VERSION ? `same as before` : `was v${prev.v}`) : "first run here";
-	game_log(`★ farmer v${VERSION} running — ${how}; ${was}`, prev?.v && prev.v !== VERSION ? "#7f7" : fl?.how?.includes("cache") ? "#fa0" : "#8cf");
+	game_log(`★ farmer ${build_txt(VERSION, BUILD)} running — ${how}; ${was}`, prev?.v && prev.v !== VERSION ? "#7f7" : fl?.how?.includes("cache") ? "#fa0" : "#8cf");
 	if (typeof set === "function") set(key, { v: VERSION, at: Date.now() });
 })();
 setInterval(() => { save_state(); save_hist(); }, 60_000);
@@ -3868,7 +3873,7 @@ function report_facts() {
 		F("party", "party", `party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"}`);
 		for (const n of others()) {
 			const P = state.partners[n];
-			F("partner:" + n, "party", fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, v${P.v || "?"}${P.v !== VERSION ? " ≠ ours: update it" : ""}) on ${P.map}${P.errand ? ", in " + P.errand : ""}`
+			F("partner:" + n, "party", fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, ${build_txt(P.v, P.b)}${other_build(P.v, P.b) ? " ≠ ours: update it" : ""}) on ${P.map}${P.errand ? ", in " + P.errand : ""}`
 				: `  ${n}: no message in 20s (not running the script, or offline)`);
 		}
 	}
@@ -4091,10 +4096,10 @@ function selftest() {
 	ok(kb < 1500, `saved data: ${kb} KB (state + history + stored report)`, true);
 	ok(Number.isFinite(character.cc), `call meter character.cc (${character.cc})`, true);
 	const fl = typeof window !== "undefined" ? window.farmer_loaded : null;
-	ok(true, fl ? `loaded via loader v${fl.loader} (${fl.how}) from ${fl.url}` : "pasted directly (no loader)");
+	ok(true, fl ? `loaded via loader v${fl.loader} (${fl.how}) from ${fl.url}${fl.sha ? "" : " — commit unknown: loader v1 or the branch copy"}` : "pasted directly (no loader)");
 	for (const n of party_names_all().filter((x) => x !== character.name)) {
 		const P = n === CFG.merchant?.name ? state.merchant : state.partners[n];
-		ok(fresh(P), `${n}: ${fresh(P) ? `heartbeat ${Math.round((now - P.t) / 1000)}s ago, v${P.v}${P.v !== VERSION ? " ≠ ours" : ""}` : "no heartbeat in 10s"}`, true);
+		ok(fresh(P), `${n}: ${fresh(P) ? `heartbeat ${Math.round((now - P.t) / 1000)}s ago, ${build_txt(P.v, P.b)}${other_build(P.v, P.b) ? " ≠ ours" : ""}` : "no heartbeat in 10s"}`, true);
 	}
 	ok(true, `cm received: ${Object.entries(seen.cm).map(([k, n]) => `${k} ${n}`).join(", ") || "none"}`);
 	const others_ = party_names_all().filter((x) => x !== character.name);
@@ -4150,12 +4155,12 @@ function report_reply(m) {
 	report_reply_at[rk] = now;
 	const h = +m.message.hours || 0;
 	const lines = m.message.kind === "history" ? history_lines(h || 6) : m.message.kind === "gear" ? gear_check_lines() : [...report_lines(false, true), ...(h > 0 ? history_lines(h) : [])];
-	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, lines })).catch(() => {});
+	Promise.resolve(send_cm([from], { k: "rrep", id: m.message.id, v: VERSION, b: BUILD, lines })).catch(() => {});
 }
 function report_collect(m) {
 	const g = gathers.get(m.message.id);
 	if (!g || !g.want.has(m.name)) return;
-	g.got[m.name] = { v: m.message.v, lines: Array.isArray(m.message.lines) ? m.message.lines : [] };
+	g.got[m.name] = { v: m.message.v, b: m.message.b || null, lines: Array.isArray(m.message.lines) ? m.message.lines : [] };
 	if ([...g.want].every((n) => g.got[n])) report_finish(g.id);
 }
 function report_finish(id) {
@@ -4166,10 +4171,10 @@ function report_finish(id) {
 	const order = [character.name, ...members, ...(CFG.merchant?.name && CFG.merchant.name !== character.name ? [CFG.merchant.name] : [])];
 	const replied = [...g.want].filter((n) => g.got[n]).length;
 	const hist_k = g.kind === "history" || g.kind === "gear";
-	const out = [`══ party ${g.kind === "history" ? `history (${g.hours || 6}h)` : g.kind === "gear" ? "gear_check" : "report"} v${VERSION} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...(hist_k ? [] : party_header_lines())];
+	const out = [`══ party ${g.kind === "history" ? `history (${g.hours || 6}h)` : g.kind === "gear" ? "gear_check" : "report"} ${build_txt(VERSION, BUILD)} ${new Date(g.at).toLocaleTimeString()} — ${replied}/${g.want.size} replied (from ${character.name}) ══`, ...(hist_k ? [] : party_header_lines())];
 	for (const n of order) {
-		const v = g.got[n]?.v;
-		out.push("", `▌ ${n}${v && v !== VERSION ? ` (v${v} ≠ v${VERSION}: update it)` : ""}`);
+		const v = g.got[n]?.v, b = g.got[n]?.b;
+		out.push("", `▌ ${n}${v && other_build(v, b) ? ` (${build_txt(v, b)} ≠ ${build_txt(VERSION, BUILD)}: update it)` : ""}`);
 		if (g.got[n]) { out.push(...g.got[n].lines); continue; }
 		const stored = !hist_k && typeof get === "function" ? get("farmer_report:" + n) : null;
 		if (stored && Array.isArray(stored.lines)) out.push(`(no reply — stored copy, ${ago(stored.at)} old, v${stored.v})`, ...stored.lines);
@@ -4381,7 +4386,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -4433,7 +4438,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
 	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one party-wide clock
 	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, C.info);
-	if (first && m.message.v !== VERSION) game_log(`party: ${m.name} runs v${m.message.v || "?"}, we run v${VERSION} - load the same version on every character`, C.warn);
+	if (first && other_build(m.message.v, m.message.b)) game_log(`party: ${m.name} runs ${build_txt(m.message.v, m.message.b)}, we run ${build_txt(VERSION, BUILD)} - load the same version on every character`, C.warn);
 });
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) heartbeat(); }, CFG.party.beat_ms);
 // Game party membership. Accepting an invite (or having your join request accepted) makes the server pull you out of
@@ -4501,7 +4506,7 @@ const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
-	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+	const msg = { k: "mhb", v: VERSION, b: BUILD, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});

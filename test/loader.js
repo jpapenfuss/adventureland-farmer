@@ -23,6 +23,21 @@ const good = `const VERSION = "9.9";\n` + "// pad\n".repeat(3000);
 	let s = sandbox(async () => ({ ok: true, text: async () => good }));
 	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
 	assert(s.ran.length === 1 && JSON.parse(s.store.farmer_code).text === good && s.logs.some((l) => /farmer v9.9 loaded from GitHub/.test(l)), "download is cached and run");
+	// 1b) v2: the API names master's newest commit → the file is fetched at that commit (not the cached branch copy)
+	const SHA = "3f57324" + "a".repeat(33), urls = [];
+	s = sandbox(async (u, o) => { urls.push([u, o && o.headers]); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA + "\n" } : { ok: true, text: async () => good }; });
+	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
+	assert(urls.length === 2 && /repos\/jpapenfuss\/adventureland-farmer\/commits\/master$/.test(urls[0][0]) && urls[0][1].Accept === "application/vnd.github.sha"
+		&& urls[1][0] === `https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/farmer.js`, `the file at the newest commit is fetched (${urls.map((x) => x[0]).join(", ")})`);
+	assert(s.ctx.window.farmer_loaded.sha === SHA && JSON.parse(s.store.farmer_code).sha === SHA && s.logs.some((l) => /farmer v9\.9 @3f57324 loaded from GitHub$/.test(l)), "the commit is logged, passed on and cached");
+	// 1c) API refused (rate limit) → branch copy, said so
+	s = sandbox(async (u) => (/api\.github\.com/.test(u) ? { ok: false, status: 403 } : { ok: true, text: async () => good }));
+	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
+	assert(s.ran.length === 1 && s.ctx.window.farmer_loaded.sha === null && s.logs.some((l) => /branch copy: may be up to 5 min behind/.test(l)), "no API → the branch copy runs, flagged as possibly behind");
+	// 1d) the commit's file fails → branch copy
+	s = sandbox(async (u) => (/api\.github\.com/.test(u) ? { ok: true, text: async () => SHA } : u.includes(SHA) ? { ok: false, status: 404 } : { ok: true, text: async () => good }));
+	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
+	assert(s.ran.length === 1 && s.ctx.window.farmer_loaded.sha === null && s.logs.some((l) => /branch copy/.test(l)), "the commit's file unavailable → branch copy");
 	// 2) bad body → cached copy
 	const store = { farmer_code: JSON.stringify({ text: good, at: Date.now() - 120000 }) };
 	s = sandbox(async () => ({ ok: true, text: async () => "<html>404</html>" }), store);
