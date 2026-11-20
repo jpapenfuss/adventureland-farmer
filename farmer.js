@@ -1,4 +1,4 @@
-const VERSION = "23.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -162,6 +162,8 @@ const CFG = {
 	min_upgrade_chance: 0.80,  // upgrade only at >= 80% success (the server's own preview); failure destroys the item
 	min_compound_chance: 0.80, // same for compounding (failure destroys all three inputs)
 	min_chance_rebuyable: 0.5, // items NPCs sell: failure only costs gold, accept the guide's odds down to this
+	rebuy_loss_max: 100_000,   // compounds of NPC-sold items take compound_min_chance_rebuyable odds only when the three
+	                           //   copies are worth at most this (a +L copy = 3^L base copies; v23.1)
 	min_chance_spare: 0.6,     // you hold another copy at that level or higher (bags/worn): a failure costs a spare
 	gear_actions: ["equip", "buy", "upgrade", "develop", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
 	                           // guide row kinds the bot executes; other kinds are logged once and left to you
@@ -321,7 +323,8 @@ const state = {
 	last_target_at: Date.now(), // last time we had something to fight (idle detection)
 	best_score: 0,           // best free-choice pack's xp/s (reference for quest opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
-	measured: {},            // pack key -> measured xp/s, averaged (saved)
+	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
+	measured_solo: {},       // pack key -> measured xp/s farming it alone (split) (saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
 	danger_at: {},           // monster id -> last death/flee (fading pauses for an hour after one) (saved)
@@ -501,7 +504,10 @@ function farmable_entity(e) {
 // evasion (physical) / avoidance miss; reflection bounces magic; dreturn hits melee; lifesteal/self_healing heal.
 // solo (v23.0): judge the fight with no partner damage, no tank cover and no priest heals. Default: whenever we farm
 // alone (split mode) — partners passing by, or still near as a split starts, aren't there for the fight.
+// solo = "all" (v23.1): every online member counts wherever it is — planning something that regroups the party
+// (a boss, a probe); false: the members near now
 function fight_math(m, use_tank = true, solo = solo_now()) {
+	const mates = solo === true ? [] : solo === "all" ? partners() : partners_near();
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -511,13 +517,13 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = !solo && use_tank && !(m.aggro > 0.3) && tank_cover(), D = tank || character; // who the monster will be hitting
+	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? partners() : undefined), D = tank || character; // who the monster will be hitting
 	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
 	const their_dps = their_hit * (m.frequency || 1);
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0); // heal per s
 	let our_dps = hit * land * character.frequency - heal_dps;
-	if (!solo) for (const P of partners_near()) if (P.attack && P.frequency) { // every nearby member shoots the same target
+	for (const P of mates) if (P.attack && P.frequency) { // every member counted shoots the same target
 		const pmring = P.damage_type === "magical";
 		our_dps += P.attack * dm(((pmring ? m.resistance : m.armor) || 0) - ((pmring ? P.rpiercing : P.apiercing) || 0)) * (pmring ? 1 : 1 - pct(m.evasion)) * P.frequency;
 	}
@@ -528,7 +534,8 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 		// returns dreturn % of each physical hit to attackers with range < 75 (melee)
 	const chase = m.charge || m.speed || 0; // targeted monsters move at charge speed
 	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
-	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp, solo };
+	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp,
+		solo: solo === true, team: solo === true ? "solo" : solo === "all" ? "all" : "near" };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
 // Safety multiplier for a monster: calibration (how its fights went vs the model) × incidents (deaths/flees, fading)
@@ -541,12 +548,13 @@ function calib_factor(mtype) {
 	return 1;
 }
 const danger_of = (mtype) => calib_factor(mtype) * (state.danger[mtype] || 1);
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype) *
-	(!f.solo && partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+// A priest among the members the verdict counted heals us through it (none when judged alone)
+const heal_mult = (f) => (!f.solo && (f.team === "all" ? partners() : partners_near()).some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype) * heal_mult(f);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
-function tank_cover() {
+function tank_cover(pool = partners_near(300)) {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
-	return partners_near(300).find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp &&
+	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp &&
 		Number.isFinite(p.armor) && p.v === VERSION) || null;
 }
 // Hold fire on an untouched monster while the tank engages it (tells the tank the target right away, not at the
@@ -661,8 +669,11 @@ function resolve_area(monster, map, boundary, count) {
 function score_area(t, pack, area) {
 	const f = state.safe[t];
 	const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-	return { est, score: state.measured[pack_key(area)] ?? est * state.realism };
+	return { est, score: meas()[pack_key(area)] ?? est * state.realism };
 }
+// Measured xp/s per spot, one table per mode (v23.1): a spot farmed by the whole party kills ~n times as fast as by one
+// fighter alone, so the two can't share a table. Split = farming alone; together = the party's rate.
+const meas = (split = split_now()) => (split ? state.measured_solo : state.measured);
 
 // =====================================================================
 // Where to fight
@@ -683,10 +694,10 @@ function set_pack(p, label) {
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
 // ---- Probing (CFG.probe) ----
 // How far over the safety limit a monster is: fight_risk ÷ the same budget safe_enough uses (1 = exactly at it)
-function risk_over(mt) {
-	const m = G.monsters[mt], f = m && fight_math(m);
+function risk_over(mt, team = solo_now()) {
+	const m = G.monsters[mt], f = m && fight_math(m, true, team);
 	if (!f) return Infinity;
-	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mt) * (!f.solo && partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mt) * heal_mult(f);
 	return fight_risk(f) / Math.max(1, limit);
 }
 const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower() && leader_hb()?.pack?.probe)) ? CFG.probe.flee_hp : CFG.flee_hp);
@@ -721,22 +732,38 @@ function probe_why() {
 	if (lp) return `${lp.name} potions under ${CFG.pot_min * 2}`;
 	return "ready (next pick)";
 }
-// Best-xp spot of a monster just past the limit that would beat the best normal spot by min_gain
-function probe_pick() {
+// Best-xp spot of a monster just past the limit that would beat the best normal spot by min_gain. team: who the fight
+// is judged with (default: as now); ref: the best normal xp/s to beat (default: this pick's)
+function probe_pick(team = solo_now(), ref = state.best_score) {
 	const P = CFG.probe, now = Date.now();
 	let best = null;
 	for (const mt in G.monsters) {
-		if (!farmable_type(mt) || state.safe[mt] || skipped("probe:" + mt)) continue;
-		const r = risk_over(mt);
+		if (!farmable_type(mt) || skipped("probe:" + mt)) continue; // safe ones fail r > 1 below
+		const r = risk_over(mt, team);
 		if (!(r > 1 && r <= P.max_over)) continue;
-		const m = G.monsters[mt], f = fight_math(m);
+		const m = G.monsters[mt], f = fight_math(m, true, team);
 		each_area((pack, area) => {
 			if (pack.type !== mt || (!pack.grow && (expected_respawn(mt, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 			if ((state.cooldown[pack_key(area)] || 0) > now) return;
 			const est = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-			if (est >= P.min_gain * (state.best_score || 0) && (!best || est > best.est)) best = { mt, area, est, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
+			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
+	return best;
+}
+// Best normal spot's xp/s for a team, without being there (v23.1: the probe check before a regroup compares against
+// the party's best, not the split fighter's solo best)
+function best_score_for(team) {
+	const prof = {}, tab = team === true ? state.measured_solo : state.measured;
+	let best = 0;
+	each_area((pack, area) => {
+		const t = pack.type;
+		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t], true, team); prof[t] = f && safe_enough(f, t) ? f : null; }
+		const f = prof[t];
+		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
+		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+		best = Math.max(best, tab[pack_key(area)] ?? est * state.realism);
+	});
 	return best;
 }
 // Leader: end a running probe on time (success) or on trouble (failure)
@@ -813,9 +840,9 @@ function pick_pack() {
 	}
 	const cur = state.pack;
 	if (cur && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now) && best && pack_key(best) !== pack_key(cur)) {
-		if (best.score < (state.measured[pack_key(cur)] ?? cur.score) * CFG.switch_margin) best = cur;
+		if (best.score < (meas()[pack_key(cur)] ?? cur.score) * CFG.switch_margin) best = cur;
 	}
-	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${state.measured[pack_key(best)] ? " measured" : " est"})`);
+	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
 	// split, nothing we can farm alone: follow the leader for a while (is_follower turns true until split_fallback)
 	if (!best && split_now() && leader_name() !== character.name) state.split_fallback = now + CFG.party.split.fallback_min * 60_000;
 }
@@ -856,8 +883,8 @@ function end_session() {
 	if (s.split) rate = s.kx / secs;
 	else if (s.kc_n > 0) rate = s.kc / secs;
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
-	const prev = state.measured[s.key];
-	state.measured[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
+	const tab = meas(s.split), prev = tab[s.key];
+	tab[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	if (s.est > 0) state.realism = state.realism * 0.7 + (rate / s.est) * 0.3; // slow-moving average of measured ÷ estimate
 	game_log(`${s.key}: ${rate.toFixed(1)} xp/s over ${secs.toFixed(0)}s`, C.dim);
@@ -1977,7 +2004,9 @@ async function task_compound() {
 		if (state.errand) state.errand_at = Date.now(); // progress keeps the errand lock
 		const g = compound_groups().find((x) => x.bags.length >= 3);
 		if (!g) break;
-		const floor = shop_for(g.name) && !G.items[g.name]?.cash ? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
+		// rebuyable odds only when the three copies are cheap: a +L copy embodies 3^L base copies (v23.1)
+		const floor = shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
+			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
 		if (!gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
 		try {
@@ -2097,17 +2126,22 @@ async function task_upgrade() {
 		}
 		if (!gold_ok(step)) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
 		state.fund_need = 0;
-		if (P.spent_from === undefined) P.spent_from = character.gold;
-		if (P.spent_from - character.gold > P.cost * CFG.upgrade_abort_x) {
+		// v23.1: the gold the project's steps cost (copy + scrolls), counted per step — measuring from total gold let loot,
+		// sales, potion buys and the fighters' funding move it
+		if (P.spent === undefined) P.spent = 0;
+		if (P.spent > P.cost * CFG.upgrade_abort_x) {
 			skip("upg:" + P.name, 24 * 3600_000, "over budget");
 			game_log(`upgrade ${P.name}: failures pushed the cost past ${CFG.upgrade_abort_x}x the estimate; stopped${top >= 1 ? ` at +${top}` : ""}`, C.bad);
 			state.upg = null;
 			break;
 		}
+		const g0 = character.gold;
 		try {
 			await run_upgrade({ name: P.name }, { request: { name: P.name, level: P.to } });
+			P.spent += Math.max(0, g0 - character.gold);
 			n++;
 		} catch (e) {
+			P.spent += Math.max(0, g0 - character.gold);
 			skip("upg:" + P.name, pause_ms(e, 24 * 3600_000), why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
 			game_log(`upgrade ${P.name}: ${why(e)}; project stopped${top >= 1 ? ` at +${top}` : ""}`, C.dim);
 			state.upg = null; // the copy reached so far is free again (equip/share judge it)
@@ -2286,7 +2320,7 @@ function bag_plan() {
 	// blocked the fetch, while quest progress counted bags + bank — "spores 12(+8 bank)/20" never farmed, fetched or
 	// crafted). A fetched stack merges into the bag stack (the server's add_item), so the craft's one-stack rule is met.
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
-	const short_of = (n) => (G.items[n]?.s ? held_any(n) < (state.needs.get(n) || 1) : held_any(n) + worn(n) === 0);
+	const short_of = (n) => (G.items[n]?.s ? held_any(n) < (state.needs.get(n) || 1) && bank_share(n) > 0 : held_any(n) + worn(n) === 0);
 	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && short_of(n) &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
 	{
@@ -2513,7 +2547,11 @@ function drop_sources(item) {
 	return out.length ? out : DROP_FALLBACK[item] || [];
 }
 const drop_rate = (mt, item) => (drop_sources(item).find(([m]) => m === mt) || [, 0])[1];
-// Best place to farm an item: the safe monster/area with the most items per second (chance × kills/s)
+// Fighters sharing loot: the server gives each chest item to a random party member wherever it is, weighted by its xp
+// share (equal among one account's fighters; the merchant's is 0). Our expected cut of any drop is 1 / party_n().
+const party_n = () => 1 + (in_party_cfg() ? partners().length : 0);
+// Best place to farm an item: the safe monster/area with the most items per second (chance × kills/s) — counted as
+// the items that reach US (v23.1: ÷ party_n; quest times were ~n x too optimistic and stall checks fired early)
 function best_source(item) {
 	let best = null;
 	for (const [mt, rate] of drop_sources(item)) {
@@ -2521,10 +2559,11 @@ function best_source(item) {
 		if (!f) continue;
 		each_area((pack, area) => {
 			if (pack.type !== mt) return;
-			const m = state.measured[pack_key(area)];
+			const m = meas()[pack_key(area)];
 			const kps = m !== undefined ? m / Math.max(1, f.xp) // measured xp/s ÷ xp per kill = kills/s
 				: Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-			if (!best || rate * kps > best.ips) best = { monster: mt, ...area, ips: rate * kps };
+			const ips = (rate * kps) / party_n();
+			if (!best || ips > best.ips) best = { monster: mt, ...area, ips };
 		});
 	}
 	return best;
@@ -2662,11 +2701,11 @@ function quest_directive(guide_only) {
 		if (!pickm || (!guided && total_s > CFG.quest_farm_max_h * 3600)) continue;
 		const f = fight_profile(pickm.monster);
 		// xp/s at that pack (items/s ÷ chance per kill = kills/s; × xp per kill); 1e-9 avoids dividing by zero
-		const qxp = state.measured[pack_key(pickm)] ?? (f ? f.xp * pickm.ips / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
+		const qxp = meas()[pack_key(pickm)] ?? (f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
 		if (!guided && state.best_score > 0 && qxp < CFG.quest_farm_min_xp * state.best_score) continue;
 		const sk = id + ":" + pickm.item, now = Date.now();
 		if (!state.qprog || state.qprog.key !== sk || pickm.have > state.qprog.have) state.qprog = { key: sk, have: pickm.have, t: now };
-		else if (now - state.qprog.t > CFG.quest_stall_min * 60_000) {
+		else if (now - state.qprog.t > Math.max(CFG.quest_stall_min * 60_000, 3000 / Math.max(pickm.ips, 1e-9))) { // or 3 expected drops' time
 			skip("qc:" + id, CFG.quest_shelve_h * 3600_000);
 			game_log(`quest: no ${pickm.item} in ${CFG.quest_stall_min} min at ${pickm.monster}; retrying ${id} in ${CFG.quest_shelve_h}h`, C.bad);
 			state.qprog = null;
@@ -2678,7 +2717,21 @@ function quest_directive(guide_only) {
 	return null;
 }
 // Material count for a recipe: bags at that level, plus the bank's last-seen count for +0 materials
-const owned_in_bags_or_bank = (n, l) => held(n, l) + (l ? 0 : state.bank_seen[n] || 0);
+const owned_in_bags_or_bank = (n, l) => held(n, l) + (l ? 0 : bank_share(n));
+// Our share of the bank's copies of a quest material (v23.1). The bank is account-wide and every fighter runs the same
+// own quests, so each used to count all of it toward its own copy. Copies go to the fighters short of the item (bags
+// vs what they need; each one's shortfall comes in its heartbeat) in name order, so all agree. The merchant counts all.
+const qshort = () => { const o = {}; for (const [n, q] of state.needs) if (G.items[n]?.s) { const v = q - held_any(n); if (v > 0) o[n] = v; } return o; };
+function bank_share(n) {
+	const pool = state.bank_seen[n] || 0;
+	if (!pool || is_merchant() || !in_party_cfg()) return pool;
+	const mine = Math.max(0, (state.needs.get(n) || 0) - held_any(n));
+	const claims = [...(mine > 0 ? [{ name: character.name, s: mine }] : []),
+		...partners().filter((p) => p.qshort?.[n] > 0).map((p) => ({ name: p.name, s: p.qshort[n] }))].sort((a, b) => (a.name < b.name ? -1 : 1));
+	let left = pool;
+	for (const c of claims) { const take = Math.min(left, c.s); if (c.name === character.name) return take; left -= take; }
+	return left; // not short of it ourselves (crafting materials...): what the members short of it leave
+}
 // Farm our own monster hunt's target if we can fight it safely
 // A hunt that can't be finished before it expires (h.ms left) isn't worth chasing: let it lapse and take a new one
 // (v18.6: a 417-bee hunt pulled the party onto bees at half the xp/s of croc for hours). Party kills count, so the
@@ -2686,13 +2739,14 @@ const owned_in_bags_or_bank = (n, l) => held(n, l) + (l ? 0 : state.bank_seen[n]
 // xp/s we'd get at a monster's best area (measured if we've been there, else estimated)
 function mt_xps(mt) {
 	let best = 0;
-	each_area((pack, area) => { if (pack.type === mt && state.measured[pack_key(area)] !== undefined) best = Math.max(best, state.measured[pack_key(area)]); });
+	const tab = meas();
+	each_area((pack, area) => { if (pack.type === mt && tab[pack_key(area)] !== undefined) best = Math.max(best, tab[pack_key(area)]); });
 	if (best) return best;
 	const f = fight_profile(mt);
 	return f ? kills_per_s(mt) * (f.xp || G.monsters[mt]?.xp || 0) : 0;
 }
 // The best xp/s we know of: this pick's best, or the best measured pack
-const best_known_xps = () => Math.max(state.best_score || 0, ...Object.values(state.measured || {}).filter(Number.isFinite), 0);
+const best_known_xps = () => Math.max(state.best_score || 0, ...Object.values(meas() || {}).filter(Number.isFinite), 0);
 function hunt_feasible(h) {
 	if (!h || !(h.c > 0)) return false;
 	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
@@ -2718,7 +2772,7 @@ function kills_per_s(mt) {
 	let best = 0;
 	each_area((pack, area) => {
 		if (pack.type !== mt) return;
-		const m = state.measured[pack_key(area)];
+		const m = meas()[pack_key(area)];
 		const kps = m !== undefined ? m / Math.max(1, f.xp) : Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
 		best = Math.max(best, kps);
 	});
@@ -2823,13 +2877,15 @@ async function run_hunt() {
 	return r;
 }
 // ---- World bosses (CFG.boss) ----
-function boss_safe(name) {
+// team "all" (v23.1, the default): every online member counts wherever it is — a boss target regroups the party
+// (split_decide), so judging it only with whoever happens to be near (nobody, while split) skipped bosses the party
+// could take. boss_tick only engages once it's safe with the members actually there (team false).
+function boss_safe(name, team = "all") {
 	const m = G.monsters[name];
-	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true); // their side of the fight only
+	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true, team); // their side of the fight only
 	if (!f) return false;
-	const heal = partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1;
-	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * CFG.safety * heal) return false;
-	const squish = Math.min(character.max_hp, ...partners_near().map((p) => p.max_hp || Infinity));
+	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * CFG.safety * heal_mult(f)) return false;
+	const squish = Math.min(character.max_hp, ...(team === "all" ? partners() : partners_near()).map((p) => p.max_hp || Infinity));
 	return f.their_dps / (m.frequency || 1) <= squish * CFG.boss.one_hit;
 }
 // The live boss we'd join (highest xp), from the server's event list
@@ -2856,6 +2912,11 @@ function boss_directive() {
 // Leader/solo at a boss pack: fight it when in view, else walk to its last reported position
 function boss_tick(pack) {
 	const e = Object.values(parent.entities || {}).find((x) => x.type === "monster" && x.mtype === pack.mtype && x.visible && !x.dead);
+	if (e && !e.target && !boss_safe(pack.mtype, false)) { // judged with the whole party: wait for it before engaging
+		state.last_target_at = Date.now();
+		set_message(`BOSS ${pack.mtype}: waiting for the party (${partners_near().length}/${partners().length} here)`);
+		return true;
+	}
 	if (e) {
 		state.last_target_at = Date.now();
 		fight(e, true);
@@ -3550,12 +3611,12 @@ const SAVE_KEY = "farmer_v9:" + character.name; // historical name — don't cha
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), meas_v: 2, measured: state.measured, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), meas_v: 3, measured: state.measured, measured_solo: state.measured_solo, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
-		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [],
+		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0,
@@ -3567,8 +3628,10 @@ function load_state() {
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
 	// v23.0: measurements are now in one unit (base xp of kills at the spot); older ones mixed received xp (a share of
 	// every party kill) with own kills, so they're dropped once and re-measured
-	if (d.meas_v === 2) {
+	// v23.1: party and solo rates are kept apart; v23.0's single table mixed them, so it's dropped too
+	if (d.meas_v === 3) {
 		Object.assign(state.measured, d.measured || {});
+		Object.assign(state.measured_solo, d.measured_solo || {});
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
 	Object.assign(state.danger, d.danger || {});
@@ -3589,6 +3652,7 @@ function load_state() {
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
+	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due (and a regroup) at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
@@ -3625,7 +3689,7 @@ load_state();
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, measured_solo: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
@@ -3774,7 +3838,7 @@ function report_facts() {
 		const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
 		const why_ = P ? null : probe_why(), none = state.probe_none && Date.now() - state.probe_none.at < 2 * 3600_000 ? state.probe_none : null;
 		F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : why_}` +
-			(none && !P ? ` | last check ${ago(none.at)} ago: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
+			(none && !P ? ` | last check ${ago(none.at)} ago${none.dry ? " (before regrouping)" : ""}: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
 			(last ? ` | last probe: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""));
 	}
 	if (p && !p.boss && !M_) F("safety", "self", `safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
@@ -3809,7 +3873,8 @@ function report_facts() {
 	}
 	if (!M_) for (const id of quest_recipes()) {
 		const r = G.craft[id];
-		const inputs = r.items.map(([q, n, l]) => `${n}${l ? "+" + l : ""} ${held(n, l)}${state.bank_seen[n] ? `(+${state.bank_seen[n]} bank)` : ""}/${q}`).join(", ");
+		const inputs = r.items.map(([q, n, l]) => { const b = l ? 0 : bank_share(n), t = state.bank_seen[n] || 0;
+			return `${n}${l ? "+" + l : ""} ${held(n, l)}${b ? `(+${b} bank${t > b ? ` of ${t}` : ""})` : t && !l ? `(bank ${t}: partners' share)` : ""}/${q}`; }).join(", ");
 		const pk = quest_parked(id) && quest_park_cache.get(id);
 		const st = pk ? `parked ~${Math.round(pk.eta)}h to farm (> ${CFG.quest_park_h}h; materials banked)` : !recipe_wanted(id) ? "done" : skipped("qc:" + id) ? `paused ${mins(state.gear_skip["qc:" + id])}` : has_inputs(r) ? "READY to craft" : "collecting";
 		F("quest:" + id, "self", `quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`, st === "done");
@@ -4110,6 +4175,17 @@ function split_decide() {
 	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void (state.split_on = false);
 	let on = !state.probe && !state.directive?.boss && !event_live();
 	if (on && P?.enabled && now - (state.probe_at || 0) >= P.every_min * 60_000) {
+		// v23.1: only call everyone back if a probe would find something — judged for the whole party (as it would be
+		// once regrouped) against the party's best normal spot. Most checks find nothing; each regroup cost a walk.
+		if (!state.regroup_since) {
+			const ref = best_score_for("all"), pb = probe_pick("all", ref);
+			if (!pb) {
+				state.probe_at = now;
+				state.probe_none = { at: now, best: Math.round(ref), dry: true };
+				log_ev("probe_dry", { best: Math.round(ref) });
+				return void (state.split_on || (state.split_on = true, state.last_pick = 0, log_ev("split", {}), game_log("party: farming separately (equal xp shares wherever we are)", C.info)));
+			}
+		}
 		state.regroup_since = state.regroup_since || now;
 		if (now - state.regroup_since < S_.regroup_max_min * 60_000) on = false;
 		else { state.probe_at = now; state.regroup_since = 0; log_ev("regroup_timeout", {}); game_log(`party: not everyone made it back for the probe in ${S_.regroup_max_min} min; skipping it this round`, C.dim); }
@@ -4126,7 +4202,7 @@ function split_decide() {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, qshort: qshort(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -4775,6 +4851,21 @@ async function merchant_handoff() {
 			return;
 		}
 		const needed = needed_slots(), cmp = compound_slots(needed);
+		// v23.1: a piece that's an upgrade for a partner who isn't near goes to the merchant, which delivers it
+		// (gear_target → serve → share_gear). share_gear only reaches members within gear_share_range, which split
+		// fighters rarely are, so such pieces used to sit in our bags. Not for pieces we'd wear ourselves.
+		const near_n = new Set(partners_near(CFG.gear_share_range).map((p) => p.name)), mine = my_gear();
+		const gk = character.items.findIndex((it, i) => {
+			if (!it || it.l || it.b || needed.has(i) || !GEAR.has(G.items[it.name]?.type) || (!equip_paused(it) && gear_gain(it, character.ctype, mine))) return false;
+			const want = gear_takers().slice(1).filter((m) => gear_gain(it, m.ctype, m.g));
+			return want.length > 0 && !want.some((m) => near_n.has(m.name));
+		});
+		if (gk >= 0 && can_spend(1, RESERVE.errand)) {
+			const it = character.items[gk];
+			await T(send_item(M.name, gk, 1)).then(() => { M.esize--; game_log(`merchant: gave ${it.name}+${it.level || 0} to deliver (an upgrade for a partner away)`, C.dim); log_ev("give", { to: M.name, item: `${it.name}+${it.level || 0}`, deliver: true }); })
+				.catch((er) => game_log(`merchant: giving ${it.name}: ${why(er)}`, C.dim));
+			return;
+		}
 		const k = character.items.findIndex((it) => it && ["bank", "sell"].includes(bag_class(it, needed, cmp)) && !gear_wanted_by(it));
 		if (k < 0 || !can_spend(1, RESERVE.errand)) return;
 		const it = character.items[k];

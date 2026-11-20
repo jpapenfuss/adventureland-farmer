@@ -2270,10 +2270,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
 		vm.runInContext("state.probe_at = Date.now(); split_decide()", ctx);
 		assert(vm.runInContext("state.split_on && split_now()", ctx), "leader: nothing special going on → split");
-		vm.runInContext("state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()", ctx);
-		assert(vm.runInContext("!state.split_on && state.regroup_since > 0", ctx), "probe due → regroup");
+		// v23.1: a due probe first checks (for the whole party) whether there's anything to probe
+		vm.runInContext("globalThis.__pp = probe_pick; probe_pick = () => null; state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()", ctx);
+		assert(vm.runInContext("state.split_on && !state.regroup_since && Date.now() - state.probe_at < 5000 && state.probe_none && state.probe_none.dry", ctx),
+			"probe due but nothing to probe → no regroup, next check in every_min");
+		vm.runInContext("probe_pick = () => ({ mt: 'edge', area: {}, est: 1, r: 1.4 }); state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()", ctx);
+		assert(vm.runInContext("!state.split_on && state.regroup_since > 0", ctx), "probe due with a candidate → regroup");
 		vm.runInContext("state.regroup_since = Date.now() - CFG.party.split.regroup_max_min * 60000 - 1; split_decide()", ctx);
 		assert(vm.runInContext("state.split_on && Date.now() - state.probe_at < 5000", ctx), "nobody came back in time → probe skipped this round, split again");
+		vm.runInContext("probe_pick = globalThis.__pp", ctx);
 		vm.runInContext("state.directive = { monster: 'franky', boss: true }; split_decide()", ctx);
 		assert(vm.runInContext("!state.split_on", ctx), "a boss → together");
 		vm.runInContext("state.directive = null; state.split_on = false", ctx);
@@ -2289,10 +2294,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("is_follower()", ctx), "regroup: the follower follows");
 		// v21.1: while split, a pack's measurement counts our own kills, not the shared xp we receive
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51 });
-		vm.runInContext("state.partners = {}; state.split_on = true; state.measured = {}", ctx);
+		vm.runInContext("state.partners = {}; state.split_on = true; state.measured = {}; state.measured_solo = {}", ctx);
 		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
 		vm.runInContext(`state.session = { key: "main:0,0,10,10", mtype: "goo", est: 0, xp: 9000, kx: 300, split: true, start: Date.now() - 100000 }; end_session()`, ctx);
-		assert(Math.round(vm.runInContext("state.measured['main:0,0,10,10']", ctx)) === 3, `split: own kills (300 xp / 100s = 3), not received xp 90 (${vm.runInContext("state.measured['main:0,0,10,10']", ctx)})`);
+		assert(Math.round(vm.runInContext("state.measured_solo['main:0,0,10,10']", ctx)) === 3 && vm.runInContext("state.measured['main:0,0,10,10'] === undefined", ctx),
+			`split: own kills (300 xp / 100s = 3) in the solo table (v23.1), not received xp 90 (${vm.runInContext("state.measured_solo['main:0,0,10,10']", ctx)})`);
 		vm.runInContext(`state.session = { key: "main:0,0,10,11", mtype: "goo", est: 0, xp: 9000, kx: 300, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:0,0,10,11'] === undefined", ctx), "a measurement that spans a mode change is dropped");
 		vm.runInContext("state.partners = {}; CFG.party.split.enabled = false; state.split_on = false; state.measured = {}", ctx);
@@ -2417,6 +2423,99 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(JSON.stringify(paid) === '[["DoWhatNow",3000]]' && vm.runInContext("state.owe", ctx) === 0, `paid when the merchant is near (${JSON.stringify(paid)})`);
 		ctx.send_gold = sg; ctx.send_item = si; ctx.send_cm = scm;
 		vm.runInContext("state.merchant = null; state.partners = {}; state.owe = 0", ctx);
+	}
+	// 107) v23.1 medium fixes
+	{
+		const V = vm.runInContext("VERSION", ctx);
+		// per-mode measurement tables: split reads the solo table, together the party table
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, attack: 100, frequency: 1, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
+		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.measured = { 'main:100,100,400,400': 11 }; state.measured_solo = { 'main:100,100,400,400': 77 }", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 2000, y: 0 });
+		vm.runInContext("state.split_on = true; state.safe.goo = { ttk: 1, xp: 10 }", ctx);
+		assert(vm.runInContext("score_area('goo', G.maps.main.monsters[0], { map: 'main', boundary: [100,100,400,400], count: 5 }).score", ctx) === 77, "split: the solo table");
+		vm.runInContext("state.split_on = false", ctx);
+		assert(vm.runInContext("score_area('goo', G.maps.main.monsters[0], { map: 'main', boundary: [100,100,400,400], count: 5 }).score", ctx) === 11, "together: the party table");
+		vm.runInContext("state.measured = {}; state.measured_solo = {}; CFG.party.split.enabled = false", ctx);
+		// the probe timer is saved
+		{
+			const st = {}; const set_s = ctx.set, get_s = ctx.get;
+			ctx.set = (k, v) => ((st[k] = JSON.parse(JSON.stringify(v))), true); ctx.get = (k) => st[k] ?? null;
+			const t0 = Date.now() - 600000;
+			vm.runInContext(`state.probe_at = ${t0}; save_state(); state.probe_at = 0; load_state()`, ctx);
+			assert(vm.runInContext(`state.probe_at === ${t0}`, ctx), "probe_at survives a reload");
+			ctx.set = set_s; ctx.get = get_s;
+		}
+		// bosses: judged with the whole party (members away count), engaged only once safe with those here
+		ctx.G.monsters.bossx = { xp: 50000, hp: 100000, attack: 500, frequency: 1, range: 50, speed: 10, respawn: 600, armor: 0, resistance: 0 };
+		vm.runInContext("state.partners = {}", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 3000, y: 0, max_hp: 20000, hp: 20000, armor: 900, resistance: 900, v: V });
+		assert(vm.runInContext("boss_safe('bossx') && !boss_safe('bossx', false)", ctx), "boss: safe with the party (tank away counts), not with whoever is here");
+		const atk107 = []; const atk_s = ctx.attack; ctx.attack = (e) => (atk107.push(e.id), Promise.resolve());
+		ctx.parent.entities = { b1: { id: "b1", type: "monster", mtype: "bossx", visible: true, hp: 100000, max_hp: 100000, x: 10, y: 0, target: null } };
+		vm.runInContext("inflight.attack = false; boss_tick({ mtype: 'bossx', map: 'main', boundary: [0,0,10,10], boss: true })", ctx);
+		assert(atk107.length === 0, "boss: waits for the party before engaging");
+		hb("Torlis", { ...tor, level: 60, x: 20, y: 0, max_hp: 20000, hp: 20000, armor: 900, resistance: 900, v: V });
+		vm.runInContext("inflight.attack = false; boss_tick({ mtype: 'bossx', map: 'main', boundary: [0,0,10,10], boss: true })", ctx);
+		assert(atk107.includes("b1"), `boss: the tank is here → engage (${atk107})`);
+		ctx.attack = atk_s; ctx.parent.entities = {}; vm.runInContext("state.partners = {}", ctx);
+		// the shared bank, shared out: fighters short of a material claim the bank's copies in name order
+		ctx.G.items.spores = { type: "material", s: 9999 };
+		character.items = Array(42).fill(null); character.items[1] = { name: "spores", q: 10 }; // Sanala holds 10 of 20 → short 10
+		vm.runInContext("state.needs = new Map([['spores', 20]]); state.bank_seen = { spores: 12 }", ctx);
+		hb("Aspernari", { ...asp, x: 900, y: 0, qshort: { spores: 8 } });
+		hb("Torlis", { ...tor, level: 60, x: 900, y: 0, qshort: { spores: 5 } });
+		assert(vm.runInContext("bank_share('spores')", ctx) === 4, `12 in the bank: Aspernari 8, Sanala 4, Torlis 0 (${vm.runInContext("bank_share('spores')", ctx)})`);
+		assert(vm.runInContext("owned_in_bags_or_bank('spores', 0)", ctx) === 14, "Sanala's quest counts 10 in bags + her 4");
+		vm.runInContext("state.needs = new Map(); state.bank_seen = {}; state.partners = {}", ctx);
+		character.items = Array(42).fill(null);
+		// loot sharing: items per second that reach us = drops ÷ fighters in the party
+		ctx.G.monsters.minimush = { xp: 20, hp: 50, attack: 1, frequency: 1, range: 20, speed: 10, respawn: 5, armor: 0, resistance: 0 };
+		vm.runInContext("G.maps.main.monsters.push({ type: 'minimush', count: 6, boundary: [500, 500, 700, 700] }); state.measured = {}; state.measured_solo = {}", ctx);
+		const solo_ips = vm.runInContext("best_source('spores').ips", ctx);
+		hb("Aspernari", { ...asp, x: 3000, y: 0 }); hb("Torlis", { ...tor, level: 60, x: 3000, y: 0 });
+		const party_ips = vm.runInContext("best_source('spores').ips", ctx);
+		assert(Math.abs(solo_ips / party_ips - 3) < 0.01, `3 fighters: a third of the spores reach us (${solo_ips} vs ${party_ips})`);
+		vm.runInContext("state.partners = {}; G.maps.main.monsters = G.maps.main.monsters.filter((p) => p.type !== 'minimush')", ctx);
+		// partner gear goes to the merchant when the partner is away
+		ctx.G.items.plate2 = { type: "chest", armor: 300 };
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60, gold: 500000, map: "main", x: 0, y: 0 });
+		character.items = Array(42).fill(null); character.slots = { chest: { name: "plate2", level: 0 } }; character.items[2] = { name: "plate2", level: 0 };
+		vm.runInContext("state.partners = {}; state.owe = 0; handoff_busy = false; merchant_gold_at = Date.now(); my_gear_cache = null; state.needs = new Map(); state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 40, y: 0, esize: 30, gold: 1e6 }", ctx);
+		hb("Sanala", { ...san, level: 51, x: 3000, y: 0, gear: { w: { chest: 0 }, own: {} } });
+		const gv = []; const si_s = ctx.send_item; ctx.send_item = (to, k, q) => (gv.push([to, character.items[k]?.name]), Promise.resolve());
+		await vm.runInContext("merchant_handoff()", ctx);
+		assert(JSON.stringify(gv) === '[["DoWhatNow","plate2"]]', `an upgrade for Sanala (away) goes to the merchant to deliver (${JSON.stringify(gv)})`);
+		ctx.send_item = si_s; character.items = Array(42).fill(null); character.slots = {};
+		vm.runInContext("state.merchant = null; state.partners = {}", ctx);
+		// upgrade projects count what their steps cost, not total gold changes
+		vm.runInContext(`state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 3e6 }; state.gear_skip = {};
+			globalThis.__ru = run_upgrade; run_upgrade = async () => ({ success: true });`, ctx);
+		Object.assign(character, { gold: 9e6 });
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg === null && skipped('upg:wbow')", ctx), "3M spent on a 1M project → stopped, whatever our gold");
+		vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6 }; state.gear_skip = {}; run_upgrade = async () => { character.gold -= 4000; return { success: true }; }", ctx);
+		character.items = Array(42).fill(null); character.items[0] = { name: "computer" };
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg && state.upg.spent >= 4000", ctx), `each step's cost is added (${vm.runInContext("state.upg && state.upg.spent", ctx)})`);
+		vm.runInContext("run_upgrade = globalThis.__ru; state.upg = null; state.gear_skip = {}", ctx);
+		character.items = Array(42).fill(null);
+		// compounds of NPC-sold items take the rebuyable odds only while the three copies are cheap
+		{
+			ctx.G.items.cring = { type: "ring", compound: {}, g: 10000 }; ctx.G.npcs.jeweler = { items: ["cring"] };
+			const fn_s = ctx.find_npc; ctx.find_npc = () => ({ map: "main", x: 0, y: 0 });
+			const floors = [];
+			vm.runInContext(`globalThis.__cg2 = compound_groups; globalThis.__rc2 = run_compound; globalThis.__lvl = 0;
+				compound_groups = () => [{ name: "cring", level: globalThis.__lvl, key: "cmp:cring:" + globalThis.__lvl, bags: [1, 2, 3], bank: 0 }];
+				run_compound = (a, row, floor) => { globalThis.__floors.push(floor); return Promise.resolve({ success: true }); };
+				globalThis.__floors = []; CFG.compound_per_run = 1;`, ctx);
+			await vm.runInContext("task_compound()", ctx);
+			vm.runInContext("globalThis.__lvl = 2", ctx);
+			await vm.runInContext("task_compound()", ctx);
+			const fl = vm.runInContext("globalThis.__floors", ctx);
+			assert(fl[0] === 0.6 && fl[1] === 0.75, `cring+0 (3 x 10k) at 60%; cring+2 (worth 270k) needs 75% (${JSON.stringify(fl)})`);
+			vm.runInContext("compound_groups = globalThis.__cg2; run_compound = globalThis.__rc2; CFG.compound_per_run = 6; cmp_cache = null", ctx);
+			ctx.find_npc = fn_s;
+		}
 	}
 	all_done = true;
 	console.log("ALL PASS");
