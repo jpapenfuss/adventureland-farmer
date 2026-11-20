@@ -1854,6 +1854,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.S = { schedule: {}, event_flags: {}, event_ends: { goobrawl: new Date(Date.now() + 3e5).toISOString() } };
 	assert(vm.runInContext("event_live()", ctx) === "goobrawl", "...or from a future event_ends entry");
 	ctx.parent.S = {};
+	// 86) time accounting: moving while engaged with a target is fight time; a smart_move is walk time
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", moving: true, rip: false });
+	vm.runInContext("state.recovering = false; state.errand = null; smart_depth = 0; state.last_target_at = Date.now()", ctx);
+	const gtm86 = ctx.get_targeted_monster;
+	ctx.get_targeted_monster = () => ({ id: "x", hp: 10 });
+	assert(vm.runInContext("time_class()", ctx) === "fight", "approaching a live target counts as fighting");
+	vm.runInContext("smart_depth = 1", ctx);
+	assert(vm.runInContext("time_class()", ctx) === "walk", "a smart_move counts as walking");
+	vm.runInContext("smart_depth = 0", ctx); ctx.get_targeted_monster = gtm86; character.moving = false;
 	all_done = true;
 	console.log("ALL PASS");
 })();

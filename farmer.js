@@ -1,4 +1,4 @@
-const VERSION = "17.5"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -838,8 +838,11 @@ function time_class() {
 	if (character.rip) return "dead";
 	if (state.recovering) return "recover";
 	if (errand_busy()) return state.errand === "town" ? "town" : "errand";
-	if (walking() || character.moving) return "walk";
-	if (Date.now() - (state.last_target_at || 0) < 3000 && get_targeted_monster()) return "fight";
+	if (walking()) return "walk"; // a smart_move: travelling between places
+	const t = get_targeted_monster();
+	// stepping toward / around a live target (melee approach, kiting, a follower keeping up mid-fight) is fighting
+	if (t && !t.dead && Date.now() - (state.last_target_at || 0) < 3000) return "fight";
+	if (character.moving) return "walk";
 	return "idle";
 }
 let err_seen = {};
