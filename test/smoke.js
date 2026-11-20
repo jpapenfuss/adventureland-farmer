@@ -1093,7 +1093,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const tg = { id: "b1", type: "monster", mtype: "brute", visible: true, hp: 4000, max_hp: 4000, x: 100, y: 0, target: null };
 	ctx.parent.entities.b1 = tg;
 	const cms = []; ctx.send_cm = (to, m) => (cms.push([to.join(), m.k]), Promise.resolve());
-	assert(vm.runInContext("hold_for_tank(parent.entities.b1)", ctx) && JSON.stringify(cms) === '[["Torlis","tgt"]]', `holds fire and points Torlis at it (${JSON.stringify(cms)})`);
+	assert(vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "holds fire on an untouched monster while Torlis is near");
 	vm.runInContext("tank_hold.at -= CFG.party.tank_hold_ms + 1", ctx);
 	assert(!vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "gives up holding after tank_hold_ms");
 	tg.target = "Torlis";
@@ -1363,5 +1363,38 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(!stops64.length, "never during an errand (town)");
 	vm.runInContext("smart_depth = 0; state.pack = null", ctx);
 	delete ctx.parent.entities.m64; ctx.distance = dist_save; ctx.stop = (a) => calls.push("stop:" + a);
+	// 65) assist the tank: the tank picks and announces; the mage follower and a non-tank leader hit its target
+	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	ctx.G.monsters.goo.aggro = 0;
+	const cms65 = []; ctx.send_cm = (to, m) => (cms65.push([to.join(), m.k, m.id]), Promise.resolve());
+	// Torlis (tank) following Sanala: picks the goo near her, broadcasts it
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", range: 25, x: 0, y: 0, map: "main", rip: false, moving: false, hp: 3000, max_hp: 3000, attack: 300, s: {} });
+	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; announced = null; state.fsafe_at = 0", ctx);
+	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: "far65", v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+	hb("Aspernari", { ...asp, x: 20, y: 30, v: V });
+	ctx.parent.entities.g65 = { id: "g65", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 120, y: 0, target: null };
+	ctx.parent.entities.far65 = { id: "far65", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 280, y: 0, target: null };
+	const at65 = []; ctx.attack = (e) => (at65.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
+	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
+	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "g65" && /Sanala/.test(to) && /Aspernari/.test(to)), `the tank picks its own target and announces it to everyone (${JSON.stringify(cms65)})`);
+	// Aspernari (follower, not the tank) assists Torlis instead of hitting the leader's target
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", range: 200, x: 20, y: 30, hp: 2500, max_hp: 2500 });
+	vm.runInContext("state.partners = {}", ctx);
+	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: "far65", v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+	hb("Torlis", { ...tor, x: 100, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000 });
+	handlers.cm({ name: "Torlis", message: { k: "tgt", id: "g65" } });
+	ctx.parent.entities.g65.target = "Torlis"; at65.length = 0;
+	vm.runInContext("inflight.attack = false; CFG.party.heal_at = 0; follower_tick(); CFG.party.heal_at = 0.75", ctx);
+	assert(at65.includes("g65") && !at65.includes("far65"), `a follower hits the tank's target, not the leader's (${at65})`);
+	// tank away (errand): back to the leader's target
+	hb("Torlis", { ...tor, x: 100, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000, errand: "town" });
+	ctx.parent.entities.far65.target = "Sanala"; at65.length = 0;
+	vm.runInContext("inflight.attack = false; CFG.party.heal_at = 0; follower_tick(); CFG.party.heal_at = 0.75", ctx);
+	assert(at65.includes("far65"), `with the tank away, the leader's target is used (${at65})`);
+	// non-tank party (no paladin near): caller_target is null
+	vm.runInContext("delete state.partners.Torlis", ctx);
+	assert(vm.runInContext("caller_target() === null && !i_am_tank()", ctx), "without a tank nothing changes");
+	for (const id of ["g65", "far65"]) delete ctx.parent.entities[id];
+	ctx.distance = dist_save; ctx.send_cm = () => Promise.resolve();
 	console.log("ALL PASS");
 })();

@@ -74,7 +74,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "15.3";
+const VERSION = "15.4";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -497,11 +497,23 @@ function hold_for_tank(t) {
 	if (!tank) return false;
 	const solo = G.monsters[t.mtype] && fight_math({ ...G.monsters[t.mtype], hp: t.max_hp || G.monsters[t.mtype].hp, attack: t.attack ?? G.monsters[t.mtype].attack }, false);
 	if (solo && safe_enough(solo, t.mtype)) return false; // safe without the tank: no reason to wait
-	if (tank_hold.id !== t.id) {
-		tank_hold.id = t.id; tank_hold.at = Date.now();
-		if (typeof send_cm === "function") Promise.resolve(send_cm([tank.name], { k: "tgt", id: t.id })).catch(() => {});
-	}
+	if (tank_hold.id !== t.id) { tank_hold.id = t.id; tank_hold.at = Date.now(); }
 	return Date.now() - tank_hold.at < CFG.party.tank_hold_ms;
+}
+// ---- Assist the tank (v15.4): with a tank near, it picks the targets and everyone else hits its target ----
+const i_am_tank = () => CFG.party.tank_first && in_party_cfg() && CFG.gear_tank.includes(character.ctype) && partners_near(400).length > 0;
+// The tank's current target, as a live entity (its "tgt" broadcasts update state.partners[tank].target at once)
+function caller_target() {
+	const tank = tank_cover();
+	const id = tank && state.partners[tank.name]?.target, e = id && parent.entities?.[id];
+	return e && valid(e) && e.type === "monster" ? e : null;
+}
+// The tank tells everyone its new target right away (not at the next heartbeat)
+let announced = null;
+function announce_target(t) {
+	if (!t || announced === t.id || !i_am_tank() || typeof send_cm !== "function") return;
+	announced = t.id;
+	Promise.resolve(send_cm(others(), { k: "tgt", id: t.id })).catch(() => {});
 }
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
@@ -3388,9 +3400,11 @@ function follower_tick() {
 	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}` } : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
-	let t = L.target && parent.entities[L.target];
-	const pos = partner_pos(L);
-	if (!(t && valid(t) && t.type === "monster")) t = choose_target(false) || follower_pick(pos);
+	const pos = partner_pos(L), lt = L.target && parent.entities[L.target];
+	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
+	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader
+	let t = i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : caller_target() || leader_t || choose_target(false) || follower_pick(pos);
+	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
 	// attacking it, and only hit what wandered into range
@@ -3544,7 +3558,8 @@ function tick() {
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
-			const t = choose_target(in_area || !pack);
+			const t = (!i_am_tank() && caller_target()) || choose_target(in_area || !pack);
+			announce_target(t);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
 				fight(t, true);
