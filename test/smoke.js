@@ -1776,7 +1776,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.needs = new Map(); state.fetched = {}; cmp_cache = null", ctx);
 	assert(vm.runInContext("bag_class(character.items[0])", ctx) === "keep", "fighters keep their monster tokens");
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: 0 });
-	character.items = Array(42).fill(null); character.items[3] = { name: "monstertoken", q: 4 }; character.items[4] = { name: "tracker", q: 1 };
+	character.items = Array(42).fill(null); character.items[3] = { name: "monstertoken", q: 4 }; // tokens only (no tracker of its own here)
 	vm.runInContext("state.partners = {}", ctx);
 	hb("Sanala", { ...san, x: 30, y: 0, tokens: 1, need: ["tracker"] });
 	hb("Torlis", { ...tor, x: 30, y: 10, tokens: 0, need: ["tracker"] });
@@ -1791,6 +1791,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(JSON.stringify(gt81) === '[["Sanala",3],["Torlis",1]]', `Sanala gets 3 (1→4), Torlis the last one; Aspernari (has one) nothing (${JSON.stringify(gt81)})`);
 	character.items = Array(42).fill(null); ctx.distance = dist_save;
 	vm.runInContext("state.partners = {}", ctx);
+	// 82) fighters first: the merchant's own tracker goes to a fighter lacking one; nobody buys the merchant a copy
+	// while any fighter still lacks theirs
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: 0 });
+	character.items = Array(42).fill(null); character.items[2] = { name: "tracker", q: 1 };
+	vm.runInContext("state.partners = {}", ctx);
+	hb("Torlis", { ...tor, x: 30, y: 0, tokens: 0, need: ["tracker"] });
+	hb("Sanala", { ...san, x: 30, y: 10, tokens: 0, need: [] });
+	const g82 = []; ctx.send_item = (to, k, q) => { g82.push([to, character.items[k].name]); character.items[k] = null; return Promise.resolve(); };
+	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+	await vm.runInContext("give_tokens()", ctx);
+	assert(JSON.stringify(g82) === '[["Torlis","tracker"]]', `merchant's tracker goes to Torlis (${JSON.stringify(g82)})`);
+	// a fighter with spare tokens doesn't buy for the merchant while Torlis (on its heartbeat) still lacks one
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", x: 0, y: 0 });
+	character.items = Array(42).fill(null); character.items[0] = { name: "monstertoken", q: 9 }; character.items[1] = { name: "tracker", q: 1 };
+	vm.runInContext("state.partners = {}; state.bank_seen = {}; state.hold_for = {}; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 50, y: 0, esize: 20, gold: 1e6, need: ['tracker'] }", ctx);
+	hb("Torlis", { ...tor, tokens: 0, need: ["tracker"] });
+	assert(vm.runInContext("hold_for_merchant()", ctx) === null, "no copy bought for the merchant while a fighter lacks one");
+	hb("Torlis", { ...tor, tokens: 0, need: [] });
+	assert(vm.runInContext("hold_for_merchant() && hold_for_merchant().for", ctx) === "DoWhatNow", "once every fighter has one, the merchant's copy is bought");
+	character.items = Array(42).fill(null); ctx.distance = dist_save;
+	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

@@ -1,4 +1,4 @@
-const VERSION = "17.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3536,6 +3536,16 @@ async function give_pots(f) {
 // Tokens the merchant holds (fighters used to hand them over as loot) go to fighters still missing a must-hold item
 // bought with them: the one closest to affording it first, just enough to complete it, the rest to the next
 async function give_tokens() {
+	// fighters first: our own copy of a must-hold item goes to a near fighter that lacks it (we're re-supplied later,
+	// once every fighter has one)
+	for (const n of Object.keys(CFG.hold || {})) {
+		const f = partners_near(350).find((x) => Array.isArray(x.need) && x.need.includes(n));
+		const k = character.items.findIndex((i) => i && i.name === n && !i.l);
+		if (!f || k < 0) continue;
+		await wait_budget(1, RESERVE.errand);
+		await T(send_item(f.name, k, 1)).then(() => { f.need = f.need.filter((x) => x !== n); game_log(`merchant: gave our ${n} to ${f.name} (fighters first)`, C.ok); log_ev("give", { to: f.name, item: n }); })
+			.catch((e) => game_log(`merchant: ${n} to ${f.name}: ${why(e)}`, C.dim));
+	}
 	for (const n of Object.keys(CFG.hold || {})) {
 		const cur = CFG.hold[n], price = hold_price(n);
 		if (!price) continue;
@@ -3600,6 +3610,7 @@ function hold_for_merchant() {
 	if (!M || !Array.isArray(M.need) || is_merchant()) return null;
 	for (const n of M.need) {
 		const price = hold_price(n), cur = CFG.hold[n];
+		if (hold_missing().includes(n) || partners().some((f) => (f.need || []).includes(n))) continue; // fighters first
 		if (!price || state.bank_seen[n] > 0 || held_any(n) !== 1 || state.hold_for[n]) continue; // ours only, no extra yet
 		const me = { name: character.name, tokens: held_any(cur), need: hold_missing() };
 		const ok = [me, ...partners()].filter((f) => Array.isArray(f.need) && !f.need.includes(n) && (f.tokens || 0) >= price)
