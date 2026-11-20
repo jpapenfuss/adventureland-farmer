@@ -1436,10 +1436,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 1, x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
 	vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; state.recovering = false; smart_depth = 0; hist.ev = []; wd.acts = []; wd.lost_since = null", ctx);
 	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}", ctx);
-	const seed = (mins, dx = 0) => vm.runInContext(`wd.pos = [{ t: Date.now() - ${mins} * 60000, map: 'main', x: ${100 + dx}, y: 100, xp: stats.xp }]`, ctx);
+	// v23.0: progress = our own hits/kills (party xp arrives from partners' kills anywhere)
+	const seed = (mins, dx = 0) => vm.runInContext(`wd.pos = [{ t: Date.now() - ${mins} * 60000, map: 'main', x: ${100 + dx}, y: 100, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]`, ctx);
 	const stop66 = []; ctx.stop = (w) => stop66.push(w);
 	seed(4);
-	vm.runInContext("watchdog()", ctx);
+	vm.runInContext("stats.xp += 5000; watchdog()", ctx); // xp from partners' kills doesn't count as our progress
 	assert(vm.runInContext("hist.ev.some((e) => e.type === 'stuck' && e.kind === 'frozen') && Object.keys(state.cooldown).length === 1", ctx) && stop66.includes("smart"), "frozen leader: walk stopped, pack cooled down, logged");
 	// moving but no xp for 11 min → noprog; third time in an hour → town
 	vm.runInContext("hist.ev = []; state.cooldown = {}", ctx);
@@ -2335,6 +2336,87 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(called === 0 && vm.runInContext("state.guide === null && state.guide_farm === null && !next_guide_row(state.guide)", ctx), "guide off: not read, no rows, no farm row");
 		assert(vm.runInContext("!is_guide_quest('wattire') && !state.needs.has('coat')", ctx), "guide off: no guide quests, nothing held for it");
 		vm.runInContext("CFG.guide_enabled = true; state.guide_quests = {}", ctx); ctx.get_progression = gp_s;
+	}
+	// 106) v23.0 high-priority fixes
+	{
+		// (1) quest materials split between bags and bank: fetch the rest
+		ctx.G.items.spores = { type: "material", s: 9999 };
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "main", x: 0, y: 0, rip: false, esize: 30 });
+		character.items = Array(42).fill(null); character.items[3] = { name: "spores", q: 12 }; character.slots = {};
+		vm.runInContext("state.partners = {}; state.merchant = null; state.needs = new Map([['spores', 20]]); state.bank_seen = { spores: 8 }; state.fetch_try = {}; state.bank_gear = []; cmp_cache = null; craft_cache = null", ctx);
+		assert(vm.runInContext("bag_plan().fetch.includes('spores')", ctx), "12 spores in bags + 8 in the bank, 20 needed → the bank's are fetched");
+		character.items[3].q = 20;
+		assert(!vm.runInContext("bag_plan().fetch.includes('spores')", ctx), "20 in bags → nothing fetched");
+		ctx.G.items.hX = { type: "helmet", armor: 5 };
+		character.items[3] = { name: "hX", level: 0 };
+		vm.runInContext("state.needs = new Map([['hX', 2]]); state.bank_seen = { hX: 1 }", ctx);
+		assert(!vm.runInContext("bag_plan().fetch.includes('hX')", ctx), "gear: a copy in the bags still blocks the fetch (no fetch/bank loop)");
+		character.items = Array(42).fill(null);
+		vm.runInContext("state.needs = new Map(); state.bank_seen = {}", ctx);
+
+		// (2) farming alone (split) → fights judged solo: no partner damage, tank or priest heals
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, attack: 100, frequency: 1, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0 });
+		ctx.G.classes.mage = { ...(ctx.G.classes.mage || {}), damage_type: "magical" };
+		ctx.G.monsters.solo_t = { xp: 100, hp: 1000, attack: 30, frequency: 1, range: 20, speed: 10, respawn: 5, armor: 0, resistance: 0 };
+		vm.runInContext("state.partners = {}; state.split_on = false; live_cache.clear(); state.spread_c = null", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 20, y: 0, attack: 900, frequency: 1, damage_type: "physical", armor: 500, resistance: 300, max_hp: 6000, hp: 6000, v: vm.runInContext("VERSION", ctx) });
+		const party_ttk = vm.runInContext("fight_math(G.monsters.solo_t).ttk", ctx);
+		vm.runInContext("CFG.party.split.enabled = true; state.split_on = true", ctx);
+		const sf = vm.runInContext("fight_math(G.monsters.solo_t)", ctx);
+		assert(sf.solo === true && sf.ttk > party_ttk * 3, `split: Torlis near doesn't count (solo ttk ${sf.ttk.toFixed(1)}s vs ${party_ttk.toFixed(1)}s with him)`);
+		vm.runInContext("state.split_on = false; CFG.party.split.enabled = false", ctx);
+		// spread: a monster the party kills in < 3s but we'd need 10s alone isn't ours to take
+		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, attack: 100, frequency: 1, x: 0, y: 0 });
+		hb("Sanala", { ...san, level: 51, x: 30, y: 0, attack: 900, frequency: 1, damage_type: "magical" });
+		vm.runInContext("state.spread_c = null", ctx);
+		assert(!vm.runInContext("spread_ok('solo_t')", ctx), "spread: judged alone (10s solo), not with the party's damage");
+		vm.runInContext("state.partners = {}; state.spread_c = null; live_cache.clear()", ctx);
+
+		// (3) one measurement unit: together = party kills (kill_credit), split = own kills
+		vm.runInContext("state.partners = {}; state.split_on = false; state.measured = {}", ctx);
+		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, split: false, start: Date.now() - 100000 };
+			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
+		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
+		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
+		assert(vm.runInContext("state.measured['main:1,1,9,8'] === undefined", ctx), "together with no kill_credit in the session: not measured");
+		vm.runInContext("state.measured = {}", ctx);
+		// the socket hook: kill_credit listener registered once, the previous script's replaced; emit re-wrapped after a reload
+		{
+			const on = [], off = []; let real = 0;
+			const sock = { emit() { real++; }, on(ev, f) { on.push([ev, f]); }, off(ev, f) { off.push([ev, f]); } };
+			ctx.parent.socket = sock;
+			vm.runInContext("meter_socket(); meter_socket()", ctx);
+			assert(on.length === 1 && on[0][0] === "kill_credit", `kill_credit listener registered once (${on.length})`);
+			const old = () => {}; sock.__farmer_kc = old;
+			vm.runInContext("meter_socket()", ctx);
+			assert(off.length === 1 && off[0][1] === old && on.length === 2, "the previous script's listener is removed and ours added");
+			sock.__xp_meter = []; // what a previous script leaves behind
+			vm.runInContext("meter_socket(); sent.length = 0; parent.socket.emit('x')", ctx);
+			assert(vm.runInContext("sent.length", ctx) === 1 && real === 1, `after a reload our meter counts again, one wrapper deep (${vm.runInContext("sent.length", ctx)} counted, ${real} sent)`);
+			ctx.parent.socket = { emit() {} };
+		}
+
+		// (5) potions: the merchant bills, the fighter pays when near
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, gold: 200000, map: "main", x: 0, y: 0, rip: false, esize: 30 });
+		character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 300 };
+		const bills = [], si = ctx.send_item, scm = ctx.send_cm;
+		ctx.send_item = () => Promise.resolve();
+		ctx.send_cm = (to, m) => (bills.push([to.join(), m]), Promise.resolve());
+		await vm.runInContext("give_pots({ name: 'Torlis', pots: { hp: 50, mp: 200 } })", ctx);
+		const bill = bills.find(([, m]) => m.k === "bill");
+		assert(bill && bill[0] === "Torlis" && bill[1].g === 150 * 20, `merchant bills Torlis for 150 hpot1 at 20 = 3000 (${JSON.stringify(bill)})`);
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, gold: 500000, map: "main", x: 0, y: 0 });
+		character.items = Array(42).fill(null);
+		vm.runInContext("state.owe = 0; state.partners = {}; handoff_busy = false; merchant_gold_at = Date.now()", ctx);
+		handlers.cm({ name: "DoWhatNow", message: { k: "bill", g: 3000, what: "150 hpot1" } });
+		assert(vm.runInContext("state.owe", ctx) === 3000, "the fighter records the bill");
+		assert(/owes DoWhatNow 3k for potions/.test(vm.runInContext("report_lines(false).join('\\n')", ctx)), "report shows the unpaid bill");
+		vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 50, y: 0, esize: 30, gold: 200000 }", ctx);
+		const paid = []; const sg = ctx.send_gold; ctx.send_gold = (to, g) => (paid.push([to, g]), Promise.resolve());
+		await vm.runInContext("merchant_handoff()", ctx);
+		assert(JSON.stringify(paid) === '[["DoWhatNow",3000]]' && vm.runInContext("state.owe", ctx) === 0, `paid when the merchant is near (${JSON.stringify(paid)})`);
+		ctx.send_gold = sg; ctx.send_item = si; ctx.send_cm = scm;
+		vm.runInContext("state.merchant = null; state.partners = {}; state.owe = 0", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");

@@ -1,4 +1,4 @@
-const VERSION = "22.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "23.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -55,7 +55,7 @@ const CFG = {
 	// frozen_min → stop the walk, cool the pack, re-pick. noprog: leader/solo with a pack but no xp for noprog_min →
 	// cool the pack and re-pick (3rd time in an hour: teleport to town first). lost: a follower out of reach of the
 	// leader (other map / > follow_far) for lost_min → teleport to town, then walk to the leader.
-	watchdog: { enabled: true, frozen_min: 3, noprog_min: 10, lost_min: 5 },
+	watchdog: { enabled: true, frozen_min: 3, noprog_min: 10, lost_min: 5 }, // v23.0: "no xp" now means no hits / no kills of our own
 	history_max: 1500,         // events kept in the persistent log (history(), deaths()); ~300KB per character
 	history_hours: 48,         // hourly time/xp/gold buckets kept
 	gear_auto: true,           // equip bag/bank items that score higher than what's worn; hand spares to party members
@@ -398,14 +398,32 @@ const BUDGET = { window_ms: 4000, soft: 110 };
 // player update it sends back. Anything not listed costs 1.
 const EMIT_COST = { move: 2.5, equip: 5, unequip: 8, equip_batch: 6 };
 const sent = []; // [timestamp, cost] of every packet in the current window
-// Wrap the socket's emit so every packet (ours and the game UI's) is counted. A reconnect creates a new socket, so
-// tick() calls this every time; the __xp_metered flag stops double-wrapping.
+// Wrap the socket's emit so every packet (ours and the game UI's) is counted. tick() calls this every time: a reconnect
+// creates a new socket, and a code reload leaves the previous script's wrapper counting into ITS array (v23.0: before,
+// a flag stopped the new script from wrapping, so after any reload only the server's lagging character.cc was seen).
+// The wrapper is rebuilt over the original emit whenever it isn't ours. The same hook keeps our kill_credit listener on
+// the live socket, replacing the previous script's.
 function meter_socket() {
 	const s = parent.socket;
-	if (!s || s.__xp_metered) return;
-	const orig = s.emit;
-	s.emit = function (ev, ...args) { sent.push([Date.now(), EMIT_COST[ev] || 1]); return orig.call(this, ev, ...args); };
-	s.__xp_metered = true;
+	if (!s) return;
+	if (s.__xp_meter !== sent) {
+		const orig = s.__xp_orig_emit || s.emit;
+		s.__xp_orig_emit = orig;
+		s.emit = function (ev, ...args) { sent.push([Date.now(), EMIT_COST[ev] || 1]); return orig.call(this, ev, ...args); };
+		s.__xp_meter = sent;
+	}
+	if (typeof s.on === "function" && s.__farmer_kc !== on_kill_credit) {
+		if (s.__farmer_kc && typeof s.off === "function") try { s.off("kill_credit", s.__farmer_kc); } catch (e) {}
+		s.on("kill_credit", on_kill_credit);
+		s.__farmer_kc = on_kill_credit;
+	}
+}
+// Server "kill_credit" { mtype }: sent to every party member for every party kill, wherever they are (and to a solo
+// player for its own). Counts the party's kills for pack measurements (together) and the watchdog (v23.0).
+function on_kill_credit(d) {
+	seen.kc = (seen.kc || 0) + 1;
+	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
+	if (state.session) { state.session.kc = (state.session.kc || 0) + xp; state.session.kc_n = (state.session.kc_n || 0) + 1; }
 }
 function spent() {
 	const cut = Date.now() - BUDGET.window_ms;
@@ -481,7 +499,9 @@ function farmable_entity(e) {
 
 // Server complete_attack(): hit = attack · damage_multiplier(defense − pierce); 1hp targets take 1;
 // evasion (physical) / avoidance miss; reflection bounces magic; dreturn hits melee; lifesteal/self_healing heal.
-function fight_math(m, use_tank = true) {
+// solo (v23.0): judge the fight with no partner damage, no tank cover and no priest heals. Default: whenever we farm
+// alone (split mode) — partners passing by, or still near as a split starts, aren't there for the fight.
+function fight_math(m, use_tank = true, solo = solo_now()) {
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -491,13 +511,13 @@ function fight_math(m, use_tank = true) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = use_tank && !(m.aggro > 0.3) && tank_cover(), D = tank || character; // who the monster will be hitting
+	const tank = !solo && use_tank && !(m.aggro > 0.3) && tank_cover(), D = tank || character; // who the monster will be hitting
 	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
 	const their_dps = their_hit * (m.frequency || 1);
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0); // heal per s
 	let our_dps = hit * land * character.frequency - heal_dps;
-	for (const P of partners_near()) if (P.attack && P.frequency) { // every nearby member shoots the same target
+	if (!solo) for (const P of partners_near()) if (P.attack && P.frequency) { // every nearby member shoots the same target
 		const pmring = P.damage_type === "magical";
 		our_dps += P.attack * dm(((pmring ? m.resistance : m.armor) || 0) - ((pmring ? P.rpiercing : P.apiercing) || 0)) * (pmring ? 1 : 1 - pct(m.evasion)) * P.frequency;
 	}
@@ -508,7 +528,7 @@ function fight_math(m, use_tank = true) {
 		// returns dreturn % of each physical hit to attackers with range < 75 (melee)
 	const chase = m.charge || m.speed || 0; // targeted monsters move at charge speed
 	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
-	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp };
+	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp, solo };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
 // Safety multiplier for a monster: calibration (how its fights went vs the model) × incidents (deaths/flees, fading)
@@ -522,7 +542,7 @@ function calib_factor(mtype) {
 }
 const danger_of = (mtype) => calib_factor(mtype) * (state.danger[mtype] || 1);
 const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mtype) *
-	(partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+	(!f.solo && partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover() {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
@@ -564,14 +584,14 @@ function fight_profile(mtype) {
 // Live-stat check per entity: monsters level up when left alive, and an elite can be several times stronger than its
 // G.monsters entry. Verdicts are cached per entity id and recomputed when its level/HP/attack changes.
 const live_cache = new Map(); // entity id -> { key, ok, ttk, xp }; trimmed to 500 entries (oldest first)
-function entity_profile(e) {
-	const key = `${e.level || 1}:${e.max_hp}:${e.attack}`;
+function entity_profile(e, solo = solo_now()) {
+	const key = `${solo ? "solo" : "party"}:${e.level || 1}:${e.max_hp}:${e.attack}`;
 	const c = live_cache.get(e.id);
 	if (c && c.key === key) return c.ok ? c : null;
 	const def = G.monsters[e.mtype];
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = def && fight_math({ ...def, ...live, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
+	const f = def && fight_math({ ...def, ...live, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) }, true, solo);
 	const ok = safe_enough(f, e.mtype);
 	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
 	live_cache.set(e.id, out);
@@ -666,7 +686,7 @@ function set_pack(p, label) {
 function risk_over(mt) {
 	const m = G.monsters[mt], f = m && fight_math(m);
 	if (!f) return Infinity;
-	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mt) * (partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+	const limit = (f.hp_pool || character.max_hp) * CFG.safety * danger_of(mt) * (!f.solo && partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
 	return fight_risk(f) / Math.max(1, limit);
 }
 const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower() && leader_hb()?.pack?.probe)) ? CFG.probe.flee_hp : CFG.flee_hp);
@@ -827,10 +847,16 @@ function end_session() {
 	if (!s) return;
 	const secs = (Date.now() - s.start) / 1000;
 	if (secs < CFG.measure_min_s) return;
-	// v21.1: while split, the xp we receive includes shares of partners' kills elsewhere (the server splits every
-	// party kill), which would make every spot look alike: measure our own kills there instead
 	if (s.split !== split_now()) return; // the mode changed mid-measurement: neither number is clean
-	const rate = (s.split ? s.kx : s.xp) / secs, prev = state.measured[s.key];
+	// v23.0: one unit in both modes, the one score_area estimates in: base xp of the kills made at this spot. The xp we
+	// receive is a share of every party kill anywhere (server), so it can't be used. Split: our own kills (partners'
+	// kills elsewhere aren't this spot's). Together: every party kill (kill_credit, sent to each member; the party is
+	// here). No kill_credit seen at all (an older client?) → together-mode spots aren't measured; estimates stand.
+	let rate;
+	if (s.split) rate = s.kx / secs;
+	else if (s.kc_n > 0) rate = s.kc / secs;
+	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
+	const prev = state.measured[s.key];
 	state.measured[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	if (s.est > 0) state.realism = state.realism * 0.7 + (rate / s.est) * 0.3; // slow-moving average of measured ÷ estimate
@@ -867,7 +893,7 @@ function bucket(t = Date.now()) {
 }
 // Last 20s, one sample per second (filled by the 1s interval), and hits taken with the attacker's type
 const pmring = { ring: [], hits: [] };
-const seen = { hit: 0, target_hit: 0, kill: 0, cm: {}, since: Date.now() }; // event counts since load (selftest)
+const seen = { hit: 0, target_hit: 0, kill: 0, kc: 0, cm: {}, since: Date.now() }; // event counts since load (selftest, watchdog)
 if (typeof character.on === "function") {
 	character.on("hit", (d) => {
 		seen.hit++;
@@ -959,14 +985,18 @@ function wd_act(kind, note) {
 function watchdog() {
 	const W = CFG.watchdog, now = Date.now();
 	if (!W?.enabled) return;
-	wd.pos.push({ t: now, map: character.map, x: character.x, y: character.y, xp: stats.xp });
+	wd.pos.push({ t: now, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc || 0 });
 	wd.pos = wd.pos.filter((p) => now - p.t <= 15 * 60_000);
 	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant()) {
 		wd.lost_since = null;
 		return;
 	}
 	const since = (min) => wd.pos.filter((p) => now - p.t >= min * 60_000).pop(); // the sample ~min minutes ago
-	const no_xp = (p) => !!p && stats.xp - p.xp <= 0;
+	// v23.0: progress is our own fighting, not xp. In a party every member receives xp from every party kill wherever it
+	// is (server), so a stuck fighter kept "gaining xp" and frozen/noprog never fired for party members.
+	// frozen: no hit landed; noprog: no kill (together: any party kill — kill_credit — since the party shares targets)
+	const no_hits = (p) => !!p && seen.target_hit - p.hits <= 0;
+	const no_kills = (p) => !!p && (split_now() || !seen.kc ? seen.kill - p.kills : seen.kc - p.kc) <= 0;
 	const still = (p) => !!p && wd.pos.filter((q) => q.t >= p.t).every((q) => q.map === character.map && Math.hypot(q.x - character.x, q.y - character.y) < 20);
 	const reset = (p) => { wd.pos = wd.pos.filter((q) => q.t > now - 1000); return p; };
 	if (is_follower()) {
@@ -982,7 +1012,7 @@ function watchdog() {
 			return;
 		}
 		const f = since(W.frozen_min);
-		if (still(f) && no_xp(f) && !away) { // a follower glued in place while the leader is near: walk back to it
+		if (still(f) && no_hits(f) && !away) { // a follower glued in place while the leader is near: walk back to it
 			reset();
 			wd_act("frozen", `follower stuck ${W.frozen_min} min; walking to ${L?.name}`);
 			try { stop("smart"); } catch (e) {}
@@ -991,9 +1021,9 @@ function watchdog() {
 		return;
 	}
 	const f = since(W.frozen_min);
-	if (state.pack && still(f) && no_xp(f)) { // no pack = nothing safe to fight: waiting is correct, not a stall
+	if (state.pack && still(f) && no_hits(f)) { // no pack = nothing safe to fight: waiting is correct, not a stall
 		reset();
-		wd_act("frozen", `no movement and no xp for ${W.frozen_min} min${state.pack ? " at " + state.pack.mtype : ""}`);
+		wd_act("frozen", `no movement and no hits for ${W.frozen_min} min${state.pack ? " at " + state.pack.mtype : ""}`);
 		try { stop("smart"); } catch (e) {}
 		state.travel_block_until = 0;
 		if (state.pack) state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
@@ -1001,10 +1031,10 @@ function watchdog() {
 		return;
 	}
 	const n = since(W.noprog_min);
-	if (state.pack && no_xp(n)) {
+	if (state.pack && no_kills(n)) {
 		reset();
 		const repeat = wd.acts.filter((a) => a.kind === "noprog").length >= 2;
-		wd_act("noprog", `no xp for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
+		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
 		state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
 		state.last_pick = 0;
 		if (repeat) { try { stop("smart"); } catch (e) {} use_skill("use_town"); }
@@ -1213,7 +1243,7 @@ setInterval(() => {
 	if (!p || character.rip) return;
 	const here = character.map === p.map && in_boundary(p.boundary, 300);
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, split: split_now(), start: Date.now() };
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, kc: 0, kc_n: 0, split: split_now(), start: Date.now() };
 	if (state.session) {
 		state.session.xp += d;
 		if ((Date.now() - state.session.start) / 1000 > CFG.measure_min_s * 2) end_session();
@@ -2249,11 +2279,15 @@ function bag_plan() {
 	const needed = needed_slots();
 	const cmp = compound_slots(needed);
 	const sell = slots_where((i) => bag_class(i, needed, cmp) === "sell"), bank = slots_where((i) => bag_class(i, needed, cmp) === "bank");
-	// Fetch a needed item only when no copy at any level is in the bags or worn, and at most one attempt per item
-	// name every 2 hours (persisted), whatever happens to the fetched copy. Counting only +0 copies, or not counting
-	// worn ones, lets a fetched copy look missing again — the bot then fetches/banks in a loop.
+	// Fetch a needed item when the bags are short of it and the bank has some, at most one attempt per item name every
+	// 2 hours (persisted), whatever happens to the fetched copy. Gear: only when no copy at any level is in the bags or
+	// worn (counting only +0 copies, or not counting worn ones, lets a fetched copy look missing again — a fetch/bank
+	// loop). Stackables (quest materials): when the bags hold fewer than needed (v23.0: before, any copy in the bags
+	// blocked the fetch, while quest progress counted bags + bank — "spores 12(+8 bank)/20" never farmed, fetched or
+	// crafted). A fetched stack merges into the bag stack (the server's add_item), so the craft's one-stack rule is met.
 	const worn = (n) => Object.values(character.slots || {}).filter((i) => i && i.name === n).length;
-	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && held_any(n) + worn(n) === 0 &&
+	const short_of = (n) => (G.items[n]?.s ? held_any(n) < (state.needs.get(n) || 1) : held_any(n) + worn(n) === 0);
+	const fetch = [...state.needs.keys()].filter((n) => (state.bank_seen[n] || 0) > 0 && short_of(n) &&
 		!BAG_TYPES.has(G.items[n]?.type) && Date.now() - (state.fetch_try[n] || 0) > 2 * 3600_000);
 	{
 		const c = craft_pick();
@@ -3516,7 +3550,7 @@ const SAVE_KEY = "farmer_v9:" + character.name; // historical name — don't cha
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), measured: state.measured, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), meas_v: 2, measured: state.measured, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -3524,15 +3558,19 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [],
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at,
+		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
 	if (!d || d.v !== 1) return;
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
-	Object.assign(state.measured, d.measured || {});
-	if (d.realism > 0) state.realism = d.realism;
+	// v23.0: measurements are now in one unit (base xp of kills at the spot); older ones mixed received xp (a share of
+	// every party kill) with own kills, so they're dropped once and re-measured
+	if (d.meas_v === 2) {
+		Object.assign(state.measured, d.measured || {});
+		if (d.realism > 0) state.realism = d.realism;
+	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
 	Object.assign(state.danger, d.danger || {});
 	Object.assign(state.danger_at, d.danger_at || {});
 	Object.assign(state.calib, d.calib || {});
@@ -3563,6 +3601,7 @@ function load_state() {
 	Object.assign(state.hold_for, d.hold_for || {});
 	if (d.mspot) state.mspot = d.mspot;
 	if (d.parcel_at) state.parcel_at = d.parcel_at;
+	if (d.owe > 0) state.owe = d.owe; // potion bills not paid yet (v23.0)
 	Object.assign(state.guide_equip, d.guide_equip || {});
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
@@ -3762,6 +3801,7 @@ function report_facts() {
 	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
 	F("trips", "self", `trips v${VERSION} (last ${tc.span}m): ${tc.n}${tc.n ? ` — triggered by ${tc.trig.map(([w, n]) => `${w} ${n}`).join(", ")}; work due on them: ${tc.by.map(([w, n]) => `${w} ${n}`).join(", ")}` : ""}` +
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
+	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	for (const r of state.guide?.rows || []) {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded"}` : r.affordable === false ? "unaffordable" : "next";
@@ -3862,6 +3902,7 @@ function selftest() {
 	ok(seen.hit > 0 || is_merchant(), `"hit" events: ${seen.hit} in ${mins_up} min${seen.hit ? "" : " (none: post-mortems and calibration get no damage data)"}`, true);
 	ok(seen.kill > 0 || is_merchant(), `kills seen: ${seen.kill} in ${mins_up} min`, true);
 	ok(stats.xp > 0 || is_merchant(), `xp gained since load: ${fmt_k(Math.round(stats.xp))}`, true);
+	ok((seen.kc || 0) > 0 || is_merchant() || !in_party_cfg(), `kill_credit events since load: ${seen.kc || 0} (party kills: together-mode xp/s measurement and the watchdog use them)`, true);
 	try {
 		const tok = { t: now };
 		set("farmer_selftest:" + character.name, tok);
@@ -4054,7 +4095,9 @@ function leader_name() {
 }
 const leader_name_any = leader_name;
 const leader_hb = () => state.partners[leader_name()];
-// Split mode (CFG.party.split): the leader decides (state.split_on, sent in its heartbeat); others read its beat
+// Split mode (CFG.party.split): the leader decides (state.split_on, sent in its heartbeat); others read its beat.
+// While split, every fight is judged as if alone (fight_math solo): whoever happens to be near won't stay.
+const solo_now = () => split_now();
 const split_now = () => !!CFG.party.split?.enabled && in_party_cfg() && partners_any().length > 0 &&
 	(leader_name() === character.name ? !!state.split_on : !!leader_hb()?.split);
 // A follower stops following while split, unless it found nothing it can farm alone (then it follows for fallback_min)
@@ -4124,6 +4167,12 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 		return;
 	}
 	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) return void (state.merchant = { ...m.message, name: m.name, t: Date.now() });
+	if (m && m.message?.k === "bill" && m.name === CFG.merchant?.name && !is_merchant()) { // potions it handed us (v23.0)
+		const g = Math.max(0, Math.round(+m.message.g || 0));
+		state.owe = (state.owe || 0) + g;
+		log_ev("bill", { g, what: m.message.what || "" });
+		return;
+	}
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;
 	const first = !fresh(state.partners[m.name]);
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
@@ -4249,10 +4298,15 @@ async function give_pots(f) {
 		const spare = pot_count(kind) - CFG.merchant.self_pots;
 		const k = pot_slot(kind);
 		if (want < 20 || spare <= 0 || k < 0) continue;
-		const q = Math.min(want, spare, character.items[k].q || 1);
+		const q = Math.min(want, spare, character.items[k].q || 1), name = character.items[k].name, price = G.items[name]?.g || 0;
 		await wait_budget(1, RESERVE.errand);
-		await T(send_item(f.name, k, q)).then(() => game_log(`merchant: ${q} ${character.items[k]?.name || kind + " pots"} → ${f.name}`, C.ok))
-			.catch((e) => game_log(`merchant: potions to ${f.name}: ${why(e)}`, C.dim));
+		await T(send_item(f.name, k, q)).then(() => {
+			game_log(`merchant: ${q} ${name} → ${f.name}`, C.ok);
+			// v23.0: the fighter pays for what it gets. The merchant used to buy every fighter's potions with its own
+			// gold, and nothing refilled it once the fighters were under 3M, so it ran dry and stopped supplying. A bill
+			// by cm; the fighter pays it from gold above its reserve the next time it's near us (merchant_handoff).
+			if (price > 0 && typeof send_cm === "function") Promise.resolve(send_cm([f.name], { k: "bill", g: q * price, what: `${q} ${name}` })).catch(() => {});
+		}).catch((e) => game_log(`merchant: potions to ${f.name}: ${why(e)}`, C.dim));
 		if (f.pots) f.pots[kind] += q;
 	}
 }
@@ -4691,6 +4745,11 @@ async function merchant_handoff() {
 	if (Math.hypot(pos.x - character.x, pos.y - character.y) > 300) return;
 	handoff_busy = true;
 	try {
+		// v23.0: pay the merchant's potion bills first, from gold above our reserve (the rest stays owed)
+		if ((state.owe || 0) >= 1 && typeof send_gold === "function") {
+			const pay = Math.floor(Math.min(state.owe, character.gold - CFG.gold_reserve));
+			if (pay >= 1) await send_own_gold(M.name, pay).then(() => { state.owe = Math.max(0, state.owe - pay); save_state(); game_log(`merchant: paid ${fmt_k(pay)} for potions`, C.dim); }).catch(() => {});
+		}
 		const fighters = [{ name: character.name, gold: character.gold }, ...partners_near(400)];
 		const richest = fighters.sort((a, b) => (b.gold || 0) - (a.gold || 0))[0];
 		// project funding (upgrade/craft steps the merchant can't pay for), from the richest near, above fund_keep
@@ -4808,11 +4867,14 @@ function follower_tick() {
 		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);
 	}
 }
-// Easy enough to split up on: we'd kill it alone within spread_ttk (solo safety and kill time from fight_profile)
+// Easy enough to split up on: we'd kill it ALONE within spread_ttk, safely (v23.0: judged solo — no partner damage,
+// tank or heals; it used to be the party-assisted verdict)
 function spread_ok(mt) {
 	if (state.spread_c && state.spread_c.mt === mt && Date.now() - state.spread_c.at < 30_000) return state.spread_c.ok;
-	const f = fight_profile(mt), ok = !!f && f.ttk <= CFG.party.spread_ttk;
-	if (f) state.safe[mt] = f; else delete state.safe[mt]; // followers don't run pick_pack: live_ok reads this
+	const pf = fight_profile(mt); // the party verdict: what following (live_ok) uses
+	if (pf) state.safe[mt] = pf; else delete state.safe[mt]; // followers don't run pick_pack: live_ok reads this
+	const sf = farmable_type(mt) && fight_math(G.monsters[mt], false, true);
+	const ok = !!sf && safe_enough(sf, mt) && sf.ttk <= CFG.party.spread_ttk;
 	state.spread_c = { mt, at: Date.now(), ok };
 	return ok;
 }
@@ -4824,7 +4886,7 @@ function spread_pick(pos, L) {
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (e.mtype !== mt || taken.has(e.id) || !farmable_entity(e) || !valid(e) || (e.target && e.target !== character.name)) continue;
-		if (Math.hypot(e.x - pos.x, e.y - pos.y) > CFG.party.wait_radius || !live_ok(e)) continue;
+		if (Math.hypot(e.x - pos.x, e.y - pos.y) > CFG.party.wait_radius || !live_ok(e) || !entity_profile(e, true)) continue; // this one, alone
 		const d = distance(character, e);
 		if (d < bd && can_move_to(e)) (best = e), (bd = d);
 	}
@@ -4882,7 +4944,7 @@ function hold_grind() {
 // so the pack is re-judged at once — if it's too much solo, the leader moves to one it can handle, and back when
 // the partner returns. Waiting in place gains nothing: the follower always knows where the leader is.
 function duo_check() {
-	if (!in_party_cfg() || is_follower()) return;
+	if (!in_party_cfg() || is_follower() || split_now()) return; // split: fights are judged solo, passers-by change nothing
 	const near = partners_near().map((p) => p.name).sort().join(",");
 	if (near === state.duo_near) return;
 	const was = state.duo_near;
