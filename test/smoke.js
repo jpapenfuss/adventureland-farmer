@@ -2107,13 +2107,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	}
 	// 99) v19.3: the leader keeps a target it's walking to; a boss still overrides
 	vm.runInContext("state.partners = {}", ctx);
-	hb("Torlis", { ...tor, level: 60 });
-	vm.runInContext(`CFG.travel.commit_min = 10; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
+	hb("Torlis", { ...tor, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
+	vm.runInContext(`CFG.travel.commit_min = 10; state.goals_cache = null; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
 		state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.safe.arcticbee = { ttk: 1, xp: 1 };
 		globalThis.__ps = pick_shared; globalThis.__hd = hunt_directive; globalThis.__bd = boss_directive;
 		pick_shared = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], reason: "mutual" });
 		hunt_directive = () => null; boss_directive = () => null; refresh_directive()`, ctx);
 	assert(vm.runInContext("state.directive.monster === 'arcticbee' && state.dir_held && state.dir_held.monster === 'bee'", ctx), "committed: arcticbee kept, bee noted as waiting");
+	hb("Torlis", { ...tor, level: 60, goals: [] }); // the goal finished: no member lists arcticbee any more
+	vm.runInContext("state.goals_cache = null; refresh_directive()", ctx);
+	assert(vm.runInContext("state.directive.monster === 'bee'", ctx), "a finished goal ends the commitment at once");
+	hb("Torlis", { ...tor, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
+	vm.runInContext(`state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] }; state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.goals_cache = null; refresh_directive()`, ctx);
 	vm.runInContext("state.dir_lock.until = Date.now() - 1; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'bee'", ctx), "commitment over: switches to bee");
 	vm.runInContext(`state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] }; state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 };
