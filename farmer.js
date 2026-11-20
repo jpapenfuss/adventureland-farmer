@@ -1,4 +1,4 @@
-const VERSION = "24.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -251,7 +251,8 @@ const CFG = {
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
 	// commit_min (v19.3): once the leader heads for a target it keeps it for the walk there + this many minutes of
 	// fighting (a boss, an unsafe target or a finished goal still switch at once)
-	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10, commit_min: 10 }, // v18.1: walk-time estimates for goal choice
+	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10, commit_min: 10, stay_min: 20 }, // v18.1: walk-time estimates for goal choice;
+	// stay_min (v24.9): the stay a spot pick is judged over — its xp/s x stay / (stay + walk)
 	party: {
 		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9); [] = solo
 		leader: null,          // null = the lowest-level member online leads (picks packs, others assist); or a name
@@ -695,13 +696,35 @@ function each_area(fn) {
 // any same-map area beat any other), else the area with the most monsters anywhere
 // Seconds to walk from here to an area's centre (v18.1): same map → straight line ÷ speed × 1.3 (paths aren't straight);
 // another map → CFG.travel.cross_map_s for the transfers + the walk from that map's spawn
+// v24.9: maps between two maps (doors, and the town transporter's places as one hop), BFS, cached per start map. A
+// flat 60s for any other map made level4 look as near as the next room; unreachable → Infinity
+const hops_cache = {};
+function map_hops(from, to) {
+	if (from === to) return 0;
+	let c = hops_cache[from];
+	if (!c) {
+		c = hops_cache[from] = { [from]: 0 };
+		const tp = G.npcs?.transporter?.places ? Object.keys(G.npcs.transporter.places) : [];
+		const q = [from];
+		while (q.length) {
+			const m = q.shift(), d = c[m], M = G.maps[m];
+			const next = (M?.doors || []).map((dr) => dr && dr[4]).filter((n) => typeof n === "string");
+			if (tp.includes(m)) next.push(...tp);
+			for (const n of next) if (G.maps[n] && c[n] === undefined) { c[n] = d + 1; q.push(n); }
+		}
+	}
+	return c[to] ?? (G.maps[from]?.doors ? Infinity : 1); // no door data at all (tests, old clients): one hop
+}
 function travel_s(map, boundary) {
 	if (!map || !valid_boundary(boundary)) return 0;
 	const cx = (boundary[0] + boundary[2]) / 2, cy = (boundary[1] + boundary[3]) / 2, v = Math.max(character.speed || 55, 10);
 	if (map === character.map) return (Math.hypot(cx - character.x, cy - character.y) / v) * 1.3;
 	const sp = G.maps[map]?.spawns?.[0] || [0, 0];
-	return CFG.travel.cross_map_s + (Math.hypot(cx - sp[0], cy - sp[1]) / v) * 1.3;
+	return CFG.travel.cross_map_s * map_hops(character.map, map) + (Math.hypot(cx - sp[0], cy - sp[1]) / v) * 1.3;
 }
+// v24.9: a spot's xp/s counting the walk there: over an expected stay of stay_min, travel minutes earn nothing. Spots
+// were picked by rate alone, so a slightly better one maps away beat the one at hand (walk was 72-93% of the time)
+const walk_factor = (area) => { const st = CFG.travel.stay_min * 60, t = travel_s(area.map, area.boundary); return Number.isFinite(t) ? st / (st + t) : 0; };
 function resolve_area(monster, map, boundary, count) {
 	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1 };
 	// v19.1: already at a spawn of this monster → stay (a hunt for the snakes we were farming on main sent the party
@@ -881,6 +904,8 @@ function pick_pack() {
 		if (seen.has(key) || (state.cooldown[key] || 0) > now) return;
 		seen.add(key);
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
+		p.rate = p.score; // its xp/s there (the side-goal and probe reference)
+		p.score *= walk_factor(area); // v24.9: counting the walk there
 		// split: a spot a partner is already farming scores lower, so we spread over different spots. Only partners with an
 		// earlier name count (v23.2), as for hunt/quest targets: the first keeps a spot, the rest move — counting everyone
 		// made two fighters on one spot both look elsewhere
@@ -888,7 +913,7 @@ function pick_pack() {
 		if (!best || p.score > best.score) best = p;
 	});
 	state.last_pick = now;
-	state.best_score = best ? best.score : 0;
+	state.best_score = best ? best.rate : 0;
 	state.best_solo = solo_now(); state.best_at = now;
 	if (probe_ready()) {
 		state.probe_at = now;
@@ -920,7 +945,7 @@ function pick_pack() {
 	}
 	const cur = state.pack;
 	if (cur && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now) && best && pack_key(best) !== pack_key(cur)) {
-		const cur_v = cur.est > 0 ? meas_aged(pack_key(cur), cur.est * state.realism) : meas()[pack_key(cur)] ?? cur.score; // v24.6: aged
+		const cur_v = (cur.est > 0 ? meas_aged(pack_key(cur), cur.est * state.realism) : meas()[pack_key(cur)] ?? cur.score) * walk_factor(cur); // v24.6: aged; v24.9: walk left
 		if (best.score < cur_v * (occupied(pack_key(cur)) ? CFG.party.split.occupied_mult : 1) * CFG.switch_margin) best = cur;
 	}
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
@@ -1105,7 +1130,7 @@ function incident(mt, mult) {
 	state.danger_at[mt] = Date.now();
 }
 // ---- Watchdog (CFG.watchdog) ----
-const wd = { pos: [], lost_since: null, acts: [] };
+const wd = { pos: [], lost_since: null, acts: [], here_since: null };
 function wd_act(kind, note) {
 	const now = Date.now();
 	wd.acts = wd.acts.filter((t) => now - t.t < 3600_000);
@@ -1162,8 +1187,12 @@ function watchdog() {
 		state.last_pick = 0;
 		return;
 	}
+	// v24.9: only time at the pack counts — a walk there longer than noprog_min put it on cooldown before we arrived, and
+	// the next pick (often as far) went the same way: Torlis walked 93% of an hour, three noprogs at three spots
+	const P_ = state.pack, at_pack = !!P_ && character.map === P_.map && in_boundary(P_.boundary, 300);
+	if (!at_pack) wd.here_since = null; else if (!wd.here_since) wd.here_since = now;
 	const n = since(W.noprog_min);
-	if (state.pack && no_kills(n)) {
+	if (state.pack && at_pack && n && n.t >= wd.here_since - 31_000 && no_kills(n)) {
 		reset();
 		const repeat = wd.acts.filter((a) => a.kind === "noprog").length >= 2;
 		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);

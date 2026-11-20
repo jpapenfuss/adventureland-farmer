@@ -1453,7 +1453,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// moving but no xp for 11 min → noprog; third time in an hour → town
 	vm.runInContext("hist.ev = []; state.cooldown = {}", ctx);
 	const town66 = []; ctx.use_skill = (s) => (town66.push(s), Promise.resolve());
-	for (let i = 0; i < 3; i++) { seed(11, 300); vm.runInContext("watchdog()", ctx); }
+	// v24.9: only time at the pack counts — just arrived (after a long walk), or not there: no noprog
+	seed(11, 300); vm.runInContext("wd.here_since = null; watchdog()", ctx);
+	assert(vm.runInContext("!hist.ev.some((e) => e.kind === 'noprog')", ctx), "v24.9: 11 min without kills, but just arrived at the pack: no noprog");
+	seed(11, 300); character.x = 2000; vm.runInContext("watchdog()", ctx); character.x = 100;
+	assert(vm.runInContext("!hist.ev.some((e) => e.kind === 'noprog') && wd.here_since === null", ctx), "v24.9: still walking to it: no noprog");
+	for (let i = 0; i < 3; i++) { seed(11, 300); vm.runInContext("wd.here_since = Date.now() - 12 * 60000; watchdog()", ctx); }
 	assert(vm.runInContext("hist.ev.filter((e) => e.kind === 'noprog').length", ctx) === 3 && town66.includes("use_town"), `no-progress acted 3x, the 3rd with a town teleport (${town66})`);
 	// during an errand or parked: nothing
 	vm.runInContext("hist.ev = []; wd.acts = []; state.errand = 'town'; state.errand_at = Date.now()", ctx); seed(30);
@@ -3119,6 +3124,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.pack && state.pack.mtype === 'goo'", ctx), "leader fleeing (no pack sent): the follower keeps the pack");
 		vm.runInContext("state.partners = {}; state.pack = null", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000 });
+	}
+	// 121) v24.9: travel counts in spot picks (map hops via doors and the transporter); noprog only at the pack (test 66)
+	{
+		Object.assign(character, { map: "main", x: 0, y: 0, speed: 50 });
+		const maps0 = ctx.G.maps, npcs0 = ctx.G.npcs;
+		ctx.G.maps = { main: { doors: [[0, 0, 10, 10, "cave1", 0]], spawns: [[0, 0]], monsters: [] }, cave1: { doors: [[0, 0, 10, 10, "main", 0], [5, 5, 10, 10, "cave2", 0]], spawns: [[0, 0]] },
+			cave2: { doors: [[0, 0, 10, 10, "cave1", 1]], spawns: [[0, 0]] }, winter: { doors: [], spawns: [[0, 0]] }, island: { doors: [], spawns: [[0, 0]] } };
+		ctx.G.npcs = { ...npcs0, transporter: { places: { main: 0, winter: 0 } } };
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]", ctx);
+		assert(vm.runInContext("map_hops('main', 'cave2') === 2 && map_hops('main', 'winter') === 1 && map_hops('main', 'island') === Infinity", ctx), "hops: doors (2 to cave2), the transporter (1 to winter), none (island)");
+		const B = "[0, 0, 10, 10]", inner = Math.hypot(5, 5) / 50 * 1.3;
+		const t2 = vm.runInContext(`travel_s('cave2', ${B})`, ctx), t1 = vm.runInContext(`travel_s('cave1', ${B})`, ctx);
+		assert(Math.abs(t2 - (120 + inner)) < 1e-9 && Math.abs(t1 - (60 + inner)) < 1e-9, `walk estimate: 60s per map crossed (${t1}, ${t2})`);
+		const wf = vm.runInContext(`walk_factor({ map: 'cave2', boundary: ${B} })`, ctx);
+		assert(Math.abs(wf - 1200 / (1200 + 120 + inner)) < 1e-9 && vm.runInContext(`walk_factor({ map: 'island', boundary: ${B} })`, ctx) === 0, `a 2-min walk costs 2/22 of a 20-min stay (${wf}); unreachable scores 0`);
+		assert(/p\.score \*= walk_factor\(area\)/.test(src) && /state\.best_score = best \? best\.rate : 0/.test(src), "picks count the walk; the side-goal reference stays the rate there");
+		ctx.G.maps = maps0; ctx.G.npcs = npcs0; vm.runInContext("for (const k in hops_cache) delete hops_cache[k]", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");
