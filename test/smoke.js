@@ -2080,6 +2080,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("follower_tick()", ctx);
 	assert(vm.runInContext("globalThis.__trav.length === 1", ctx), "leader not on an errand and far: follower follows it");
 	vm.runInContext("travel = globalThis.__tv; state.partners = {}", ctx);
+	// 97) v18.9: no token buy of gear another character already carries (the merchant held 2 mparmor)
+	ctx.G.items.mparmor = { type: "chest", armor: 50, class: ["priest", "mage"] };
+	ctx.G.tokens = { monstertoken: { mparmor: 12 } };
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, esize: 30 });
+	character.items = Array(42).fill(null); character.items[0] = { name: "monstertoken", q: 36 }; character.items[1] = { name: "tracker", q: 1 }; character.slots = {};
+	vm.runInContext("state.partners = {}; state.bank_gear = []; state.bank_seen = {}; state.hold_for = {}; state.merchant = null", ctx);
+	hb("Aspernari", { ...asp, gear: { w: { chest: 0 }, own: {} } });
+	assert(vm.runInContext("token_pick() && token_pick().name", ctx) === "mparmor", "nobody holds mparmor: buy it for Aspernari");
+	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0, bag_gear: ['mparmor'] }", ctx);
+	assert(vm.runInContext("token_pick()", ctx) === null, "the merchant carries one: no token buy");
+	character.items = Array(42).fill(null); vm.runInContext("state.partners = {}; state.merchant = null", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

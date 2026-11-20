@@ -1,4 +1,4 @@
-const VERSION = "18.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1064,6 +1064,15 @@ function gold_room() {
 	return Math.floor(CFG.spend.share * L.earn - L.spend);
 }
 const gold_ok = (cost) => (cost || 0) <= gold_room();
+// v18.9: gear names in our bags (heartbeats share them) and whether anyone in the party already holds a piece —
+// so tokens/Ponty never buy a copy another character is already carrying (Sanala bought mparmor for Aspernari while
+// the merchant held two)
+const bag_gear_names = () => [...new Set(character.items.filter((i) => i && GEAR.has(G.items[i.name]?.type)).map((i) => i.name))].slice(0, 40);
+function party_holds(name) {
+	if (held_any(name) > 0 || (state.bank_gear || []).some((i) => i.name === name)) return true;
+	const M = state.merchant && fresh(state.merchant) ? [state.merchant] : [];
+	return [...partners_any(), ...M].some((p) => Array.isArray(p.bag_gear) && p.bag_gear.includes(name));
+}
 function budget_text() {
 	const L = party_ledger(), room = gold_room();
 	return `gold budget (${CFG.spend.window_h}h, ${L.who.length} chars): earned ${fmt_k(L.earn)}, spent ${fmt_k(L.spend)}` +
@@ -3785,7 +3794,7 @@ const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, ledger: my_ledger(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -3897,7 +3906,7 @@ const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
-	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
@@ -4070,7 +4079,7 @@ function token_pick() {
 	let best = null;
 	for (const name in shop) {
 		const price = shop[name];
-		if (price > budget || !GEAR.has(G.items[name]?.type) || held_any(name) || (state.bank_gear || []).some((i) => i.name === name)) continue;
+		if (price > budget || !GEAR.has(G.items[name]?.type) || party_holds(name)) continue;
 		for (const m of gear_takers().filter((x) => x.ctype !== "merchant")) {
 			const r = gear_gain({ name, level: 0 }, m.ctype, m.g);
 			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
@@ -4107,6 +4116,7 @@ function secondhand_reason(it, groups) {
 	if (!it || !G.items[it.name]) return null;
 	const price = shop_price(it);
 	for (const x of gear_takers().slice(1).filter((x) => x.ctype !== "merchant")) {
+		if (party_holds(it.name)) break; // someone already carries one: deliver that instead
 		const r = gear_gain(it, x.ctype, x.g);
 		if (r && price <= r.gain * CFG.secondhand_gold_per_pt) return `upgrade for ${x.name} (+${Math.round(r.gain)} pts)`;
 	}
