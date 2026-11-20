@@ -1974,9 +1974,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("globalThis.__runs === 0 && /deferrable/.test(state.town_block.blockers.join())", ctx), "guide-only work 2 min after a trip waits (deferrable)");
 	vm.runInContext("town_due = () => ({ guide: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 50 }); town_check()", ctx);
 	assert(vm.runInContext("globalThis.__runs === 1", ctx), `potions low → the trip goes now (${vm.runInContext("JSON.stringify(state.town_block)", ctx)})`);
-	vm.runInContext("town_due = () => ({ guide: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 50 }); state.last_town = Date.now() - 700000; town_check()", ctx);
-	assert(vm.runInContext("globalThis.__runs === 2", ctx), "deferrable work goes once the soft gap has passed");
-	vm.runInContext("town_due = globalThis.__td; town_run = globalThis.__tr; state.last_town = 0", ctx);
+	vm.runInContext("town_due = () => ({ guide: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 50 }); state.last_town = Date.now() - 1300000; state.town_end_at = Date.now() - 60000; town_check()", ctx);
+	assert(vm.runInContext("globalThis.__runs === 1", ctx), "v18.2: the soft gap counts from when the last run finished (walk back included)");
+	vm.runInContext("state.town_end_at = Date.now() - 1300000; smart_depth = 1; town_check()", ctx);
+	assert(vm.runInContext("globalThis.__runs === 1 && /walking to the pack/.test(state.town_block.blockers.join())", ctx), "v18.2: deferrable work never turns a pack walk around");
+	vm.runInContext("smart_depth = 0; town_check()", ctx);
+	assert(vm.runInContext("globalThis.__runs === 2", ctx), "deferrable work goes once the soft gap has passed and we've arrived");
+	vm.runInContext("town_due = globalThis.__td; town_run = globalThis.__tr; state.last_town = 0; state.town_end_at = 0", ctx);
 	vm.runInContext("hist.ev.push({ t: Date.now(), type: 'town', due: 'guide+bank' }, { t: Date.now(), type: 'town', due: 'guide' })", ctx);
 	assert(vm.runInContext("JSON.stringify(town_causes().by.slice(0, 1))", ctx) === '[["guide",2]]', "town_causes counts trips per task");
 	// 91) quests too slow to farm park (materials no longer held); a better estimate unparks them

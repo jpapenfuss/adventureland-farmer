@@ -1,4 +1,4 @@
-const VERSION = "18.1"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -132,7 +132,10 @@ const CFG = {
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
 	guide_steps_per_run: 5,    // guide steps that need walking, per town run (steps done in place don't count)
 	town_min_gap_ms: 20_000,   // at least 20s between town runs
-	town_soft_gap_ms: 600_000, // v18.1: a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 10 min
+	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
+	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
+	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
+	                           //   everything bankable, so the next trip isn't a potion/bag one 10 min later
 	walk_timeout_ms: 120_000,  // a smart_move that hasn't arrived in 2 min is cancelled (locked doors, unreachable spots)
 	town_hp: 0.7,              // start a town run only above 70% HP...
 	town_hp_critical: 0.5,     // ...or above 50% when bags are nearly full (<= 3 free)
@@ -3009,8 +3012,12 @@ function town_due(relaxed = false) {
 		Date.now() - (state.last_town || 0) < CFG.merchant.guide_gap_ms) due.guide = false;
 	return due;
 }
+// state.town_end_at: when the last run finished (the soft gap counts from there, not from leaving)
 function town_run(due) {
-	return errand("town", async () => {
+	return errand("town", () => town_body(due).finally(() => { state.town_end_at = Date.now(); }));
+}
+async function town_body(due) {
+	{
 		await stand_close(); // a stand slows us to speed 10
 		// each step refreshes the errand lock: a long run that keeps making progress is never taken for a hung one (other
 		// code would then start a walk and interrupt this run's smart_move)
@@ -3056,17 +3063,21 @@ function town_run(due) {
 		const plan = bag_plan();
 		const short = plan.free < (due.min_free || CFG.bag_min_free);
 		if (due.sell || (short && plan.sell.length && !skipped("town:sell"))) did += await bag_step("sell", task_sell);
+		// in town anyway: top potions up well before they'd run low (else a potion trip follows this one)
+		const topup = Math.ceil(CFG.pot_buy * CFG.town_topup);
 		if (due.restock) did += await bag_step("restock", () => task_restock(due.pot_min));
+		else if (!is_merchant() && !skipped("town:restock") && (pot_count("hp") < topup || pot_count("mp") < topup)) did += (await step("restock", () => task_restock(topup))) || 0;
 		const after = bag_plan();
 		// standing in the bank anyway (guide retrieves): store what's bankable now, short on space or not
-		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < (due.min_free || CFG.bag_min_free) || on_bank_floor()) && after.bank.length || after.fetch.length))
+		// in town anyway: store everything bankable (not only when short), so a bag trip doesn't follow this one
+		if (CFG.bank && !banked && !skipped("town:bank") && ((after.free < 2 * Math.max(due.min_free || 0, CFG.bag_min_free) || on_bank_floor()) && after.bank.length || after.fetch.length))
 			did += await bag_step("bank", () => task_bank(after.fetch));
 		// the bank visit may have fetched the missing copies of a group: compound now, while still in town
 		if (compound_town_due()) did += await bag_step("compound", task_compound);
 		state.last_pick = 0; // re-evaluate where to fight
 		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000) });
 		return did;
-	});
+	}
 }
 
 // Starts a town run when something is due. Blockers are recorded (report() shows them; with a nearly full bag the
@@ -3082,9 +3093,16 @@ function town_check() {
 	if (!what.length) return void (state.town_block = null);
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
-	if (!is_merchant() && !town_urgent(due) && Date.now() - state.last_town < CFG.town_soft_gap_ms) {
-		state.town_block = { what: what.join("+"), blockers: [`deferrable: next trip in ${Math.ceil((CFG.town_soft_gap_ms - (Date.now() - state.last_town)) / 60_000)}m`], at: Date.now() };
-		return;
+	if (!is_merchant() && !town_urgent(due)) {
+		const since = Date.now() - Math.max(state.last_town || 0, state.town_end_at || 0);
+		if (since < CFG.town_soft_gap_ms) {
+			state.town_block = { what: what.join("+"), blockers: [`deferrable: next trip in ${Math.ceil((CFG.town_soft_gap_ms - since) / 60_000)}m`], at: Date.now() };
+			return;
+		}
+		if (walking() && !errand_busy()) { // on the way to the pack: arrive first; deferrable work never turns us around
+			state.town_block = { what: what.join("+"), blockers: ["deferrable: walking to the pack"], at: Date.now() };
+			return;
+		}
 	}
 	const attacked = !!get_nearest_monster({ target: character.name });
 	const floor = critical ? CFG.town_hp_critical : CFG.town_hp;
