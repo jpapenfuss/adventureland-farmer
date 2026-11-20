@@ -2036,10 +2036,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(ctx.parent.add_log === add94, "quiet_logs = [] restores the game's own add_log");
 	// 95) v18.6: an unfinishable hunt is ignored; Ponty buys cap price per point; the merchant delivers held gear
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
-	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05", ctx); // 3 kills/min
+	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05; globalThis.__ms = state.measured; state.measured = {}; state.best_score = 0", ctx); // 3 kills/min
 	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 })", ctx),
 		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept");
-	vm.runInContext("kills_per_s = globalThis.__kps", ctx);
+	// v18.7: a hunt monster far below the best xp/s we know isn't chased
+	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); state.best_score = 800", ctx);
+	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "bee hunt at 300 xp/s vs best 800: not chased; croc: chased");
+	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_score = 0", ctx);
+	// v18.7 gold budget: party spending held under 90% of income
+	vm.runInContext(`globalThis.__hb = hist.buckets; hist.buckets = {}; state.partners = {}; state.merchant = null;
+		const b = bucket(); b.earn = 1000000; b.spend = 800000; b.ls = 7200;`, ctx);
+	assert(vm.runInContext("gold_room()", ctx) === 100000 && vm.runInContext("gold_ok(50000) && !gold_ok(200000)", ctx), `room = 0.9 × 1M − 800k = 100k (${vm.runInContext("gold_room()", ctx)})`);
+	vm.runInContext("bucket().spend = 950000", ctx);
+	assert(vm.runInContext("gold_room() < 0 && !gold_ok(1)", ctx), "spending over 90% of income: optional spending stops");
+	hb("Torlis", { ...tor, ledger: { earn: 2000000, spend: 0, s: 7200 } });
+	assert(vm.runInContext("gold_room()", ctx) === Math.floor(0.9 * 3000000 - 950000), "the party's ledger counts (heartbeats)");
+	vm.runInContext("hist.buckets = {}; bucket().ls = 60; state.partners = {}", ctx);
+	assert(vm.runInContext("gold_room() === Infinity", ctx), "under an hour of records: no limit yet");
+	vm.runInContext("hist.buckets = globalThis.__hb; state.partners = {}", ctx);
 	ctx.G.items.gpants = { type: "pants", armor: 60, g: 1000 };
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: 0, rip: false });
 	character.items = Array(42).fill(null); character.slots = {};

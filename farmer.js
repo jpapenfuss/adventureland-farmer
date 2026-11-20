@@ -1,4 +1,4 @@
-const VERSION = "18.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "18.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -134,6 +134,12 @@ const CFG = {
 	guide_steps_per_run: 5,    // guide steps that need walking, per town run (steps done in place don't count)
 	town_min_gap_ms: 20_000,   // at least 20s between town runs
 	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
+	// v18.7 gold budget: optional spending (upgrade projects, guide buys/upgrades, compounds, crafting, Ponty, elixirs,
+	// donations) only while the party's spending over the last window_h stays under share × what it earned (loot,
+	// sales). Potions and other necessities are never held back, but they count as spending.
+	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1 },
+	// v18.7: a monster hunt is chased only if its monster gives at least this share of the best xp/s we know
+	hunt_min_xp: 0.6,
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
@@ -800,7 +806,7 @@ function save_hist() {
 const hour_of = (t) => Math.floor(t / 3600_000) * 3600_000;
 function bucket(t = Date.now()) {
 	const k = hour_of(t);
-	return (hist.buckets[k] = hist.buckets[k] || { time: {}, xp: 0, gold: 0, kills: 0, deaths: 0, flees: 0 });
+	return (hist.buckets[k] = hist.buckets[k] || { time: {}, xp: 0, gold: 0, earn: 0, spend: 0, ls: 0, kills: 0, deaths: 0, flees: 0 });
 }
 // Last 20s, one sample per second (filled by the 1s interval), and hits taken with the attacker's type
 const pmring = { ring: [], hits: [] };
@@ -1032,6 +1038,36 @@ function deaths(n = 5) {
 	}
 	return share_text(`deaths ${character.name}`, L);
 }
+// ---- Gold budget (CFG.spend) ----
+// Our gross earned/spent over the last window_h (hour buckets), and the party's (heartbeats carry each member's)
+function my_ledger(h = CFG.spend.window_h) {
+	const from = hour_of(Date.now()) - (h - 1) * 3600_000, out = { earn: 0, spend: 0, s: 0 };
+	for (const k in hist.buckets) if (+k >= from) { const b = hist.buckets[k]; out.earn += b.earn || 0; out.spend += b.spend || 0; out.s += b.ls || 0; }
+	return out;
+}
+function party_ledger() {
+	const L = my_ledger(), out = { ...L, who: [character.name] };
+	const seen = new Set([character.name]);
+	for (const p of [...partners_any(), ...(merchant_hb() ? [merchant_hb()] : [])]) {
+		if (!p || seen.has(p.name) || !p.ledger) continue;
+		seen.add(p.name);
+		out.earn += p.ledger.earn || 0; out.spend += p.ledger.spend || 0; out.s += p.ledger.s || 0; out.who.push(p.name);
+	}
+	return out;
+}
+// Gold optional spending may still use now (Infinity: budget off, or under min_data_h of records)
+function gold_room() {
+	if (!CFG.spend?.enabled) return Infinity;
+	const L = party_ledger();
+	if (L.s < CFG.spend.min_data_h * 3600 * L.who.length) return Infinity;
+	return Math.floor(CFG.spend.share * L.earn - L.spend);
+}
+const gold_ok = (cost) => (cost || 0) <= gold_room();
+function budget_text() {
+	const L = party_ledger(), room = gold_room();
+	return `gold budget (${CFG.spend.window_h}h, ${L.who.length} chars): earned ${fmt_k(L.earn)}, spent ${fmt_k(L.spend)}` +
+		(room === Infinity ? " — under an hour of records, no limit yet" : room > 0 ? ` — ${fmt_k(room)} left for upgrades/guide buys/compounds/Ponty` : " — optional spending paused (spent ≥ 90% of income)");
+}
 // Per-hour rates over the last hour (report, heartbeat): a sample of cumulative xp and gold every minute
 // adj = gold moved between our own characters (sent: +, received: −), so transfers don't count as earnings/spending
 const stats = { xp: 0, adj: 0, samples: [] };
@@ -1063,7 +1099,13 @@ setInterval(() => {
 	b.time[cls] = (b.time[cls] || 0) + 1;
 	b.xp += d;
 	const g = character.gold + stats.adj;
-	if (gold_prev !== null) b.gold += g - gold_prev;
+	if (gold_prev !== null) {
+		const dg = g - gold_prev;
+		b.gold += dg;
+		// gross ledger (transfers between our characters are already out via stats.adj); ls = seconds recorded
+		if (dg > 0) b.earn = (b.earn || 0) + dg; else if (dg < 0) b.spend = (b.spend || 0) - dg;
+		b.ls = (b.ls || 0) + 1;
+	}
 	gold_prev = g;
 	hist.dirty = true;
 	if (!character.rip) { pm_sample(); calib_tick(); }
@@ -1730,6 +1772,8 @@ async function task_compound() {
 		const g = compound_groups().find((x) => x.bags.length >= 3);
 		if (!g) break;
 		const floor = shop_for(g.name) && !G.items[g.name]?.cash ? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
+		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
+		if (!gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
 		try {
 			// resources: the exact spare slots, so run_compound never grabs a guide-needed copy of the same item
 			const before = g.bags.slice(0, 3).map((k) => character.items[k]);
@@ -1784,7 +1828,7 @@ function upgrade_cost(name, to) {
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
 // Best project: the NPC-sold piece whose upgraded copy beats a member's worn piece by the most points per gold
 function pick_upgrade() {
-	const gold = upgrade_gold(), budget = gold * CFG.upgrade_spend, H = CFG.upgrade_high;
+	const room = gold_room(), gold = Math.min(upgrade_gold(), room), budget = gold * CFG.upgrade_spend, H = CFG.upgrade_high;
 	if (!CFG.upgrade_auto || budget <= 0) return null;
 	const takers = gear_takers().filter((m) => m.ctype !== "merchant");
 	let best = null;
@@ -1840,6 +1884,7 @@ async function task_upgrade() {
 			game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
 			break;
 		}
+		if (!gold_ok(step)) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
 		state.fund_need = 0;
 		if (P.spent_from === undefined) P.spent_from = character.gold;
 		if (P.spent_from - character.gold > P.cost * CFG.upgrade_abort_x) {
@@ -1895,6 +1940,7 @@ async function task_craft_power() {
 	const c = craft_pick();
 	if (!c || !craft_inputs_in_bags(c.id)) return 0;
 	const r = G.craft[c.id];
+	if (!gold_ok(r.cost)) return (town_reason.forge = "gold budget"), 0;
 	if ((r.cost || 0) > character.gold - (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve)) {
 		if (is_merchant()) state.fund_need = r.cost;
 		return 0;
@@ -1925,6 +1971,7 @@ function best_elixir() {
 const bank_elixir = () => (state.bank_gear || []).filter((i) => elixir_ok(i.name))
 	.sort((a, b) => gear_score({ name: b.name }) - gear_score({ name: a.name }))[0] || null;
 const elixir_buy_due = () => CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && !bank_elixir() &&
+	gold_ok(G.items[CFG.elixir_buy]?.g) &&
 	character.gold >= CFG.elixir_buy_min_gold && !!G.items[CFG.elixir_buy] && !skipped("town:elixir");
 async function drink_elixir() {
 	if (!CFG.elixir_auto || character.ctype === "merchant" || character.rip || elixir_active()) return false;
@@ -2396,8 +2443,21 @@ const owned_in_bags_or_bank = (n, l) => held(n, l) + (l ? 0 : state.bank_seen[n]
 // A hunt that can't be finished before it expires (h.ms left) isn't worth chasing: let it lapse and take a new one
 // (v18.6: a 417-bee hunt pulled the party onto bees at half the xp/s of croc for hours). Party kills count, so the
 // party's rate is estimated as ours × (1 + 0.6 per member near).
+// xp/s we'd get at a monster's best area (measured if we've been there, else estimated)
+function mt_xps(mt) {
+	let best = 0;
+	each_area((pack, area) => { if (pack.type === mt && state.measured[pack_key(area)] !== undefined) best = Math.max(best, state.measured[pack_key(area)]); });
+	if (best) return best;
+	const f = fight_profile(mt);
+	return f ? kills_per_s(mt) * (f.xp || G.monsters[mt]?.xp || 0) : 0;
+}
+// The best xp/s we know of: this pick's best, or the best measured pack
+const best_known_xps = () => Math.max(state.best_score || 0, ...Object.values(state.measured || {}).filter(Number.isFinite), 0);
 function hunt_feasible(h) {
 	if (!h || !(h.c > 0)) return false;
+	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
+	const best = best_known_xps();
+	if (best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
 	if (!(h.ms > 0)) return true; // no expiry known
 	const kps = kills_per_s(h.id) * (1 + 0.6 * partners_near().length);
 	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
@@ -2764,7 +2824,7 @@ function needed_slots() {
 function read_guide() {
 	if (typeof get_progression !== "function") return null;
 	let prog;
-	try { prog = get_progression({ spendLimit: Math.max(0, character.gold - CFG.gold_reserve) }); } catch (e) { game_log("progression: " + e); return null; }
+	try { prog = get_progression({ spendLimit: Math.max(0, Math.min(character.gold - CFG.gold_reserve, gold_room())) }); } catch (e) { game_log("progression: " + e); return null; }
 	if (!prog || !prog.ready) return null;
 	state.guide = prog;
 	for (const id of guide_quest_ids(prog)) {
@@ -2958,6 +3018,10 @@ function row_is_local(row) {
 async function guide_step(row) {
 	row = row || next_guide_row(guide_refresh());
 	if (!row) return false;
+	if (["buy", "upgrade", "compound", "stat", "craft"].includes(row.kind) && gold_room() <= 0) {
+		skip(row.id, 1_800_000, "gold budget: party spending ≥ income");
+		return false;
+	}
 	try {
 		await run_row(row);
 		await sleep_ms(500); // let the result's update arrive before the guide is re-read
@@ -3421,6 +3485,7 @@ function report_facts() {
 	}
 	if (p && !p.boss && !M_) F("safety", "self", `safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
 	if (state.guide_farm && !M_) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
+	if (CFG.spend?.enabled) F("budget", "party", budget_text());
 	const golds = partners().filter((x) => Number.isFinite(x.gold));
 	if (golds.length && CFG.party.gold?.enabled) {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
@@ -3434,7 +3499,7 @@ function report_facts() {
 	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
 	const h = character.s.monsterhunt;
 	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
-	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
 	const tc = town_causes();
 	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
@@ -3645,6 +3710,7 @@ function party_header_lines() {
 	const lack = [...fighters.map((f) => [f.name, f.name === character.name ? hold_missing() : f.need]), ...(M ? [[M.name, M.name === character.name ? hold_missing() : M.need]] : [])]
 		.filter(([, nd]) => Array.isArray(nd) && nd.length);
 	if (lack.length) out.push(`missing must-hold items: ${lack.map(([n, nd]) => `${n} (${nd.join(", ")})`).join(", ")}`);
+	if (CFG.spend?.enabled) out.push(budget_text());
 	if (CFG.merchant?.name) out.push(`merchant ${CFG.merchant.name}: ${M ? `${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free` : "offline (fighters do their own town runs)"}`);
 	if (lead === character.name && state.shared?.mutual.length) out.push(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 	return out;
@@ -3717,7 +3783,7 @@ const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, ledger: my_ledger(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -3829,7 +3895,7 @@ const merchant_does_it = () => merchant_recent();
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
-	const msg = { k: "mhb", v: VERSION, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
+	const msg = { k: "mhb", v: VERSION, ledger: my_ledger(), level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
@@ -4065,7 +4131,7 @@ async function task_secondhands() {
 	for (const it of list) {
 		if (state.errand) state.errand_at = Date.now();
 		const why_buy = secondhand_reason(it, groups), price = shop_price(it);
-		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3) continue;
+		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !gold_ok(price)) continue;
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;
 		parent.socket.emit("sbuy", { rid: it.rid });
@@ -4254,7 +4320,7 @@ function merchant_donate() {
 	if (!D || character.level >= D.to_level || now - donate_at < 60_000 || character.map === "bank") return false;
 	donate_at = now;
 	const day = state.donated && now - state.donated.since < 86_400_000 ? state.donated : (state.donated = { since: now, g: 0 });
-	const g = Math.floor(Math.min(character.gold - D.keep, D.chunk, D.per_day - day.g));
+	const g = Math.floor(Math.min(character.gold - D.keep, D.chunk, D.per_day - day.g, gold_room()));
 	if (g < 100_000 || !can_spend(1, RESERVE.errand)) return false; // < 100k: the server's "low" donation, skip
 	parent.socket.emit("donate", { gold: g });
 	day.g += g;
