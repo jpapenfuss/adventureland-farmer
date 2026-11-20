@@ -1,4 +1,4 @@
-const VERSION = "24.6"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.7"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -79,7 +79,7 @@ const CFG = {
 	// the other two main stats count off_stat. Defensive stats count × tank_mult for tank classes.
 	gear_w: { attack: 1, main_stat: 1.2, off_stat: 0.2, vit: 1, for: 0.6, hp: 0.05, mp: 0.02, armor: 0.3, resistance: 0.3,
 		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
-		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, xp: 0.6, luck: 0.15, gold: 0.15 },
+		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, xp: 0.6, luck: 0.15, gold: 0.15, output: 3 },
 	gear_tank: ["paladin", "warrior"],
 	// v23.4: the xp stat (+1% of the wearer's kill xp per point; server: xpm) is worth what that much more damage would
 	// earn: each fighter gets 1/n of every party kill, so +1% damage adds ~1/n % xp while +1 xp adds 1%. One point counts
@@ -208,6 +208,7 @@ const CFG = {
 	// --- merchant (same script; a merchant-class character named here works for the party instead of fighting) ---------
 	merchant: {
 		name: "DoWhatNow",
+		wear_gear: false,      // v24.7: the merchant doesn't fight: gear it wore (spare jewellery) broke compound sets and did nothing
 		serve_free: 12,        // visit a fighter with fewer free bag slots than this...
 		serve_pots: 80,        // ...or fewer potions of either kind than this
 		pot_carry: 400,        // potions of each kind taken out per trip (configured tier, or the cheap one if gold is short)
@@ -809,7 +810,7 @@ function probe_pick(team = solo_now(), ref = state.best_score) {
 			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
 			const raw = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
-			const est = meas(team === true)[pack_key(area)] ?? raw * state.realism;
+			const est = meas_aged(pack_key(area), raw * state.realism, team === true); // v24.7: aged
 			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
@@ -956,7 +957,8 @@ function end_session() {
 	else if (s.kc_n > 0) rate = s.kc / secs;
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
 	const tab = meas(s.split), prev = tab[s.key];
-	tab[s.key] = prev === undefined ? rate : prev * 0.5 + rate * 0.5; // average with the previous measurement
+	// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
+	tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate, s.split) * 0.5 + rate * 0.5;
 	state.meas_at[(s.split ? "s:" : "p:") + s.key] = Date.now();
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3
@@ -1658,9 +1660,10 @@ function sustain() {
 	if (channeling()) return calm && hp < 0.9 ? fire("regen_hp") : undefined;
 	if (hp < 0.55 && pot_count("hp")) return fire("use_hp");
 	if (mp < 0.35 && pot_count("mp")) return fire("use_mp");
-	if (!calm) return;
-	if (mp < 0.9 && hp > 0.8) return fire("regen_mp");
-	if (hp < 0.9) return fire("regen_hp");
+	// v24.7: calm matters only with potions of that kind to protect — with none, the regen is all there is
+	const ok_hp = calm || !pot_count("hp"), ok_mp = calm || (!pot_count("mp") && !pot_count("hp"));
+	if (mp < 0.9 && hp > 0.8 && ok_mp) return fire("regen_mp");
+	if (hp < 0.9 && ok_hp) return fire("regen_hp");
 }
 const chest_tries = {}; // chest id -> { n: attempts, t: last attempt, seen: first seen }; forgotten once the chest is gone
 function loot_chests() {
@@ -1724,15 +1727,22 @@ function item_props(item, ctype) {
 function xp_weight(ctype) {
 	if (ctype === "merchant") return 0;
 	const atk = ctype === character.ctype ? character.attack : partners().find((p) => p.ctype === ctype)?.attack;
-	return CFG.gear_xp_value * (atk || character.attack || 100) * party_n();
+	// v24.7: not x party size — +1% xp on one fighter is 1/n of the party's xp, the same as +1% of its own damage (which
+	// speeds every member's share); x n made xp gear outscore real armour, and differ on the merchant (party_n 1)
+	return CFG.gear_xp_value * (atk || character.attack || 100);
 }
 function gear_score(item, ctype = character.ctype) {
 	if (!item || !G.items[item.name]) return 0;
-	const p = item_props(item, ctype), W = CFG.gear_w, main = G.classes[ctype]?.main_stat, tank = CFG.gear_tank.includes(ctype);
+	const p = { ...item_props(item, ctype) }, W = CFG.gear_w, main = G.classes[ctype]?.main_stat, tank = CFG.gear_tank.includes(ctype);
+	// v24.7: the class's own modifiers for this weapon type (server: applied on equip) — a mage's wand +60 frequency,
+	// a paladin's sword -5 output — weren't counted, so the staff scored above the faster wand
+	const d = G.items[item.name], cls = G.classes[ctype];
+	if (d?.type === "weapon" && cls) for (const [k, v] of Object.entries(cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype] || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
 	let s = 0;
 	for (const k in p) {
 		if (!p[k] || typeof p[k] !== "number") continue;
-		let w = MAIN_STATS.includes(k) ? (k === main ? W.main_stat : W.off_stat) : k === "xp" ? xp_weight(ctype) : W[k];
+		// paladin attack = item attack x (str/20 + int/40) (server): int is worth half of str to it, not an off-stat
+		let w = MAIN_STATS.includes(k) ? (k === main ? W.main_stat : ctype === "paladin" && k === "int" ? W.main_stat / 2 : W.off_stat) : k === "xp" ? xp_weight(ctype) : W[k];
 		if (!w) continue;
 		if (tank && DEF_STATS.has(k)) w *= CFG.gear_tank_mult;
 		s += p[k] * w;
@@ -1791,9 +1801,11 @@ function gear_takers() {
 	for (const p of partners()) if (p.gear?.w) out.push({ name: p.name, ctype: p.ctype, g: p.gear, esize: p.esize, p });
 	return out;
 }
-const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m) => gear_gain(item, m.ctype, m.g));
+// (a merchant that doesn't wear gear isn't a taker for itself: v24.7)
+const self_taker_ok = () => !is_merchant() || CFG.merchant.wear_gear;
+const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m, i) => (i > 0 || self_taker_ok()) && gear_gain(item, m.ctype, m.g));
 // An upgrade for us (not refused by the server) or for a fighter: such a piece is never banked, sold or listed
-const wanted_by_member = (item) => CFG.gear_auto && gear_takers().some((m, i) => (i > 0 || !equip_paused(item)) && gear_gain(item, m.ctype, m.g));
+const wanted_by_member = (item) => CFG.gear_auto && gear_takers().some((m, i) => (i > 0 || (!equip_paused(item) && self_taker_ok())) && gear_gain(item, m.ctype, m.g));
 // Gear in the bank that beats what we wear: one per slot (the best), as task_bank fetch entries
 function bank_upgrades() {
 	if (!CFG.gear_auto || !CFG.bank) return [];
@@ -1805,7 +1817,7 @@ function bank_upgrades() {
 		const own = !equip_paused(it) && gear_gain(it, character.ctype, g);
 		const theirs = () => takers.map((m) => [m.name, gear_gain(it, m.ctype, m.g)]).filter(([, r]) => r);
 		// v24.5: a fighter keeps first claim; the merchant takes a piece only if no fighter would
-		const cands = is_merchant() ? (theirs().length ? theirs() : own ? [[character.name, own]] : []) : own ? [[character.name, own]] : theirs();
+		const cands = is_merchant() ? (theirs().length ? theirs() : own && CFG.merchant.wear_gear ? [[character.name, own]] : []) : own ? [[character.name, own]] : theirs();
 		for (const [who, r] of cands) offers.push({ ms: `${who}:${r.slot}`, i, gain: r.gain, it });
 	});
 	// v23.2: one piece per (member, slot); v24.5: and each bank copy to one (member, slot), biggest gains first — a
@@ -1835,7 +1847,7 @@ async function equip_upgrades() {
 	const for_fighter = (it) => fighters.some((m) => gear_gain(it, m.ctype, m.g));
 	let best = null;
 	character.items.forEach((it, k) => {
-		if (!it || equip_paused(it) || (M_ && (needed.has(k) || for_fighter(it)))) return;
+		if (!it || equip_paused(it) || (M_ && (!CFG.merchant.wear_gear || needed.has(k) || for_fighter(it)))) return;
 		const r = gear_gain(it, character.ctype, g);
 		// a copy the guide holds as an upgrade/compound input is worn only when clearly better (v20.0)
 		if (r && needed.has(k) && r.gain < (g.w[r.slot] || 0) * CFG.gear_input_gain) return;
@@ -1845,7 +1857,7 @@ async function equip_upgrades() {
 	if (!best && g.dh) {
 		let one = null, off = null;
 		character.items.forEach((it, k) => {
-			if (!it || equip_paused(it) || needed.has(k) || (M_ && for_fighter(it))) return;
+			if (!it || equip_paused(it) || needed.has(k) || (M_ && (!CFG.merchant.wear_gear || for_fighter(it)))) return;
 			const d = G.items[it.name], cls = G.classes[character.ctype] || {};
 			if (!d) return;
 			const sc = gear_score(it);
@@ -1903,7 +1915,10 @@ async function share_gear() {
 			const r = gear_gain(it, m.ctype, m.g);
 			if (r && (!to || r.gain > to.gain)) to = { ...r, m };
 		}
-		if (!to && Mt) { const r = gear_gain(it, "merchant", Mt.g); if (r) to = { ...r, m: Mt }; }
+		// v24.7: the merchant hands a piece only to the fighter it helps most (gear_target walks to that one), not to
+		// whoever is near when it serves someone
+		if (to && is_merchant() && best_fighter_for(it)?.name !== to.m.name) to = null;
+		if (!to && Mt && CFG.merchant.wear_gear) { const r = gear_gain(it, "merchant", Mt.g); if (r) to = { ...r, m: Mt }; }
 		const key = `${it.name}:${it.level || 0}>${to?.m.name}`;
 		if (!to || now - (state.gear_sent[key] || 0) < 600_000 || !can_spend(1, RESERVE.errand)) continue;
 		state.gear_sent[key] = now;
@@ -1932,10 +1947,12 @@ async function swap_worn() {
 	if (Date.now() - swap_at < 60_000 || character.esize < 1) return false;
 	const mine = my_gear(), sl = character.slots || {};
 	for (const p of partners_near(CFG.gear_share_range)) {
-		if (!p.worn || !p.gear?.w || character.name > p.name || (p.esize ?? 1) < 1) continue;
+		if (!p.worn || !p.gear?.w || (p.esize ?? 1) < 1) continue;
 		for (const s of GEAR_SLOTS) {
-			if (s === "mainhand" || s === "offhand") continue; // weapons/offhands are class-bound
+			// v24.7: weapons/offhands too (priest and mage share staves, sources, misc offhands) — but no two-handers (the
+			// offhand would have to come off first)
 			const X = sl[s], Y = p.worn[s];
+			if ((s === "mainhand" || s === "offhand") && X && Y && (is_2h(X.name, p.ctype) || is_2h(Y.name, character.ctype) || is_2h(X.name, character.ctype) || is_2h(Y.name, p.ctype))) continue;
 			// v24.5: their piece must be free too (a locked one would stay in their bags and ours would be lost to them)
 			if (!X || !Y || X.l || X.b || Y.l || (X.name === Y.name && (X.level || 0) === Y.level)) continue;
 			if (!slots_for(Y.name, character.ctype, mine).includes(s) || !slots_for(X.name, p.ctype, p.gear).includes(s)) continue;
@@ -1943,6 +1960,9 @@ async function swap_worn() {
 			const ok = (gain, cur) => gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin;
 			// the receiver must gain by the usual margins; we may lose up to gear_swap_loss of that, so the party gains
 			if (!ok(theirs, p.gear.w[s] || 0) || ours < -theirs * CFG.gear_swap_loss || !(ours + theirs >= 2 * CFG.gear_min_gain)) continue;
+			// v24.7: the giver is whoever's partner gains (it equips what it's sent); when both gain, the earlier name gives.
+			// Only the earlier name started before, checking only the other's gain: a swap where it should receive never ran
+			if (character.name > p.name && ok(ours, mine.w[s] || 0)) continue;
 			swap_at = Date.now();
 			gear_busy = true;
 			try {
@@ -2252,6 +2272,10 @@ function pick_upgrade() {
 			if (cost > cap) continue;
 			// a copy at the target level already exists: ours, the bank's, or (v23.2) in another member's bags or worn
 			if (best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to)) continue;
+			// v24.7: a lower copy that's already an upgrade for a fighter is delivered first (then judged against): a project
+			// held it as its input, undelivered, and rolled it at 50% odds
+			const ready = (i) => i && i.name === name && !i.l && (i.level || 0) < to && takers.some((m) => gear_gain(i, m.ctype, m.g));
+			if (character.items.some(ready) || (state.bank_gear || []).some(ready)) continue;
 			for (const m of takers) {
 				const r = gear_gain({ name, level: to }, m.ctype, m.g);
 				if (!r || (high && !H.slots.includes(r.slot))) continue;
@@ -2305,8 +2329,9 @@ async function task_upgrade() {
 		// v23.1: the gold the project's steps cost (copy + scrolls), counted per step — measuring from total gold let loot,
 		// sales, potion buys and the fighters' funding move it
 		if (P.spent === undefined) P.spent = 0;
+		P.max = Math.max(P.max ?? -1, top); // v24.7: the highest level this project reached (a failure destroys the copy)
 		if (P.spent > P.cost * CFG.upgrade_abort_x) {
-			upg_cap(P.name, Math.max(0, top));
+			upg_cap(P.name, Math.max(0, P.max));
 			skip("upg:" + P.name, 24 * 3600_000, "over budget");
 			game_log(`upgrade ${P.name}: failures pushed the cost past ${CFG.upgrade_abort_x}x the estimate; stopped${top >= 1 ? ` at +${top}` : ""}`, C.bad);
 			state.upg = null;
@@ -2319,9 +2344,12 @@ async function task_upgrade() {
 			n++;
 		} catch (e) {
 			P.spent += Math.max(0, g0 - character.gold);
+			// v24.7: a transient error (walk/call timeout, distance...) pauses the project, it doesn't end it: ending it freed the
+			// copy (banked, never a project input again), and the re-pick rebought from +0 with the abort budget reset
+			if (TRANSIENT.has(why(e))) { skip("upg:" + P.name, pause_ms(e, 600_000), why(e)); game_log(`upgrade ${P.name}: ${why(e)}; retrying in 10 min`, C.dim); break; }
 			// v24.5: refused for its odds, the next step will be refused again: remember the level reached, so the project
 			// isn't re-picked a day later to rebuild a copy at that level from +0 (and stopped there again, every day)
-			if (e?.chance !== undefined) upg_cap(P.name, Math.max(0, top));
+			if (e?.chance !== undefined) upg_cap(P.name, Math.max(0, P.max ?? top));
 			skip("upg:" + P.name, pause_ms(e, 24 * 3600_000), why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
 			game_log(`upgrade ${P.name}: ${why(e)}; project stopped${top >= 1 ? ` at +${top}` : ""}`, C.dim);
 			state.upg = null; // the copy reached so far is free again (equip/share judge it)
@@ -2458,17 +2486,20 @@ function is_junk(item) {
 	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
 }
 // KEEP / SELL / BANK for one bag item (see the header). `needed` = slots holding copies the guide/quests need.
+const purge_key = (it) => `${it.name}:${it.level || 0}${it.p ? ":" + it.p : ""}${it.stat_type ? ":" + it.stat_type : ""}`;
 function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (!item) return "empty";
 	if ((held_cmp || compound_slots(needed)).has(character.items.indexOf(item))) return "keep"; // waiting to be compounded
 	if (is_merchant() && stand_hold().has(character.items.indexOf(item))) return "keep"; // stock for the stand
-	if (is_merchant() && Date.now() - (state.purge[`${item.name}:${item.level || 0}`] || 0) < 86_400_000 && !item.l) return "sell"; // bank purge
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && gear_gain(item, character.ctype, my_gear())) ||
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
+	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
+	// and a titled copy fetched for a fighter)
+	if (is_merchant() && Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return "sell";
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -2761,7 +2792,9 @@ const is_guide_quest = (id) => CFG.guide_enabled && !!state.guide_quests[id] && 
 // quest_npcs). Skips outputs our class can't wear.
 function quest_recipes() {
 	const mode = CFG.quest_crafts;
-	if (!mode) return [];
+	// v24.7: the merchant can't farm, so it never parked a quest and "wanted" every one: it fetched and kept the fighters'
+	// materials from the bank (a slot each, its serving needs free slots) and they farmed them again
+	if (!mode || is_merchant()) return [];
 	const guide = [], own = [];
 	for (const id in G.craft) {
 		const r = G.craft[id];
@@ -3641,7 +3674,7 @@ function town_due(relaxed = false) {
 		elixir: elixir_buy_due(),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch) ||
-			(is_merchant() && plan.sell.some((k) => state.purge[`${character.items[k]?.name}:${character.items[k]?.level || 0}`]))),
+			(is_merchant() && plan.sell.some((k) => character.items[k] && state.purge[purge_key(character.items[k])]))),
 		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
 		// fetches of our bank upgrades alone don't send us while the merchant is online: it fetches and delivers them
 		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) ||
@@ -4065,7 +4098,7 @@ function report_facts() {
 	if (M_) {
 		const f = merchant_job(), D = CFG.merchant.donate;
 		if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
-		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[`${i.name}:${i.level || 0}`]).length;
+		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[purge_key(i)]).length;
 		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
 		if (merrit_on()) {
 			const sp = state.mspot, st = state.stand_since ? Math.round((now - state.stand_since) / 1000) : 0;
@@ -4073,7 +4106,7 @@ function report_facts() {
 			F("merrit", "self", `merrit: ${sp ? `spot ${sp.x},${sp.y} (${in_rect(sp.x, sp.y, CFG.merchant.merrit.square) ? "square" : "aisle"})` : "no qualifying spot"} | ${character.stand ? `stand still ${Math.floor(st / 60)}m${st % 60}s${st >= 120 ? " — ready for her" : ""}` : "stand closed"} | parcels 24h: ${got}${state.parcel_at ? `, last ${ago(state.parcel_at)} ago` : ""}${parcel_count() ? ` | holding ${parcel_count()}` : ""}`);
 		}
 		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && now - e.t < 86_400_000);
-		F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
+		F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
 		F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
 	} else if (CFG.merchant?.name) {
 		const M = merchant_hb();
@@ -4555,7 +4588,7 @@ function mode_ab_tick(d) {
 		for (const m of ["split", "together"]) { M[m].xp *= k; M[m].s *= k; }
 		M.at = now;
 	}
-	if (!ab_full() || state.probe || state.directive?.boss || state.regroup_since || character.rip || state.recovering || event_live()) return;
+	if (!ab_full() || state.parked || state.probe || state.directive?.boss || state.regroup_since || character.rip || state.recovering || event_live()) return;
 	const cur = state.split_on ? "split" : "together";
 	if (cur !== M.mode || now - (M.flip_at || 0) < A.settle_min * 60_000) return;
 	M[cur].xp += Math.max(0, d); M[cur].s += 1;
@@ -4738,10 +4771,20 @@ function gear_target() {
 		if (!it || it.l || it.b || !GEAR.has(G.items[it.name]?.type)) continue;
 		const key = `${it.name}:${it.level || 0}`;
 		if (now - (gear_trip_at[key] || 0) < 1_200_000 || needed.has(character.items.indexOf(it))) continue;
-		const to = gear_takers().slice(1).filter((m) => m.ctype !== "merchant" && fresh(m.p) && !m.p.rip).find((m) => gear_gain(it, m.ctype, m.g));
+		const to = best_fighter_for(it); // v24.7: the fighter it helps most (was: the first in config order with any gain)
 		if (to) return to.p; // serve() marks the pieces it carries
 	}
 	return null;
+}
+// The online fighter a piece helps most: { name, ctype, g, p, gain } or null
+function best_fighter_for(it) {
+	let best = null;
+	for (const m of gear_takers().slice(1)) {
+		if (m.ctype === "merchant" || !fresh(m.p) || m.p.rip) continue;
+		const r = gear_gain(it, m.ctype, m.g);
+		if (r && (!best || r.gain > best.gain)) best = { ...m, gain: r.gain };
+	}
+	return best;
 }
 // Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
 let token_trip_at = 0;
@@ -4833,7 +4876,8 @@ async function serve(f) {
 	await stand_close();
 	const serve_t0 = Date.now();
 	state.serving = f.name;
-	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type)) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
+	// v24.7: only the pieces for this fighter (marking every piece paused deliveries to everyone else for 20 min)
+	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type) && best_fighter_for(it)?.name === f.name) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
 	try {
 		const M = CFG.merchant;
 		await task_restock(M.pot_carry, M.pot_carry + M.self_pots).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
@@ -4934,7 +4978,9 @@ function secondhand_reason(it, groups) {
 	if (!it || !G.items[it.name]) return null;
 	const price = shop_price(it);
 	for (const x of gear_takers().slice(1).filter((x) => x.ctype !== "merchant")) {
-		if (party_holds(it.name)) break; // someone already carries one: deliver that instead
+		// someone already has one at this level or better: deliver that instead (v24.7: any copy of the name used to block it)
+		const lv = it.level || 0;
+		if (best_level_held(it.name) >= lv || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= lv) || party_holds_level(it.name, lv)) break;
 		const r = gear_gain(it, x.ctype, x.g);
 		if (r && price <= r.gain * CFG.secondhand_gold_per_pt) return `upgrade for ${x.name} (+${Math.round(r.gain)} pts)`;
 	}
@@ -5000,7 +5046,7 @@ async function bank_purge() {
 	let got = 0;
 	for (const c of cands.slice(0, M.purge_n)) {
 		await wait_budget(1, RESERVE.bulk);
-		await T(bank_retrieve(c.p, c.n)).then(() => { got++; state.purge[`${c.it.name}:${c.it.level || 0}`] = Date.now(); }).catch(() => {});
+		await T(bank_retrieve(c.p, c.n)).then(() => { got++; state.purge[purge_key(c.it)] = Date.now(); }).catch(() => {});
 		await sleep_ms(PACE_MS);
 	}
 	if (got) { game_log(`bank: ${bf.free}/${bf.total} free — pulled ${got} low-value items to sell/list`, C.info); log_ev("purge", { n: got, free: bf.free, total: bf.total }); }
@@ -5099,10 +5145,19 @@ async function stand_tick() {
 		// sales: a listing whose slot emptied (we only take items down by re-listing, which updates state first)
 		if (character.stand) for (const slot in state.stand) { // trade slots are only reliable while the stand is open
 			const L_ = state.stand[slot], cur = sl[slot];
+			const unit = L_.per_unit ? L_.price : L_.price / Math.max(1, L_.q);
+			// v24.7: with per-unit prices a buyer can take part of a stack: the slot keeps the item with a smaller q
+			if (cur && cur.name === L_.name && (cur.q || 1) < (L_.q || 1)) {
+				const q_s = (L_.q || 1) - (cur.q || 1);
+				log_ev("sold", { item: `${L_.name}+${L_.level}`, q: q_s, price: Math.round(unit * q_s) });
+				game_log(`stand: sold ${q_s} of ${L_.name} for ${fmt_k(Math.round(unit * q_s))}`, C.gold || C.ok);
+				L_.q = cur.q || 1;
+				continue;
+			}
 			if (cur && cur.name === L_.name) continue;
 			{
-				log_ev("sold", { item: `${L_.name}+${L_.level}`, q: L_.q, price: L_.price });
-				game_log(`stand: sold ${L_.name}+${L_.level}${L_.q > 1 ? " x" + L_.q : ""} for ${fmt_k(L_.price)}`, C.gold || C.ok);
+				log_ev("sold", { item: `${L_.name}+${L_.level}`, q: L_.q, price: Math.round(unit * (L_.q || 1)) });
+				game_log(`stand: sold ${L_.name}+${L_.level}${L_.q > 1 ? " x" + L_.q : ""} for ${fmt_k(Math.round(unit * (L_.q || 1)))}`, C.gold || C.ok);
 				delete state.stand[slot];
 			}
 		}

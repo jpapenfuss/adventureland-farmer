@@ -2598,8 +2598,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.partners = {}; my_gear_cache = null", ctx);
 		hb("Torlis", { ...tor, level: 60 }); hb("Aspernari", { ...asp });
 		ctx.G.items.xorb = { type: "orb", xp: 5 };
-		assert(Math.abs(vm.runInContext("xp_weight('mage')", ctx) - 12) < 1e-9, `3 fighters, attack 400: 12 points per xp (${vm.runInContext("xp_weight('mage')", ctx)})`);
-		assert(vm.runInContext("gear_score({ name: 'xorb', level: 0 })", ctx) === 60 && vm.runInContext("gear_score({ name: 'xorb', level: 0 }, 'merchant')", ctx) === 0, "an orb with +5 xp: 60 points for a fighter, 0 for the merchant");
+		// v24.7: not x party size (+1% xp on one fighter = 1/n of party xp = +1% of its own damage)
+		assert(Math.abs(vm.runInContext("xp_weight('mage')", ctx) - 4) < 1e-9, `3 fighters, attack 400: 4 points per xp, as alone (${vm.runInContext("xp_weight('mage')", ctx)})`);
+		assert(vm.runInContext("gear_score({ name: 'xorb', level: 0 })", ctx) === 20 && vm.runInContext("gear_score({ name: 'xorb', level: 0 }, 'merchant')", ctx) === 0, "an orb with +5 xp: 20 points for a fighter, 0 for the merchant");
 		vm.runInContext("state.partners = {}", ctx);
 		assert(Math.abs(vm.runInContext("xp_weight('mage')", ctx) - 4) < 1e-9, "alone: 4 points per xp");
 	}
@@ -2894,7 +2895,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, level: 60, gear: { w: { helmet: 1e6 }, own: {} } });
 		vm.runInContext("my_gear_cache = null; m_release_at = 0", ctx);
 		await vm.runInContext("equip_upgrades()", ctx);
-		assert(eq.join() === "helmet", `no fighter wants it: the merchant wears it (${eq})`);
+		assert(eq.join() === "", `v24.7: no fighter wants it, but the merchant doesn't wear gear by default (${eq})`);
+		vm.runInContext("CFG.merchant.wear_gear = true; my_gear_cache = null", ctx);
+		await vm.runInContext("equip_upgrades()", ctx);
+		vm.runInContext("CFG.merchant.wear_gear = false", ctx);
+		assert(eq.join() === "helmet", `with wear_gear on, it wears what no fighter wants (${eq})`);
 		ctx.equip = eq0; ctx.unequip = uq0; character.slots = {}; character.items = Array(42).fill(null);
 		// bank: the merchant fetches for fighters first; each copy to one member
 		hb("Torlis", { ...tor, level: 60, gear: { w: { helmet: 0 }, own: {} } });
@@ -2978,6 +2983,85 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("Object.assign(state.mode_ab, { mode: 'together', trial: true, since: 0, together: { xp: 2400 * 9.5, s: 2400 } })", ctx);
 		assert(vm.runInContext("mode_pick() === 'split'", ctx), "re-trial 5% worse: back to split (no 10% margin protecting the re-trial)");
 		vm.runInContext("CFG.party.split.enabled = false; state.mode_ab = null; state.partners = {}; state.was_leader = false; state.pack = null; hist.ev = []", ctx);
+	}
+	// 119) v24.7 economy + regression fixes: deliveries to the biggest gain; no merchant quests; purge after keep rules;
+	// weapon class modifiers and paladin int in gear scores; transient project errors keep the project; caps at the
+	// highest level reached; aged re-measurements; regen without potions in combat; partial stand sales; parked leader
+	{
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, map: "main", x: 0, y: 0, rip: false, esize: 30, stand: false, gold: 5e6 });
+		character.items = Array(42).fill(null); character.slots = {};
+		ctx.G.items.ring119 = { type: "ring", int: 10 };
+		vm.runInContext("state.partners = {}; state.gear_skip = {}; my_gear_cache = null; state.upg = null; state.needs = new Map()", ctx);
+		hb("Aspernari", { ...asp, level: 58, gear: { w: { ring1: 10, ring2: 10 }, own: {} } });
+		hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { ring1: 0, ring2: 0 }, own: {} } });
+		character.items[1] = { name: "ring119", level: 0 };
+		const tgt = vm.runInContext("gear_target()", ctx);
+		assert(tgt && tgt.name === "Sanala", `delivery goes to the biggest gain (Sanala, empty ring slots), not the first in config order (${tgt && tgt.name})`);
+		assert(vm.runInContext("quest_recipes().length === 0", ctx), "the merchant has no quests of its own");
+		// purge: after the keep rules, by the exact copy
+		ctx.G.items.helm119 = { type: "helmet", armor: 5, upgrade: { armor: 1 }, g: 1000 };
+		character.items[1] = { name: "helm119", level: 3 }; character.items[2] = { name: "helm119", level: 3, p: "shiny" };
+		vm.runInContext("state.purge = { 'helm119:3': Date.now() }; state.upg = { name: 'helm119', to: 7, cost: 1000, for: 'Torlis' }", ctx);
+		assert(vm.runInContext("bag_class(character.items[1])", ctx) === "keep", "a purged plain helm+3 that the project holds stays");
+		vm.runInContext("state.upg = null", ctx);
+		assert(vm.runInContext("bag_class(character.items[1])", ctx) === "sell" && vm.runInContext("bag_class(character.items[2])", ctx) !== "sell", "no project: the plain purged copy sells, the titled one doesn't");
+		vm.runInContext("state.purge = {}", ctx); character.items = Array(42).fill(null);
+		// gear scores: class weapon modifiers; paladin int
+		ctx.G.items.staff119 = { type: "weapon", wtype: "staff", attack: 30 }; ctx.G.items.wand119 = { type: "weapon", wtype: "wand", attack: 30 };
+		const mc = ctx.G.classes.mage; ctx.G.classes.mage = { ...mc, main_stat: "int", mainhand: { staff: { speed: -4 }, wand: { frequency: 60 } } };
+		assert(vm.runInContext("gear_score({ name: 'wand119', level: 0 }, 'mage') - gear_score({ name: 'staff119', level: 0 }, 'mage')", ctx) === 60 * 2.5 + 4 * 0.5,
+			"mage: a wand's +60 frequency counts (and a staff's -4 speed)");
+		ctx.G.classes.mage = mc;
+		ctx.G.items.intorb119 = { type: "orb", int: 10 }; ctx.G.items.strorb119 = { type: "orb", str: 10 };
+		const pc = ctx.G.classes.paladin; ctx.G.classes.paladin = { ...pc, main_stat: "str" };
+		assert(vm.runInContext("gear_score({ name: 'intorb119', level: 0 }, 'paladin') * 2 === gear_score({ name: 'strorb119', level: 0 }, 'paladin')", ctx), "paladin: int is worth half of str");
+		ctx.G.classes.paladin = pc;
+		// upgrade project: a transient error pauses it; the odds cap is the highest level reached
+		character.items[1] = { name: "helm119", level: 3 };
+		ctx.G.items.scroll0 = { g: 1000, type: "uscroll" };
+		vm.runInContext(`state.upg = { name: 'helm119', to: 7, cost: 100000, for: 'Torlis', spent: 0 }; state.upg_caps = {}; state.gear_skip = {}; state.fund_need = 0;
+			globalThis.__ru = run_upgrade; run_upgrade = async () => { throw { reason: "timeout" }; }`, ctx);
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg && state.upg.name === 'helm119' && skipped('upg:helm119')", ctx), "a timeout pauses the project, it doesn't drop it");
+		vm.runInContext("state.gear_skip = {}; state.upg.max = 5; run_upgrade = async () => { throw { reason: 'low_chance', chance: 0.3 }; }", ctx);
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("!state.upg && upg_cap_level('helm119') === 5", ctx), `refused for its odds: capped at the highest level reached (+5), not the copy now held (+3) (${vm.runInContext("upg_cap_level('helm119')", ctx)})`);
+		vm.runInContext("run_upgrade = globalThis.__ru; state.upg_caps = {}; state.gear_skip = {}; state.upg = null", ctx);
+		character.items = Array(42).fill(null); delete ctx.G.items.scroll0;
+		// Ponty: a lower copy held doesn't block buying a better one
+		ctx.G.items.amulet119 = { type: "amulet", int: 5, upgrade: { int: 3 } };
+		vm.runInContext("state.bank_gear = [{ name: 'amulet119', level: 0 }]; CFG.secondhand_gold_per_pt = 1e9", ctx);
+		hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { amulet: 0 }, own: {} } });
+		assert(/upgrade for/.test(vm.runInContext("secondhand_reason({ name: 'amulet119', level: 5 }, {}) || ''", ctx)), "a +0 in the bank doesn't block buying a +5");
+		vm.runInContext("state.bank_gear = [{ name: 'amulet119', level: 6 }]", ctx);
+		assert(!/upgrade for/.test(vm.runInContext("secondhand_reason({ name: 'amulet119', level: 5 }, {}) || ''", ctx)), "a +6 in the bank does");
+		vm.runInContext("state.bank_gear = []", ctx);
+		// stand: a partial sale is logged and the listing's quantity follows
+		character.stand = true; character.slots = { trade1: { name: "gem119", q: 3, price: 100 } };
+		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false", ctx);
+		await vm.runInContext("stand_tick()", ctx);
+		assert(vm.runInContext("state.stand.trade1 && state.stand.trade1.q === 3 && hist.ev.some((e) => e.type === 'sold' && e.q === 2 && e.price === 200)", ctx), "2 of 5 sold: logged for 200, listing now x3");
+		character.stand = false; character.slots = {}; vm.runInContext("state.stand = {}; hist.ev = []", ctx);
+		// regression: re-measuring a stale spot averages with its aged value
+		vm.runInContext(`state.split_on = false; state.measured = { 'main:3,3,4,4': 20 }; state.meas_at = { 'p:main:3,3,4,4': Date.now() - 72 * 3600000 };
+			state.session = { key: 'main:3,3,4,4', mtype: 'goo', est: 100, xp: 0, kx: 0, kc: 10000, kc_n: 5, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
+		assert(vm.runInContext("state.measured['main:3,3,4,4'] > 95", ctx), `a 3-day-old 20 re-measured at 100 is ~100, not 60 (${vm.runInContext("state.measured['main:3,3,4,4']", ctx)})`);
+		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1", ctx);
+		// regression: no HP potions → regen even with something on us
+		Object.assign(character, { name: "Sanala", ctype: "mage", hp: 500, max_hp: 1000, mp: 500, max_mp: 500 });
+		const sk119 = []; const us = ctx.use_skill, gnm = ctx.get_nearest_monster;
+		ctx.use_skill = (n) => (sk119.push(n), Promise.resolve()); ctx.get_nearest_monster = (a) => (a && a.target ? { id: "x" } : null);
+		vm.runInContext("for (const k in inflight) inflight[k] = false; sustain()", ctx);
+		assert(sk119.includes("regen_hp"), `no potions, 50% HP, attacked: regen (${sk119})`);
+		ctx.use_skill = us; ctx.get_nearest_monster = gnm;
+		// regression: a parked leader books nothing to the split/together measurement
+		hb("Torlis", { ...tor, level: 60 }); hb("Aspernari", { ...asp, level: 58 });
+		vm.runInContext(`CFG.party.split.enabled = true; state.parked = true; state.mode_ab = { split: { xp: 0, s: 0 }, together: { xp: 0, s: 0 }, at: Date.now(), mode: 'together', since: Date.now(), flip_at: 0 };
+			state.split_on = false; mode_ab_tick(10)`, ctx);
+		assert(vm.runInContext("state.mode_ab.together.s === 0", ctx), "parked: not booked");
+		vm.runInContext("state.parked = false; CFG.party.split.enabled = false; state.mode_ab = null; state.partners = {}", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500 });
+		for (const k of ["ring119", "helm119", "staff119", "wand119", "intorb119", "strorb119", "amulet119"]) delete ctx.G.items[k];
 	}
 	all_done = true;
 	console.log("ALL PASS");
