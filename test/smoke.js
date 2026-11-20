@@ -1812,6 +1812,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("hold_for_merchant() && hold_for_merchant().for", ctx) === "DoWhatNow", "once every fighter has one, the merchant's copy is bought");
 	character.items = Array(42).fill(null); ctx.distance = dist_save;
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
+	// 83) audit: only gear/materials/gems are ever listed or purged; only boxes/chests/gems exchanged; recipe inputs
+	// never; walk-type failures pause briefly
+	ctx.G.items.dkey = { type: "dungeon_key", g: 500000 }; ctx.G.items.lic = { type: "licence", g: 900000 };
+	ctx.G.items.qitem = { type: "quest", g: 50000, e: 10 }; ctx.G.items.gembox = { type: "box", g: 1000, e: 1 };
+	ctx.G.items.cscale = { type: "material", g: 80000 };
+	ctx.G.craft = { orbg: { quest: "mcollector", items: [[1, "cscale"]] } };
+	vm.runInContext("recipe_input_set = null; recipe_inputs = null", ctx);
+	assert(!vm.runInContext("tradeable('dkey') || tradeable('lic') || tradeable('qitem') || tradeable('cscale')", ctx) && vm.runInContext("tradeable('helm2')", ctx),
+		"dungeon keys, licences, quest items and recipe materials are never sold/listed/purged; gear is");
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", esize: 30 });
+	character.items = Array(42).fill(null); character.items[0] = { name: "qitem", q: 10 }; character.items[1] = { name: "gembox", q: 1 };
+	vm.runInContext("state.needs = new Map(); state.gear_skip = {}", ctx);
+	assert(vm.runInContext("exchange_pick()", ctx) === 1, "exchange opens the box, not the quest item");
+	assert(vm.runInContext("pause_ms({ reason: 'interrupted' }, 6 * 3600000)", ctx) === 600000 && vm.runInContext("pause_ms({ reason: 'low_chance' }, 6 * 3600000)", ctx) === 6 * 3600000, "transient failures pause 10 min, verdicts the long pause");
+	assert(vm.runInContext("fresh({ t: Date.now() - 15000 })", ctx), "a member silent 15s still counts (busy members skip beats)");
+	character.items = Array(42).fill(null);
+	vm.runInContext("G.craft = {}; recipe_input_set = null; recipe_inputs = null", ctx);
 	all_done = true;
 	console.log("ALL PASS");
 })();

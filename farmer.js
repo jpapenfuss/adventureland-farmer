@@ -1,4 +1,4 @@
-const VERSION = "17.2"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.3"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -229,6 +229,22 @@ const RANGED = ["ranger", "mage", "priest"].includes(character.ctype); // classe
 // Item types that are equipment (sellable as junk, bankable as spares)
 const GEAR = new Set(["weapon", "shield", "helmet", "chest", "pants", "gloves", "shoes", "cape", "ring", "earring", "amulet", "belt", "orb", "source", "quiver", "misc_offhand"]);
 // Item types that always stay in the bags: consumables, scrolls, tools, keys
+// Item types the bot may ever sell, list on the stand or purge from the bank: gear, plain materials, gems. Everything
+// else (dungeon keys, licences, cosmetics, quest items, tomes, flutes, containers...) is only ever kept or banked.
+const TRADE_TYPES = new Set(["material", "gem"]);
+const tradeable = (name) => { const d = G.items[name]; return !!d && (GEAR.has(d.type) || TRADE_TYPES.has(d.type)) && !recipe_input(name); };
+// Item types the exchange task may open (boxes, chests, gems); quest items with an exchange are left to the player
+const EXCHANGE_TYPES = new Set(["box", "chest", "gem"]);
+let recipe_input_set = null; // every item any recipe uses (anyone's quests and crafts)
+function recipe_input(name) {
+	if (!recipe_input_set) { recipe_input_set = new Set(); for (const id in G.craft || {}) for (const [, n] of G.craft[id].items || []) recipe_input_set.add(n); }
+	return recipe_input_set.has(name);
+}
+// Failures that say nothing about the item or goal (walks, distance, timing, bank, money): retry soon instead of
+// pausing for hours. Everything else (low odds, not combinable, invalid...) is a real verdict.
+const TRANSIENT = new Set(["interrupted", "walk_timeout", "timeout", "distance", "bank_not_loaded", "no_space", "gold_reserve",
+	"buy_cost", "scroll_missing", "no_scroll", "inputs_not_ready", "player_gone", "cant_in_bank", "no_mp", "not_found", "failed"]);
+const pause_ms = (e, long) => (TRANSIENT.has(why(e)) ? 600_000 : long);
 const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "tracker", "token", "misc", "throw",
 	"booster", "skill_item", "bank_key", "spawner", "placeholder", "computer"]);
 
@@ -1703,7 +1719,7 @@ async function task_upgrade() {
 			await run_upgrade({ name: P.name }, { request: { name: P.name, level: P.to } });
 			n++;
 		} catch (e) {
-			skip("upg:" + P.name, 24 * 3600_000, why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
+			skip("upg:" + P.name, pause_ms(e, 24 * 3600_000), why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
 			game_log(`upgrade ${P.name}: ${why(e)}; project stopped${top >= 1 ? ` at +${top}` : ""}`, C.dim);
 			state.upg = null; // the copy reached so far is free again (equip/share judge it)
 			break;
@@ -1758,7 +1774,7 @@ async function task_craft_power() {
 	game_log(`craft ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts): ${ok ? "OK" : "FAILED " + (res?.reason || "")}`, ok ? C.ok : C.bad);
 	log_ev("craft", { item: c.id, for: c.for, ok });
 	craft_cache = null;
-	if (!ok) skip("craft:" + c.id, 6 * 3600_000, res?.reason || "failed");
+	if (!ok) skip("craft:" + c.id, pause_ms({ reason: res?.reason || "invalid" }, 6 * 3600_000), res?.reason || "failed");
 	return ok ? 1 : 0;
 }
 // ---- Elixirs (CFG.elixir_auto) ----
@@ -1794,8 +1810,8 @@ function exchange_pick(needed = needed_slots()) {
 	if (!CFG.exchange_auto || character.esize < 2) return -1;
 	return character.items.findIndex((it, k) => {
 		const d = it && G.items[it.name];
-		return !!d?.e && (it.q || 1) >= d.e && !it.l && !needed.has(k) && !CFG.keep.includes(it.name) &&
-			!CFG.exchange_skip.includes(it.name) && d.type !== "token" && !skipped("exch:" + it.name);
+		return !!d?.e && EXCHANGE_TYPES.has(d.type) && !recipe_input(it.name) && (it.q || 1) >= d.e && !it.l && !needed.has(k) &&
+			!CFG.keep.includes(it.name) && !CFG.exchange_skip.includes(it.name) && !skipped("exch:" + it.name);
 	});
 }
 async function task_exchange() {
@@ -1815,7 +1831,7 @@ async function task_exchange() {
 			game_log(`exchange ${it.name} → ${r?.reward || "?"}`, C.ok);
 			log_ev("exchange", { item: it.name, reward: r?.reward || null });
 		} catch (e) {
-			skip("exch:" + it.name, 6 * 3600_000, why(e));
+			skip("exch:" + it.name, pause_ms(e, 6 * 3600_000), why(e));
 			game_log(`exchange ${it.name}: ${why(e)}; retrying in 6h`, C.dim);
 		}
 	}
@@ -3046,7 +3062,7 @@ function report_facts() {
 		for (const n of others()) {
 			const P = state.partners[n];
 			F("partner:" + n, "party", fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, v${P.v || "?"}${P.v !== VERSION ? " ≠ ours: update it" : ""}) on ${P.map}${P.errand ? ", in " + P.errand : ""}`
-				: `  ${n}: no message in 10s (not running the script, or offline)`);
+				: `  ${n}: no message in 20s (not running the script, or offline)`);
 		}
 	}
 	{
@@ -3352,7 +3368,7 @@ const in_party_cfg = () => (CFG.party.members || []).includes(character.name) &&
 const others = () => (CFG.party.members || []).filter((n) => n !== character.name);
 // Party members are known only through their heartbeats (state.partners: name -> last message + t).
 // "Fresh" = heard from in the last 10s (5 missed heartbeats → treat as offline).
-const fresh = (p) => !!p && Date.now() - p.t < 10_000;
+const fresh = (p) => !!p && Date.now() - p.t < 20_000; // 10 missed beats: a busy member skips some (budget)
 const partners_any = () => others().map((n) => state.partners[n]).filter(fresh);   // online, dead or alive
 const partners = () => partners_any().filter((p) => !p.rip);                        // online and alive
 // Position: live from its entity when it's in view on our map, else from its last heartbeat
@@ -3577,6 +3593,7 @@ async function serve(f) {
 		const M = CFG.merchant;
 		await task_restock(M.pot_carry, M.pot_carry + M.self_pots).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
 		for (let i = 0; i < 4; i++) {
+			if (state.errand) state.errand_at = Date.now(); // each re-aimed walk is progress
 			const q = state.partners[f.name];
 			if (!fresh(q) || q.rip || q.errand === "town") return;
 			const pos = partner_pos(q);
@@ -3587,6 +3604,7 @@ async function serve(f) {
 		await give_tokens();
 		const end = Date.now() + M.wait_ms;
 		while (Date.now() < end && character.esize > 2 && !character.rip) {
+			if (state.errand) state.errand_at = Date.now();
 			mluck_near();
 			const q = state.partners[f.name], pos = q && partner_pos(q);
 			if (pos && pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) > 200) move_to(pos.x, pos.y, 500);
@@ -3655,7 +3673,7 @@ async function task_tokens() {
 			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
-		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", 3600_000, why(e)); break; }
+		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }
 	}
 	return n;
 }
@@ -3691,6 +3709,7 @@ async function task_secondhands() {
 	for (const it of state.bank_gear || []) if (compound_spare(it, -1, needed)) count(it, "bank");
 	let n = 0;
 	for (const it of list) {
+		if (state.errand) state.errand_at = Date.now();
 		const why_buy = secondhand_reason(it, groups), price = shop_price(it);
 		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3) continue;
 		await wait_budget(1, RESERVE.errand);
@@ -3711,7 +3730,7 @@ let recipe_inputs = null; // every item any crafting recipe uses (anyone's quest
 function purge_ok(it) {
 	const d = it && G.items[it.name];
 	if (!recipe_inputs) { recipe_inputs = new Set(); for (const id in G.craft || {}) for (const [, n] of G.craft[id].items || []) recipe_inputs.add(n); }
-	if (!d || it.l || it.b || d.e || d.type === "token" || d.type === "stand" || CFG.keep.includes(it.name) || state.needs.has(it.name) ||
+	if (!d || it.l || it.b || d.e || !tradeable(it.name) || CFG.keep.includes(it.name) || state.needs.has(it.name) ||
 		recipe_inputs.has(it.name) || gear_wanted_by(it)) return false;
 	if (d.compound && compound_groups().some((g) => g.name === it.name && g.level === (it.level || 0))) return false;
 	return true;
@@ -3797,8 +3816,7 @@ const unit_value = (it) => {
 };
 function stand_worthy(it, k, needed, cmp) {
 	const d = it && G.items[it.name], S_ = CFG.merchant.stand;
-	if (!d || it.l || it.b || needed.has(k) || cmp.has(k) || CFG.keep.includes(it.name) || BAG_TYPES.has(d.type) ||
-		d.type === "stand" || d.type === "token" || gear_wanted_by(it)) return false;
+	if (!d || it.l || it.b || needed.has(k) || cmp.has(k) || CFG.keep.includes(it.name) || !tradeable(it.name) || gear_wanted_by(it)) return false;
 	return unit_value(it) >= S_.min_value || (GEAR.has(d.type) && (it.level || 0) >= 3) || item_grade(it) >= 1 || !!it.p;
 }
 // Bag slots held back for the stand: the most valuable candidates, as many as there are free trade slots
