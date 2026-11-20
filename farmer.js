@@ -23,6 +23,7 @@
 //   Safety (fight_math) follows the server's damage formula on live monster stats; nearby members' damage and a
 //   nearby priest's heals count only while they're near. Tank first (CFG.party.tank_first): with a paladin/warrior
 //   near, the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's HP/armour.
+//   World bosses (CFG.boss): a live cooperative boss on this server that the party can survive beats every other goal.
 //   Class skills: priest heal/partyheal/curse/absorb, mage energize (lowest-mana member)/burst, paladin
 //   selfheal/smash/mshield, ranger mark/supershot.
 //
@@ -71,7 +72,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "14.4";
+const VERSION = "14.5";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -145,6 +146,13 @@ const CFG = {
 	elixir_auto: true,
 	elixir_buy: "elixirluck",  // Liquid Luck: 240k for 12h of +16 luck (the only elixir an NPC sells)
 	elixir_buy_min_gold: 5_000_000,
+	// World bosses / events on this server (parent.S: snowman, pinkgoo, wabbit, dragold, mrpumpkin, franky...). They're
+	// "cooperative" (every attacker shares xp and loot by damage), so they're judged on survival, not kill time: the
+	// party (tank first) must take tank_s seconds of the boss's damage within the safety budget, and one hit may not
+	// exceed one_hit of the squishiest member near. In practice: snowman, pinkgoo, wabbit yes; dragold, franky no.
+	boss: { enabled: true, tank_s: 10, one_hit: 0.4, skip: [] },
+	// Monster tokens (Daisy): spend on the shop's class gear that a member would wear, best points per token first
+	token_auto: true,
 	// Secondhands (Ponty, main): items players sold to NPCs, resold at 2x item value (3x cash-shop items). The merchant
 	// checks every secondhand_every_ms and buys anything a fighter would wear as an upgrade, or that completes a compound
 	// set, within secondhand_max_price and never below gold_reserve.
@@ -583,6 +591,8 @@ function pick_pack() {
 	if (d && d.until > now && farmable_type(d.monster) && !state.safe[d.monster] && d.guide_safe)
 		state.safe[d.monster] = { ttk: d.seconds || 5, xp: G.monsters[d.monster].xp, trusted: true }; // guide's kill time,
 		// or 5s if it gave none — the guide's own fight model judged this route safe for us
+	if (d && d.until > now && d.boss)
+		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
 	if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count };
 		if (!((state.cooldown[pack_key(area)] || 0) > now)) {
@@ -1887,6 +1897,52 @@ async function run_hunt() {
 	if (r?.started) game_log(`Monster hunt: ${h?.c ?? "?"}x ${h?.id ?? "?"}`, C.info);
 	return r;
 }
+// ---- World bosses (CFG.boss) ----
+function boss_safe(name) {
+	const m = G.monsters[name];
+	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true); // their side of the fight only
+	if (!f) return false;
+	const heal = partners_near().some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1;
+	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * CFG.safety * heal) return false;
+	const squish = Math.min(character.max_hp, ...partners_near().map((p) => p.max_hp || Infinity));
+	return f.their_dps / (m.frequency || 1) <= squish * CFG.boss.one_hit;
+}
+// The live boss we'd join (highest xp), from the server's event list
+function live_boss() {
+	if (!CFG.boss?.enabled || character.ctype === "merchant") return null;
+	const S_ = (typeof parent !== "undefined" && parent.S) || {};
+	let best = null;
+	for (const name in S_) {
+		const e = S_[name], m = G.monsters[name];
+		if (!e || e.live !== true || !m || !e.map || !Number.isFinite(e.x) || !G.maps[e.map] || !map_ok(e.map) || CFG.boss.skip.includes(name)) continue;
+		if (!boss_safe(name)) continue;
+		if (!best || (m.xp || 0) > (G.monsters[best.name].xp || 0)) best = { name, map: e.map, x: e.x, y: e.y, hp: e.hp, max_hp: e.max_hp };
+	}
+	return best;
+}
+// Boundary on a 400px grid around the boss, so its wandering doesn't make a new "pack" every refresh
+function boss_directive() {
+	const b = live_boss();
+	if (!b) return null;
+	const gx = Math.round(b.x / 400) * 400, gy = Math.round(b.y / 400) * 400;
+	return { monster: b.name, map: b.map, boundary: [gx - 300, gy - 300, gx + 300, gy + 300], count: 1, boss: true, guide_safe: false,
+		reason: `event boss ${G.monsters[b.name].name || b.name} (${b.hp}/${b.max_hp})` };
+}
+// Leader/solo at a boss pack: fight it when in view, else walk to its last reported position
+function boss_tick(pack) {
+	const e = Object.values(parent.entities || {}).find((x) => x.type === "monster" && x.mtype === pack.mtype && x.visible && !x.dead);
+	if (e) {
+		state.last_target_at = Date.now();
+		fight(e, true);
+		set_message(`BOSS ${pack.mtype} ${e.hp}/${e.max_hp} | ${character.esize} free`);
+		return true;
+	}
+	const b = parent.S?.[pack.mtype];
+	if (!b || b.live !== true) { state.last_pick = 0; return false; }
+	if (!walking() && !errand_busy()) travel({ map: b.map, x: b.x, y: b.y });
+	set_message(`→ BOSS ${pack.mtype} @ ${b.map}`);
+	return true;
+}
 // The guide's farm row if it's current, not paused and not outlevelled (guide_farm_min_xp; a row we can't measure,
 // e.g. a monster we can't fight but the guide calls safe, is kept)
 function live_guide_farm() {
@@ -1918,11 +1974,11 @@ function refresh_directive() {
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
 	let mine = null;
-	for (const f of [hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
+	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
-	if (partners().length && in_party_cfg() && !is_follower()) d = pick_shared(mine) || mine;
+	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
@@ -2232,7 +2288,7 @@ async function guide_step(row) {
 let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated at most every 10 min)
 // The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed — never derive "what's due" from
 // its truthy keys: the numeric fields would make a town run permanently due.
-const TOWN_TASKS = ["hunt", "craft", "guide", "compound", "upgrade", "exchange", "elixir", "sell", "restock", "bank"];
+const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // relaxed: the partner is already in town, so use the trip — bank at < bag_min_free × sync_factor free slots,
 // restock potions below pot_min × sync_factor
@@ -2253,6 +2309,7 @@ function town_due(relaxed = false) {
 		craft: !!next_quest_craft(),
 		compound: compound_groups().some((g) => g.bags.length >= 3),
 		upgrade: upgrade_due(),
+		tokens: !skipped("town:tokens") && !!token_pick(),
 		exchange: exchange_pick() >= 0,
 		elixir: elixir_buy_due(),
 		guide: !!next_guide_row(state.guide),
@@ -2276,6 +2333,7 @@ function town_run(due) {
 		};
 		let did = 0;
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
+		if (!skipped("town:tokens") && token_pick()) did += (await step("tokens", task_tokens)) || 0; // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
 		// Guide steps: keep going while the next row is local (no walking); rows that walk count toward the cap;
 		// a failed row is paused and we move on to the next one instead of ending the run
@@ -2499,6 +2557,14 @@ function report() {
 	} else if (CFG.merchant?.name) {
 		const M = merchant_hb();
 		L(`merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
+	}
+	if (CFG.boss?.enabled && !is_merchant()) {
+		const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
+		L(`bosses: ${live.length ? live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ") : "none live on this server"}`);
+	}
+	if (CFG.token_auto && !is_merchant()) {
+		const b = token_pick();
+		L(`tokens: ${held_any("monstertoken")}${b ? ` → next: ${b.name} (${b.price}) for ${b.for}` : ""}`);
 	}
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
@@ -2782,6 +2848,38 @@ async function serve(f) {
 		}
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
 	} finally { state.serving = null; }
+}
+// ---- Monster tokens (CFG.token_auto) ----
+// Best shop piece by points per token: class gear a member would wear (+0), not already owned (bags or bank)
+function token_pick() {
+	const have = held_any("monstertoken"), shop = G.tokens?.monstertoken || {};
+	if (!CFG.token_auto || have <= 0 || character.esize < 2) return null;
+	let best = null;
+	for (const name in shop) {
+		const price = shop[name];
+		if (price > have || !GEAR.has(G.items[name]?.type) || held_any(name) || (state.bank_gear || []).some((i) => i.name === name)) continue;
+		for (const m of gear_takers().filter((x) => x.ctype !== "merchant")) {
+			const r = gear_gain({ name, level: 0 }, m.ctype, m.g);
+			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
+		}
+	}
+	return best;
+}
+async function task_tokens() {
+	let n = 0;
+	for (let i = 0; i < 5; i++) {
+		const b = token_pick();
+		if (!b) break;
+		await go_npc("monsterhunter");
+		await wait_budget(1, RESERVE.errand);
+		try {
+			await T(exchange_buy("monstertoken", b.name));
+			n++;
+			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
+			await until(() => held_any(b.name) > 0, 3000);
+		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", 3600_000, why(e)); break; }
+	}
+	return n;
 }
 // ---- Secondhands (Ponty) ----
 const shop_price = (it) => {
@@ -3090,6 +3188,7 @@ function tick() {
 			}
 			duo_check();
 			if (!state.pack || Date.now() - state.last_pick > CFG.repick_ms) pick_pack();
+			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
 			const t = choose_target(in_area || !pack);
