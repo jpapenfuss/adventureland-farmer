@@ -76,7 +76,7 @@
 //     action.route {monster, map, boundary, safe}; reason "bees" = save Bee Wings for Cole.
 // =====================================================================
 
-const VERSION = "16.0";
+const VERSION = "16.1";
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1899,13 +1899,18 @@ async function store_here() {
 	return { stored, full };
 }
 // Wait (up to 10s) until we're on this bank floor and its pack contents have arrived
-const floor_loaded = (map) => until(() => character.map === map && character.bank && Object.keys(character.bank).some((k) => k.startsWith("items")), 10_000);
+const floor_loaded = (map) => until(() => character.map === map && character.bank && Object.keys(character.bank).some((k) => k.startsWith("items")), 20_000);
 // Bank visit: store everything classed BANK (overflowing to other unlocked floors), then fetch needed items
 async function task_bank(fetch_names) {
 	const store = slots_where((i) => bag_class(i) === "bank");
 	if (!store.length && !fetch_names.length) return (town_reason.bank = "nothing to store or fetch"), 0;
 	try { if (character.map !== "bank") await go({ map: "bank" }); } catch (e) { town_reason.bank = "can't reach the bank: " + why(e); throw e; }
-	if (!(await floor_loaded("bank"))) { town_reason.bank = "bank didn't load"; throw { reason: "bank_not_loaded" }; }
+	// the bank's contents arrive separately after entering; if they haven't after 20s, walk out and back in once
+	if (!(await floor_loaded("bank"))) {
+		log_error("bank didn't load (retrying once)");
+		try { await go({ map: "main" }); await go({ map: "bank" }); } catch (e) {}
+		if (!(await floor_loaded("bank"))) { town_reason.bank = "bank didn't load (twice)"; throw { reason: "bank_not_loaded" }; }
+	}
 	let { stored, full } = await store_here();
 	// main floor full → other floors you've unlocked. bank_b/bank_u sit behind doors the server keeps locked until a
 	// bkey/ukey is used; an unlocked floor's packs show up in character.bank (items8 for bank_b, items24 for bank_u).
