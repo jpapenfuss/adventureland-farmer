@@ -1716,6 +1716,36 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("state.errand", ctx) === "serve", "an urgent trip (2 free slots) goes at once");
 	vm.runInContext("state.errand = null; state.partners = {}; G.maps.main.npcs = []; state.mspot = null", ctx);
 	character.stand = false;
+	// 79) v16.9: walk failures pause compounds 10 min (item verdicts 6h); old 'interrupted' pauses cleared; merchant's
+	// fetched compound copies of a paused set are bankable; town steps refresh the errand lock
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 2e6, esize: 30, map: "main" });
+	character.items = Array(42).fill(null);
+	character.items[4] = { name: "ringx", level: 0 }; character.items[5] = { name: "ringx", level: 0 }; character.items[6] = { name: "ringx", level: 0 };
+	vm.runInContext("state.merchant = null; state.gear_skip = {}; state.fund_need = 0; state.fetched = { ringx: Date.now() }; state.needs = new Map(); cmp_cache = null; state.stand = {}; stand_cache = null; state.bank_gear = []", ctx);
+	const rc79 = vm.runInContext("run_compound", ctx);
+	vm.runInContext("run_compound = () => Promise.reject({ reason: 'interrupted' })", ctx);
+	await vm.runInContext("task_compound()", ctx);
+	const p79 = vm.runInContext("state.gear_skip['cmp:ringx:0']", ctx) - Date.now();
+	assert(p79 > 0 && p79 <= 600_000, `interrupted → 10-min pause (${Math.round(p79 / 60000)}m)`);
+	assert(vm.runInContext("bag_class(character.items[4])", ctx) === "bank", "paused set: the merchant's fetched copies are bankable, not held 1h");
+	vm.runInContext("state.gear_skip = {}; cmp_cache = null; run_compound = () => Promise.reject({ reason: 'low_chance', chance: 0.3 })", ctx);
+	await vm.runInContext("task_compound()", ctx);
+	assert(vm.runInContext("state.gear_skip['cmp:ringx:0']", ctx) - Date.now() > 5 * 3600_000, "low chance → 6h pause");
+	ctx.__rc79 = rc79; vm.runInContext("run_compound = __rc79; state.gear_skip = {}; cmp_cache = null", ctx);
+	assert(vm.runInContext("bag_class(character.items[4])", ctx) === "keep", "active set: copies kept for compounding");
+	// load clears interrupted pauses
+	ctx.get = (k) => (k.startsWith("farmer_v9:") ? { v: 1, at: Date.now(), gear_skip: { "cmp:hpbelt:0": Date.now() + 3e6 }, skip_why: { "cmp:hpbelt:0": "interrupted" } } : null);
+	vm.runInContext("state.gear_skip = {}; load_state()", ctx);
+	assert(!vm.runInContext("state.gear_skip['cmp:hpbelt:0']", ctx), "an old 'interrupted' compound pause is cleared on load");
+	ctx.get = () => null;
+	// errand lock refreshed by town steps: an errand started 6 min ago is still busy after a step
+	vm.runInContext("state.errand = 'town'; state.errand_at = Date.now() - 6 * 60000", ctx);
+	assert(!vm.runInContext("errand_busy()", ctx), "(setup) a 6-min-old lock has lapsed");
+	vm.runInContext("cmp_cache = null; state.gear_skip['cmp:ringx:0'] = Date.now() + 1e6", ctx); // nothing to compound
+	await vm.runInContext("task_compound()", ctx);
+	assert(vm.runInContext("errand_busy()", ctx), "a compound pass refreshes the errand lock");
+	vm.runInContext("state.errand = null; state.gear_skip = {}; state.fetched = {}", ctx);
+	character.items = Array(42).fill(null);
 	all_done = true;
 	console.log("ALL PASS");
 })();

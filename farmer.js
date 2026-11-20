@@ -1,4 +1,4 @@
-const VERSION = "16.8"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "16.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1578,6 +1578,7 @@ function compound_slots(needed) {
 async function task_compound() {
 	let n = 0;
 	for (let guard = 0; guard < CFG.compound_per_run * 2 && n < CFG.compound_per_run; guard++) {
+		if (state.errand) state.errand_at = Date.now(); // progress keeps the errand lock
 		const g = compound_groups().find((x) => x.bags.length >= 3);
 		if (!g) break;
 		const floor = shop_for(g.name) && !G.items[g.name]?.cash ? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
@@ -1595,8 +1596,10 @@ async function task_compound() {
 			}
 		} catch (e) {
 			const broke = why(e) === "gold_reserve" || why(e) === "buy_cost";
+			// only verdicts about the items themselves are worth a 6h pause; walking/transient failures retry in 10 min
+			const item_verdict = ["low_chance", "not_combinable", "mismatch"].includes(why(e));
 			if (broke && is_merchant()) state.fund_need = Math.max(state.fund_need || 0, (G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 10_000) * 3 + CFG.gold_reserve);
-			skip(g.key, broke ? 600_000 : 6 * 3600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
+			skip(g.key, item_verdict ? 6 * 3600_000 : 600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in 6h`, C.dim);
 		}
 	}
@@ -1672,6 +1675,7 @@ function upgrade_due() {
 async function task_upgrade() {
 	let n = 0;
 	for (let i = 0; i < CFG.upgrade_steps_per_run; i++) {
+		if (state.errand) state.errand_at = Date.now();
 		const P = state.upg;
 		if (!P) break;
 		const top = best_level_held(P.name);
@@ -1797,6 +1801,7 @@ function exchange_pick(needed = needed_slots()) {
 async function task_exchange() {
 	let n = 0;
 	for (let i = 0; i < 20; i++) {
+		if (state.errand) state.errand_at = Date.now();
 		const k = exchange_pick();
 		if (k < 0) break;
 		const it = character.items[k];
@@ -1839,7 +1844,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	const def = G.items[item.name];
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
-		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && merchant_does_it()))) return "keep"; // never store what we fetched within the hour (except compound copies the merchant now handles)
+		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant())))) return "keep"; // never store what we fetched within the hour (except compound copies the merchant now handles)
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -2785,7 +2790,9 @@ function town_due(relaxed = false) {
 function town_run(due) {
 	return errand("town", async () => {
 		await stand_close(); // a stand slows us to speed 10
-		const step = async (label, fn) => { try { return await fn(); } catch (e) { town_reason[label] = town_reason[label] || why(e); game_log(`${label}: ${why(e)}`, C.dim); } };
+		// each step refreshes the errand lock: a long run that keeps making progress is never taken for a hung one (other
+		// code would then start a walk and interrupt this run's smart_move)
+		const step = async (label, fn) => { state.errand_at = Date.now(); try { return await fn(); } catch (e) { town_reason[label] = town_reason[label] || why(e); game_log(`${label}: ${why(e)}`, C.dim); } };
 		// step: run one task, record why it failed (for report()), never let one failure end the run.
 		// A bag/potion task that achieves nothing (bank full, item on another bank floor, no gold) pauses 15 min,
 		// so an unfixable condition can't send us to town every town_min_gap_ms
@@ -2979,7 +2986,7 @@ function load_state() {
 	// guide-row pauses from older versions have no recorded reason and were judged by older rules: retry them now
 	if (!d.skip_why) for (const k in state.gear_skip) if (!k.includes(":") || k.startsWith("upgrade:") || k.startsWith("compound:")) delete state.gear_skip[k];
 	// v14.1: compounds/upgrades that took longer than 10s were reported as "timeout" and paused 6-24h: retry them
-	for (const k in state.gear_skip) if (/timeout|gold_reserve|buy_cost/.test(skip_why[k] || "") && /^(cmp:|upg:|upgrade:|compound:)/.test(k)) delete state.gear_skip[k];
+	for (const k in state.gear_skip) if (/timeout|gold_reserve|buy_cost|interrupted/.test(skip_why[k] || "") && /^(cmp:|upg:|upgrade:|compound:)/.test(k)) delete state.gear_skip[k];
 	const off = now - (d.at || now);
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
