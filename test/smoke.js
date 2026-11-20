@@ -427,8 +427,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 
 	// 22) diagnostics run without throwing and say something useful
 	const logs0 = log.length;
-	vm.runInContext("report(); why_not('squigtoad'); why_not('goo'); why_not('nope')", ctx);
-	const out22 = log.slice(logs0).join("\n");
+	const rep22 = vm.runInContext("report('solo')", ctx);
+	vm.runInContext("why_not('squigtoad'); why_not('goo'); why_not('nope')", ctx);
+	const out22 = rep22 + "\n" + log.slice(logs0).join("\n");
 	if (process.env.SHOW) console.log(out22);
 	assert(/fighting:/.test(out22) && /quest wcap/.test(out22) && /bags: \d+ free/.test(out22), "report() summarises pack, quests, bags");
 	assert(/squigtoad: .*UNSAFE|squigtoad: .*SAFE/.test(out22) && /nope: no such monster/.test(out22), "why_not() explains safety");
@@ -463,8 +464,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// report is copyable
 	let modal = "";
 	ctx.parent.show_modal = (html) => (modal = html);
-	vm.runInContext("report()", ctx);
-	assert(/<textarea/.test(modal) && /quest wcap/.test(modal), "report() opens a selectable text box");
+	vm.runInContext("report('solo')", ctx);
+	assert(/<textarea/.test(modal) && /quest wcap/.test(modal), "report('solo') opens a selectable text box");
 
 	// 24) pause reasons survive reload; old reasonless guide-row pauses are cleared once
 	vm.runInContext(`skip("upgrade:mainhand:slimestaff:4:", 600000, "low_chance 70%"); save_state(); state.gear_skip = {}; load_state()`, ctx);
@@ -1459,14 +1460,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	let modal68 = ""; ctx.parent.show_modal = (h) => (modal68 = h);
 	vm.runInContext("report()", ctx);
 	const req = cm68.find(([, k]) => k === "rreq");
-	assert(req && req[0] === "Aspernari,Torlis,DoWhatNow" && /fighting:/.test(modal68), `report() shows ours and asks the other three (${req && req[0]})`);
+	assert(req && req[0] === "Aspernari,Torlis,DoWhatNow" && modal68 === "", `report() asks the other three and opens no window until the combined one (${req && req[0]})`);
 	const id68 = req[2].id;
 	// responder side: a request makes us reply with our lines; a 2nd within 5s doesn't
 	cm68.length = 0;
 	handlers.cm({ name: "Torlis", message: { k: "rreq", id: "x1", hours: 2 } });
 	handlers.cm({ name: "Torlis", message: { k: "rreq", id: "x2", hours: 2 } });
 	const reps = cm68.filter(([, k]) => k === "rrep");
-	assert(reps.length === 1 && reps[0][0] === "Torlis" && reps[0][2].lines.some((l) => /^at main .* per 4s/.test(l)) && !reps[0][2].lines.some((l) => /^gold: us/.test(l)) && reps[0][2].lines.some((l) => /— history Sanala/.test(l)),
+	assert(reps.length === 1 && reps[0][0] === "Torlis" && reps[0][2].lines.some((l) => /^level \d+ .* at main .* per 4s/.test(l)) && !reps[0][2].lines.some((l) => /^gold: us/.test(l)) && reps[0][2].lines.some((l) => /— history Sanala/.test(l)),
 		`replies once with report + history lines (${reps.length})`);
 	// collector: stale id ignored; Aspernari + Torlis reply, DoWhatNow silent but has a stored copy
 	handlers.cm({ name: "Torlis", message: { k: "rrep", id: "old", v: "15.9", lines: ["STALE"] } });
@@ -1536,7 +1537,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	if (process.env.SHOW) console.log("HEADER\n" + hdr + "\nSECTION\n" + cmp71);
 	assert(!/^gold: us/m.test(cmp71) && !/'s hunt:/.test(cmp71) && !/^quest wcap.*done/m.test(cmp71) && !/^tokens:/m.test(cmp71) && !/^— report/m.test(cmp71) && /^gear:/m.test(cmp71) && /^bags:/m.test(cmp71),
 		`compact section drops shared/idle lines:\n${cmp71}`);
-	assert(/^gold: us/m.test(full71) && /^tokens:/m.test(full71) && full71.split("\n").length > cmp71.split("\n").length, "the full report keeps everything");
+	assert(/^gold: us/m.test(full71) && /^hunt:/m.test(full71) && full71.split("\n").length > cmp71.split("\n").length, "the full report keeps everything");
 	vm.runInContext("state.merchant = null; state.pack = null", ctx); delete character.s.monsterhunt;
 	// 72) must-hold items: Tracktrix fetched from the bank, else bought with tokens before any gear; one fighter buys the
 	// merchant's copy and hands only that over
@@ -1746,6 +1747,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("errand_busy()", ctx), "a compound pass refreshes the errand lock");
 	vm.runInContext("state.errand = null; state.gear_skip = {}; state.fetched = {}", ctx);
 	character.items = Array(42).fill(null);
+	// 80) v17 report: party sections say each fact once; not-at-pack is visible; merrit counts parcels from history
+	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, gold: 3.8e6, map: "winterland", x: 4, y: -602, rip: false, s: { monsterhunt: { id: "croc", c: 90 } } });
+	character.items = Array(42).fill(null); character.slots = {};
+	vm.runInContext("state.partners = {}; state.merchant = null; state.pack = { mtype: 'croc', map: 'main', boundary: [0,0,400,400], directive: 'mutual: hunt' }; state.directive = { monster: 'croc', reason: 'mutual: hunt' }; state.safe = { croc: { ttk: 1, xp: 1 } }; state.shared = { mutual: ['croc ~0.2h (x)'], too_slow: ['goo: slow'] }", ctx);
+	ctx.G.items.tracker = ctx.G.items.tracker || { type: "tracker" };
+	character.items[0] = { name: "monstertoken", q: 1 };
+	hb("Torlis", { ...tor, level: 60, map: "winterland", x: 20, y: -600 }); // Sanala (51) leads
+	const sec80 = vm.runInContext("report_lines(false, true)", ctx).join("\n");
+	assert(/^fighting: → croc @ main \(now at winterland\)$/m.test(sec80), `not at the pack: shown as heading there (${sec80.split("\n")[0]})`);
+	assert(!/mutual/.test(sec80) && !/directive/.test(sec80) && !/too slow/.test(sec80) && !/^tokens:/m.test(sec80), `leader section: no directive/goals repeats, no separate tokens line:\n${sec80}`);
+	assert((sec80.match(/^hold:/gm) || []).length === 1, "hold + tokens in one line");
+	const full80 = vm.runInContext("report_lines(false)", ctx).join("\n");
+	if (process.env.SHOW) console.log("SECTION\n" + sec80 + "\nFULL\n" + full80 + "\nEND");
+	assert((full80.match(/mutual: hunt/g) || []).length === 1, `solo report states the directive once (${(full80.match(/mutual: hunt/g) || []).length})`);
+	// merrit counts parcels from history
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main", x: 0, y: -8, stand: true });
+	vm.runInContext("hist.ev = [{ t: Date.now() - 600000, type: 'parcel', n: 1 }]; state.parcel_at = Date.now() - 600000; state.mspot = { x: 0, y: -8 }; state.pack = null; state.directive = null", ctx);
+	const m80 = vm.runInContext("report_lines(false, true).find((l) => l.startsWith('merrit:'))", ctx);
+	assert(/parcels 24h: 1, last 10m ago/.test(m80), `merrit line counts parcels from history (${m80})`);
+	vm.runInContext("hist.ev = []; state.shared = null; state.partners = {}", ctx);
+	delete character.s.monsterhunt; character.items = Array(42).fill(null); character.stand = false;
 	all_done = true;
 	console.log("ALL PASS");
 })();

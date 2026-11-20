@@ -1,4 +1,4 @@
-const VERSION = "16.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "17.0"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3014,134 +3014,135 @@ function share_text(title, lines) {
 	return text;
 }
 // report(): one-screen summary of what the bot is doing and why (also as copyable text)
-// compact: for party reports — leaves out what the party header shows once (roster, gold, hunts, bosses, merchant,
-// last hour, rates) and lines with nothing to say (done quests, idle features, normal safety)
-function report_lines(log = true, compact = false) {
-	const lines = [];
-	const L = (s, c = C.note) => { lines.push(s); if (log) game_log(s, c); };
-	const p = state.pack, d = state.directive, full = !compact, M_ = is_merchant();
-	if (full) L(`— report v${VERSION} ${new Date().toLocaleTimeString()} —`, C.title);
-	if (is_merchant()) L(`merchant mode: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
-	else L(`fighting: ${p ? `${p.mtype} @ ${p.map}` : "nothing"} because ${p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack")}`);
-	if (compact && !M_) {
-		const near = partners_near().map((p) => p.name);
-		L(`near: ${near.join(", ") || "nobody (solo safety)"}${leader_name() === character.name ? " | LEADER" : ""}`);
+// ---- Report (v17): facts once, two renderers ----
+// report_facts(): this character's state as { key, scope, text, quiet } in display order.
+//   scope "party": the party header shows it once for everyone (roster, leader/directive, goals merge, gold, hunts,
+//   last hour, rates, bosses, merchant) — only the solo report prints these from here.
+//   quiet: nothing worth reading right now (done quests, farm rows, idle features, normal safety); solo shows them.
+function report_facts() {
+	const out = [], F = (key, scope, text, quiet = false) => out.push({ key, scope, text, quiet });
+	const p = state.pack, d = state.directive, M_ = is_merchant(), now = Date.now();
+	// what we're doing (fight target and reason merged into one line; say so when we're not there yet)
+	if (M_) F("doing", "self", `merchant: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
+	else {
+		const at_pack = !!p && character.map === p.map && in_boundary(p.boundary, 600);
+		const why_ = p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack");
+		const tgt = p ? `${at_pack ? "" : "→ "}${p.mtype} @ ${p.map}${at_pack ? "" : ` (now at ${character.map})`}` : "nothing";
+		// a follower's reason is "following X"; the leader's directive is in the party header
+		F("doing", "self", `fighting: ${tgt}${is_follower() ? ` — ${why_}` : ""}`);
+		F("doing_why", "party", `  because ${why_}`, is_follower());
+		if (d && !is_follower() && !state.safe[d.monster] && !d.boss) F("directive_unsafe", "self", `directive ${d.monster} is NOT safe → ignored (why_not("${d.monster}"))`);
 	}
-	if (full && in_party_cfg()) {
-		const near = partners_near().map((p) => p.name);
-		L(`party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"} | near: ${near.join(", ") || "nobody (solo safety)"}`);
+	if (!M_ && in_party_cfg()) {
+		const near = partners_near().map((x) => x.name);
+		F("near", "self", `near: ${near.join(", ") || "nobody (solo safety)"}${leader_name() === character.name ? " | LEADER" : ""}`);
+		F("party", "party", `party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"}`);
 		for (const n of others()) {
 			const P = state.partners[n];
-			L(fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, v${P.v || "?"}${P.v !== VERSION ? " ≠ ours: update it" : ""}) seen ${Math.round((Date.now() - P.t) / 1000)}s ago on ${P.map}${P.errand ? ", in " + P.errand : ""}`
+			F("partner:" + n, "party", fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, v${P.v || "?"}${P.v !== VERSION ? " ≠ ours: update it" : ""}) on ${P.map}${P.errand ? ", in " + P.errand : ""}`
 				: `  ${n}: no message in 10s (not running the script, or offline)`);
 		}
 	}
-	if (CFG.gear_auto) {
-		const g = my_gear(), total = Object.values(g.w).filter((v) => v < 1e9).reduce((a, b) => a + b, 0);
-		const held_for = character.items.map((it) => it && gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)) && `${it.name}→${gear_takers().slice(1).find((m) => gear_gain(it, m.ctype, m.g)).name}`).filter(Boolean);
-		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9);
-		const bu = bank_upgrades().map((u) => u.name + "+" + u.level);
-		L(`gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""}` + (full || bu.length ? ` | bank upgrades: ${bu.join(", ") || "none"}` : "") + (full || held_for.length ? ` | for party: ${held_for.join(", ") || "none"}` : ""));
-	}
-	{
-		const acts = wd.acts.filter((a) => Date.now() - a.t < 3600_000);
-		if (acts.length) L(`watchdog: ${acts.length} intervention(s) in 1h (last: ${acts[acts.length - 1].kind} ${ago(acts[acts.length - 1].t)} ago)`);
-	}
-	if (full) {
-		const h = last_hour(), ph = partners().filter((x) => x.h1).map((x) => `${x.name} ${x.h1.dead}d/${x.h1.fled}f`);
-		L(`last hour: ${h.dead} deaths, ${h.fled} flees, ${h.town} town trips${ph.length ? " | " + ph.join(", ") : ""} — history() / deaths() for details`);
-	}
-	if (full) {
-		const r = rates(), pr = partners().filter((x) => x.rates).map((x) => `${x.name} ${fmt_k(x.rates.xph)} xp/h ${fmt_k(x.rates.gph)} g/h`);
-		L(`rates (last ${r ? r.mins : 0} min, transfers between us excluded): us ${r ? `${fmt_k(r.xph)} xp/h, ${fmt_k(r.gph)} gold/h` : "collecting (15 min)"}${pr.length ? " | " + pr.join(" | ") : ""}`);
-	}
-	if (is_merchant()) {
-		const f = merchant_job();
-		const D = CFG.merchant.donate;
-		if (D) L(`xp: level ${character.level}${character.level < D.to_level ? `, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && Date.now() - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)` : " (donations done)"}`);
-		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[`${i.name}:${i.level || 0}`]).length;
-		if (bf) L(`bank: ${bf.free} of ${bf.total} free (seen ${ago(bf.at)} ago)${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
-		if (merrit_on()) {
-			const sp = state.mspot, st = state.stand_since ? Math.round((Date.now() - state.stand_since) / 1000) : 0;
-			L(`merrit: ${sp ? `spot ${sp.x},${sp.y} (${in_rect(sp.x, sp.y, CFG.merchant.merrit.square) ? "square" : "aisle"})` : "no qualifying spot"} | ${character.stand ? `stand still ${Math.floor(st / 60)}m${st % 60}s${st >= 120 ? " — ready for her" : ""}` : "stand closed"} | parcels ${parcel_count()}${state.parcel_at ? `, last ${ago(state.parcel_at)} ago` : ""}`);
-		}
-		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && Date.now() - e.t < 86_400_000);
-		L(`stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length} for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}`);
-		L(`merchant: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | trip gap ${mins(merchant_trip_at + CFG.merchant.trip_gap_ms)} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
-	} else if (full && CFG.merchant?.name) {
-		const M = merchant_hb();
-		L(`merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
-	}
 	{
 		const ev = event_live();
-		if (ev) L(`event: ${ev} — ${event_here(ev) ? "at it" : "joining"}`);
+		if (ev) F("event", "self", `event: ${ev} — ${event_here(ev) ? "at it" : "joining"}`);
 	}
-	if (full && CFG.boss?.enabled && !is_merchant()) {
-		const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
-		L(`bosses: ${live.length ? live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ") : "none live on this server"}`);
+	if (CFG.gear_auto) {
+		const g = my_gear(), total = Object.values(g.w).filter((v) => v < 1e9).reduce((a, b) => a + b, 0);
+		const takers = gear_takers().slice(1);
+		const held_for = character.items.map((it) => { const m = it && takers.find((x) => gear_gain(it, x.ctype, x.g)); return m && `${it.name}→${m.name}`; }).filter(Boolean);
+		const locked = Object.keys(g.w).filter((k) => g.w[k] >= 1e9), bu = bank_upgrades().map((u) => u.name + "+" + u.level);
+		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide owns ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
 	}
 	{
-		const miss = hold_missing(), names = Object.keys(CFG.hold || {}).filter((n) => G.items[n]);
-		if (names.length && (full || miss.length)) L(`hold: ${names.map((n) => {
+		const acts = wd.acts.filter((a) => now - a.t < 3600_000);
+		if (acts.length) F("watchdog", "self", `watchdog: ${acts.length} intervention(s) in 1h (last: ${acts[acts.length - 1].kind} ${ago(acts[acts.length - 1].t)} ago)`);
+	}
+	{
+		const h = last_hour(), r = rates();
+		F("hour", "party", `last hour: ${h.dead} deaths, ${h.fled} flees, ${h.town} town trips | ${r ? `${fmt_k(r.xph)} xp/h, ${fmt_k(r.gph)} gold/h (${r.mins} min)` : "rates after 15 min"} — history() / deaths()`);
+	}
+	if (M_) {
+		const f = merchant_job(), D = CFG.merchant.donate;
+		if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
+		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[`${i.name}:${i.level || 0}`]).length;
+		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(bf.at)} ago)${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+		if (merrit_on()) {
+			const sp = state.mspot, st = state.stand_since ? Math.round((now - state.stand_since) / 1000) : 0;
+			const got = hist.ev.filter((e) => e.type === "parcel" && now - e.t < 86_400_000).reduce((a, e) => a + (e.n || 1), 0);
+			F("merrit", "self", `merrit: ${sp ? `spot ${sp.x},${sp.y} (${in_rect(sp.x, sp.y, CFG.merchant.merrit.square) ? "square" : "aisle"})` : "no qualifying spot"} | ${character.stand ? `stand still ${Math.floor(st / 60)}m${st % 60}s${st >= 120 ? " — ready for her" : ""}` : "stand closed"} | parcels 24h: ${got}${state.parcel_at ? `, last ${ago(state.parcel_at)} ago` : ""}${parcel_count() ? ` | holding ${parcel_count()}` : ""}`);
+		}
+		const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && now - e.t < 86_400_000);
+		F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price, 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
+		F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
+	} else if (CFG.merchant?.name) {
+		const M = merchant_hb();
+		F("merchant", "party", `merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
+	}
+	if (CFG.boss?.enabled && !M_) {
+		const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
+		F("bosses", "party", `bosses: ${live.length ? live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ") : "none live on this server"}`, !live.length);
+	}
+	{
+		// must-hold items and tokens in one line
+		const miss = hold_missing(), names = Object.keys(CFG.hold || {}).filter((n) => G.items[n]), tok = held_any("monstertoken"), b = !M_ && CFG.token_auto ? token_pick() : null;
+		const parts = names.map((n) => {
 			if (!miss.includes(n)) return `${n} ✓`;
 			if (state.bank_seen[n] > 0) return `${n} missing — fetching from the bank`;
-			const p = hold_price(n), t = held_any(CFG.hold[n]);
-			return is_merchant() ? `${n} missing — a fighter buys it (${p} tokens)` : `${n} missing — ${t >= p ? `buying (${p} tokens)` : `${t}/${p} tokens`}`;
-		}).join(", ")}${Object.keys(state.hold_for).length ? ` | for the merchant: ${Object.keys(state.hold_for).join(", ")}` : ""}`);
-	}
-	if (CFG.token_auto && !is_merchant() && (full || held_any("monstertoken") > 0)) {
-		const b = token_pick();
-		L(`tokens: ${held_any("monstertoken")}${b ? ` → next: ${b.name} (${b.price}) for ${b.for}` : ""}`);
+			const pr = hold_price(n);
+			return M_ ? `${n} missing — a fighter buys it (${pr} tokens)` : `${n} missing — ${tok >= pr ? `buying (${pr} tokens)` : `${tok}/${pr} tokens`}`;
+		});
+		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}`);
+		if (Object.keys(state.hold_for).length) parts.push(`for the merchant: ${Object.keys(state.hold_for).join(", ")}`);
+		if (parts.length) F("hold", "self", `hold: ${parts.join(" | ")}`, !miss.length && !(b && !b.hold) && !Object.keys(state.hold_for).length);
 	}
 	{
 		const c = CFG.craft_power && craft_pick();
-		if (c) L(`craft: ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts${c.cost ? `, ${fmt_k(c.cost)} gold` : ""})${craft_inputs_in_bags(c.id) ? " — ready" : " — fetching inputs"}`);
+		if (c) F("craft", "self", `craft: ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts${c.cost ? `, ${fmt_k(c.cost)} gold` : ""})${craft_inputs_in_bags(c.id) ? " — ready" : " — fetching inputs"}`);
 	}
-	if (CFG.upgrade_auto && (full || state.upg)) {
+	if (CFG.upgrade_auto) {
 		const P = state.upg;
-		L(`upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : merchant_does_it() ? "left to the merchant" : "no project"}`);
+		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : merchant_does_it() ? "left to the merchant" : "no project"}`, !P);
 	}
-	if (CFG.elixir_auto && character.ctype !== "merchant" && (full || elixir_active() || best_elixir() || bank_elixir() || character.gold >= CFG.elixir_buy_min_gold)) {
+	if (CFG.elixir_auto && !M_) {
 		const e = character.slots?.elixir;
-		L(`elixir: ${elixir_active() ? `${e.name}${e.expires ? ` until ${new Date(e.expires).toLocaleTimeString()}` : ""}` : best_elixir() ? "about to drink " + best_elixir().name : bank_elixir() ? "fetching " + bank_elixir().name + " from the bank" : character.gold >= CFG.elixir_buy_min_gold ? "buying " + CFG.elixir_buy : `none (buys ${CFG.elixir_buy} at ${fmt_k(CFG.elixir_buy_min_gold)} gold)`}`);
+		const t = elixir_active() ? `${e.name}${e.expires ? ` until ${new Date(e.expires).toLocaleTimeString()}` : ""}` : best_elixir() ? "about to drink " + best_elixir().name
+			: bank_elixir() ? "fetching " + bank_elixir().name + " from the bank" : character.gold >= CFG.elixir_buy_min_gold ? "buying " + CFG.elixir_buy : `none (buys ${CFG.elixir_buy} at ${fmt_k(CFG.elixir_buy_min_gold)} gold)`;
+		F("elixir", "self", `elixir: ${t}`, !elixir_active() && !best_elixir() && !bank_elixir() && character.gold < CFG.elixir_buy_min_gold);
 	}
-	if (CFG.compound_auto && (full || compound_groups().length || Object.keys(state.gear_skip).some((k) => k.startsWith("cmp:") && skipped(k)))) {
+	if (CFG.compound_auto) {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
-		L(`compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
-			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""));
+		F("compound", "self", `compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
+			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""), !gs.length && !paused.length);
 	}
-	if (p && !p.boss && !is_merchant() && (full || danger_of(p.mtype) < 1)) L(`safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`);
-	if (d && (full || !is_follower())) L(`directive: ${d.monster} — ${d.reason}${is_follower() ? ` (ignored while following ${leader_name()})` : state.safe[d.monster] ? "" : " (NOT safe → ignored; see why_not)"}`);
-	if (state.guide_farm && full) L(`guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`);
-	const h = character.s.monsterhunt;
-	const golds = partners().filter((p) => Number.isFinite(p.gold));
-	if (full && golds.length && CFG.party.gold?.enabled) {
+	if (p && !p.boss && !M_) F("safety", "self", `safety at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
+	if (state.guide_farm && !M_) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
+	const golds = partners().filter((x) => Number.isFinite(x.gold));
+	if (golds.length && CFG.party.gold?.enabled) {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
-		L(`gold: us ${character.gold.toLocaleString()} / ${golds.map((p) => `${p.name} ${p.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((Date.now() - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > Date.now() ? `, next allowed in ${mins(next)}` : ""}`);
+		F("gold", "party", `gold: us ${character.gold.toLocaleString()} / ${golds.map((x) => `${x.name} ${x.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((now - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > now ? `, next allowed in ${mins(next)}` : ""}`);
 	}
-	if (!is_follower() && partners().length) {
-		if (state.shared?.mutual.length) L(`mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
-		else if (state.turn) L(`no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}`);
-		if (state.shared?.too_slow.length) L(`too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
+	if (!is_follower() && partners().length && !M_) {
+		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
+		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}`);
+		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
-	if (is_follower() && !M_) L(`my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
-	if (full) for (const P of partners()) if (P.hunt?.c > 0)
-		L(`${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left${is_follower() || is_merchant() ? "" : fight_profile(P.hunt.id) ? " (we can farm it)" : " (not safe for us)"}`);
-	if (full || (!M_ && !in_party_cfg())) L(`hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
+	const h = character.s.monsterhunt;
+	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
+	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 	const due = town_due();
-	L(`town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((Date.now() - state.last_town) / 60_000) + "m ago" : "never"}`);
-	if (state.town_block?.blockers.length) L(`town blocked (${Math.round((Date.now() - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
+	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
+	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	for (const r of state.guide?.rows || []) {
-		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded (set before this version)"}` : r.affordable === false ? "unaffordable" : "next";
-		if (compact && (r.kind === "farm" || !CFG.gear_actions.includes(r.kind))) continue; // farm rows / not automated: noise here
-		L(`guide ${r.id}: ${st}`);
+		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded"}` : r.affordable === false ? "unaffordable" : "next";
+		F("guide:" + r.id, "self", `guide ${r.id}: ${st}`, r.kind === "farm" || !CFG.gear_actions.includes(r.kind));
 	}
-	if (!(compact && M_)) for (const id of quest_recipes()) {
+	if (!M_) for (const id of quest_recipes()) {
 		const r = G.craft[id];
 		const inputs = r.items.map(([q, n, l]) => `${n}${l ? "+" + l : ""} ${held(n, l)}${state.bank_seen[n] ? `(+${state.bank_seen[n]} bank)` : ""}/${q}`).join(", ");
 		const st = !recipe_wanted(id) ? "done" : skipped("qc:" + id) ? `paused ${mins(state.gear_skip["qc:" + id])}` : has_inputs(r) ? "READY to craft" : "collecting";
-		if (compact && st === "done") continue;
-		L(`quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`);
+		F("quest:" + id, "self", `quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`, st === "done");
 	}
 	const plan = bag_plan(), kept = {}, why_k = {}, fetched_n = {}, nd = needed_slots(), cm = compound_slots(nd);
 	character.items.forEach((i, k) => {
@@ -3156,15 +3157,19 @@ function report_lines(log = true, compact = false) {
 	});
 	const fetch_names = {};
 	for (const f of plan.fetch) { const n = f.name ? `${f.name}${f.level ? "+" + f.level : ""}` : f; fetch_names[n] = (fetch_names[n] || 0) + 1; }
-	L(`bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}${kept.keep ? ` (${Object.entries(why_k).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(", ")})` : ""}, bank ${kept.bank || 0}, sell ${kept.sell || 0}` +
+	F("bags", "self", `bags: ${plan.free} free (min ${CFG.bag_min_free}) | keep ${kept.keep || 0}${kept.keep ? ` (${Object.entries(why_k).sort((a, b) => b[1] - a[1]).map(([r, n]) => `${r} ${n}`).join(", ")})` : ""}, bank ${kept.bank || 0}, sell ${kept.sell || 0}` +
 		`${plan.fetch.length ? ` | to fetch: ${Object.entries(fetch_names).map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ")}` : ""}`);
-	if (Object.keys(fetched_n).length) L(`  fetched (kept 1h): ${Object.entries(fetched_n).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(", ")}`);
-	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) L(`${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
-	if (bank_is_full()) L(`bank marked full ${Math.round((Date.now() - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
-	if (full) {
-		L(`calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
-		L(`gold ${character.gold} | level ${character.level} ${character.ctype} | ${character.map} ${Math.round(character.x)},${Math.round(character.y)}`);
-	} else L(`at ${character.map} ${Math.round(character.x)},${Math.round(character.y)} | calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
+	if (Object.keys(fetched_n).length) F("fetched", "self", `  fetched (kept 1h): ${Object.entries(fetched_n).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(", ")}`);
+	for (const k of ["town:sell", "town:restock", "town:bank", "town:loop"]) if (skipped(k)) F("pause:" + k, "self", `${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
+	if (bank_is_full()) F("bank_full", "self", `bank marked full ${Math.round((now - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
+	F("footer", "self", `level ${character.level} ${character.ctype} | ${fmt_k(character.gold)} gold | at ${character.map} ${Math.round(character.x)},${Math.round(character.y)} | calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
+	return out;
+}
+// Lines for one character. compact (party sections): only "self" facts that say something; full (solo): everything.
+function report_lines(log = true, compact = false) {
+	const facts = report_facts().filter((f) => !compact || (f.scope === "self" && !f.quiet));
+	const lines = [...(compact ? [] : [`— report v${VERSION} ${new Date().toLocaleTimeString()} —`]), ...facts.map((f) => f.text)];
+	if (log) lines.forEach((l, i) => game_log(l, i === 0 && !compact ? C.title : C.note));
 	return lines;
 }
 // why_not("bee"): is this monster farmable and safe for us, with the numbers behind the verdict
@@ -3231,18 +3236,20 @@ function selftest_finish(R, others_) {
 let gather = null, last_party_report = null;
 const report_reply_at = {}; // requester -> last reply (one per 5s)
 const party_names_all = () => [...new Set([...(CFG.party.members || []), CFG.merchant?.name].filter(Boolean))];
+// report(): one window. In a party: the combined report (after every reply or 6s). Solo, or report("solo"): this
+// character's full report. report(6) adds each character's 6h history.
 function report(hours = 0) {
-	const mine = report_lines(true);
-	const text = share_text("report()", mine);
+	const solo = hours === "solo";
+	if (solo) hours = 0;
 	const targets = party_names_all().filter((n) => n !== character.name);
-	if (!targets.length || typeof send_cm !== "function") return text;
+	if (solo || !targets.length || typeof send_cm !== "function") return share_text("report()", [...report_lines(false), ...(hours > 0 ? history_lines(hours) : [])]);
 	const id = `${Date.now()}:${character.name}`;
 	const own = report_lines(false, true);
 	gather = { id, want: new Set(targets), got: { [character.name]: { v: VERSION, lines: hours > 0 ? [...own, ...history_lines(hours)] : own } }, at: Date.now() };
 	Promise.resolve(send_cm(targets, { k: "rreq", id, hours })).catch(() => {});
 	game_log(`report: collecting from ${targets.join(", ")} (up to 6s)…`, C.info);
 	setTimeout(() => report_finish(id), 6000);
-	return text;
+	return `collecting reports from ${targets.join(", ")}…`;
 }
 function report_reply(m) {
 	const from = m.name, now = Date.now();
