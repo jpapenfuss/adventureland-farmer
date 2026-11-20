@@ -4197,7 +4197,8 @@ function party_header_lines() {
 		out.push(sp ? `party: farming separately${CFG.probe?.enabled && pa ? ` (regroup for a probe in ${mins(due)})` : ""} — ${fighters.map((f) => `${f.name} @ ${f.pack ? f.pack.mtype : "?"}`).join(", ")}`
 			: `party: together${lead === character.name && state.regroup_since ? ` (regrouping for a probe, ${ago(state.regroup_since)})` : ""}`);
 		const ab = lead === character.name ? state.mode_ab : state.partners[lead]?.ab;
-		if (CFG.party.split.ab?.enabled && ab?.split) out.push(`mode: ${ab.mode === "split" ? "separate" : "together"} by measurement since ${ago(ab.since)} — ${mode_why(ab)}`);
+		if (CFG.party.split.ab?.enabled && ab?.split) out.push(`mode: ${ab.mode === "split" ? "separate" : "together"} by measurement since ${ago(ab.since)} — ${mode_why(ab)}`
+			+ (fighters.length < (CFG.party.members || []).length ? " (measuring paused: not every fighter online)" : ""));
 	}
 	const M = is_merchant() ? { name: character.name, gold: character.gold, map: character.map, esize: character.esize, serving: state.serving } : merchant_hb();
 	out.push(`gold: ${[...fighters, ...(M ? [M] : [])].map((f) => `${f.name} ${fmt_k(f.gold || 0)}`).join(" / ")}`);
@@ -4335,6 +4336,9 @@ function split_decide() {
 // chosen), flip_at (last actual split/regroup) }. mode is kept apart from split_on: probes, bosses and events override
 // split_on for a while without changing the choice or its hold clock.
 const ab_rate = (b) => (b && b.s > 0 ? b.xp / b.s : 0); // xp per second
+// Every configured fighter online: with one missing, each kill is shared fewer ways and fewer fighters kill, so a rate
+// measured then isn't comparable with one measured at full strength — neither booked nor acted on
+const ab_full = () => partners_any().length >= (CFG.party.members || []).length - 1;
 const ab_state = () => state.mode_ab || (state.mode_ab = { split: { xp: 0, s: 0 }, together: { xp: 0, s: 0 }, at: Date.now(), mode: "split", since: Date.now(), flip_at: 0 });
 // Leader, every second: book this second's xp to the mode we're in, unless something else decides the mode right now
 function mode_ab_tick(d) {
@@ -4346,7 +4350,7 @@ function mode_ab_tick(d) {
 		for (const m of ["split", "together"]) { M[m].xp *= k; M[m].s *= k; }
 		M.at = now;
 	}
-	if (state.probe || state.directive?.boss || state.regroup_since || character.rip || state.recovering || event_live()) return;
+	if (!ab_full() || state.probe || state.directive?.boss || state.regroup_since || character.rip || state.recovering || event_live()) return;
 	const cur = state.split_on ? "split" : "together";
 	if (cur !== M.mode || now - (M.flip_at || 0) < A.settle_min * 60_000) return;
 	M[cur].xp += Math.max(0, d); M[cur].s += 1;
@@ -4357,7 +4361,7 @@ function mode_pick() {
 	const A = CFG.party.split?.ab, now = Date.now();
 	if (!A?.enabled) return "split";
 	const M = ab_state(), cur = M.mode, other = cur === "split" ? "together" : "split", need = A.sample_min * 60;
-	if (now - (M.since || 0) < A.hold_min * 60_000 || M[cur].s < need) return cur;
+	if (!ab_full() || now - (M.since || 0) < A.hold_min * 60_000 || M[cur].s < need) return cur;
 	const why = M[other].s < need / 2 ? "too little data on it" : ab_rate(M[other]) > ab_rate(M[cur]) * A.margin ? "it earns more" : "";
 	if (!why) return cur;
 	M.mode = other; M.since = now;
