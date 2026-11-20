@@ -3142,6 +3142,36 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/p\.score \*= walk_factor\(area\)/.test(src) && /state\.best_score = best \? best\.rate : 0/.test(src), "picks count the walk; the side-goal reference stays the rate there");
 		ctx.G.maps = maps0; ctx.G.npcs = npcs0; vm.runInContext("for (const k in hops_cache) delete hops_cache[k]", ctx);
 	}
+	// 122) v24.10: no spots next to aggressive monsters we can't take on, nor routes past faster ones; outrun the slower
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, map: "town", x: 0, y: 0, speed: 55, rip: false, hp: 1000, max_hp: 1000 });
+		const maps0 = ctx.G.maps, mons0 = ctx.G.monsters;
+		ctx.G.monsters = { ...mons0, roamer: { xp: 100, hp: 100, attack: 5, respawn: 2, speed: 20, aggro: 0.2 }, boar: { xp: 10, hp: 12000, attack: 240, speed: 20, charge: 40, aggro: 1, rage: 1 },
+			prat: { xp: 10, hp: 9200, attack: 320, speed: 12, charge: 86, aggro: 1 }, mouse: { xp: 1, hp: 10, attack: 1, speed: 10, aggro: 1 } };
+		ctx.G.maps = { town: { doors: [[0, 0, 1, 1, "cave", 0], [0, 0, 1, 1, "snow", 0]], spawns: [[0, 0]], monsters: [] },
+			cave: { doors: [[0, 0, 1, 1, "town", 0], [0, 0, 1, 1, "deep", 0]], spawns: [[0, 0]], monsters: [{ type: "prat", count: 3, boundary: [500, 500, 700, 700] }] },
+			deep: { doors: [[0, 0, 1, 1, "cave", 1]], spawns: [[0, 0]], monsters: [{ type: "roamer", count: 5, boundary: [0, 0, 200, 200] }] },
+			snow: { doors: [[0, 0, 1, 1, "town", 1]], spawns: [[0, 0]], monsters: [{ type: "roamer", count: 5, boundary: [0, 0, 200, 200] }, { type: "boar", count: 4, boundary: [400, 0, 600, 200] },
+				{ type: "roamer", count: 5, boundary: [2000, 2000, 2200, 2200] }, { type: "mouse", count: 3, boundary: [2300, 2000, 2400, 2100] }] } };
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; state.safe = { roamer: { ttk: 1, xp: 100 }, mouse: { ttk: 0.1, xp: 1 } }", ctx);
+		assert(vm.runInContext("area_danger({ map: 'snow', boundary: [0, 0, 200, 200] }, 'roamer')", ctx) === "boar", "roamers 200px from boars: dangerous");
+		assert(vm.runInContext("area_danger({ map: 'snow', boundary: [2000, 2000, 2200, 2200] }, 'roamer')", ctx) === null, "...far from them, or next to an aggressive one we can take (mice): fine");
+		assert(vm.runInContext("route_danger('deep')", ctx) === "prat @ cave" && vm.runInContext("route_danger('snow')", ctx) === null, "the way to deep passes prats (faster than us); snow's boars are slower");
+		assert(JSON.stringify(vm.runInContext("map_route('town', 'deep')", ctx)) === '["cave","deep"]', "route: the maps crossed");
+		// outrun: a boar on us (can't take it, slower): step away, don't stop a walk for it
+		const mv = []; const mv0 = ctx.move, dist0 = ctx.distance; ctx.move = (x, y) => (mv.push([x, y]), Promise.resolve()); ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		const boar = { id: "boar1", type: "monster", mtype: "boar", visible: true, x: 30, y: 0, target: "Sanala", hp: 12000, max_hp: 12000 };
+		ctx.parent.entities.boar1 = boar;
+		vm.runInContext("last_move = 0; smart_depth = 0; fight(parent.entities.boar1, true)", ctx);
+		assert(mv.length === 1 && mv[0][0] < 0, `a boar on us: stepped away from it (${JSON.stringify(mv)})`);
+		vm.runInContext("smart_depth = 1", ctx);
+		assert(vm.runInContext("break_walk_for(parent.entities.boar1)", ctx) === false, "walking: the walk goes on past it");
+		vm.runInContext("smart_depth = 0", ctx);
+		delete ctx.parent.entities.boar1; ctx.move = mv0; ctx.distance = dist0;
+		ctx.G.maps = maps0; ctx.G.monsters = mons0;
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; state.safe = {}; state.pick_skips = {}", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 1000, max_hp: 1000 });
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

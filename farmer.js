@@ -1,4 +1,4 @@
-const VERSION = "24.9"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.10"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -21,6 +21,7 @@ const CFG = {
 	repick_ms: 120_000,        // re-evaluate where to fight every 2 min (levels, gear and measurements change)
 	switch_margin: 1.15,       // change packs only if the new one scores 15% better (walking there isn't free)
 	near_pad: 450,             // px around the pack area a target may be picked from (and chased to)
+	danger_px: 400,            // v24.10: spots this close to a spawn of an aggressive monster we can't take on aren't farmed
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
@@ -390,6 +391,7 @@ const state = {
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)
 	probe_ok: {},            // mtype -> { mult, at }: a probe held; the party verdict for it is widened by mult for 24h (v24.6, saved)
+	pick_skips: {},          // pack key -> why the last pick skipped it as dangerous (v24.10; why_not)
 	mode_ab: null,           // leader: split vs together xp measurements and the measured choice (v24.0, saved)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	fund_need: 0,            // merchant: gold its current project step needs from the fighters
@@ -698,22 +700,67 @@ function each_area(fn) {
 // another map → CFG.travel.cross_map_s for the transfers + the walk from that map's spawn
 // v24.9: maps between two maps (doors, and the town transporter's places as one hop), BFS, cached per start map. A
 // flat 60s for any other map made level4 look as near as the next room; unreachable → Infinity
-const hops_cache = {};
+const hops_cache = {}, hops_prev = {};
 function map_hops(from, to) {
 	if (from === to) return 0;
 	let c = hops_cache[from];
 	if (!c) {
 		c = hops_cache[from] = { [from]: 0 };
+		const prev = (hops_prev[from] = {});
 		const tp = G.npcs?.transporter?.places ? Object.keys(G.npcs.transporter.places) : [];
 		const q = [from];
 		while (q.length) {
 			const m = q.shift(), d = c[m], M = G.maps[m];
 			const next = (M?.doors || []).map((dr) => dr && dr[4]).filter((n) => typeof n === "string");
 			if (tp.includes(m)) next.push(...tp);
-			for (const n of next) if (G.maps[n] && c[n] === undefined) { c[n] = d + 1; q.push(n); }
+			for (const n of next) if (G.maps[n] && c[n] === undefined) { c[n] = d + 1; prev[n] = m; q.push(n); }
 		}
 	}
 	return c[to] ?? (G.maps[from]?.doors ? Infinity : 1); // no door data at all (tests, old clients): one hop
+}
+// The maps a walk crosses after leaving `from`, ending with `to` (the BFS route; smart_move's may differ a little)
+function map_route(from, to) {
+	if (from === to || !Number.isFinite(map_hops(from, to))) return [];
+	const prev = hops_prev[from] || {}, out = [];
+	for (let m = to; m && m !== from && out.length < 30; m = prev[m]) out.unshift(m);
+	return out;
+}
+// ---- Dangerous neighbours (v24.10) ----
+// Aggressive monsters (aggro or rage >= 0.5: they come at anyone near) that we can't take on. In the first v24.9 run,
+// boars and dark hounds next to winterland's iceroamers and vampire rats on the way through level1 killed Torlis 4 times
+// and Sanala once in an hour: the picker only judged the monster it farmed.
+const chase_speed = (mt) => { const m = G.monsters[mt]; return m ? m.charge || m.speed || 0 : 0; };
+const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
+const can_take = (e) => !!(state.safe[e.mtype] ? live_ok(e) : fight_profile(e.mtype));
+const rect_gap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
+function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }
+// A spot within danger_px of a spawn of such a monster: its name, else null
+function area_danger(area, mt) {
+	for (const [pk, a2] of map_areas(area.map)) {
+		const t = pk.type;
+		if (t === mt || !aggressive(t) || state.safe[t] || !valid_boundary(a2.boundary)) continue;
+		if (rect_gap(area.boundary, a2.boundary) < CFG.danger_px) return t;
+	}
+	return null;
+}
+// A route through (or into) a map with such a monster that's also faster than us — it can't be outrun: "mt @ map", else null
+function route_danger(to) {
+	const v = character.speed || 55;
+	for (const m of map_route(character.map, to)) for (const [pk] of map_areas(m)) {
+		const t = pk.type;
+		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) return `${t} @ ${m}`;
+	}
+	return null;
+}
+// Step away from a monster (it's slower than us): ~120px straight away, or sideways if that's blocked
+function step_away(e) {
+	if (!e || !Number.isFinite(e.x)) return false;
+	const a = Math.atan2(character.y - e.y, character.x - e.x);
+	for (const da of [0, 0.8, -0.8, 1.6, -1.6]) {
+		const x = character.x + Math.cos(a + da) * 120, y = character.y + Math.sin(a + da) * 120;
+		if (can_move_to(x, y)) return move_to(x, y, 300);
+	}
+	return false;
 }
 function travel_s(map, boundary) {
 	if (!map || !valid_boundary(boundary)) return 0;
@@ -895,7 +942,8 @@ function pick_pack() {
 		return;
 	}
 	let best = null;
-	const seen = new Set();
+	const seen = new Set(), route_cache = new Map();
+	state.pick_skips = {};
 	each_area((pack, area) => {
 		const t = pack.type;
 		if ((CFG.force_type && t !== CFG.force_type) || !state.safe[t]) return;
@@ -903,6 +951,9 @@ function pick_pack() {
 		const key = pack_key(area);
 		if (seen.has(key) || (state.cooldown[key] || 0) > now) return;
 		seen.add(key);
+		// v24.10: not next to aggressive monsters we can't take on, nor past ones we can't outrun
+		const nb = area_danger(area, t), rd = nb ? null : route_cache.has(area.map) ? route_cache.get(area.map) : (route_cache.set(area.map, route_danger(area.map)), route_cache.get(area.map));
+		if (nb || rd) { state.pick_skips[key] = nb ? `${nb} spawns within ${CFG.danger_px}px` : `the way there passes ${rd}`; return; }
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
 		p.rate = p.score; // its xp/s there (the side-goal and probe reference)
 		p.score *= walk_factor(area); // v24.9: counting the walk there
@@ -938,7 +989,10 @@ function pick_pack() {
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
 	if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count };
-		if (!((state.cooldown[pack_key(area)] || 0) > now)) {
+		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
+		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || route_danger(area.map));
+		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
+		if (!dz && !((state.cooldown[pack_key(area)] || 0) > now)) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
 		}
@@ -1694,10 +1748,18 @@ function break_walk_for(t) {
 	if (errand_busy()) return false; // a town walk interrupted would fail (and pause) that errand step
 	const attacking_us = !!t.target && party_names().has(t.target);
 	if (!attacking_us && state.pack?.boss) return false; // on the way to a boss: only stop for attackers
+	if (t.target === character.name && !can_take(t) && (character.speed || 0) > chase_speed(t.mtype)) return false; // v24.10: outrun it
 	try { stop("smart"); } catch (e) {}
 	return true;
 }
 function fight(t, steer = true) {
+	// v24.10: attacked by something we can't take on and slower than us: get away (keep walking, or step away), shooting
+	// if we can; stopping to trade hits with it was a death (a dark hound on the way through winterland)
+	if (t && t.target === character.name && !can_take(t) && (character.speed || 0) > chase_speed(t.mtype)) {
+		if (!walking()) step_away(t);
+		if (RANGED && can_attack(t)) fire("attack", t);
+		return;
+	}
 	if (get_targeted_monster() !== t) change_target(t);
 	if (steer) break_walk_for(t);
 	if (steer && !walking() && !kite(t) && !errand_busy()) approach(t);
@@ -4502,6 +4564,8 @@ function why_not(mtype) {
 	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
 		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
 	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
+	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
+	if (sk.length) L(`  skipped as dangerous at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split(":")[0]} (${w})`).join("; ")}`);
 	const areas = [];
 	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
 	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
@@ -5451,7 +5515,11 @@ function follower_tick() {
 	if (party_heal()) return;
 	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
 	// and back (every leader trip used to move the whole party)
-	const away = (!!L.errand || !!L.recovering) && !!state.pack;
+	// v24.10: also, while split (a member with nothing of its own to farm follows for a while), straight to the leader's
+	// spot while the leader is still walking there — chasing its position across maps crossed paths with it
+	const L_off = !!state.pack && split_now() && !(L.map === state.pack.map && Number.isFinite(L.x) &&
+		in_rect(L.x, L.y, [state.pack.boundary[0] - 300, state.pack.boundary[1] - 300, state.pack.boundary[2] + 300, state.pack.boundary[3] + 300]));
+	const away = (!!L.errand || !!L.recovering || L_off) && !!state.pack;
 	const pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
