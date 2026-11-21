@@ -3451,6 +3451,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.partners = {}; state.convoy_wait = null", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
+	// 133) v24.23: escaping or kiting picks open ground, not just "straight away" — out of a corner, past a dead end
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55, rip: false });
+		const cmt0 = ctx.can_move_to, cm0 = ctx.can_move;
+		// a corner: cliffs to the east (x > 20) and the north (y < -20); the monster sits just west of us
+		ctx.can_move_to = (x, y) => x <= 20 && y >= -20;
+		ctx.can_move = (o) => o.going_x <= 20 && o.going_y >= -20 && !(o.going_y > 200 && o.going_x > -50); // straight south runs into a dead end past 200
+		const m133 = { x: -40, y: 0 };
+		const p = vm.runInContext("(m) => best_escape(m, 140)", ctx)(m133);
+		assert(p && p.x <= 20 && p.y >= -20 && Math.hypot(p.x - m133.x, p.y - m133.y) > 100,
+			`cornered (cliffs east and north, the monster west): out along the open side (${JSON.stringify(p)})`);
+		assert(!(p.y > 100 && p.x > -50), "...not down the dead end to the south");
+		ctx.can_move_to = () => false;
+		assert(vm.runInContext("(m) => best_escape(m, 140)", ctx)(m133) === null, "walled in all round: nothing (fight back)");
+		ctx.can_move_to = cmt0; if (cm0) ctx.can_move = cm0; else delete ctx.can_move;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

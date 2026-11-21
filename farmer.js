@@ -1,4 +1,4 @@
-const VERSION = "24.22"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.23"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -972,12 +972,24 @@ function party_route_danger(to) {
 // Step away from a monster (it's slower than us): ~120px straight away, or sideways if that's blocked
 function step_away(e) {
 	if (!e || !Number.isFinite(e.x)) return false;
-	const a = Math.atan2(character.y - e.y, character.x - e.x);
-	for (const da of [0, 0.8, -0.8, 1.6, -1.6]) {
-		const x = character.x + Math.cos(a + da) * 120, y = character.y + Math.sin(a + da) * 120;
-		if (can_move_to(x, y)) return move_to(x, y, 300);
+	const p = best_escape(e, 140);
+	return p ? move_to(p.x, p.y, 300) : false;
+}
+// v24.23: where to move away from a monster: of 12 directions around us, the ones we can walk (and keep walking another
+// `step` beyond — not into a dead end), the one ending farthest from it. Straight away and ±45/90° only, a party backed
+// against a cliff stood still and face-tanked with open ground beside it; this also slips out sideways or past it.
+function best_escape(t, step) {
+	const cm = typeof can_move === "function" ? can_move : null;
+	let best = null;
+	for (let i = 0; i < 12; i++) {
+		const a = (i / 12) * Math.PI * 2, dx = Math.cos(a), dy = Math.sin(a);
+		const x = character.x + dx * step, y = character.y + dy * step;
+		if (!can_move_to(x, y)) continue;
+		const open = !cm || cm({ map: character.map, x, y, going_x: x + dx * step, going_y: y + dy * step, base: character.base });
+		const v = Math.hypot(x - t.x, y - t.y) + (open ? step : 0);
+		if (!best || v > best.v) best = { x, y, v };
 	}
-	return false;
+	return best;
 }
 function travel_s(map, boundary) {
 	if (!map || !valid_boundary(boundary)) return 0;
@@ -1822,11 +1834,9 @@ function point_at(t, dist, ang_off = 0) {
 function kite(t) {
 	const so = standoff(t);
 	if (!so.can_kite || t.target !== character.name || distance(character, t) >= so.keep) return false;
-	// straight away from it first, then 30°, 60° and 90° to either side (radians) if walls are in the way
-	for (const off of [0, 0.52, -0.52, 1.05, -1.05, 1.57, -1.57]) {
-		const p = point_at(t, so.want, off);
-		if (can_move_to(p.x, p.y)) { move_to(p.x, p.y, 250); return true; } // kiting may re-steer every 250ms
-	}
+	// v24.23: the open direction that ends farthest from it (best_escape), far enough to get back to `want`
+	const p = best_escape(t, Math.max(80, so.want - distance(character, t) + 40));
+	if (p) { move_to(p.x, p.y, 250); return true; } // kiting may re-steer every 250ms
 	return false;
 }
 function approach(t) {
