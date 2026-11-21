@@ -1427,7 +1427,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.entities.far65 = { id: "far65", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 280, y: 0, target: null };
 	const at65 = []; ctx.attack = (e) => (at65.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
 	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
-	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "g65" && /Sanala/.test(to) && /Aspernari/.test(to)), `the tank picks its own target and announces it to everyone (${JSON.stringify(cms65)})`);
+	// v24.24: the leader's untouched pick first (it holds fire for us) — one monster pulled, by the tank
+	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "far65" && /Sanala/.test(to) && /Aspernari/.test(to)), `the tank takes the leader's untouched pick and announces it (${JSON.stringify(cms65)})`);
+	cms65.length = 0;
+	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: null, v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+	vm.runInContext("inflight.attack = false; announced = null; follower_tick()", ctx);
+	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "g65" && /Sanala/.test(to) && /Aspernari/.test(to)), `no pick from the leader: the tank picks its own and announces it to everyone (${JSON.stringify(cms65)})`);
 	// Aspernari (follower, not the tank) assists Torlis instead of hitting the leader's target
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", range: 200, x: 20, y: 30, hp: 2500, max_hp: 2500 });
 	vm.runInContext("state.partners = {}", ctx);
@@ -3466,6 +3471,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.can_move_to = () => false;
 		assert(vm.runInContext("(m) => best_escape(m, 140)", ctx)(m133) === null, "walled in all round: nothing (fight back)");
 		ctx.can_move_to = cmt0; if (cm0) ctx.can_move = cm0; else delete ctx.can_move;
+	}
+	// 134) v24.24: with the tank near, nobody else touches an untouched monster (it attacks whoever hits it first, for good)
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 1000, max_hp: 1000, rip: false });
+		const dist0 = ctx.distance, scm = ctx.send_cm; ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		const sent = []; ctx.send_cm = (to, m) => (sent.push([to.join(), m.k, m.id]), Promise.resolve());
+		vm.runInContext("state.partners = {}; tank_hold.id = null; CFG.party.tank_first = true", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 50, y: 0, v: "0.1", armor: 400, max_hp: 6000, hp: 6000 }); // another version: still our tank
+		const easy = { id: "e134", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, target: null, x: 100, y: 0 };
+		ctx.parent.entities.e134 = easy;
+		assert(vm.runInContext("tank_cover() && tank_cover().name", ctx) === "Torlis", "the tank counts whatever version it runs");
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === true, "an untouched goo (one we'd solo): we hold for the tank anyway");
+		assert(sent.some(([to, k, id]) => to === "Torlis" && k === "tgt" && id === "e134"), "...and tell the tank our pick at once");
+		vm.runInContext("tank_hold.at = Date.now() - CFG.party.tank_hold_ms - 1", ctx);
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank never came (tank_hold_ms): we go");
+		vm.runInContext("tank_hold.id = null", ctx); easy.target = "Torlis";
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank has it: fire");
+		easy.target = null; hb("Torlis", { ...tor, level: 60, x: 50, y: 0, armor: 400, max_hp: 6000, hp: 6000, recovering: true });
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank is fleeing: no holding for it");
+		delete ctx.parent.entities.e134; ctx.distance = dist0; ctx.send_cm = scm;
+		vm.runInContext("state.partners = {}; tank_hold.id = null", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");

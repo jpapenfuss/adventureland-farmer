@@ -1,4 +1,4 @@
-const VERSION = "24.23"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.24"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -275,7 +275,7 @@ const CFG = {
 		// tank_hold_ms so the tank takes its aggro; risk is then judged against the tank's HP and armour, so the party
 		// can take spots the leader couldn't survive alone. Not for aggressive monsters (G.monsters[].aggro > 0.3).
 		tank_first: true,
-		tank_hold_ms: 4000,    // how long the others hold fire on an untouched monster for the tank
+		tank_hold_ms: 12000,   // how long the others hold fire on an untouched monster for the tank (v24.24: was 4000)
 		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
 		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
 		// trickled in one by one, the leader (lowest level, often the mage) first. Members on their own errand,
@@ -675,21 +675,29 @@ const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || characte
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover(pool = partners_near(300)) {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
-	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp &&
-		Number.isFinite(p.armor) && p.v === VERSION) || null;
+	// v24.24: any version (a rollout with mixed versions turned tanking off for everyone)
+	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp && Number.isFinite(p.armor)) || null;
 }
 // Hold fire on an untouched monster while the tank engages it (tells the tank the target right away, not at the
 // next heartbeat). Gives up after tank_hold_ms, so a tank that doesn't come can't stall us.
 const tank_hold = { id: null, at: 0 };
+// v24.24: a monster attacks whoever hits it first and keeps them (server: target_player on the first hit; only a warrior's
+// taunt or a priest's absorb moves it) — a paladin holds aggro only by striking first. The others pulled first: they
+// didn't wait on a monster they'd survive alone, and gave up after 4s, by which time the tank was on its own pick. Now,
+// with the tank near (and not dead or fleeing), nobody else touches an untouched monster for tank_hold_ms; and the
+// first time we hold on one, we tell the tank, which takes our pick before its own.
 function hold_for_tank(t) {
 	if (!t || t.target) return false;
 	const tank = tank_cover();
-	if (!tank) return false;
-	const solo = G.monsters[t.mtype] && fight_math({ ...G.monsters[t.mtype], hp: t.max_hp || G.monsters[t.mtype].hp, attack: t.attack ?? G.monsters[t.mtype].attack }, false);
-	if (solo && safe_enough(solo, t.mtype)) return false; // safe without the tank: no reason to wait
-	if (tank_hold.id !== t.id) { tank_hold.id = t.id; tank_hold.at = Date.now(); }
+	if (!tank || tank.rip || tank.recovering) return false;
+	if (tank_hold.id !== t.id) {
+		tank_hold.id = t.id; tank_hold.at = Date.now();
+		if (typeof send_cm === "function") Promise.resolve(send_cm([tank.name], { k: "tgt", id: t.id })).catch(() => {});
+	}
 	return Date.now() - tank_hold.at < CFG.party.tank_hold_ms;
 }
+// The leader's target if nobody has it yet (the tank should take it first) — else null
+const leader_untouched = (lt) => (lt && !lt.target && farmable_entity(lt) ? lt : null);
 // ---- Assist the tank (v15.4): with a tank near, it picks the targets and everyone else hits its target ----
 const i_am_tank = () => CFG.party.tank_first && in_party_cfg() && CFG.gear_tank.includes(character.ctype) && partners_near(400).length > 0;
 // The tank's current target, as a live entity (its "tgt" broadcasts update state.partners[tank].target at once)
@@ -5956,7 +5964,9 @@ function follower_tick() {
 	// v24.8: what's hitting us first, always; spread: then a free monster, before one already on a partner (it was
 	// choose_target first, which piled everyone onto the priest's monster)
 	let t = easy ? hit_on_me() || spread_pick(pos, L) || choose_target(false) || leader_t
-		: i_am_tank() ? choose_target(false) || follower_pick(pos) || leader_t : hit_on_me() || caller_target() || leader_t || choose_target(false) || follower_pick(pos);
+		// v24.24: the tank takes the leader's pick (announced as it holds fire) before one of its own — they used to pick two
+		: i_am_tank() ? choose_target(false) || leader_untouched(leader_t) || follower_pick(pos) || leader_t
+		: hit_on_me() || caller_target() || leader_t || choose_target(false) || follower_pick(pos);
 	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
