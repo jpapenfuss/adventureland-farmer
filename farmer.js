@@ -1,4 +1,4 @@
-const VERSION = "24.14"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.15"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -212,6 +212,7 @@ const CFG = {
 	merchant: {
 		name: "DoWhatNow",
 		wear_gear: false,      // v24.7: the merchant doesn't fight: gear it wore (spare jewellery) broke compound sets and did nothing
+		sell_dead_compounds: true, // v24.15: sell compound pieces at their ceiling (odds under the floor) that no member wants
 		serve_free: 12,        // visit a fighter with fewer free bag slots than this...
 		serve_pots: 500,       // ...or fewer potions of either kind than this (v24.12: half of pot_buy; was 80 — fighters
 		                       // ran low, walked to town, and the merchant stayed idle)
@@ -401,6 +402,7 @@ const state = {
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	upg_caps: {},            // item -> { level, at }: the level a project reached before odds/failures stopped it (v24.5, saved)
+	cmp_caps: {},            // item -> { level, at }: copies at this level won't be compounded (odds under the floor; v24.15, saved)
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)
 	probe_ok: {},            // mtype -> { mult, at }: a probe held; the party verdict for it is widened by mult for 24h (v24.6, saved)
@@ -2317,8 +2319,24 @@ async function run_compound(a, row, floor) {
 const compound_key = (name, level) => `cmp:${name}:${level}`;
 function compound_spare(it, k, needed) {
 	const def = it && G.items[it.name];
-	return !!def?.compound && !it.l && !it.b && !it.p && !needed.has(k) && (it.level || 0) < CFG.compound_max_level &&
+	return !!def?.compound && !it.l && !it.b && !it.p && !needed.has(k) && (it.level || 0) < cmp_top(it.name) &&
 		!CFG.keep.includes(it.name) && !gear_wanted_by(it);
+}
+// Compound ceilings (v24.15): item -> { level, at } where the server's odds were under our floor; 7 days (saved)
+const cmp_cap = (name, level) => { state.cmp_caps[name] = { level, at: Date.now() }; cmp_cache = null; };
+const cmp_top = (name) => {
+	const c = state.cmp_caps[name];
+	let top = Math.min(CFG.compound_max_level, c && Date.now() - c.at < 7 * 86400_000 ? c.level : Infinity);
+	// a refusal for its odds paused before v24.15 (a 6h skip, no ceiling recorded) counts too
+	for (let L = 0; L < top; L++) if (skipped(compound_key(name, L)) && /low_chance/.test(skip_why[compound_key(name, L)] || "")) { top = L; break; }
+	return top;
+};
+// A compound piece at its ceiling that no member wants: it can't go further and nobody wears it (v24.15). The merchant
+// sells it (an NPC pays its value: ~134k for an Amulet of HP +2) — it held 12 of those, refetched every 6h.
+function dead_compound(it) {
+	const def = it && G.items[it.name];
+	return !!def?.compound && !it.l && !it.b && !it.p && (it.level || 0) > 0 && (it.level || 0) >= cmp_top(it.name) &&
+		!CFG.keep.includes(it.name) && !wanted_by_member(it);
 }
 let cmp_cache = null; // { key, at, list }: keyed by bags + bank snapshot + pauses; bag_class asks once per item
 function compound_groups(needed) {
@@ -2392,6 +2410,9 @@ async function task_compound() {
 		} catch (e) {
 			// only verdicts about the items themselves are worth a 6h pause; walking/transient failures retry in 10 min
 			const item_verdict = ["low_chance", "not_combinable", "mismatch"].includes(why(e));
+			// v24.15: odds don't change — that level is this item's compound ceiling (7 days): no more fetching the copies
+			// out of the bank every 6h to be refused again
+			if (why(e) === "low_chance") cmp_cap(g.name, g.level);
 			skip(g.key, item_verdict ? 6 * 3600_000 : 600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
 			town_reason.compound = `${g.name}+${g.level}: ${why(e)}`;
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in ${item_verdict ? "6h" : "10 min"}`, C.dim);
@@ -2674,11 +2695,12 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
-		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && gear_gain(item, character.ctype, my_gear())) ||
+		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && self_taker_ok() && gear_gain(item, character.ctype, my_gear())) ||
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
 	if (is_merchant() && Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return "sell";
+	if (is_merchant() && CFG.merchant.sell_dead_compounds && dead_compound(item)) return "sell"; // v24.15
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -2693,6 +2715,7 @@ function keep_reason(item, k, needed, cmp) {
 	if (BAG_TYPES.has(def.type) || item.name === CFG.hp_pot || item.name === CFG.mp_pot) return "supplies";
 	if (needed.has(k)) return state.upg && item.name === state.upg.name ? "upgrade" : "guide/quest";
 	if (Date.now() - (state.fetched[item.name] || 0) < 3600_000) return "fetched";
+	if (Date.now() - (state.fetched[item.name] || 0) < 7200_000 && self_taker_ok()) return "fetched (for us)";
 	if (GEAR.has(def.type) && wanted_by_member(item)) return "for party";
 	return CFG.bank ? "other" : "no-bank";
 }
@@ -2733,6 +2756,16 @@ function bag_plan() {
 	}
 	for (const u of [...bank_upgrades(), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
+	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
+	if (is_merchant() && CFG.merchant.sell_dead_compounds) {
+		let room = Math.max(0, character.esize - 8);
+		for (const it of state.bank_gear || []) {
+			if (room <= 0) break;
+			const key = `dead:${it.name}:${it.level || 0}`;
+			if (!dead_compound(it) || Date.now() - (state.fetch_try[key] || 0) < 600_000) continue;
+			fetch.push({ name: it.name, level: it.level || 0, key }); room--;
+		}
+	}
 	return { sell, bank, fetch, free: character.esize };
 }
 // Nearest NPC with a shop on this map (any shop buys anything), else one on main
@@ -4074,7 +4107,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
-		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
+		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -4119,6 +4152,7 @@ function load_state() {
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.upg_caps && typeof d.upg_caps === "object") state.upg_caps = d.upg_caps;
+	if (d.cmp_caps && typeof d.cmp_caps === "object") state.cmp_caps = d.cmp_caps;
 	if (d.probe_ok && typeof d.probe_ok === "object") state.probe_ok = d.probe_ok;
 	if (d.donated) state.donated = d.donated;
 	if (d.stand) state.stand = d.stand;
@@ -5217,7 +5251,10 @@ function secondhand_reason(it, groups) {
 	}
 	const g = G.items[it.name].compound && !it.p && (it.level || 0) < CFG.compound_max_level &&
 		groups[compound_key(it.name, it.level || 0)];
-	if (g && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
+	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
+	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
+	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
+	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
 	return null;
 }
 let secondhand_at = 0;

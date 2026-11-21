@@ -1261,7 +1261,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null); character.items[0] = { name: "ringx", level: 0 }; character.items[1] = { name: "ringx", level: 0 };
 	character.slots = {};
 	vm.runInContext("state.partners = {}; state.bank_gear = []; state.needs = new Map(); cmp_cache = null", ctx);
+	// v24.15: a compound set's missing copy only when the result is a fighter's upgrade — rings at 1e9: no
 	hb("Torlis", { ...tor, x: 40, y: 0, v: V, esize: 10, gear: { w: { helmet: 3, ring1: 1e9, ring2: 1e9 }, dh: false, off: false } });
+	assert(!vm.runInContext("secondhand_reason({ name: 'ringx', level: 0 }, compound_groups())", ctx), "v24.15: no buy for a compound set nobody would wear");
+	// empty ring slots: ringx+0 (2 pts) is under gear_min_gain, the +1 it completes (3 pts) isn't
+	hb("Torlis", { ...tor, x: 40, y: 0, v: V, esize: 10, gear: { w: { helmet: 3, ring1: 0, ring2: 0 }, dh: false, off: false } });
 	ctx.parent.secondhands = [{ name: "helm3", level: 0, rid: "a" }, { name: "ringx", level: 0, rid: "b" }, { name: "beewings", q: 5, rid: "c" }];
 	const sb = [];
 	ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { sb.push(d.rid); character.esize--; } };
@@ -1794,7 +1798,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null; run_compound = () => Promise.reject({ reason: 'low_chance', chance: 0.3 })", ctx);
 	await vm.runInContext("task_compound()", ctx);
 	assert(vm.runInContext("state.gear_skip['cmp:ringx:0']", ctx) - Date.now() > 5 * 3600_000, "low chance → 6h pause");
-	ctx.__rc79 = rc79; vm.runInContext("run_compound = __rc79; state.gear_skip = {}; cmp_cache = null", ctx);
+	assert(vm.runInContext("cmp_top('ringx') === 0 && !compound_spare(character.items[4], 4, new Set())", ctx), "v24.15: ...and a ceiling: +0 copies are no longer compound inputs");
+	ctx.__rc79 = rc79; vm.runInContext("run_compound = __rc79; state.gear_skip = {}; state.cmp_caps = {}; cmp_cache = null", ctx);
 	assert(vm.runInContext("bag_class(character.items[4])", ctx) === "keep", "active set: copies kept for compounding");
 	// load clears interrupted pauses
 	ctx.get = (k) => (k.startsWith("farmer_v9:") ? { v: 1, at: Date.now(), gear_skip: { "cmp:hpbelt:0": Date.now() + 3e6 }, skip_why: { "cmp:hpbelt:0": "interrupted" } } : null);
@@ -3251,6 +3256,31 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		for (const k of ["e125", "c125"]) delete ctx.parent.entities[k];
 		ctx.G.monsters = mons0; ctx.distance = dist0; ctx.move = mv0;
 		vm.runInContext("state.pack = null; state.cooldown = {}; state.keep_log = []; hist.ev = []; for (const k in deadly_c) delete deadly_c[k]", ctx);
+	}
+	// 126) v24.15: compound pieces stuck at their ceiling that nobody wants are sold by the merchant, not hoarded
+	{
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, map: "main", x: 0, y: 0, rip: false, esize: 20, stand: false });
+		character.items = Array(42).fill(null); character.slots = {};
+		ctx.G.items.hpam126 = { type: "amulet", hp: 200, compound: { hp: 240 }, g: 20000 };
+		vm.runInContext("state.partners = {}; state.gear_skip = {}; state.cmp_caps = {}; state.needs = new Map(); state.stand = {}; stand_cache = null; cmp_cache = null; my_gear_cache = null; state.upg = null; state.purge = {}", ctx);
+		hb("Torlis", { ...tor, level: 60, gear: { w: { amulet: 1e9 }, own: {} } });
+		character.items[3] = { name: "hpam126", level: 2 };
+		vm.runInContext("state.fetched = { hpam126: Date.now() }", ctx);
+		assert(vm.runInContext("bag_class(character.items[3])", ctx) !== "keep", `fetched, an upgrade only for the merchant's own (unused) slot: not held (${vm.runInContext("bag_class(character.items[3])", ctx)})`);
+		vm.runInContext("cmp_cap('hpam126', 2)", ctx);
+		assert(vm.runInContext("dead_compound(character.items[3]) && bag_class(character.items[3]) === 'sell'", ctx), "+2 at its ceiling, no fighter wants it: sell");
+		hb("Torlis", { ...tor, level: 60, gear: { w: { amulet: 0 }, own: {} } });
+		vm.runInContext("my_gear_cache = null", ctx);
+		assert(vm.runInContext("!dead_compound(character.items[3]) && bag_class(character.items[3]) !== 'sell'", ctx), "a fighter would wear it: not sold");
+		hb("Torlis", { ...tor, level: 60, gear: { w: { amulet: 1e9 }, own: {} } });
+		vm.runInContext("state.cmp_caps.hpam126.at = Date.now() - 8 * 86400000; cmp_cache = null", ctx);
+		assert(vm.runInContext("cmp_top('hpam126') === CFG.compound_max_level && !dead_compound(character.items[3])", ctx), "the ceiling lapses after 7 days (odds re-checked)");
+		// a low_chance pause from before v24.15 counts as the ceiling at once; bank copies come out to be sold
+		vm.runInContext("state.cmp_caps = {}; skip('cmp:hpam126:2', 3600000, 'low_chance (40%)'); state.bank_gear = [{ name: 'hpam126', level: 2 }, { name: 'hpam126', level: 1 }]; state.fetch_try = {}", ctx);
+		assert(vm.runInContext("cmp_top('hpam126') === 2 && dead_compound(character.items[3])", ctx), "an old low_chance pause is a ceiling too");
+		assert(vm.runInContext("bag_plan().fetch.some((f) => f.key === 'dead:hpam126:2') && !bag_plan().fetch.some((f) => f.key === 'dead:hpam126:1')", ctx), "the bank's +2 comes out to be sold (not the +1, still compoundable)");
+		vm.runInContext("state.cmp_caps = {}; state.gear_skip = {}; state.bank_gear = []; state.fetched = {}; state.partners = {}; cmp_cache = null", ctx);
+		character.items = Array(42).fill(null); delete ctx.G.items.hpam126;
 	}
 	all_done = true;
 	console.log("ALL PASS");
