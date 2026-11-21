@@ -1,4 +1,4 @@
-const VERSION = "24.81"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.82"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -136,6 +136,11 @@ const CFG = {
 	// preview (min_chance_rebuyable: a failure only costs gold); at low odds the project stops at the level reached.
 	upgrade_auto: true,
 	upgrade_max_level: 7,      // target at most +7, and only levels that take scroll0/scroll1 (scroll2 costs ~1.6M)
+	// v24.82 (owner: lower odds have to be accepted for meaningful upgrades): a shop piece's target level is the one
+	// where gain x upgrade_gold_per_pt most exceeds its EXPECTED cost — the copy and scrolls, counting the copies lost
+	// to failed steps at the server's base odds (+4 70%, +5 60%, +6 40%, +7 25%). A wand: +5 ≈ 136k, +6 ≈ 340k,
+	// +7 ≈ 1.4M. Steps on shop pieces are then taken down to min_chance_rebuyable (20%).
+	upgrade_gold_per_pt: 40_000,
 	upgrade_spend: 0.2,        // a project may cost at most 20% of the gold above gold_reserve (estimate without failures)
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
 	upgrade_steps_per_run: 8,  // upgrade steps per town run
@@ -225,7 +230,7 @@ const CFG = {
 	gold_reserve: 50_000,      // guide steps never spend below this much gold (potions may dip into it)
 	min_upgrade_chance: 0.80,  // upgrade only at >= 80% success (the server's own preview); failure destroys the item
 	min_compound_chance: 0.80, // same for compounding (failure destroys all three inputs)
-	min_chance_rebuyable: 0.5, // items NPCs sell: failure only costs gold, accept the guide's odds down to this
+	min_chance_rebuyable: 0.2, // items NPCs sell: failure only costs gold, accept the guide's odds down to this
 	rebuy_loss_max: 100_000,   // compounds of NPC-sold items take compound_min_chance_rebuyable odds only when the three
 	                           //   copies are worth at most this (a +L copy = 3^L base copies; v23.1)
 	min_chance_spare: 0.6,     // you hold another copy at that level or higher (bags/worn): a failure costs a spare
@@ -1871,7 +1876,9 @@ function gold_room() {
 	if (!CFG.spend?.enabled) return Infinity;
 	const L = party_ledger();
 	if (L.s < CFG.spend.min_data_h * 3600 * L.who.length) return Infinity;
-	return Math.floor(CFG.spend.share * L.earn - L.spend);
+	// v24.82: "other" (gold that left with no tag: the owner's own purchases, trades) isn't the script's spending —
+	// 4.5M of it had the budget at zero for six hours and every upgrade waiting
+	return Math.floor(CFG.spend.share * L.earn - (L.spend - (L.cats?.other || 0)));
 }
 // The merchant's optional spending (Ponty, compound scrolls, crafting, upgrade steps) also has to leave it
 // merchant.donate.keep (its potion float); nobody refills it, so when it's below that it simply stops buying extras
@@ -1894,7 +1901,7 @@ function party_holds(name) {
 function budget_text() {
 	const L = party_ledger(), room = gold_room();
 	return `gold budget (${CFG.spend.window_h}h, ${L.who.length} chars): earned ${fmt_k(L.earn)}, spent ${fmt_k(L.spend)} (${cats_text(L.cats)})` +
-		(room === Infinity ? " — under an hour of records, no limit yet" : room > 0 ? ` — ${fmt_k(room)} left for upgrades/guide buys/compounds/Ponty` : " — optional spending paused (spent ≥ 90% of income)");
+		(room === Infinity ? " — under an hour of records, no limit yet" : room > 0 ? ` — ${fmt_k(room)} left for upgrades/guide buys/compounds/Ponty` : " — optional spending paused (the script's own spending ≥ 90% of income; \"other\" isn't counted)");
 }
 // Per-hour rates over the last hour (report, heartbeat): a sample of cumulative xp and gold every minute
 // adj = gold moved between our own characters (sent: +, received: −), so transfers don't count as earnings/spending
@@ -3305,6 +3312,16 @@ const upg_cap = (name, level) => { state.upg_caps[name] = { level, at: Date.now(
 const upg_cap_level = (name) => { const c = state.upg_caps[name]; return c && Date.now() - c.at < 7 * 86400_000 ? c.level : Infinity; };
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
 // Best project: the NPC-sold piece whose upgraded copy beats a member's worn piece by the most points per gold
+// v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..10
+const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018],
+	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015] };
+const upg_odds = (name, to) => (UPG_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || UPG_ODDS[0])[to - 1] || 0;
+// Expected gold for one copy at +to, buying again after each failure: C(l) = (C(l-1) + scroll) / odds(l)
+function upgrade_expected(name, to) {
+	let c = G.items[name]?.g || 0;
+	for (let l = 1; l <= to; l++) c = (c + (G.items[upgrade_scroll(name, l - 1)]?.g || 1e9)) / Math.max(0.01, upg_odds(name, l));
+	return Math.round(c);
+}
 // Is it sold by an NPC we can find? (cached: G doesn't change)
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
@@ -3320,13 +3337,14 @@ function pick_upgrade() {
 		// game: when a piece nobody sells scored best (pyjamas, for Torlis), there was no project at all, ever.
 		if (!sold_by_npc(name)) continue;
 		// normal target (scroll0/1 levels) and, for weapon slots, the high target (scroll2 levels too)
-		const targets = [[upgrade_target(name), budget, false]];
+		const targets = [];
+		for (let L = 1, T = upgrade_target(name); L <= T; L++) targets.push([L, budget, false]); // v24.82: every level, by expected cost
 		if (H?.enabled) targets.push([upgrade_target(name, true), gold * H.spend, true]);
 		const capL = upg_cap_level(name);
 		for (let [to, cap, high] of targets) {
 			if (to > capL) to = capL; // v24.5: no higher than a past project of it reached before its odds/failures stopped it
 			if (!to) continue;
-			const cost = upgrade_cost(name, to);
+			const cost = high ? upgrade_cost(name, to) : upgrade_expected(name, to);
 			if (cost > cap) continue;
 			// a copy at the target level already exists: ours, the bank's, or (v23.2) in another member's bags or worn
 			// (v24.74: a copy another member WEARS no longer counts — a wand+7 on one caster blocked the other's for good)
@@ -3338,7 +3356,9 @@ function pick_upgrade() {
 			for (const m of takers) {
 				const r = gear_gain({ name, level: to }, m.ctype, m.g);
 				if (!r || (high && !H.slots.includes(r.slot))) continue;
-				const v = r.gain / cost;
+				// worth (gain x gold per point) less the expected cost; a scroll2 project only when nothing else is worth doing
+				const v = high ? -1e12 + r.gain / cost : r.gain * CFG.upgrade_gold_per_pt - cost;
+				if (!high && v <= 0) continue;
 				if (!best || v > best.v) best = { name, to, for: m.name, slot: r.slot, gain: Math.round(r.gain), cost, v, high };
 			}
 		}
@@ -3359,13 +3379,13 @@ function upgrade_why() {
 		for (const name in G.items) {
 			const def = G.items[name];
 			if (!def.upgrade || !GEAR.has(def.type) || def.cash || !sold_by_npc(name)) continue;
-			const to = Math.min(upgrade_target(name), upg_cap_level(name));
-			if (!to) continue;
-			let g = null;
-			for (const m of takers) { const r = gear_gain({ name, level: to }, m.ctype, m.g); if (r && (!g || r.gain > g.gain)) g = { gain: r.gain, who: m.name }; }
+			let g = null, to = 0, cost = 0;
+			for (let L = 1, T = Math.min(upgrade_target(name), upg_cap_level(name)); L <= T; L++) for (const m of takers) {
+				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = upgrade_expected(name, L);
+				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
+			}
 			if (!g) continue;
-			const cost = upgrade_cost(name, to);
-			const stop = skipped("upg:" + name) ? "paused" : cost > budget ? `costs ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
+			const stop = skipped("upg:" + name) ? "paused" : cost > budget ? `expected cost ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
 				: best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to, true) ? "a spare copy at that level exists already"
 				: "eligible";
 			rows.push({ name, to, g, stop });
@@ -5213,7 +5233,7 @@ const DATA_V = 2; // bump to clear everything learned, once per character (load_
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, upg_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -5293,6 +5313,8 @@ function load_state() {
 	const off = now - (d.at || now);
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
+	// v24.82: upgrade ceilings and pauses recorded under the 50%/80% rules go once (a wand "capped at +4" would stay there)
+	if (d.upg_v !== 2) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();

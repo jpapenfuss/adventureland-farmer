@@ -1049,6 +1049,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null", ctx);
 	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked — the best piece an NPC sells, though one nobody sells scores higher (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
 	delete ctx.G.items.xhelm49;
+	// v24.82: the target comes from the expected cost with failures (2000 gold copy, 1000 scrolls, base odds 100/98/95/70%)
+	assert(vm.runInContext("upgrade_expected('nhelm', 1)", ctx) === 3000 && vm.runInContext("upgrade_expected('nhelm', 4)", ctx) === 9070 && vm.runInContext("upgrade_expected('nhelm', 7)", ctx) > 150_000,
+		`expected cost counts the copies lost on the way (+1 ${vm.runInContext("upgrade_expected('nhelm', 1)", ctx)}, +4 ${vm.runInContext("upgrade_expected('nhelm', 4)", ctx)}, +7 ${vm.runInContext("upgrade_expected('nhelm', 7)", ctx)})`);
+	{ const gpp = vm.runInContext("CFG.upgrade_gold_per_pt", ctx);
+		vm.runInContext("CFG.upgrade_gold_per_pt = 2000; globalThis.__p49 = pick_upgrade()", ctx);
+		const lo = vm.runInContext("__p49 && __p49.to", ctx);
+		vm.runInContext(`CFG.upgrade_gold_per_pt = ${gpp}; globalThis.__q49 = pick_upgrade()`, ctx);
+		const hi = vm.runInContext("__q49 && __q49.to", ctx);
+		assert(lo >= 1 && hi > lo, `a point worth more gold takes the project to a higher level (${lo} → ${hi})`);
+	}
 	const to49 = vm.runInContext("state.upg.to", ctx);
 	assert(vm.runInContext("needed_slots().has(2)", ctx), "project copy protected (not equipped/sent/banked mid-project)");
 	const ups49 = [];
