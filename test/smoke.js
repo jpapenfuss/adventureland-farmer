@@ -3143,11 +3143,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.npcs = { ...npcs0, transporter: { places: { main: 0, winter: 0 } } };
 		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]", ctx);
 		assert(vm.runInContext("map_hops('main', 'cave2') === 2 && map_hops('main', 'winter') === 1 && map_hops('main', 'island') === Infinity", ctx), "hops: doors (2 to cave2), the transporter (1 to winter), none (island)");
-		const B = "[0, 0, 10, 10]", inner = Math.hypot(5, 5) / 50 * 1.3;
+		// v24.16: walking distance as smart_move walks it (cave1's door to cave2 is at 5,5: one more 7px leg): door_px per door
+		const B = "[0, 0, 10, 10]", inner = Math.hypot(5, 5), DP = vm.runInContext("CFG.travel.door_px", ctx);
 		const t2 = vm.runInContext(`travel_s('cave2', ${B})`, ctx), t1 = vm.runInContext(`travel_s('cave1', ${B})`, ctx);
-		assert(Math.abs(t2 - (120 + inner)) < 1e-9 && Math.abs(t1 - (60 + inner)) < 1e-9, `walk estimate: 60s per map crossed (${t1}, ${t2})`);
+		assert(Math.abs(t1 - (DP + inner) / 50 * 1.3) < 1e-9 && Math.abs(t2 - (2 * DP + 2 * inner) / 50 * 1.3) < 1e-9, `walk estimate: distance + door_px per door, at our speed (${t1}, ${t2})`);
 		const wf = vm.runInContext(`walk_factor({ map: 'cave2', boundary: ${B} })`, ctx);
-		assert(Math.abs(wf - 1200 / (1200 + 120 + inner)) < 1e-9 && vm.runInContext(`walk_factor({ map: 'island', boundary: ${B} })`, ctx) === 0, `a 2-min walk costs 2/22 of a 20-min stay (${wf}); unreachable scores 0`);
+		assert(Math.abs(wf - 1200 / (1200 + t2)) < 1e-9 && vm.runInContext(`walk_factor({ map: 'island', boundary: ${B} })`, ctx) === 0, `the walk discounts the stay (${wf}); unreachable scores 0`);
+		const r = vm.runInContext("route_to('cave2', 5, 5)", ctx);
+		assert(r && JSON.stringify(r.maps) === '["cave1","cave2"]' && r.doors === 2, `route_to: the maps entered (${JSON.stringify(r)})`);
 		assert(/p\.score \*= walk_factor\(area\)/.test(src) && /state\.best_score = best \? best\.rate : 0/.test(src), "picks count the walk; the side-goal reference stays the rate there");
 		ctx.G.maps = maps0; ctx.G.npcs = npcs0; vm.runInContext("for (const k in hops_cache) delete hops_cache[k]", ctx);
 	}
@@ -3281,6 +3284,51 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("bag_plan().fetch.some((f) => f.key === 'dead:hpam126:2') && !bag_plan().fetch.some((f) => f.key === 'dead:hpam126:1')", ctx), "the bank's +2 comes out to be sold (not the +1, still compoundable)");
 		vm.runInContext("state.cmp_caps = {}; state.gear_skip = {}; state.bank_gear = []; state.fetched = {}; state.partners = {}; cmp_cache = null", ctx);
 		character.items = Array(42).fill(null); delete ctx.G.items.hpam126;
+	}
+	// 127) v24.16: routes as smart_move walks them; never stop a walk for what we can't take on; roamer deaths don't cool
+	// the spot; no keep-away mid-walk; no group wait under attack
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, map: "town", x: 0, y: 0, speed: 55, rip: false, hp: 4000, max_hp: 4000 });
+		const maps0 = ctx.G.maps, mons0 = ctx.G.monsters, dist0 = ctx.distance;
+		ctx.G.monsters = { ...mons0, rat127: { xp: 10, hp: 9200, attack: 320, speed: 12, charge: 86, aggro: 1 }, hawk127: { xp: 30000, hp: 32000, attack: 480, speed: 24, charge: 52, aggro: 1 } };
+		// by map hops the long way (town → hall → dest, 2) wins; by distance the cave way (town → rats → tube → dest, 3)
+		ctx.G.maps = { town: { doors: [[5000, 0, 10, 10, "hall", 0], [20, 0, 10, 10, "rats", 0], [10, 0, 10, 10, "camp", 0]], spawns: [[0, 0]], monsters: [] },
+			hall: { doors: [[0, 0, 10, 10, "dest", 0]], spawns: [[0, 0]], monsters: [] },
+			rats: { doors: [[30, 0, 10, 10, "tube", 0], [40, 0, 10, 10, "camp", 0]], spawns: [[0, 0]], monsters: [{ type: "rat127", count: 3, boundary: [100, 100, 200, 200] }] },
+			camp: { doors: [], spawns: [[0, 0]], monsters: [] }, far: { doors: [[0, 0, 10, 10, "rats", 0]], spawns: [[0, 0]], monsters: [] },
+			tube: { doors: [[30, 0, 10, 10, "dest", 0]], spawns: [[0, 0]], monsters: [] },
+			dest: { doors: [], spawns: [[0, 0]], monsters: [] } };
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); state.safe = {}; state.partners = {}", ctx);
+		assert(JSON.stringify(vm.runInContext("route_to('dest', 0, 0).maps", ctx)) === '["rats","tube","dest"]', "the route smart_move takes: the short way, through the rats");
+		assert(vm.runInContext("route_danger('dest')", ctx) === "rat127 @ rats", "...so the rats are on it (the hop count saw only the hall)");
+		// a member elsewhere: its own way counts too
+		vm.runInContext("CFG.party.split.enabled = false", ctx);
+		hb("Torlis", { ...tor, level: 60, map: "far", x: 0, y: 0 });
+		assert(vm.runInContext("route_danger('camp')", ctx) === null && /Torlis's way/.test(vm.runInContext("party_route_danger('camp') || ''", ctx)),
+			`camp: safe for us (its own door), but Torlis's only way there is through the rats (${vm.runInContext("party_route_danger('camp')", ctx)})`);
+		vm.runInContext("state.partners = {}", ctx);
+		ctx.G.maps = maps0; ctx.G.monsters = { ...mons0, hawk127: ctx.G.monsters.hawk127 };
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); for (const k in deadly_c) delete deadly_c[k]", ctx);
+		// a hawk (faster than us, can't take it) on us mid-walk: the walk goes on; standing, we fight back
+		Object.assign(character, { map: "main", x: 0, y: 0, speed: 50 });
+		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		ctx.parent.entities.h127 = { id: "h127", type: "monster", mtype: "hawk127", visible: true, x: 20, y: 0, target: "Sanala", hp: 32000, max_hp: 32000 };
+		const st = []; const st0 = ctx.stop; ctx.stop = (a) => st.push(a);
+		vm.runInContext("smart_depth = 1", ctx);
+		assert(vm.runInContext("break_walk_for(parent.entities.h127)", ctx) === false && !st.length, "walking: a hawk on us doesn't stop the walk (through the door, it's left behind)");
+		vm.runInContext("smart_depth = 0", ctx);
+		// the group doesn't stand and wait while it's on one of us
+		hb("Torlis", { ...tor, level: 60, map: "main", x: 3000, y: 0 });
+		assert(vm.runInContext("group_hold({ mtype: 'goo', map: 'main', boundary: [5000, 5000, 5100, 5100] }, false)", ctx) === null, "no group wait while something we can't take on is on one of us");
+		delete ctx.parent.entities.h127; ctx.stop = st0; ctx.distance = dist0; ctx.G.monsters = mons0;
+		vm.runInContext("state.partners = {}; state.group_wait = null", ctx);
+		// a roamer's kill doesn't cool the spot down
+		vm.runInContext(`state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.cooldown = {}; state.dead_handled = false; state.danger = {};
+			pmring.hits.push({ t: Date.now(), mtype: 'boar', dmg: 5000 }); G.monsters.boar = G.monsters.boar || { xp: 1, hp: 1, attack: 1 }; on_death(); pmring.hits.length = 0`, ctx);
+		assert(vm.runInContext("!state.cooldown['main:100,100,400,400'] && state.danger.boar < 1", ctx), "killed by a roamer (not the spot's monster): the roamer is blamed, the spot isn't cooled");
+		assert(/const lm = !walking\(\) && in_area \? looming\(\) : null/.test(src) && /length >= 4\) \{/.test(src), "keep-away only at the spot, not mid-walk; a spot cools after 4 episodes");
+		vm.runInContext("state.pack = null; state.cooldown = {}; state.danger = {}; state.dead_handled = false; state.safety_mult = 1", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 1000, max_hp: 1000 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
