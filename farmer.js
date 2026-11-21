@@ -1,4 +1,4 @@
-const VERSION = "24.36"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.37"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1854,7 +1854,7 @@ function choose_target(local_ok, keep_cur = false) {
 	const cur = get_targeted_monster();
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
-	let best = null, best_v = 0, best_tier = 2; // tier 0 = the pack's own monster, 1 = anything else
+	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
@@ -1867,7 +1867,11 @@ function choose_target(local_ok, keep_cur = false) {
 		// xp per second of effort (remaining fight + walk + 0.2s turnaround); the current target gets ×1.5 so we
 		// finish it instead of flipping between similar targets
 		const v = (e.xp || f.xp || 1) / (f.ttk * (e.hp / e.max_hp) + walk_s + 0.2) * (e === cur ? 1.5 : 1);
-		if ((tier < best_tier || v > best_v) && can_move_to(e)) (best = e), (best_v = v), (best_tier = tier);
+		// v24.37: a monster with no straight walking line (water, a ledge: level2s' cgoo pool) used to be skipped — with
+		// targets all around, the leader found "nothing" and patrolled. In reach already, or with a clear line: first
+		// choice; the others are taken when there's none of those (approach path-finds round to them).
+		const clear = distance(character, e) <= character.range || can_move_to(e);
+		if (tier < best_tier || (clear && !best_clear) || (clear === best_clear && v > best_v)) (best = e), (best_v = v), (best_tier = tier), (best_clear = clear);
 	}
 	return best;
 }
@@ -1917,8 +1921,18 @@ function approach(t) {
 	else if (can_move_to(t.x, t.y)) { approach_path = null; move_to(t.x, t.y, 400); } // only the standoff point is blocked: straight at it
 	// v24.32: a wall between us (a ledge above the monster's pool): walking straight at it ran us into the corner, where we
 	// stood for good. Path-find to it; break_walk_for leaves that walk alone until we can reach it or see a clear line.
-	else { approach_path = t.id; travel({ map: character.map, x: t.x, y: t.y }); }
+	else {
+		// v24.37: no way round within 10s (an island, the far bank): leave it alone for 2 min
+		const now = Date.now(), d = distance(character, t);
+		if (approach_try.id !== t.id || d < approach_try.d - 30) approach_try = { id: t.id, at: now, d };
+		else if (now - approach_try.at > 10_000) {
+			state.bad_ids[t.id] = now + 120_000; approach_path = null;
+			return void game_log(`can't get to that ${t.mtype}; leaving it for 2 min`, C.dim);
+		}
+		approach_path = t.id; travel({ map: character.map, x: t.x, y: t.y });
+	}
 }
+let approach_try = { id: null, at: 0, d: 0 };
 let approach_path = null; // id of the target we're path-finding around a wall to
 async function travel(dest) {
 	if (walking() || Date.now() < (state.travel_block_until || 0)) return;
@@ -5070,6 +5084,23 @@ function report_facts() {
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
 	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
+	// v24.37: why the monsters in view are or aren't targets (the spot's type): attackable, or skipped and why
+	if (p && !M_ && character.map === p.map) {
+		const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, unsafe: [], far: 0, taken: 0, ignored: 0, wall: 0 };
+		for (const id in parent.entities || {}) {
+			const e = parent.entities[id];
+			if (!e || e.type !== "monster" || e.mtype !== p.mtype || !e.visible || e.dead) continue;
+			if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
+			else if (e.target && !party.has(e.target)) c.taken++;
+			else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
+			else if (!live_ok(e)) c.unsafe.push(e.level || 1);
+			else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
+		}
+		const n = c.ok + c.unsafe.length + c.far + c.taken + c.ignored;
+		if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
+			`${c.unsafe.length ? `, ${c.unsafe.length} over the safety limit (levels ${c.unsafe.sort((x, y) => x - y).join(",")})` : ""}` +
+			`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
+	}
 	// v24.28: party town trips — the one on now, else the last (1h)
 	{
 		const P = state.ptown, L = state.ptown_last;
