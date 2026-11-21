@@ -1,4 +1,4 @@
-const VERSION = "24.53"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.54"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1290,6 +1290,9 @@ function probe_pick() {
 		each_area((pack, area) => {
 			if (pack.type !== mt || (!pack.grow && (expected_respawn(mt, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 			if ((state.cooldown[pack_key(area)] || 0) > now) return;
+			// v24.54: a probe spot gets the same checks as any other — no no-go neighbour, a safe way there. The probe
+			// picked cgoo@level2s, whose only way passes the ents: the tank stood in town repeating "deadly_route".
+			if (area_danger(area, mt) || party_route_danger(area.map)) return;
 			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
 			const raw = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
@@ -2094,6 +2097,14 @@ async function travel(dest) {
 		// failing (v24.4: it was blocked 5s too, standing idle after the kill and undoing the watchdog's reset)
 		if (!e || e.reason !== "interrupted") {
 			game_log("travel: " + why(e)); state.travel_block_until = Date.now() + 5000;
+			// v24.54: no safe way to our own camp — whoever chose it: rest it 30 min and pick again, don't stand and retry
+			const P_ = state.pack;
+			if (e?.reason === "deadly_route" && P_ && !is_follower() && dest?.map === P_.map) {
+				state.cooldown[pack_key(P_)] = Date.now() + 1_800_000;
+				if (state.probe?.mtype === P_.mtype) { skip("probe:" + P_.mtype, 6 * 3600_000, "no safe way there"); state.probe = null; }
+				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
+				state.pack = null; state.last_pick = 0;
+			}
 			// v24.8: an unreachable waypoint is skipped (it was retried forever, and each failure counted as activity, so
 			// the idle give-up never fired)
 			const W = state.waypoints, w = W.length ? W[state.wp % W.length] : null;
