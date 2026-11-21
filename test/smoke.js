@@ -782,6 +782,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("!state.errand && skipped('town:loop')", ctx), "7th run in 10 min refused, town paused");
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("!state.errand", ctx), "still paused on the next check");
+	{ // v24.92: the merchant isn't braked while its runs get work done
+		const nm = character.name, ct = character.ctype;
+		Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
+		vm.runInContext("state.errand = null; state.gear_skip = {}; state.town_runs = Array(6).fill(Date.now()); state.last_town = 0; state.last_town_did = 3", ctx);
+		vm.runInContext("town_check()", ctx);
+		assert(vm.runInContext("!skipped('town:loop')", ctx), "merchant: 6 runs in 10 min that each did work → no loop brake");
+		vm.runInContext("state.errand = null; state.gear_skip = {}; state.last_town_did = 0", ctx);
+		Object.assign(character, { name: nm, ctype: ct });
+	}
 	ctx.quantity = () => 100;
 
 	// 43) gold balance: Aspernari 13,191,492 vs Torlis 299,409 → Aspernari sends 15% (1,978,723) once; then 3h lockout both ways

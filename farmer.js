@@ -1,4 +1,4 @@
-const VERSION = "24.91"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.92"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -159,7 +159,8 @@ const CFG = {
 	upgrade_weapon: { enabled: true, to: 7 },
 	upgrade_spend: 0.2,        // a project may cost at most 20% of the gold above gold_reserve (estimate without failures)
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
-	upgrade_steps_per_run: 8,  // upgrade steps per town run
+	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)
+	merchant_upgrade_steps: 60, // v24.92: the merchant's — it lives in town; 8 a run made it start a run every minute
 	// High upgrades: weapon-slot projects may go past the scroll0/1 levels with scroll2 (1.6M each), up to max_level.
 	// A failure destroys the copy, so each such step needs the server's preview >= min_chance (a Primling offering in
 	// the bags is used when it lifts the odds over it), and a project may cost at most spend of the party's spare gold.
@@ -3512,7 +3513,7 @@ function upgrade_due() {
 }
 async function task_upgrade() {
 	let n = 0;
-	for (let i = 0; i < CFG.upgrade_steps_per_run; i++) {
+	for (let i = 0; i < (is_merchant() ? CFG.merchant_upgrade_steps : CFG.upgrade_steps_per_run); i++) {
 		if (state.errand) state.errand_at = Date.now();
 		if (upg_drop_if_stale()) break; // v24.91: something better is worn now
 		const P = state.upg;
@@ -5040,6 +5041,7 @@ async function town_body(due) {
 		// ...or a set piece to upgrade (v24.69)
 		if (!skipped("town:upgrade") && upgrade_due()) did += await bag_step("upgrade", task_upgrade);
 		state.last_pick = 0; // re-evaluate where to fight
+		state.last_town_did = did; // v24.92: the loop brake spares a merchant whose runs get work done
 		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000), trig: state.town_trig || "?", v: VERSION });
 		return did;
 	}
@@ -5256,7 +5258,8 @@ function town_check() {
 	}
 	// Loop brake: more than 6 runs in 10 minutes means something keeps coming back due — pause non-critical runs
 	state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
-	if (state.town_runs.length >= 6 && !critical) {
+	// (v24.92: not the merchant while its runs get work done — 6 runs of upgrades in 10 min paused it 15 min, idle with 12M)
+	if (state.town_runs.length >= 6 && !critical && !(is_merchant() && (state.last_town_did || 0) > 0)) {
 		if (!skipped("town:loop")) {
 			skip("town:loop", 900_000, `${state.town_runs.length} runs in 10 min; last due: ${what.join("+")}`);
 			game_log(`Town: ${state.town_runs.length} trips in 10 min (${what.join("+")} keeps coming back) — pausing town trips 15 min. Send report().`, C.bad);
