@@ -3213,6 +3213,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/split: \{ enabled: false,/.test(src) && /group: \{ enabled: true, radius: 450/.test(src), "v24.11 defaults: together, group travel on");
 		Object.assign(character, { x: 0, y: 0 });
 	}
+	// 124) v24.13: the xp multiplier and its breakdown (report, heartbeat, party header)
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, xpm: 1.26, slots: { amulet: { name: "xamulet124", level: 0 } } });
+		ctx.G.items.xamulet124 = { type: "amulet", xp: 10 };
+		const gp0 = ctx.get_party; ctx.get_party = () => ({ Sanala: {}, Torlis: {}, Aspernari: {} });
+		assert(vm.runInContext("xp_mult_text()", ctx) === "xp multiplier x1.26 = 100% + gear 10% + party 16%", vm.runInContext("xp_mult_text()", ctx));
+		character.xpm = 1.36;
+		assert(/\+ other 10%$/.test(vm.runInContext("xp_mult_text()", ctx)), "what's left is shown as other");
+		const sent124 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent124.push(m); return Promise.resolve(); };
+		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
+		assert(sent124.some((m) => m.k === "hb" && m.xpm === 1.36), "the heartbeat carries it");
+		ctx.get_party = gp0; delete character.xpm; character.slots = {}; delete ctx.G.items.xamulet124;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

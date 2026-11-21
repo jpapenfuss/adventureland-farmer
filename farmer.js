@@ -1,4 +1,4 @@
-const VERSION = "24.12"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.13"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -4223,6 +4223,7 @@ function report_facts() {
 		const held_for = character.items.map((it) => { const m = it && takers.find((x) => gear_gain(it, x.ctype, x.g)); return m && `${it.name}→${m.name}`; }).filter(Boolean);
 		const fr = (u) => { const r = state.fetch_res[u.key], t = state.fetch_try[u.key]; return r ? ` (fetch ${ago(r.at)} ago: ${r.ok ? "ok" : r.why})` : t ? ` (tried ${ago(t)} ago)` : ""; };
 		const locked = owns, bu = bank_upgrades().map((u) => u.name + "+" + u.level + fr(u));
+		F("xpm", "self", xp_mult_text());
 		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide working on ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
 	}
 	{
@@ -4523,7 +4524,7 @@ function party_header_lines() {
 	const out = [], me_f = in_party_cfg();
 	const fighters = [...(me_f ? [{ name: character.name, ctype: character.ctype, level: character.level, map: character.map, errand: errand_busy() ? state.errand : null,
 		rip: !!character.rip, gold: character.gold, hunt: character.s?.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
-		h1: last_hour(), rates: rates(), pack: state.pack ? { mtype: state.pack.mtype, map: state.pack.map, directive: state.pack.directive } : null }] : []),
+		h1: last_hour(), rates: rates(), xpm: xp_mult(), pack: state.pack ? { mtype: state.pack.mtype, map: state.pack.map, directive: state.pack.directive } : null }] : []),
 		...partners_any()].sort((a, b) => (a.name < b.name ? -1 : 1));
 	if (!fighters.length) return out;
 	out.push(`roster: ${fighters.map((f) => `${f.name} ${f.ctype} ${f.level} @${f.map}${f.errand ? " (" + f.errand + ")" : ""}${f.rip ? " DEAD" : ""}`).join(" | ")}`);
@@ -4547,7 +4548,7 @@ function party_header_lines() {
 	const hunts = {};
 	for (const f of fighters) if (f.hunt?.c > 0) (hunts[`${f.hunt.id}`] = hunts[f.hunt.id] || []).push(`${f.name} ${f.hunt.c}`);
 	if (Object.keys(hunts).length) out.push(`hunts: ${Object.entries(hunts).map(([id, xs]) => `${id} (${xs.join(", ")})`).join(" | ")}`);
-	out.push(`last hour: ${fighters.map((f) => `${f.name} ${f.h1 ? `${f.h1.dead}d/${f.h1.fled}f/${f.h1.town}town` : "?"}${f.rates ? ` ${fmt_k(f.rates.xph)}xp/h` : ""}`).join(" | ")}`);
+	out.push(`last hour: ${fighters.map((f) => `${f.name} ${f.h1 ? `${f.h1.dead}d/${f.h1.fled}f/${f.h1.town}town` : "?"}${f.rates ? ` ${fmt_k(f.rates.xph)}xp/h` : ""}${f.xpm ? ` (x${(+f.xpm).toFixed(2)})` : ""}`).join(" | ")}`);
 	const S_ = parent.S || {}, live = Object.keys(S_).filter((k) => S_[k]?.live === true && G.monsters[k]);
 	if (live.length) out.push(`bosses: ${live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ")}`);
 	const lack = [...fighters.map((f) => [f.name, f.name === character.name ? hold_missing() : f.need]), ...(M ? [[M.name, M.name === character.name ? hold_missing() : M.need]] : [])]
@@ -4691,6 +4692,18 @@ function calp_share() {
 	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= 20) o[k.slice(0, -2)] = +state.calib[k].ratio.toFixed(3);
 	return o;
 }
+// v24.13: the server's xp multiplier (1 + gear/party/other xp% / 100): party kill xp is split equally among an account's
+// characters, so a member earning less in the same fights has a lower one. Breakdown: worn gear's xp, the party bonus.
+const xp_mult = () => (Number.isFinite(character.xpm) ? +character.xpm.toFixed(3) : null);
+function xp_mult_text() {
+	const m = xp_mult();
+	if (m === null) return "xp multiplier: not reported by the client";
+	let gear = 0;
+	for (const s of GEAR_SLOTS) { const it = character.slots?.[s]; if (it) gear += item_props(it, character.ctype).xp || 0; }
+	const pn = Object.keys(get_party() || {}).filter((n) => n !== CFG.merchant?.name).length, party = [0, 0, 10, 16, 20, 24, 25, 30, 36, 40][pn] || 0;
+	const other = Math.round(m * 100 - 100 - gear - party);
+	return `xp multiplier x${m.toFixed(2)} = 100% + gear ${Math.round(gear)}% + party ${party}%${other ? ` + other ${other}%` : ""}`;
+}
 // ---- Group travel (CFG.party.group, v24.11) ----
 // Leader, together: the members we should wait for, as text — or null to go on (nothing to wait for, or waited enough)
 function group_hold(pack, here) {
@@ -4793,7 +4806,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, xpm: xp_mult(), follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
