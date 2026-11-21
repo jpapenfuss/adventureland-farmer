@@ -21,10 +21,10 @@ In the code as of v24.50:
 - Off by default: travel gear, spread targets. Removed: the "can the rest keep farming" town judgement.
 
 **Plan approved 2026-11-21** (four stages; the full text is in the session's plan file):
-- [x] Stage 1 (v24.51): one party or nothing. A member offline or dead, or us under `flee_hp` with a monster on
-  us → the suicide command (`harakiri`: no XP loss; respawn in main town after 12 s) in the field, wait in town.
-  **Corrected in v24.52: low HP is not a trigger — only a member being dead or offline is.**
-  No fleeing for party fighters. Without a live tank nobody starts a fight. A suicide blames no camp.
+- [x] Stage 1 (v24.51, corrected v24.52 and v24.56): one party or nothing. **If a party member dies, the others
+  use the suicide command** (`harakiri`) and the party is together again at the respawn in town. That is the only
+  reason anyone suicides — not low HP, not "trouble", not a member being offline (then: walk to town and wait).
+  Without a live tank nobody starts a fight. A suicide blames no camp.
 - [x] Stage 2 (v24.53): deleted the solo and split code (split mode, A/B, `duo_check`, `hold_grind`, spread, convoy, solo
   judging in the fight model, leadership other than the tank).
 - [ ] Stage 3: followers execute orders; only the tank runs `town_check`, picks targets and camps.

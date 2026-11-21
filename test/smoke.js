@@ -3626,7 +3626,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a member offline: all three or nothing
 		Object.assign(character, { map: "desertland", x: 400, y: -1400 });
 		R("state.partners.Aspernari.t = Date.now() - 60_000");
-		assert(R("/Aspernari offline/.test(party_break())") && R("party_break_tick()") === true && emits.join() === "harakiri", "a member offline: back to town by suicide, and wait");
+		{ const tv = []; R("globalThis.__tv144 = travel; travel = (d) => { globalThis.__tvd144 = d; }; globalThis.__tvd144 = null");
+			assert(R("/Aspernari offline/.test(party_break())") && R("party_break_tick()") === true && emits.length === 0 && R("__tvd144 && __tvd144.map") === "main", "v24.56: a member offline: walk to town and wait — no suicide (only a death causes one)");
+			R("travel = __tv144"); }
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 }); hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400 });
 		// about to die: suicide is free, dying to the monster isn't
 		emits.length = 0; R("suicide_at = 0"); character.hp = 500;
@@ -3680,6 +3682,43 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.calib = {}; load_state()");
 		assert(Math.abs(R("calib_factor('goo')") - 0.5) < 1e-9 && R("calib_key('goo')") === "goo@p", `saved party calibration ("goo@p") still applies; the old solo entry isn't read (${R("calib_factor('goo')")})`);
 		ctx.get = gs; R("state.calib = {}; state.partners = {}");
+	}
+	// 146) v24.56: a follower never goes for an untouched monster; the tank clears levelled-up monsters of its camp
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const ents = ctx.parent.entities, atk = ctx.attack, gp = ctx.get_party, mv0 = ctx.move, hits = [], steps = [];
+		ctx.attack = (e) => (hits.push(e.id), Promise.resolve()); ctx.move = (x, y) => steps.push([x, y]);
+		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y); ctx.get_party = () => ({ Torlis: {}, Sanala: {}, Aspernari: {} });
+		ctx.G.monsters.poi146 = { xp: 100, hp: 500, attack: 20, frequency: 1, range: 20, speed: 10, respawn: 10, armor: 0, resistance: 0, aggro: 0, damage_type: "physical" };
+		const mk = (id, x, lv, tg) => ({ id, type: "monster", mtype: "poi146", visible: true, dead: false, hp: 500 * lv, max_hp: 500 * lv, attack: 20 * lv * lv * lv, level: lv, x, y: 0, target: tg || null, xp: 100 });
+		R("CFG.party.tank_first = true; state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; inflight.attack = false; live_cache.clear(); state.fsafe_at = 0; state.bad_ids = {}; for (const k in hopeless_c) delete hopeless_c[k]");
+		// Sanala (follower): five untouched monsters around, the tank has no target → she stays put and attacks nothing
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 53, map: "main", x: 0, y: 0, rip: false, hp: 3650, max_hp: 3650, range: 150, attack: 600, frequency: 1.2, moving: false });
+		const pk = { mtype: "poi146", map: "main", boundary: [-300, -300, 300, 300] };
+		hb("Torlis", { ...tor, ctype: "paladin", level: 53, map: "main", x: 40, y: 0, hp: 6500, max_hp: 6500, armor: 500, resistance: 250, attack: 380, frequency: 0.9, target: null, pack: pk });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 20, y: 30, hp: 5270, max_hp: 5270, attack: 300, frequency: 0.8 });
+		ctx.parent.entities = { a: mk("a", 250, 1), b: mk("b", 260, 1) };
+		R("follower_tick()");
+		assert(hits.length === 0 && steps.length === 0 && R("approach_path === null"), `follower with only untouched monsters about: no approach, no attack (${JSON.stringify([hits, steps])})`);
+		ctx.parent.entities.a.target = "Torlis"; R("inflight.attack = false; last_move = 0");
+		R("follower_tick()");
+		assert(hits.join() === "a" || steps.length > 0, `once a monster is on the tank, the follower goes for it (${JSON.stringify([hits, steps])})`);
+		// Torlis (tank) at a camp where everything has levelled up: lowest level first, as a last resort
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 53, map: "main", x: 0, y: 0, rip: false, hp: 6500, max_hp: 6500, range: 30, attack: 380, frequency: 0.9, armor: 500, resistance: 250 });
+		R("state.partners = {}; live_cache.clear(); state.pack = { mtype: 'poi146', map: 'main', boundary: [-300, -300, 300, 300] }; pick_pack_safe146 = (state.safe.poi146 = { ttk: 3, xp: 100 })");
+		hb("Sanala", { ...san, ctype: "mage", level: 53, map: "main", x: 10, y: 0, hp: 3650, max_hp: 3650, attack: 600, frequency: 1.2, damage_type: "magical" });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: -10, y: 0, hp: 5270, max_hp: 5270, attack: 300, frequency: 0.8, damage_type: "magical" });
+		ctx.parent.entities = { n9: mk("n9", 60, 9), n8: mk("n8", 200, 8), o9: { ...mk("o9", 30, 9), mtype: "goo" } };
+		assert(R("!live_ok(parent.entities.n9) && !live_ok(parent.entities.n8)"), "setup: both levelled monsters fail the per-monster check");
+		assert(R("choose_target(true).id") === "n8", `nothing passes: the tank takes the lowest-level one of its camp's type (${R("choose_target(true)?.id")})`);
+		ctx.parent.entities.ok1 = mk("ok1", 250, 1);
+		R("live_cache.clear()");
+		assert(R("choose_target(true).id") === "ok1", "a monster that passes is there: that one first");
+		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n9; delete ctx.parent.entities.n8; R("live_cache.clear()");
+		assert(R("choose_target(true)") === null, "a levelled monster of another type is never taken this way");
+		ctx.attack = atk; ctx.move = mv0; ctx.get_party = gp; ctx.parent.entities = ents; ctx.distance = () => 0; delete ctx.G.monsters.poi146;
+		R("state.partners = {}; state.pack = null; delete state.safe.poi146; CFG.party.tank_first = false; live_cache.clear()");
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });
 	}
 	all_done = true;
 	console.log("ALL PASS");

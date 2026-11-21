@@ -1,4 +1,4 @@
-const VERSION = "24.55"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.56"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -757,14 +757,21 @@ function party_break() {
 	const dead = partners_any().filter((q) => q.rip).map((q) => q.name);
 	return dead.length ? `${dead.join(", ")} dead` : null;
 }
-// Run each tick while alive (fighters): true = the party is broken and this tick is spent on it. In the field: suicide.
+// Run each tick while alive (fighters): true = the party is broken and this tick is spent on it. In the field: a member
+// dead → suicide (the only reason there is); a member offline → walk to town.
 // In town: stand and wait (a town errand in progress carries on). The first 30s after loading are a grace period:
 // the others' heartbeats haven't arrived yet.
 function party_break_tick() {
 	if (is_merchant() || !in_party_cfg() || Date.now() - seen.since < 30_000) return false;
 	const why_ = party_break();
 	if (!why_) return false;
-	if (!in_town()) { suicide(why_); return true; }
+	// v24.56: ONLY a member's death sends the others by suicide. A member offline: walk to town and wait there.
+	const dead = partners_any().some((q) => q.rip);
+	if (!in_town()) {
+		if (dead) suicide(why_);
+		else if (!errand_busy()) { travel_as("party_break", dest_point("main")); set_message(`to town: ${why_}`); }
+		return true;
+	}
 	if (errand_busy()) return false;
 	if (walking()) halt("party_break");
 	const a = hit_on_me(); // town is safe, but never just stand and be hit
@@ -2013,11 +2020,17 @@ function choose_target(local_ok, keep_cur = false) {
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
+	let grown = null; // v24.56: the camp's own type, over the per-monster limit (levelled up): the last resort
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
 		const f = live_ok(e);
-		if (!f) continue;
+		if (!f) {
+			// lowest level first, then nearest; never one the party couldn't kill at all
+			if (e.mtype === want && !hopeless(e) && (!grown || (e.level || 1) < (grown.level || 1) ||
+				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
+			continue;
+		}
 		const tier = e.mtype === want ? 0 : 1;
 		if (tier === 1 && f.ttk * (e.hp / e.max_hp) > CFG.max_ttk_s) continue;
 		if (tier > best_tier) continue;
@@ -2031,7 +2044,10 @@ function choose_target(local_ok, keep_cur = false) {
 		const clear = distance(character, e) <= character.range || can_move_to(e);
 		if (tier < best_tier || (clear && !best_clear) || (clear === best_clear && v > best_v)) (best = e), (best_v = v), (best_tier = tier), (best_clear = clear);
 	}
-	return best;
+	// v24.56 (owner): a camp whose monsters have all levelled up past the limit isn't stood at — the tank works them
+	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
+	// Torlis stood among five level 8-9 poisio, "0 attackable".)
+	return best || grown;
 }
 // A target that loses no HP for 8s in range is ignored for 5 min (immune, healing, invulnerable)
 function watch_progress(t) {
@@ -5263,7 +5279,7 @@ function report_facts() {
 		}
 		const n = c.ok + c.unsafe.length + c.far + c.taken + c.ignored;
 		if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
-			`${c.unsafe.length ? `, ${c.unsafe.length} over the safety limit (levels ${c.unsafe.sort((x, y) => x - y).join(",")})` : ""}` +
+			`${c.unsafe.length ? `, ${c.unsafe.length} levelled up past the limit — the tank takes them, lowest first, when nothing else is there (levels ${c.unsafe.sort((x, y) => x - y).join(",")})` : ""}` +
 			`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 	}
 	// v24.28: party town trips — the one on now, else the last (1h)
@@ -6447,7 +6463,13 @@ function follower_tick() {
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// v24.8: what's hitting us first, always; then assist the tank (the leader)
-	const t = hit_on_me() || caller_target() || leader_t || choose_target(false) || follower_pick(pos);
+	// v24.56: a follower only goes for what already targets the party. It used to pick its own monster of the camp's
+	// type (follower_pick) and walk up to it; fire() then refused the attack (only the tank starts a fight), so it stood
+	// next to untanked monsters — Sanala, 150px from the tank, beside five level 8-9 poisio. follower_pick is still
+	// called for what it keeps up to date (state.safe: which type the party can take), not for its pick.
+	follower_pick(pos);
+	let t = hit_on_me() || caller_target() || leader_t || choose_target(false);
+	if (t && !t.target) t = null;
 	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
