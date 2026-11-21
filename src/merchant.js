@@ -555,3 +555,23 @@ function merchant_tick() {
 // else (dungeon keys, licences, cosmetics, quest items, tomes, flutes, containers...) is only ever kept or banked.
 const TRADE_TYPES = new Set(["material", "gem"]);
 const tradeable = (name) => { const d = G.items[name]; return !!d && (GEAR.has(d.type) || TRADE_TYPES.has(d.type)) && !recipe_input(name); };
+// ---- report() sections of the merchant (v24.96): called from report_facts in order; c = { p: state.pack, d: state.directive, now } ----
+function facts_merchant(F, ctx) {
+	const { p, d, now } = ctx;
+	const f = merchant_job(), D = CFG.merchant.donate;
+	if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
+	const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[purge_key(i)]).length;
+	if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? (CFG.sell_junk ? " — purging low-value items" : " — nearly full; nothing is sold (sell_junk off)") : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+	// v24.68: everything in the bank (as last seen) and in the merchant's bags, as JSON: "name+level" → count, * = locked
+	F("bank_json", "self", state.bank_dump ? `bank JSON (seen ${ago(state.bank_at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""}): ${JSON.stringify(state.bank_dump)}`
+		: "bank JSON: nothing recorded yet — it's taken on the next bank visit by any character");
+	F("bags_json", "self", `bags JSON: ${JSON.stringify(items_dump(character.items))}`);
+	if (merrit_on()) {
+		const sp = state.mspot, st = state.stand_since ? Math.round((now - state.stand_since) / 1000) : 0;
+		const got = hist.ev.filter((e) => e.type === "parcel" && now - e.t < 86_400_000).reduce((a, e) => a + (e.n || 1), 0);
+		F("merrit", "self", `merrit: ${sp ? `spot ${sp.x},${sp.y} (${in_rect(sp.x, sp.y, CFG.merchant.merrit.square) ? "square" : "aisle"})` : "no qualifying spot"} | ${character.stand ? `stand still ${Math.floor(st / 60)}m${st % 60}s${st >= 120 ? " — ready for her" : ""}` : "stand closed"} | parcels 24h: ${got}${state.parcel_at ? `, last ${ago(state.parcel_at)} ago` : ""}${parcel_count() ? ` | holding ${parcel_count()}` : ""}`);
+	}
+	const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && now - e.t < 86_400_000);
+	F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
+	F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
+}
