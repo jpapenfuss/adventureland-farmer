@@ -27,9 +27,15 @@ const good = `const VERSION = "9.9";\n` + "// pad\n".repeat(3000);
 	const SHA = "3f57324" + "a".repeat(33), urls = [];
 	s = sandbox(async (u, o) => { urls.push([u, o && o.headers]); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA + "\n" } : { ok: true, text: async () => good }; });
 	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
-	assert(urls.length === 2 && /repos\/jpapenfuss\/adventureland-farmer\/commits\/master$/.test(urls[0][0]) && urls[0][1].Accept === "application/vnd.github.sha"
-		&& urls[1][0] === `https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/farmer.js`, `the file at the newest commit is fetched (${urls.map((x) => x[0]).join(", ")})`);
-	assert(s.ctx.window.farmer_loaded.sha === SHA && JSON.parse(s.store.farmer_code).sha === SHA && s.logs.some((l) => /farmer v9\.9 @3f57324 loaded from GitHub$/.test(l)), "the commit is logged, passed on and cached");
+	assert(/repos\/jpapenfuss\/adventureland-farmer\/commits\/master$/.test(urls[0][0]) && urls[0][1].Accept === "application/vnd.github.sha"
+		&& urls.length === 4 && ["common", "fighter", "main"].every((f, i) => urls[i + 1][0] === `https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/src/${f}.js`), `v3: the role's src/ files at the newest commit are fetched (${urls.map((x) => x[0]).join(", ")})`);
+	assert(s.ctx.window.farmer_loaded.sha === SHA && JSON.parse(s.store.farmer_code).sha === SHA && s.logs.some((l) => /farmer v9\.9 @3f57324 loaded from GitHub \(src: common \+ fighter \+ main\)$/.test(l)), "the commit is logged, passed on and cached");
+	// 1b2) v3: the merchant fetches merchant.js; a commit without src/ falls back to farmer.js at that commit
+	{ const u2 = []; s = sandbox(async (u) => { u2.push(u); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA } : /\/src\//.test(u) ? { ok: false, status: 404 } : { ok: true, text: async () => good }; });
+		s.ctx.character = { ctype: "merchant" };
+		vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
+		assert(u2.some((x) => /src\/merchant\.js$/.test(x)) && !u2.some((x) => /src\/fighter\.js$/.test(x)) && u2.includes(`https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/farmer.js`)
+			&& s.ran.length === 1 && s.ctx.window.farmer_loaded.sha === SHA, `v3: the merchant asks for merchant.js; no src/ at the commit → farmer.js at the commit (${u2.join(", ")})`); }
 	// 1c) API refused (rate limit) → branch copy, said so
 	s = sandbox(async (u) => (/api\.github\.com/.test(u) ? { ok: false, status: 403 } : { ok: true, text: async () => good }));
 	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
