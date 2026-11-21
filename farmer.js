@@ -1,4 +1,4 @@
-const VERSION = "24.20"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.21"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -168,7 +168,8 @@ const CFG = {
 	// v24.20: bigger game panels. log_*: the game log (#gamelog; drag its corner to resize — the size is remembered);
 	// status_*: the code runner's box under CODE (our set_message text; the game draws it 128x60 with no drag handle).
 	// ui(w, h, font) in the console sets the log's size and font.
-	ui: { enabled: true, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14 },
+	// v24.21: off — enlarging the log in place pushed it under the DOCS panel and moved the tutorial/level bars
+	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14 },
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
 	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
@@ -4398,7 +4399,11 @@ quiet_logs();
 // A size dragged with the log's handle is saved (shared by every character in this browser) and reapplied on reload.
 function apply_ui() {
 	const U = CFG.ui;
-	if (!U?.enabled || typeof parent === "undefined" || !parent.document) return false;
+	if (typeof parent === "undefined" || !parent.document) return false;
+	if (!U?.enabled) { // v24.21: take back the rule an earlier version left in the game page (it lasts until the page reloads)
+		try { const st = parent.document.getElementById("farmer-ui"); if (st && st.parentNode) st.parentNode.removeChild(st); } catch (e) {}
+		return false;
+	}
 	try {
 		const pd = parent.document, saved = (typeof get === "function" && get("farmer_ui")) || {};
 		let st = pd.getElementById("farmer-ui");
@@ -4429,7 +4434,7 @@ function apply_ui() {
 		return true;
 	} catch (e) { return false; } // another origin, or no such panel: leave the game's own layout
 }
-// Console: ui(560, 360, 15) — the log's width, height and font size (saved); ui() — back to CFG.ui
+// Console: ui(560, 360, 15) — the log's width, height and font size (saved); ui() — back to CFG.ui. Needs CFG.ui.enabled.
 function ui(w, h, font) {
 	const cur = (typeof get === "function" && get("farmer_ui")) || {};
 	const next = w === undefined ? {} : { ...cur, log_w: w || cur.log_w, log_h: h || cur.log_h, log_font: font || cur.log_font };

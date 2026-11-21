@@ -3413,6 +3413,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		els.gamelog = mk("gamelog");
 		ctx.parent.document = { getElementById: (id) => els[id] || null, createElement: () => mk(""), head: { appendChild: (e) => (els[e.id || "farmer-ui"] = e) } };
 		const store131 = {}, sg = [ctx.set, ctx.get];
+		// v24.21: off by default — and an earlier version's rule is taken out of the page
+		els["farmer-ui"] = { id: "farmer-ui", textContent: "#gamelog{}", parentNode: { removeChild: (e) => delete els[e.id] } };
+		assert(vm.runInContext("CFG.ui.enabled === false && apply_ui() === false", ctx) && !els["farmer-ui"], "ui off by default: the old style rule is removed from the game page");
+		vm.runInContext("CFG.ui.enabled = true", ctx);
 		ctx.set = (k, v) => ((store131[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in store131 ? JSON.parse(store131[k]) : null);
 		assert(vm.runInContext("apply_ui()", ctx) === true && /#gamelog\{width:560px !important;height:360px/.test(els["farmer-ui"]?.textContent || "") && /resize:both/.test(els["farmer-ui"].textContent),
 			`the log gets CFG.ui's size, font and a resize handle (${els["farmer-ui"] && els["farmer-ui"].textContent.slice(0, 80)})`);
@@ -3420,6 +3424,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/width:700px !important;height:450px[^}]*font-size:17px/.test(els["farmer-ui"].textContent) && JSON.parse(store131.farmer_ui).log_w === 700, "ui(700, 450, 17): applied and saved");
 		vm.runInContext("ui()", ctx);
 		assert(/width:560px/.test(els["farmer-ui"].textContent), "ui(): back to CFG.ui");
+		vm.runInContext("CFG.ui.enabled = false", ctx);
 		[ctx.set, ctx.get] = sg; ctx.parent.document = pd0;
 		assert(vm.runInContext("map_ok('jail') === false", ctx) && /if \(!\(p\.score > 0\)\) return;/.test(src), "jail is never a pick, nor a spot with no way there");
 	}
