@@ -1,4 +1,4 @@
-const VERSION = "24.43"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.44"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -11,6 +11,7 @@ const CFG = {
 	kite_slack: 4,             // a mob we can kite still counts 1/kite_slack of its damage: kiting isn't perfect
 	                           //   (other mobs, walls, missed steps), so it lowers the risk 4x rather than to zero
 	max_ttk_s: 20,             // a monster that isn't the pack's type is only attacked if it dies within this many s
+	hopeless_ttk_s: 180,       // v24.44: a monster the party couldn't kill in 3 min is never attacked at all (ents)
 	                           //   (long fights block the pack's respawns and hunt progress)
 	max_respawn: 120,          // s; packs whose monster respawns slower than this aren't farmed (too much idle time)
 	min_count: 3,              // packs with fewer monsters than this aren't farmed, unless they "grow" (refill instantly)
@@ -1899,7 +1900,23 @@ setInterval(() => {
 // replies, so firing again before that would waste calls. Cleared 100ms after the reply (cooldown display lag),
 // or after 3s if the reply never comes.
 const inflight = {};
+// v24.44: a monster the whole party couldn't kill in hopeless_ttk_s (an ent: 8M HP) is never attacked — not in
+// self-defence, not because it's on a partner, not by any skill. Every attack and skill goes through fire(), so the rule
+// lives here and nowhere else. Hitting it gains nothing and keeps us there.
+const hopeless_c = {};
+let boss_type = null; // the boss boss_tick is on (a long fight the party chose)
+function hopeless(t) {
+	// not what we came for (the spot's own type, a boss), nor an event monster everyone hits together (cooperative)
+	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || state.pack?.mtype === t.mtype || boss_type === t.mtype || G.monsters[t.mtype].cooperative) return false;
+	const c = hopeless_c[t.mtype], now = Date.now();
+	if (c && now - c.at < 30_000) return c.v;
+	const f = fight_math(G.monsters[t.mtype], true, solo_now() ? true : in_party_cfg() ? "party" : false);
+	const v = !f || f.ttk > CFG.hopeless_ttk_s;
+	hopeless_c[t.mtype] = { at: now, v };
+	return v;
+}
 function fire(skill, target, extra) {
+	if (hopeless(target)) return false;
 	const key = G.skills[skill]?.share || skill;
 	if (inflight[key] || is_on_cooldown(skill)) return false;
 	const reserve = skill === "attack" ? RESERVE.attack : skill.startsWith("use_") || skill.startsWith("regen_") ? RESERVE.potion : RESERVE.skill;
@@ -1946,7 +1963,7 @@ function choose_target(local_ok, keep_cur = false) {
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (e.type !== "monster" || !e.visible || e.dead || !e.target || !party.has(e.target)) continue;
-		if ((state.bad_ids[e.id] || 0) > Date.now()) continue;
+		if ((state.bad_ids[e.id] || 0) > Date.now() || hopeless(e)) continue; // v24.44: nothing to gain from an ent
 		const d = distance(character, e) - (e.target === character.name ? 10_000 : 0); // ours always before a partner's
 		if (d < hd) (hd = d), (hitting = e);
 	}
@@ -3975,6 +3992,7 @@ function boss_directive() {
 }
 // Leader/solo at a boss pack: fight it when in view, else walk to its last reported position
 function boss_tick(pack) {
+	boss_type = pack?.mtype || null;
 	const e = Object.values(parent.entities || {}).find((x) => x.type === "monster" && x.mtype === pack.mtype && x.visible && !x.dead);
 	// v24.4: something else hitting us on the way (or while we wait for the party) gets fought; we used to walk or stand
 	// there taking hits until flee HP

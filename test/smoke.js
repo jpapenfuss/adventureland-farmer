@@ -3832,6 +3832,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(tried.length === 0, "already within reach of it: no walk");
 		ctx.smart_move = sm; Object.assign(character, { map: "main", x: 0, y: 0 });
 	}
+	// 143) v24.44: a monster the party can't kill (an ent) is never attacked or targeted — on us, on a partner, by any skill
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const atk = ctx.attack, ents = ctx.parent.entities, hits = [];
+		ctx.attack = (e) => (hits.push(e.id), Promise.resolve());
+		ctx.G.monsters.ent143 = { hp: 8_000_000, attack: 3600, frequency: 1.2, aggro: 0.2, damage_type: "physical", xp: 1, speed: 12, charge: 48, range: 64, respawn: 10, abilities: { mtangle: {} } };
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 3650, max_hp: 3650, attack: 900, frequency: 1.5, range: 150, speed: 52 });
+		R("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [-200, -200, 200, 200] }; state.bad_ids = {}; inflight.attack = false; for (const k in hopeless_c) delete hopeless_c[k]; boss_type = null");
+		const e = { id: "t143", type: "monster", mtype: "ent143", visible: true, dead: false, hp: 8_000_000, max_hp: 8_000_000, x: 30, y: 0, target: "Sanala" };
+		ctx.parent.entities = { t143: e };
+		assert(R("hopeless(parent.entities.t143)") === true && R("chase_speed('ent143')") === Infinity, "an ent: hopeless, and (it tangles) not to be outrun");
+		assert(R("fire('attack', parent.entities.t143)") === false && hits.length === 0, "no attack on it, even with it on us");
+		assert(R("choose_target(true)") === null, "nor is it a target (it would only hold us there)");
+		e.target = "Torlis";
+		assert(R("choose_target(true)") === null, "nor when it's on a partner");
+		R("state.pack = null; for (const k in hopeless_c) delete hopeless_c[k]");
+		ctx.attack = atk; ctx.parent.entities = ents; delete ctx.G.monsters.ent143;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
