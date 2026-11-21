@@ -3658,6 +3658,94 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.slots = {}; character.items = Array(42).fill(null);
 		R("state.travel_off = []; my_gear_cache = null; travel_restored_at = 0");
 	}
+	// 138) v24.28: party town trips — the others go too when they'd only stand around; all wait, then walk back together
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const scm = ctx.send_cm, ents = ctx.parent.entities, cms = [];
+		ctx.send_cm = (to, m) => (cms.push([to.join(), m.k, m.id, m.by]), Promise.resolve());
+		ctx.parent.entities = {};
+		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; CFG.party.town_together = 'idle'; state.partners = {}; state.ptown = null; state.ptown_last = null; state.errand = null; state.recovering = false");
+		R("globalThis.__td = town_due; town_due = () => ({ plan: { free: 30 }, min_free: 10, pot_min: 100, relaxed: true }); globalThis.__trun = town_run; globalThis.__runs = []; town_run = (due) => (__runs.push(due), true)");
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 4000, max_hp: 4000, attack: 300, frequency: 1, armor: 50, resistance: 50, speed: 55 });
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 30, y: 0, hp: 6000, max_hp: 6000, armor: 600, resistance: 300, attack: 300, frequency: 1 });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: -30, y: 0, hp: 5000, max_hp: 5000, armor: 100, resistance: 100, attack: 200, frequency: 1 });
+		ctx.G.monsters.hard138 = { hp: 30000, attack: 900, frequency: 1, aggro: 0, damage_type: "physical", xp: 5000, speed: 20, range: 50 };
+		ctx.G.monsters.easy138 = { hp: 300, attack: 10, frequency: 1, aggro: 0, damage_type: "physical", xp: 50, speed: 20, range: 50 };
+		R("state.pack = { mtype: 'hard138', map: 'main', boundary: [-100, -100, 100, 100] }");
+		assert(R("is_follower() && leader_name() === 'Torlis'"), "setup: Torlis (the tank) leads, Sanala follows");
+		// the fight model can leave members out
+		const f_all = R("fight_math(G.monsters.hard138, true, false)"), f_wo = R("fight_math(G.monsters.hard138, true, false, ['Torlis'])");
+		assert(f_all.mates === 2 && f_wo.mates === 1 && f_all.tank === "Torlis" && f_wo.tank === null && f_wo.excl[0] === "Torlis", `fight_math without Torlis: no tank, one mate (${f_all.mates}/${f_wo.mates}, ${f_all.tank}/${f_wo.tank})`);
+		// the leader goes to town: a hard spot isn't safe for us alone → we go too
+		cms.length = 0;
+		R("ptown_recv({ k: 'ptown', id: 'Torlis:1', by: 'Torlis' }, 'Torlis')");
+		assert(R("state.ptown.pending === true && /isn't safe alone/.test(state.ptown.why)"), `the leader leaves a spot we can't solo: we go (${R("state.ptown.why")})`);
+		// pending: not while something is on us; then the run starts, and we tell the others (with the same trip id)
+		ctx.parent.entities = { m138: { id: "m138", type: "monster", mtype: "easy138", visible: true, dead: false, target: "Sanala", x: 0, y: 0 } };
+		assert(R("ptown_join_tick()") === true && R("__runs.length") === 0, "a monster on us: finish it first");
+		ctx.parent.entities = {};
+		assert(R("ptown_join_tick()") === true && R("__runs.length") === 1 && R("state.ptown.joined === true && !state.ptown.pending"), "then we go");
+		assert(cms.some(([to, k, id, by]) => k === "ptown" && id === "Torlis:1" && by === "Torlis" && to.includes("Aspernari")), `we tell the others we're going (${JSON.stringify(cms)})`);
+		const hb_s = R("heartbeat.toString()");
+		assert(/pt: state\.ptown\?\.joined \? \{ id: state\.ptown\.id, done: !!state\.ptown\.done \}/.test(hb_s), "our heartbeat carries the trip (pt)");
+		// an easy spot: we keep farming (it's fine without the leavers)
+		R("state.ptown = null; state.pack = { mtype: 'easy138', map: 'main', boundary: [-100, -100, 100, 100] }");
+		R("ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Aspernari')");
+		assert(R("!state.ptown.pending && !state.ptown.joined && /staying/.test(state.ptown.why)"), `a spot we can farm without Aspernari: we stay (${R("state.ptown.why")})`);
+		// ...until the leader joins that trip: then judged again, alone
+		R("state.pack = { mtype: 'hard138', map: 'main', boundary: [-100, -100, 100, 100] }");
+		R("ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Torlis')");
+		assert(R("state.ptown.pending === true && state.ptown.leavers.join() === 'Aspernari,Torlis'"), `the leader joins too: we go as well (${R("state.ptown.leavers.join()")})`);
+		// work due of our own: we go even from an easy spot
+		R("state.ptown = null; state.pack = { mtype: 'easy138', map: 'main', boundary: [-100, -100, 100, 100] }; town_due = () => ({ hunt: true, plan: { free: 30 } })");
+		R("ptown_recv({ k: 'ptown', id: 'Aspernari:3', by: 'Aspernari' }, 'Aspernari')");
+		assert(R("state.ptown.pending && /work due: hunt/.test(state.ptown.why)"), "our own town work rides along");
+		// off: nobody joins
+		R("state.ptown = null; CFG.party.town_together = false"); R("ptown_recv({ k: 'ptown', id: 'Aspernari:4', by: 'Aspernari' }, 'Aspernari')");
+		assert(R("!state.ptown.pending"), "town_together off: each goes alone");
+		R("CFG.party.town_together = 'idle'");
+		// too late: we couldn't get away within town_join_s
+		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
+		assert(R("ptown_join_tick()") === false && R("!state.ptown.pending && /in time/.test(state.ptown.why)"), "the join window closes");
+		// done in town: wait while a member on the trip isn't done, then go back together
+		R("globalThis.__hbf = heartbeat; heartbeat = () => {}; state.ptown = { id: 'Torlis:1', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], joined: true, why: 'w' }");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 30, y: 0, pt: { id: "Torlis:1", done: false } });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: -30, y: 0, pt: null });
+		let fin = false;
+		const mark = timers.length; // only ptown_wait's own 1s sleeps are run below (older timers belong to other tests)
+		const pw = R("ptown_wait()").then(() => { fin = true; });
+		await new Promise((r) => setImmediate(r));
+		assert(!fin && R("state.ptown.done === true"), "Torlis is still busy in town: we wait (and say we're done)");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 30, y: 0, pt: { id: "Torlis:1", done: true } });
+		for (let i = 0; i < 5 && !fin; i++) { timers.splice(mark).filter((t) => t.ms === 1000).forEach((t) => t.fn()); await new Promise((r) => setImmediate(r)); }
+		await pw;
+		assert(fin && R("state.ptown === null && state.ptown_last.left_without.length === 0"), "everyone's done: back together");
+		const pf = R("report_facts()").find((f) => f.key === "ptown");
+		assert(pf && /last party trip .*all back together/.test(pf.text), `the report shows the trip (${pf && pf.text})`);
+		// the initiator: starting a run tells the others
+		cms.length = 0; R("state.ptown = null; ptown_start(['bank'])");
+		assert(R("state.ptown.joined && state.ptown.by === 'Sanala'") && cms.some(([, k, , by]) => k === "ptown" && by === "Sanala"), "a trip we start is announced");
+		// the teleport: only when this map's spawn is much nearer town
+		const us = ctx.use_skill; const sk = []; ctx.use_skill = (s) => (sk.push(s), Promise.resolve());
+		ctx.G.maps.main.spawns = ctx.G.maps.main.spawns || [[0, 0]];
+		Object.assign(character, { map: "main", x: 100, y: 100 });
+		assert(await R("town_hop()") === 0 && sk.length === 0, "near town: no teleport");
+		Object.assign(character, { map: "main", x: 1450, y: 1450, c: {} });
+		const mk = timers.length; let hopped = null;
+		const hp_ = R("town_hop()").then((v) => { hopped = v; });
+		for (let i = 0; i < 10 && hopped === null; i++) {
+			await new Promise((r) => setImmediate(r));
+			if (sk.length) Object.assign(character, { x: 0, y: 0 }); // the server moved us to the spawn
+			R("state.town_at = Date.now() - 2000");
+			timers.splice(mk).filter((t) => t.ms === 200).forEach((t) => t.fn());
+		}
+		await hp_;
+		assert(hopped === 1 && sk.join() === "use_town", `1450px out on main: teleport to the spawn (${hopped}, ${sk.join()})`);
+		ctx.use_skill = us;
+		R("town_due = __td; town_run = __trun; heartbeat = __hbf; state.ptown = null; state.ptown_last = null; CFG.party.tank_leads = false; state.partners = {}; state.pack = null");
+		ctx.send_cm = scm; ctx.parent.entities = ents;
+		delete ctx.G.monsters.hard138; delete ctx.G.monsters.easy138;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

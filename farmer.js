@@ -1,4 +1,4 @@
-const VERSION = "24.27"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.28"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -165,6 +165,8 @@ const CFG = {
 	guide_interval_ms: 15_000, // re-read the guide every 15s (cheap: no walking)
 	guide_steps_per_run: 5,    // guide steps that need walking, per town run (steps done in place don't count)
 	town_min_gap_ms: 20_000,   // at least 20s between town runs
+	town_hop: true,            // v24.28: start a town run with the town teleport (to this map's spawn) when that cuts the walk
+	town_hop_px: 600,          //   by more than this (main from poisio: ~1450px of walking for a 3s channel)
 	// v18.7 gold budget: optional spending (upgrade projects, guide buys/upgrades, compounds, crafting, Ponty, elixirs,
 	// donations) only while the party's spending over the last window_h stays under share × what it earned (loot,
 	// sales). Potions and other necessities are never held back, but they count as spending.
@@ -319,6 +321,13 @@ const CFG = {
 			ab: { enabled: true, sample_min: 40, hold_min: 30, margin: 1.1, half_life_h: 8, settle_min: 3 } },
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
+		// v24.28: party town trips (together). A fighter going to town tells the others. Each one goes too if it has any
+		// town work due (relaxed thresholds), or if its spot isn't safe without the members leaving — the fight model
+		// without them, as the stay-behinds would fight: a follower whose leader leaves judges alone. Those are the
+		// cases where it would only stand around. Joiners tell the rest, who judge again without them too.
+		// Everyone who went waits in town until all are done (town_wait_s at most), then they walk back together.
+		// "always": every fighter goes on every trip; false: off (each goes alone, as before).
+		town_together: "idle", town_join_s: 90, town_wait_s: 240,
 		turn_min: 15,          // with no mutual goal, the leader alternates 15-min turns between its goal and its partner's
 		mutual_max_h: 6,       // a goal counts toward "mutual" only if it would finish within 6h
 		// gold balance: if the poorer member has < min_ratio of the richer's gold, the richer sends give × its gold.
@@ -631,8 +640,10 @@ function farmable_entity(e) {
 // alone (split mode) — partners passing by, or still near as a split starts, aren't there for the fight.
 // solo = "all" (v23.1): every online member counts wherever it is — planning something that regroups the party
 // (a boss, a probe); false: the members near now
-function fight_math(m, use_tank = true, solo = solo_now()) {
-	const mates = solo === true ? [] : solo === "all" ? partners() : partners_near();
+// exclude (v24.28): names left out (members about to leave: would the rest still fight it?)
+function fight_math(m, use_tank = true, solo = solo_now(), exclude = null) {
+	const keep = (arr) => (exclude?.length ? arr.filter((p) => !exclude.includes(p.name)) : arr);
+	const mates = keep(solo === true ? [] : solo === "all" ? partners() : partners_near());
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -642,7 +653,7 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? partners() : undefined);
+	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? keep(partners()) : exclude?.length ? keep(partners_near(300)) : undefined);
 	// v24.25: we're the tank (leading, picking for everyone) and it's aggressive: it goes for whoever is near, so judge it
 	// on the squishiest member counted, not on our armour
 	const squish = !tank && solo !== true && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
@@ -665,7 +676,7 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 	const chase = m.charge || m.speed || 0; // targeted monsters move at charge speed
 	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
 	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : D !== character ? D.max_hp : character.max_hp,
-		solo: solo === true, team: solo === true ? "solo" : solo === "all" ? "all" : "near", tank: tank ? tank.name : null, mates: mates.length };
+		solo: solo === true, team: solo === true ? "solo" : solo === "all" ? "all" : "near", tank: tank ? tank.name : null, mates: mates.length, excl: exclude || null };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
 // Safety multiplier for a monster: calibration (how its fights went vs the model) × incidents (deaths/flees, fading)
@@ -689,7 +700,7 @@ function calib_factor(mtype, f) {
 const probe_ok_mult = (mtype, f) => { const o = state.probe_ok[mtype]; return o && (f ? !f.solo : !solo_now()) && Date.now() - o.at < 24 * 3600_000 ? o.mult : 1; };
 const danger_of = (mtype, f) => calib_factor(mtype, f) * (state.danger[mtype] || 1) * probe_ok_mult(mtype, f);
 // A priest among the members the verdict counted heals us through it (none when judged alone)
-const heal_mult = (f) => (!f.solo && (f.team === "all" ? partners() : partners_near()).some((p) => p.ctype === "priest") ? CFG.party.heal_bonus : 1);
+const heal_mult = (f) => (!f.solo && (f.team === "all" ? partners() : partners_near()).some((p) => p.ctype === "priest" && !f.excl?.includes(p.name)) ? CFG.party.heal_bonus : 1);
 // The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max. Together, the
 // leader picks for everyone, so the party's lowest multiplier counts (v23.6: a follower's death reset only its own, and
 // the leader kept choosing the spot that killed it); split, each its own.
@@ -4341,11 +4352,17 @@ function town_due(relaxed = false) {
 }
 // state.town_end_at: when the last run finished (the soft gap counts from there, not from leaving)
 function town_run(due) {
-	return errand("town", () => town_body(due).finally(() => { state.town_end_at = Date.now(); }));
+	return errand("town", async () => {
+		try { await town_body(due); } finally {
+			state.town_end_at = Date.now();
+			await ptown_wait().catch(() => {}); // v24.28: everyone on the trip walks back together
+		}
+	});
 }
 async function town_body(due) {
 	{
 		await stand_close(); // a stand slows us to speed 10
+		await town_hop().catch(() => 0); // v24.28: teleport to this map's spawn when that's nearer town
 		// each step refreshes the errand lock: a long run that keeps making progress is never taken for a hung one (other
 		// code would then start a walk and interrupt this run's smart_move)
 		const step = async (label, fn) => { state.errand_at = Date.now(); try { return await fn(); } catch (e) { town_reason[label] = town_reason[label] || why(e); game_log(`${label}: ${why(e)}`, C.dim); } };
@@ -4407,11 +4424,120 @@ async function town_body(due) {
 	}
 }
 
+// ---- Party town trips (v24.28, CFG.party.town_together) ----
+// state.ptown: { id, by (who started it), at, leavers (members known to be going), pending (we'll go once free),
+// joined (we went: our heartbeat pt), done (our work's finished: waiting in town), why (why we went / stayed) }
+const ptown_tell = (P) => { if (typeof send_cm === "function" && others().length) Promise.resolve(send_cm(others(), { k: "ptown", id: P.id, by: P.by })).catch(() => {}); };
+// Why we'd go with them (null: we keep farming). The stay-behinds would fight as the code does: with the leader gone a
+// follower picks alone (follower_pick judges solo); otherwise the members near without the leavers.
+function ptown_reason(P) {
+	const T_ = CFG.party.town_together;
+	if (!T_ || is_merchant() || !in_party_cfg() || split_now() || character.rip) return null;
+	if (T_ === "always") return "always together";
+	const what = due_tasks(town_due(true));
+	if (what.length) return `work due: ${what.join("+")}`;
+	const mt = state.pack?.mtype, m = mt && G.monsters[mt];
+	if (!m) return "no spot of our own";
+	const lead_out = P.leavers.includes(leader_name()) && leader_name() !== character.name;
+	const f = lead_out ? fight_math(m, false, true) : fight_math(m, true, false, P.leavers);
+	if (!safe_enough(f, mt)) return lead_out ? `${mt} isn't safe alone (${leader_name()} leads and is going)` : `${mt} isn't safe without ${P.leavers.join(", ")}`;
+	return null;
+}
+// We start a trip: tell the others (each judges whether to come)
+function ptown_start(what) {
+	if (!CFG.party.town_together || is_merchant() || !in_party_cfg() || split_now() || !others().length) return;
+	if (state.ptown?.joined && !state.ptown.done) return; // already on one (we joined someone's)
+	state.ptown = { id: `${character.name}:${Date.now()}`, by: character.name, at: Date.now(), leavers: [character.name], joined: true, why: `started it: ${what.join("+")}` };
+	ptown_tell(state.ptown);
+	log_ev("ptown", { by: character.name, join: "started", what: what.join("+") });
+}
+// A member is going (it started a trip, or joined one)
+function ptown_recv(msg, from) {
+	if (!msg?.id || is_merchant()) return;
+	let P = state.ptown;
+	// another trip while we're on one: same thing — everyone on any trip waits for everyone (ptown_wait)
+	if (P && P.id !== msg.id && !(P.joined || P.pending)) P = null;
+	if (!P) P = state.ptown = { id: msg.id, by: msg.by || from, at: Date.now(), leavers: [] };
+	if (!P.leavers.includes(from)) P.leavers.push(from);
+	if (msg.by && !P.leavers.includes(msg.by)) P.leavers.push(msg.by);
+	if (P.joined || P.pending) return;
+	if (state.errand === "town" && errand_busy()) { P.joined = true; P.why = "in town already"; ptown_tell(P); return; }
+	const why_ = ptown_reason(P);
+	P.why = why_ || `staying: our spot is fine without ${P.leavers.join(", ")}`;
+	if (why_) P.pending = true;
+	log_ev("ptown", { by: P.by, join: why_ || null });
+	if (why_) game_log(`party trip: going to town with ${P.leavers.join(", ")} (${why_})`, C.dim);
+}
+// Pending: go as soon as nothing is on us (each tick, before our own town check). true = holds our own town check.
+function ptown_join_tick() {
+	const P = state.ptown;
+	if (!P) return false;
+	const now = Date.now();
+	// stale: never got going, or our run ended without the wait (cleared there)
+	if (P.joined && !P.done && !errand_busy() && now - P.at > CFG.party.town_join_s * 1000) { state.ptown = null; return false; }
+	if (!P.pending) return false;
+	if (now - P.at > CFG.party.town_join_s * 1000) { P.pending = false; P.why += " — couldn't get away in time"; return false; }
+	if (errand_busy()) { if (state.errand === "town") { P.pending = false; P.joined = true; ptown_tell(P); } return true; }
+	if (character.rip || state.recovering || hit_on_me()) return true; // finish this fight first
+	if (walking()) { try { stop("smart"); } catch (e) {} return true; } // the next tick starts the run
+	state.town_runs = (state.town_runs || []).filter((t) => now - t < 600_000);
+	if (state.town_runs.length >= 6) { P.pending = false; P.why += " — town loop brake"; return false; }
+	const due = town_due(true), what = due_tasks(due);
+	state.town_trig = `party trip (${P.by})`;
+	if (!town_run(due)) return true;
+	P.pending = false; P.joined = true;
+	state.town_runs.push(now); state.last_town = now;
+	ptown_tell(P);
+	game_log(`Town: with ${P.leavers.join(", ")}${what.length ? ` — ${what.join("+")}` : " (nothing of our own due)"}`, C.dim);
+	return true;
+}
+// Our town work is done: wait in town until every member on a trip is done too, then all walk back together
+async function ptown_wait() {
+	const P = state.ptown;
+	if (!P?.joined || character.rip) return;
+	P.done = true;
+	try { heartbeat(); } catch (e) {} // tell them now, not at the next beat
+	const t0 = Date.now();
+	const busy = () => partners().filter((p) => fresh(p) && !p.rip && p.ctype !== "merchant" && p.pt && !p.pt.done).map((p) => p.name);
+	// nothing of ours took us to town (no work, no teleport): walk there, so we gather with them and leave together
+	const town = dest_point("main"), rt = town && route_to(town.map, town.x, town.y);
+	if (rt && rt.d > CFG.town_hop_px && busy().length) await go({ map: town.map, x: town.x, y: town.y }).catch(() => {});
+	let who = [];
+	while (Date.now() - t0 < CFG.party.town_wait_s * 1000 && !character.rip && !state.recovering) {
+		who = busy();
+		if (!who.length) break;
+		state.errand_at = Date.now(); // a long wait isn't a hung errand
+		set_message(`town: waiting for ${who.join(", ")}`);
+		await sleep_ms(1000);
+	}
+	const waited = Math.round((Date.now() - t0) / 1000);
+	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
+	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
+	if (who.length) game_log(`party trip: waited ${waited}s; going back without ${who.join(", ")}`, C.warn);
+	state.ptown = null;
+}
+// The town teleport (to this map's spawn: server transport_player_to(player, player.in)) when it cuts the walk to
+// main's town by town_hop_px. 3s channel; a hit or a move cancels it, and it fails with more than 5 monsters on us.
+async function town_hop() {
+	if (!CFG.town_hop || character.rip || typeof use_skill !== "function" || hit_on_me()) return 0;
+	const town = dest_point("main"), sp = G.maps[character.map]?.spawns?.[0];
+	if (!town || !sp) return 0;
+	const here = route_to(town.map, town.x, town.y), there = route_to(town.map, town.x, town.y, { map: character.map, x: sp[0], y: sp[1] });
+	if (!here || !there || here.d - there.d < CFG.town_hop_px) return 0;
+	if (walking()) { try { stop("smart"); } catch (e) {} }
+	state.town_at = Date.now();
+	await T(use_skill("use_town"), 8000).catch(() => {});
+	await until(() => !character.c?.town && Date.now() - state.town_at > 1500, 6000);
+	const ok = Math.hypot(character.x - sp[0], character.y - sp[1]) < 120;
+	game_log(ok ? `town: teleported (~${Math.round(here.d - there.d)}px less walking)` : "town: the teleport didn't happen; walking", C.dim);
+	return ok ? 1 : 0;
+}
 // Starts a town run when something is due. Blockers are recorded (report() shows them; with a nearly full bag the
 // log says so every 5 min). Nearly full bags lower the HP floor and ignore attackers, and a patrol walk yields to
 // town — otherwise a priest hovering at 60-70% HP, or a patrol between waypoints, can farm with a full bag for hours.
 let town_block_logged = 0; // last "town needed but waiting" log (at most every 5 min)
 function town_check() {
+	if (ptown_join_tick()) return; // v24.28: a member's trip we're going on
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
 	if (skipped("town:loop") && character.esize > 3) return;
 	const in_town = partners().filter((p) => p.errand === "town").map((p) => p.name);
@@ -4464,7 +4590,7 @@ function town_check() {
 	state.last_town = Date.now();
 	state.town_trig = town_urgent(due) || (due.relaxed ? "joined a member's trip" : "deferrable");
 	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + in_town.join(", ") : ""})`, C.dim);
-	town_run(due);
+	if (town_run(due)) ptown_start(what);
 }
 
 // =====================================================================
@@ -4901,6 +5027,14 @@ function report_facts() {
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
 	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
+	// v24.28: party town trips — the one on now, else the last (1h)
+	{
+		const P = state.ptown, L = state.ptown_last;
+		if (P && !is_merchant()) F("ptown", "self", `party trip (${P.by}, ${ago(P.at)} ago; going: ${P.leavers.join(", ")}): ` +
+			(P.done ? "done, waiting in town for the others" : P.joined ? `in town — ${P.why}` : P.pending ? `joining — ${P.why}` : P.why));
+		else if (L && now - L.at < 3600_000) F("ptown", "self", `last party trip ${ago(L.at)} ago (${L.by}; ${L.leavers.join(", ")}): ${L.why}; waited ${L.waited}s in town` +
+			(L.left_without.length ? `, went back without ${L.left_without.join(", ")}` : ", all back together"));
+	}
 	for (const r of state.guide?.rows || []) {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded"}` : r.affordable === false ? "unaffordable" : "next";
 		F("guide:" + r.id, "self", `guide ${r.id}: ${st}`, r.kind === "farm" || !CFG.gear_actions.includes(r.kind));
@@ -5447,7 +5581,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, lw: travel_long() ? 1 : 0, xpm: xp_mult(), speed: character.speed, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : null, xpm: xp_mult(), speed: character.speed, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -5489,6 +5623,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	}
 	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) return void (state.merchant = { ...m.message, name: m.name, t: Date.now() });
 	if (m && m.message?.k === "verdict" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) return void apply_verdict(m.message, m.name);
+	if (m && m.message?.k === "ptown" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) return void ptown_recv(m.message, m.name);
 	if (m && m.message?.k === "bill" && m.name === CFG.merchant?.name && !is_merchant()) { // potions it handed us (v23.0)
 		const g = Math.max(0, Math.round(+m.message.g || 0));
 		state.owe = (state.owe || 0) + g;
@@ -6545,7 +6680,10 @@ tick();
 //   4. Town run, when something is due: Daisy (hunt, tokens) → quest crafts (Cole etc.) → Progression Guide steps →
 //      compound → upgrade project → exchange → elixir → sell → potions → bank (→ compound what the bank visit
 //      fetched). Needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical and attackers are
-//      ignored. A member already in town relaxes the thresholds (sync_factor) to share the trip. With the merchant
+//      ignored. A member already in town relaxes the thresholds (sync_factor) to share the trip. Together (v24.28), a
+//      trip is announced: the others come along when they have town work or their spot isn't safe without the leavers
+//      (CFG.party.town_together); all wait in town for each other and walk back together. Runs start with the town
+//      teleport when this map's spawn is nearer town (town_hop). With the merchant
 //      online, fighters go only at <= fighter_min_free slots / fighter_pot_min potions, and for guide steps alone at
 //      most every guide_gap_ms.
 //   5. Merchant → supply runs, secondhands, donations, stand (see Merchant).
