@@ -1,4 +1,4 @@
-const VERSION = "24.79"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.80"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -104,6 +104,11 @@ const CFG = {
 	gear_w: { attack: 1, main_stat: 1.2, hp: 0.05, mp: 0.02, armor: 0.3, resistance: 0.3,
 		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
 		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, luck: 0.15, gold: 0.15, output: 3 },
+	// v24.80: attack and attack speed on a piece are valued together, as the damage per second they add for the wearer
+	// (server: attack += item attack x main stat / 20; frequency adds; damage = attack x frequency) — not by the two
+	// flat weights above. With those, +0.40 attacks/s on a wand outscored a staff with three times its damage plus an
+	// offhand: Aspernari ended up holding a +1 wand and nothing else. false: the flat weights.
+	gear_dps: true,
 	gear_tank: ["paladin", "warrior"],
 	// v23.4: the xp stat (+1% of the wearer's kill xp per point; server: xpm) is worth what that much more damage would
 	// earn: each fighter gets 1/n of every party kill, so +1% damage adds ~1/n % xp while +1 xp adds 1%. One point counts
@@ -2545,8 +2550,36 @@ function set_gain(item, ctype, g, slot) {
 	return stat_points(set_bonus(set, others + 1), ctype) - stat_points(set_bonus(set, others), ctype);
 }
 // What a piece is worth to a member (g: its my_gear, or a partner's heartbeat gear) in a slot: alone + set bonus
+// (a partner on an older version sends off: true/false — the offhand flag that field used to be)
+const dps_ctx = (g) => (CFG.gear_dps && g && typeof g.off === "object" && g.off && g.off.mult > 0 && g.off.A > 0 && g.off.F > 0 ? g.off : null);
 function slot_value(item, ctype, g, slot) {
-	return round1(gear_score(item, ctype) + set_gain(item, ctype, g, slot));
+	let v = gear_score(item, ctype);
+	const O = dps_ctx(g);
+	if (O && slot && item && G.items[item.name]) {
+		const p = gear_stats(item, ctype), lin = (p.attack || 0) * stat_weight("attack", ctype) + (p.frequency || 0) * stat_weight("frequency", ctype);
+		if (lin) v += offense_points(p, O, slot) - lin; // its attack and speed as damage, instead of the flat weights
+	}
+	return round1(v + set_gain(item, ctype, g, slot));
+}
+// What a wearer's damage depends on (my_gear → heartbeat gear.off): its attack A and frequency F as worn, mult = attack
+// per point of item attack (server calculate_player_stats: main stat / 20; paladin str/20 + int/40; priest x1.6), and
+// each worn slot's item attack (ia) and frequency points (fr)
+function offense_ctx(sl) {
+	const cs = class_stats(character.ctype);
+	if (!cs || !(character.attack > 0) || !(character.frequency > 0)) return null;
+	let mult = character.ctype === "paladin" ? (character.str || 0) / 20 + (character.int || 0) / 40 : (character[cs.main] || 0) / 20;
+	if (character.ctype === "priest") mult *= 1.6;
+	if (!(mult > 0)) return null;
+	const ia = {}, fr = {};
+	for (const s of GEAR_SLOTS) if (sl[s]) { const p = gear_stats(sl[s], character.ctype); if (p.attack) ia[s] = p.attack; if (p.frequency) fr[s] = p.frequency; }
+	return { A: Math.round(character.attack), F: +character.frequency.toFixed(3), mult: +mult.toFixed(3), ia, fr };
+}
+// Points a piece's attack and frequency are worth in a slot: the damage per second it adds over that slot EMPTY (so
+// the worn piece and a candidate are measured from the same base — no flip-flop), in units of one point of item attack
+function offense_points(p, O, slot) {
+	const A0 = Math.max(1, O.A - (O.ia?.[slot] || 0) * O.mult), F0 = Math.max(0.1, O.F - (O.fr?.[slot] || 0) / 100);
+	const A1 = Math.max(1, A0 + (p.attack || 0) * O.mult), F1 = Math.max(0.05, F0 + (p.frequency || 0) / 100);
+	return (A1 * F1 - A0 * F0) / (F0 * O.mult);
 }
 // Sets worn: set -> pieces, slot -> set (my_gear, heartbeat)
 function worn_sets(sl) {
@@ -2559,7 +2592,8 @@ function gear_why(item, ctype = character.ctype, g = null, slot = null) {
 	if (!item || !G.items[item.name]) return "";
 	const t = stat_terms(gear_stats(item, ctype), ctype).slice(0, 4).map((x) => `${x.k} ${round1(x.v)}×${+x.w.toFixed(2)}=${round1(x.pts)}`);
 	const sg = g && slot ? round1(set_gain(item, ctype, g, slot)) : 0;
-	return t.join(", ") + (sg ? ` (+set ${G.items[item.name].set} ${sg})` : "");
+	const p_ = gear_stats(item, ctype), dps = dps_ctx(g) && slot && (p_.attack || p_.frequency) ? ` [attack+speed as damage: ${round1(offense_points(p_, g.off, slot))} pts, not the two weights]` : "";
+	return t.join(", ") + (sg ? ` (+set ${G.items[item.name].set} ${sg})` : "") + dps;
 }
 // "weights paladin (G.classes lstats, main str, side int): str 1.2 int 1.2 vit 0.96 ... | attack 1 armor 0.6 ..."
 function gear_weights_text(ctype) {
@@ -2588,11 +2622,12 @@ function my_gear() {
 	const owned = (s) => now - (state.guide_equip[s] || 0) < CFG.gear_guide_respect_h * 3600_000 && guide_plans_slot(s);
 	const key = GEAR_SLOTS.map((s) => (sl[s] ? sl[s].name + (sl[s].level || 0) : "") + (owned(s) ? "!" : "")).join();
 	if (my_gear_cache && now - my_gear_cache.at < 1000 && my_gear_cache.key === key) return my_gear_cache.g;
-	const w = {}, own = {}, ws = worn_sets(sl);
+	const w = {}, own = {}, ws = worn_sets(sl), off = CFG.gear_dps ? offense_ctx(sl) : null;
+	if (off) ws.off = off;
 	// v24.26: a worn piece's score includes what it adds to its set's bonus (taking it off loses that)
 	for (const s of GEAR_SLOTS) { w[s] = slot_value(sl[s], character.ctype, ws, s); if (owned(s)) own[s] = true; }
 	const mh = sl.mainhand && G.items[sl.mainhand.name];
-	const g = { w, own, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), off: !!sl.offhand, sets: ws.sets, sset: ws.sset };
+	const g = { w, own, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), has_off: !!sl.offhand, sets: ws.sets, sset: ws.sset, off };
 	my_gear_cache = { at: now, key, g };
 	return g;
 }
@@ -5418,7 +5453,7 @@ function report_facts() {
 		// those carries only what the LAST piece of its set adds: Sanala's fifth Monster Hunter piece showed 486 → 442
 		// (five pieces x the 5th-piece bonus instead of four x the 4th), though every stat went up.
 		const g = my_gear(), sl_ = gear_slots_v();
-		const total = GEAR_SLOTS.map((s) => (sl_[s] ? gear_score(sl_[s], character.ctype) : 0)).filter((v) => v < 1e9).reduce((a, b) => a + b, 0) +
+		const total = GEAR_SLOTS.map((s) => (sl_[s] ? slot_value(sl_[s], character.ctype, { off: g.off }, s) : 0)).filter((v) => v < 1e9).reduce((a, b) => a + b, 0) +
 			Object.entries(g.sets || {}).reduce((a, [set, n]) => a + stat_points(set_bonus(set, n), character.ctype), 0);
 		const owns = Object.keys(g.own || {});
 		const takers = gear_takers().slice(1);

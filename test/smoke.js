@@ -3405,6 +3405,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.item_grade = ig137;
 			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;
 		}
+		// v24.80: attack and attack speed valued as damage — a priest's two-handed wand against a staff plus an offhand
+		{
+			const I = ctx.G.items, keep = { slots: character.slots, ctype: character.ctype, attack: character.attack, frequency: character.frequency, int: character.int, cls: ctx.G.classes.priest };
+			I.wnd137 = { type: "weapon", wtype: "wand", attack: 16, range: 30, upgrade: { attack: 3, range: 6 } };
+			I.stf138 = { type: "weapon", wtype: "staff", attack: 30, range: 53, upgrade: { attack: 5.25, range: 3.25 } };
+			I.lan137 = { type: "misc_offhand", resistance: 120, evasion: 10 };
+			ctx.G.classes.priest = { ...(keep.cls || {}), main_stat: "int", lstats: { str: 0.2, dex: 0.2, int: 1, vit: 0.3, for: 0.02 }, mainhand: { staff: { speed: -4 } }, doublehand: { wand: { frequency: 40 } }, offhand: { misc_offhand: { speed: -4 } } };
+			// as she stood: the wand+1 in hand, nothing in the offhand; int 150 → 12 attack per point of item attack
+			Object.assign(character, { ctype: "priest", int: 150, frequency: 1.21, attack: Math.round(1.6 * 30 + 19 * 12) });
+			character.slots = { mainhand: { name: "wnd137", level: 1 } };
+			R("my_gear_cache = null; globalThis.__gd137 = CFG.gear_dps; CFG.gear_dps = false");
+			const flat = R("JSON.stringify([slot_value({ name: 'wnd137', level: 1 }, 'priest', my_gear(), 'mainhand'), slot_value({ name: 'stf138', level: 5 }, 'priest', my_gear(), 'mainhand') + slot_value({ name: 'lan137' }, 'priest', my_gear(), 'offhand')])");
+			R("CFG.gear_dps = true; my_gear_cache = null");
+			const dps = JSON.parse(R("JSON.stringify([slot_value({ name: 'wnd137', level: 1 }, 'priest', my_gear(), 'mainhand'), slot_value({ name: 'stf138', level: 5 }, 'priest', my_gear(), 'mainhand') + slot_value({ name: 'lan137' }, 'priest', my_gear(), 'offhand')])"));
+			assert(JSON.parse(flat)[0] > JSON.parse(flat)[1] && dps[1] > dps[0] * 1.5, `the flat weights put the +1 wand ahead of staff+5 and lantern (${flat}); as damage the staff and lantern are far ahead (${JSON.stringify(dps)})`);
+			assert(R("!!gear_gain({ name: 'stf138', level: 5 }, 'priest', my_gear())"), "...so the staff is an upgrade over the wand she holds");
+			// and from the other side (the staff worn): the wand is still not an upgrade — no flip-flop
+			Object.assign(character, { frequency: 0.81, attack: Math.round(1.6 * 30 + 56.25 * 12) });
+			character.slots = { mainhand: { name: "stf138", level: 5 }, offhand: { name: "lan137" } };
+			R("my_gear_cache = null");
+			assert(R("gear_gain({ name: 'wnd137', level: 1 }, 'priest', my_gear())") === null, "holding the staff and lantern, the wand isn't an upgrade (no swapping back)");
+			assert(R("dps_ctx({ off: true })") === null, "a partner on an older version (off: true) is judged with the flat weights");
+			R("CFG.gear_dps = __gd137; my_gear_cache = null");
+			for (const n of ["wnd137", "stf138", "lan137"]) delete I[n];
+			ctx.G.classes.priest = keep.cls; Object.assign(character, { ctype: keep.ctype, attack: keep.attack, frequency: keep.frequency, int: keep.int }); character.slots = keep.slots;
+		}
 		// v24.68: the report's JSON dumps
 		assert(R("JSON.stringify(items_dump([{ name: 'b', q: 3 }, null, { name: 'a', level: 2 }, { name: 'a', level: 2 }, { name: 'c', l: 'l' }, { name: 'b', q: 2 }]))") === '{"a+2":2,"b":5,"c*":1}', "items_dump: name+level → count, stacks summed, * for locked, sorted");
 		delete ctx.G.sets; character.slots = {}; ctx.G.classes.mage = mc; ctx.G.classes.paladin = pc; ctx.G.classes.priest = prc;
