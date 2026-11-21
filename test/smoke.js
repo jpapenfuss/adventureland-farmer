@@ -3362,6 +3362,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("rt_cache.clear(); deadly_maps_c = null", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0 });
 	}
+	// 129) v24.18: travelling together, the slowest member leads the walk and the rest (the leader too) follow it
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 58, rip: false });
+		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}; state.recovering = false; state.errand = null; state.pack = { mtype: 'goo', map: 'main', boundary: [3000, 3000, 3200, 3200] }", ctx);
+		hb("Torlis", { ...tor, level: 60, x: 50, y: 0, speed: 55 }); hb("Aspernari", { ...asp, level: 58, x: -50, y: 0, speed: 41 });
+		assert(vm.runInContext("leader_name() === 'Sanala' && convoy_head()", ctx) === "Aspernari", "on the way: the priest (speed 41) leads the convoy");
+		hb("Aspernari", { ...asp, level: 58, x: -50, y: 0, speed: 41, errand: "town" });
+		assert(vm.runInContext("convoy_head()", ctx) === "Torlis", "...not while it's on an errand: then the next slowest");
+		hb("Aspernari", { ...asp, level: 58, x: 3100, y: 3100, speed: 41 });
+		assert(vm.runInContext("convoy_head()", ctx) === null, "the slowest is at the spot: convoy over");
+		vm.runInContext("CFG.party.group.convoy = false", ctx); hb("Aspernari", { ...asp, level: 58, x: -50, y: 0, speed: 41 });
+		assert(vm.runInContext("convoy_head()", ctx) === null, "convoy off: none");
+		vm.runInContext("CFG.party.group.convoy = true; CFG.party.split.enabled = true; state.split_on = true", ctx);
+		assert(vm.runInContext("convoy_head()", ctx) === null, "split: none");
+		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false", ctx);
+		// a follower that is the head walks to the spot; one that isn't follows the head, not the leader
+		assert(/if \(CH === character\.name\) pos = \{ map: state\.pack\.map/.test(src) && /else if \(CH && CH !== L\.name && state\.partners\[CH\]\) pos = partner_pos\(state\.partners\[CH\]\)/.test(src)
+			&& /convoy: following \$\{CH\}/.test(src), "followers: the head walks to the spot, the others follow it; the leader follows it too");
+		const sent129 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent129.push(m); return Promise.resolve(); };
+		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
+		assert(sent129.some((m) => m.k === "hb" && m.speed === 58), "the heartbeat carries our speed");
+		vm.runInContext("state.partners = {}; state.pack = null", ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

@@ -1,4 +1,4 @@
-const VERSION = "24.17"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.18"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -276,7 +276,9 @@ const CFG = {
 		// trickled in one by one, the leader (lowest level, often the mage) first. Members on their own errand,
 		// recovering, or already waiting at our spot don't count. A straggler is waited for wait_s at most, then the
 		// party goes on for go_s before waiting again.
-		group: { enabled: true, radius: 450, wait_s: 45, go_s: 60 },
+		group: { enabled: true, radius: 450, wait_s: 45, go_s: 60, convoy: true },
+		// convoy (v24.18): while the party travels to a spot, its slowest member (the priest, slowed by its weapons) walks
+		// there and the rest — the leader too — follow it, so the group moves at its pace and arrives together
 		wait_radius: 300,      // px; a follower whose leader is dead solo-grinds safe monsters within this radius
 		// v20.0: kill xp is split equally among an account's fighters in the party (server: share by owner), so
 		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
@@ -4920,6 +4922,25 @@ function xp_mult_text() {
 	const other = Math.round(m * 100 - 100 - gear - party);
 	return `xp multiplier x${m.toFixed(2)} = 100% + gear ${Math.round(gear)}% + party ${party}%${other ? ` + other ${other}%` : ""}`;
 }
+// ---- Convoy (CFG.party.group.convoy, v24.18) ----
+// Together, travelling: the slowest online member (not on an errand, recovering or dead) leads the walk to the leader's
+// spot and everyone follows it. The leader setting off at its own pace and holding when someone fell 450px behind made
+// a stop-start string, the fast members arriving first. Ends once that member is at the spot. Everyone computes the same
+// head from the heartbeats' speeds (ties: name order).
+function convoy_head() {
+	if (!CFG.party.group?.enabled || !CFG.party.group.convoy || !in_party_cfg() || split_now()) return null;
+	const me_lead = leader_name() === character.name, L = me_lead ? null : leader_hb();
+	const pk = me_lead ? state.pack : L?.pack;
+	if (!pk || !valid_boundary(pk.boundary) || pk.boss || (!me_lead && (L.errand || L.recovering || L.rip))) return null;
+	const members = [{ name: character.name, speed: character.speed, map: character.map, x: character.x, y: character.y, ok: !state.recovering && !errand_busy() && !character.rip },
+		...partners().map((p) => { const q = partner_pos(p); return { name: p.name, speed: p.speed, map: q.map, x: q.x, y: q.y, ok: !p.errand && !p.recovering && !p.rip }; })]
+		.filter((m) => m.ok && m.speed > 0);
+	if (members.length < 2) return null;
+	members.sort((a, b) => a.speed - b.speed || (a.name < b.name ? -1 : 1));
+	const H = members[0], b = pk.boundary;
+	if (H.map === pk.map && in_rect(H.x, H.y, [b[0] - 400, b[1] - 400, b[2] + 400, b[3] + 400])) return null; // it's there: convoy over
+	return H.name;
+}
 // ---- Group travel (CFG.party.group, v24.11) ----
 // Leader, together: the members we should wait for, as text — or null to go on (nothing to wait for, or waited enough)
 function group_hold(pack, here) {
@@ -5025,7 +5046,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, xpm: xp_mult(), follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, xpm: xp_mult(), speed: character.speed, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -5802,7 +5823,11 @@ function follower_tick() {
 	const L_off = !!state.pack && split_now() && !(L.map === state.pack.map && Number.isFinite(L.x) &&
 		in_rect(L.x, L.y, [state.pack.boundary[0] - 300, state.pack.boundary[1] - 300, state.pack.boundary[2] + 300, state.pack.boundary[3] + 300]));
 	const away = (!!L.errand || !!L.recovering || L_off) && !!state.pack;
-	const pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
+	let pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
+	// v24.18: convoy — the slowest of us walks to the spot; the others follow it (not the leader)
+	const CH = !away && state.pack ? convoy_head() : null;
+	if (CH === character.name) pos = { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 };
+	else if (CH && CH !== L.name && state.partners[CH]) pos = partner_pos(state.partners[CH]);
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader
@@ -6020,6 +6045,21 @@ function tick() {
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
 			if (pack && state.group_ok && state.group_ok !== pack_key(pack)) state.group_ok = null;
 			// v24.14: something we can't take on is close and may attack: step away first (still fight what's on us)
+			// v24.18: travelling, the slowest member leads; we follow it like any follower
+			const CH = convoy_head(), CP = CH && CH !== character.name ? state.partners[CH] : null;
+			if (CP) {
+				const q = partner_pos(CP), a = hit_on_me() || choose_target(false);
+				if (a) fight(a, true);
+				else if (!walking() && !errand_busy()) {
+					const d = q.map === character.map ? Math.hypot(q.x - character.x, q.y - character.y) : Infinity;
+					if (d > CFG.party.follow_far) travel(q);
+					else if (d > CFG.party.follow) move_to(q.x + (character.x - q.x) * (CFG.party.follow * 0.6 / d), q.y + (character.y - q.y) * (CFG.party.follow * 0.6 / d), 300);
+				}
+				set_message(`convoy: following ${CH} to ${pack ? pack.mtype : "?"}`);
+				loot_chests();
+				setTimeout(tick, 200);
+				return;
+			}
 			const lm = !walking() && in_area ? looming() : null; // v24.16: at the spot only — mid-walk it stopped the walk, stepped
 			// away, and the walk went right back past it (stuck between camps); on the way, fight()'s escape outruns what attacks
 			if (lm) {
