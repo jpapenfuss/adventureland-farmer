@@ -2115,6 +2115,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(run({ "cmp:rngp:0": { bags: 1, bank: 0 } }).length === 0, "...nor when the copies cost more than the points are worth");
 		ctx.calculate_item_value = () => 100;
 		assert(/"attack":/.test(vm.runInContext("report_facts().find((f) => f.key === 'stats_json').text", ctx)), "v24.81: the report dumps the character's stats as JSON");
+		assert(vm.runInContext("JSON.stringify(ponty_dump([{ name: 'rngp', level: 0 }, { name: 'rngp', level: 0 }, { name: 'rngp', level: 2, p: 'shiny' }, { name: 'gpants', q: 5 }]))", ctx) === '{"gpants":[5,200],"rngp":[2,200],"rngp+2:shiny":[1,200]}',
+			`v24.83: Ponty's whole stock with prices (${vm.runInContext("JSON.stringify(ponty_dump([{ name: 'rngp', level: 0 }, { name: 'rngp', level: 0 }, { name: 'rngp', level: 2, p: 'shiny' }, { name: 'gpants', q: 5 }]))", ctx)})`);
 	}
 	delete ctx.G.items.rngp;
 	ctx.calculate_item_value = sp_save;

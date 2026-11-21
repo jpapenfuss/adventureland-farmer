@@ -1,4 +1,4 @@
-const VERSION = "24.82"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.83"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -5571,8 +5571,7 @@ function report_facts() {
 		F("stats_json", "self", `stats JSON: ${JSON.stringify(Object.fromEntries(pick.filter((k) => typeof c[k] === "number" && c[k] !== 0).map((k) => [k, +c[k].toFixed(3)])))}`);
 	}
 	if (M_ && state.ponty) {
-		F("ponty_json", "self", `ponty JSON (seen ${ago(state.ponty.at)} ago; name+level → count): ${JSON.stringify(state.ponty.items)}`);
-		F("ponty_prices", "self", `ponty prices: ${JSON.stringify(state.ponty.prices)}`);
+		F("ponty_json", "self", `ponty JSON (seen ${ago(state.ponty.at)} ago; name+level → [count, price each]): ${JSON.stringify(state.ponty.items)}`);
 		F("ponty_routes", "self", `ponty routes: ${state.ponty.routes?.length ? state.ponty.routes.join(" | ") : "none — nothing there compounds (at 75% or better) into a piece a fighter would wear within the price per point"}`);
 	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
@@ -6566,6 +6565,17 @@ function ponty_routes(list, groups) {
 	}
 	return out.sort((a, b) => b.gain * b.chance / b.cost - a.gain * a.chance / a.cost);
 }
+// Everything Ponty has (v24.83): "name+level:title" → [count, price of one] — every entry, sorted by name
+function ponty_dump(list) {
+	const d = {};
+	for (const it of list || []) {
+		if (!it?.name) continue;
+		const k = it.name + (it.level ? "+" + it.level : "") + (it.p ? ":" + it.p : "") + (it.stat_type ? ":" + it.stat_type : "");
+		const q = it.q || 1, e = d[k] || (d[k] = [0, 0]);
+		e[0] += q; e[1] = Math.round(shop_price(it) / q);
+	}
+	return Object.fromEntries(Object.entries(d).sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+}
 let secondhand_at = 0;
 async function task_secondhands() {
 	const ref = G.maps.main?.ref?.secondhands;
@@ -6584,7 +6594,7 @@ async function task_secondhands() {
 	const groups2 = Object.fromEntries(Object.entries(groups).map(([k, g]) => [k, { ...g }]));
 	const routes = ponty_routes(list, groups2), route_of = new Map();
 	for (const r of routes) if (!routes.some((q) => q !== r && q.name === r.name && routes.indexOf(q) < routes.indexOf(r))) for (const it of r.buy) route_of.set(it, r);
-	state.ponty = { at: Date.now(), items: items_dump(list), prices: Object.fromEntries(list.slice(0, 80).map((it) => [it.name + (it.level ? "+" + it.level : ""), shop_price(it)])), routes: routes.slice(0, 5).map((r) => r.text) };
+	state.ponty = { at: Date.now(), items: ponty_dump(list), routes: routes.slice(0, 5).map((r) => r.text) };
 	let n = 0;
 	for (const it of list) {
 		if (state.errand) state.errand_at = Date.now();
