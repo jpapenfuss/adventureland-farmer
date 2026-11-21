@@ -3091,7 +3091,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	}
 	// 128) v24.17: go() walks around deadly ground — leg by leg, through doors and the transporter — or doesn't go
 	{
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, map: "town", x: 0, y: 0, speed: 55, rip: false });
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "town", x: 0, y: 0, speed: 55, rip: false }); // the tank plans the way (a follower takes the plain one)
 		const maps0 = ctx.G.maps, mons0 = ctx.G.monsters, npcs0 = ctx.G.npcs, sm0 = ctx.smart_move;
 		ctx.G.monsters = { ...mons0, rat128: { xp: 10, hp: 9200, attack: 320, speed: 12, charge: 86, aggro: 1 } };
 		ctx.G.npcs = { ...npcs0, transporter: { places: { town: 0, sand: 0 } } };
@@ -3708,14 +3708,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.partners = {}; live_cache.clear(); state.pack = { mtype: 'poi146', map: 'main', boundary: [-300, -300, 300, 300] }; pick_pack_safe146 = (state.safe.poi146 = { ttk: 3, xp: 100 })");
 		hb("Sanala", { ...san, ctype: "mage", level: 53, map: "main", x: 10, y: 0, hp: 3650, max_hp: 3650, attack: 600, frequency: 1.2, damage_type: "magical" });
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: -10, y: 0, hp: 5270, max_hp: 5270, attack: 300, frequency: 0.8, damage_type: "magical" });
-		ctx.parent.entities = { n9: mk("n9", 60, 9), n8: mk("n8", 200, 8), o9: { ...mk("o9", 30, 9), mtype: "goo" } };
-		assert(R("!live_ok(parent.entities.n9) && !live_ok(parent.entities.n8)"), "setup: both levelled monsters fail the per-monster check");
-		assert(R("choose_target(true).id") === "n8", `nothing passes: the tank takes the lowest-level one of its camp's type (${R("choose_target(true)?.id")})`);
+		// (the per-monster check is stubbed: only "ok1" passes it; n4/n5 are mildly levelled, n10 is far beyond the party)
+		R("globalThis.__lo146 = live_ok; live_ok = (e) => (e.id === 'ok1' ? { ttk: 1, xp: 1 } : null)");
+		const mild = (id, x, lv) => ({ ...mk(id, x, lv), attack: 30, hp: 800, max_hp: 800 });
+		ctx.parent.entities = { n5: mild("n5", 60, 5), n4: mild("n4", 200, 4), n10: mk("n10", 40, 10), o9: { ...mk("o9", 30, 9), mtype: "goo" } };
+		assert(R("grown_ok(parent.entities.n4) && grown_ok(parent.entities.n5) && !grown_ok(parent.entities.n10)"), "setup: two mildly levelled monsters are within grown_over, the level-10 one is far beyond it");
+		assert(R("choose_target(true).id") === "n4", `nothing passes: the tank takes the lowest-level one of its camp's type (${R("choose_target(true)?.id")})`);
 		ctx.parent.entities.ok1 = mk("ok1", 250, 1);
 		R("live_cache.clear()");
 		assert(R("choose_target(true).id") === "ok1", "a monster that passes is there: that one first");
-		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n9; delete ctx.parent.entities.n8; R("live_cache.clear()");
-		assert(R("choose_target(true)") === null, "a levelled monster of another type is never taken this way");
+		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
+		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
+		// the tank stands and fights what it started: no stepping away from a monster that only fails the per-monster check
+		ctx.parent.entities.n10.target = "Torlis"; steps.length = 0; R("last_move = 0; smart_depth = 0");
+		R("fight(parent.entities.n10, false)");
+		assert(steps.length === 0, `a levelled monster on the tank: it fights, it doesn't step away (${JSON.stringify(steps)})`);
+		R("live_ok = __lo146");
 		ctx.attack = atk; ctx.move = mv0; ctx.get_party = gp; ctx.parent.entities = ents; ctx.distance = () => 0; delete ctx.G.monsters.poi146;
 		R("state.partners = {}; state.pack = null; delete state.safe.poi146; CFG.party.tank_first = false; live_cache.clear()");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });

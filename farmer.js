@@ -1,4 +1,4 @@
-const VERSION = "24.58"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.59"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -12,6 +12,7 @@ const CFG = {
 	                           //   (other mobs, walls, missed steps), so it lowers the risk 4x rather than to zero
 	max_ttk_s: 20,             // a monster that isn't the pack's type is only attacked if it dies within this many s
 	model_distrust: 2,         // v24.47: a monster we have no fights against is assumed to deal this many times the predicted damage
+	grown_over: 1.5,           // v24.59: levelled-up monsters of the camp's type are taken up to this x the party's limit
 	hopeless_ttk_s: 180,       // v24.44: a monster the party couldn't kill in 3 min is never attacked at all (ents)
 	                           //   (long fights block the pack's respawns and hunt progress)
 	max_respawn: 120,          // s; packs whose monster respawns slower than this aren't farmed (too much idle time)
@@ -527,7 +528,9 @@ async function go_route(dest, ms, tele_tried = false) {
 	if (state.recovering) throw { reason: "fleeing" };
 	const T_ = CFG.travel.safe_routes && G.maps[character.map]?.doors ? dest_point(dest) : null;
 	if (T_ && T_.map !== character.map) {
-		let pl = route_plan(T_.map, T_.x, T_.y);
+		// v24.59: a follower doesn't judge the way (its own verdict made it detour, refuse, or teleport while the tank
+		// walked on): it takes the shortest way, the transporter where that uses one
+		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y);
 		// v24.43: no safe way from where we stand, but there is one from this map's spawn: the town teleport takes us
 		// there (desertland's level2s door: the walk to the transporter passes the ents; the spawn is beside it)
 		if (pl?.danger && !tele_tried && typeof use_skill === "function" && !hit_on_me()) {
@@ -1047,6 +1050,10 @@ function seg_danger(map, x1, y1, x2, y2) {
 }
 // The way smart_move would walk, or if that passes deadly spawns, the shortest way around them: { d, legs, danger,
 // around } — danger set only when there's no safe way at all
+function route_plain(to_map, tx, ty) {
+	const r = route_to(to_map, tx, ty);
+	return r ? { d: r.d, legs: r.legs.some((l) => l.kind === "tp") ? r.legs : null, danger: null, around: null } : null;
+}
 function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
 	const r = route_to(to_map, tx, ty, from);
 	if (!r) return null;
@@ -1992,6 +1999,17 @@ function hit_on_me() {
 	}
 	return best;
 }
+// v24.59: a levelled-up monster of the camp's type is taken as a last resort only if the fight model, on its live
+// stats and without the calibration and penalty factors, puts it within grown_over x the party's limit. Eight level-10
+// cgoo (the type's level-1 stats had passed) were far beyond that and killed the party.
+function grown_ok(e) {
+	const def = G.monsters[e.mtype];
+	if (!def) return false;
+	const live = {};
+	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
+	const f = fight_math({ ...def, ...live, hp: e.max_hp || def.hp });
+	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over;
+}
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
 	let hitting = null, hd = Infinity;
@@ -2019,7 +2037,7 @@ function choose_target(local_ok, keep_cur = false) {
 		const f = live_ok(e);
 		if (!f) {
 			// lowest level first, then nearest; never one the party couldn't kill at all
-			if (e.mtype === want && !hopeless(e) && (!grown || (e.level || 1) < (grown.level || 1) ||
+			if (e.mtype === want && !hopeless(e) && grown_ok(e) && (!grown || (e.level || 1) < (grown.level || 1) ||
 				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
 			continue;
 		}
@@ -2218,7 +2236,7 @@ function cburst() {
 	const party = party_names(), want = state.pack?.mtype;
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const hits = Object.values(parent.entities || {}).filter((e) => e.type === "monster" && valid(e) && distance(character, e) < character.range &&
-		((e.target && party.has(e.target)) || (e.mtype === want && !e.target && live_ok(e)))).sort((a, b) => a.hp - b.hp);
+		((e.target && party.has(e.target)) || (e.mtype === want && !e.target && live_ok(e) && !tank_first(e)))).sort((a, b) => a.hp - b.hp);
 	if (hits.length < 3) return false;
 	let budget = character.mp - character.max_mp * 0.25;
 	const targets = [];
@@ -2250,9 +2268,11 @@ function fight(t, steer = true) {
 	// if we can; stopping to trade hits with it was a death (a dark hound on the way through winterland)
 	// v24.16: walking, never stop for it — whatever its speed: the walk goes on (through a door, it's left behind). Stopped,
 	// a hawk (charge 52) cornered the party at desertland's cave door and killed Sanala while they face-tanked it
-	if (t && t.target === character.name && !can_take(t) && (walking() || (character.speed || 0) > chase_speed(t.mtype))) {
+	// v24.59: only from a monster the party can't kill at all (an ent). It used to apply to anything that failed the
+	// per-monster check — so the tank, having started on a levelled-up cgoo, stepped away from it 194 times in a minute
+	// while the others fought it, and everyone died.
+	if (t && t.target === character.name && hopeless(t) && (walking() || (character.speed || 0) > chase_speed(t.mtype))) {
 		if (!walking()) step_away(t);
-		if (RANGED && can_attack(t)) fire("attack", t);
 		return;
 	}
 	if (get_targeted_monster() !== t) change_target(t);
