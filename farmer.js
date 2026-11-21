@@ -1,4 +1,4 @@
-const VERSION = "24.76"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.77"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -51,6 +51,11 @@ const CFG = {
 	                           // in one slot, so carrying more costs no bag space, and every restock is a trip saved
 	// --- bags ------------------------------------------------------------------------------------------------------
 	bag_min_free: 10,          // town run (sell + bank) when free bag slots drop below this (bags hold 42)
+	// v24.77 (owner): worn pieces with an empty Stat line get the class's main stat by stat scroll (int/str...; 8k each
+	// at the scroll seller; the server takes 1 scroll for a normal-grade piece, 10 for high, 100 for rare; it can't
+	// fail). Done on town trips, never a reason for one. max_gold_per_pt: the most a point of gear score may cost —
+	// 100k covers normal and high grade pieces; a rare one (800k for +3 of a stat) needs it raised.
+	stat_scroll: { enabled: true, max_gold_per_pt: 100_000, per_run: 3 },
 	sell: [],                  // item names to always sell
 	// v24.72 (owner): false = nothing is sold as "junk" — not plain +0 gear when the bank is full, not the merchant's
 	// bank purge, not compound pieces at their ceiling. Only the names in `sell` are sold. (What we own can still be
@@ -4512,6 +4517,38 @@ async function run_craft(a) {
 	if (ok) { state.crafted[a.recipe] = (state.crafted[a.recipe] || 0) + 1; save_state(); }
 	return r;
 }
+// ---- Stat scrolls on what we wear (CFG.stat_scroll, v24.77) ----
+// Worn pieces with a Stat line and no stat on it: { slot, name, level, stat, scroll, q, cost, pts, ok, why }
+function stat_scroll_list() {
+	const C_ = CFG.stat_scroll, cs = class_stats(character.ctype);
+	if (!C_?.enabled || is_merchant() || !cs) return [];
+	const stat = cs.main, scroll = stat + "scroll", sg = G.items[scroll]?.g, out = [];
+	if (!sg || G.items[scroll]?.type !== "pscroll") return [];
+	for (const slot of GEAR_SLOTS) {
+		const it = character.slots?.[slot], def = it && G.items[it.name];
+		if (!def || !(def.stat > 0) || it.stat_type || it.l || it.b) continue;
+		const q = [1, 10, 100, 1000][Math.max(0, item_grade(it))] || 9999, cost = q * sg;
+		const pts = (def.stat + (it.level || 0) * (def.upgrade?.stat || 0)) * stat_weight(stat, character.ctype);
+		const key = `stat:${it.name}:${it.level || 0}`;
+		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
+			: character.gold - cost < CFG.gold_reserve || !gold_ok(cost) ? `gold (${fmt_k(cost)})` : null;
+		out.push({ slot, name: it.name, level: it.level || 0, stat, scroll, q, cost, pts, key, ok: !why_, why: why_ });
+	}
+	return out.sort((a, b) => a.cost / Math.max(a.pts, 0.01) - b.cost / Math.max(b.pts, 0.01)); // cheapest per point first
+}
+async function task_stat() {
+	let n = 0;
+	for (const r of stat_scroll_list().filter((x) => x.ok).slice(0, CFG.stat_scroll.per_run)) {
+		if (state.errand) state.errand_at = Date.now();
+		try {
+			const res = await run_stat({ name: r.name, slot: r.slot, scroll: r.scroll, quantity: r.q });
+			await sleep_ms(400);
+			if (character.slots?.[r.slot]?.stat_type === r.stat) { n++; log_ev("stat", { item: r.name, stat: r.stat, q: r.q, cost: r.cost }); }
+			else { skip(r.key, 6 * 3600_000, why(res) || "not applied"); game_log(`stat scroll on ${r.name}: not applied (${why(res) || "?"}); again in 6h`, C.warn); }
+		} catch (e) { skip(r.key, pause_ms(e, 6 * 3600_000), why(e)); game_log(`stat scroll on ${r.name}: ${why(e)}`, C.dim); }
+	}
+	return n;
+}
 // Stat-scroll row: apply a stat scroll (e.g. int) to an item. Worn items must come off first; every check runs
 // before unequipping, and the finally block always puts the item back on (the scrolled copy if it worked).
 async function run_stat(a) {
@@ -4680,7 +4717,7 @@ async function guide_step(row) {
 let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated at most every 10 min)
 // The tasks a town run can do. town_due() also returns plan/min_free/pot_min/relaxed — never derive "what's due" from
 // its truthy keys: the numeric fields would make a town run permanently due.
-const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "forge", "exchange", "elixir", "sell", "restock", "bank"];
+const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "stat", "forge", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in
 // v18.8: a hunt to turn in / take is no longer urgent: it rides on the next trip (Daisy is in town)
@@ -4723,6 +4760,7 @@ function town_due(relaxed = false) {
 		compound: compound_town_due(),
 		upgrade: !skipped("town:upgrade") && upgrade_due(),
 		forge: forge_town_due(),
+		stat: !skipped("town:stat") && !!stat_scroll_list().find((r) => r.ok),
 		tokens: !skipped("town:tokens") && !!token_pick(),
 		exchange: !skipped("town:exchange") && exchange_pick() >= 0,
 		elixir: elixir_buy_due(),
@@ -4788,6 +4826,7 @@ async function town_body(due) {
 		guide_refresh(); // needs may have changed (crafted, upgraded) before deciding what to bank
 		if (compound_town_due()) did += await bag_step("compound", task_compound);
 		if (!skipped("town:upgrade") && upgrade_due()) did += await bag_step("upgrade", task_upgrade);
+		if (!skipped("town:stat") && stat_scroll_list().some((r) => r.ok)) did += await bag_step("stat", task_stat);
 		if (forge_town_due()) did += await bag_step("forge", task_craft_power);
 		if (!skipped("town:exchange") && exchange_pick() >= 0) did += await bag_step("exchange", task_exchange);
 		if (elixir_buy_due()) did += await bag_step("elixir", task_elixir);
@@ -4996,7 +5035,8 @@ function town_check() {
 	if (!what.length) return void (state.town_block = null);
 	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
 	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
-	if (what.every((k) => k === "hunt")) return void (state.town_block = { what: "hunt", blockers: ["a hunt alone waits for the next trip"], at: Date.now() });
+	// (v24.77: nor do stat scrolls)
+	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (!is_merchant() && !town_urgent(due)) {
@@ -5443,6 +5483,10 @@ function report_facts() {
 	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
 	F("worn_json", "self", `worn JSON: ${JSON.stringify(Object.fromEntries(Object.entries(character.slots || {}).filter(([k, v]) => v && !/^trade/.test(k)).map(([k, v]) => [k, v.name + (v.level ? "+" + v.level : "") + (v.stat_type ? ":" + v.stat_type : "") + (v.p ? ":" + v.p : "")])))}`);
+	if (CFG.stat_scroll?.enabled && !M_) {
+		const L = stat_scroll_list();
+		if (L.length) F("stat", "self", `stat scrolls: ${L.map((r) => `${r.name}${r.level ? "+" + r.level : ""} → ${r.stat} (${r.q} scroll${r.q === 1 ? "" : "s"}, ${fmt_k(r.cost)}, +${r.pts.toFixed(1)} pts)${r.ok ? " — on the next town trip" : " — not done: " + r.why}`).join("; ")}`);
+	}
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
 		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "shop projects are the merchant's" : "no project") + upgrade_why()}`);

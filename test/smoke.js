@@ -2547,7 +2547,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`globalThis.__td3 = town_due; globalThis.__tr3 = town_run; globalThis.__runs3 = 0; smart_depth = 0; state.errand = null;
 			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {}; state.regroup_due = false; state.ptown = null;
 			town_due = () => ({ hunt: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()`, ctx);
-		assert(vm.runInContext("globalThis.__runs3 === 0 && /hunt alone/.test(state.town_block.blockers.join())", ctx), "a hunt alone: no trip");
+		assert(vm.runInContext("globalThis.__runs3 === 0 && /hunt or stat scrolls alone/.test(state.town_block.blockers.join())", ctx), "a hunt alone: no trip");
 		vm.runInContext("town_due = () => ({ hunt: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
 		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
 		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
@@ -3377,6 +3377,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(R("bag_class(character.items[0])") === "sell" && R("bag_class(character.items[1])") !== "sell" && R("bag_class(character.items[2])") !== "sell", `sell_plain: the +0 copy is sold, the +5 and the titled one aren't (${R("[0,1,2].map((k) => bag_class(character.items[k])).join()")})`);
 			R("CFG.sell_plain = __sp137; CFG.sell_junk = true; delete state.fetched.stf137");
 			delete I.stf137; character.items = items0;
+		}
+		// v24.77: stat scrolls for worn pieces with an empty Stat line
+		{
+			const I = ctx.G.items, keep = { slots: character.slots, ctype: character.ctype, gold: character.gold };
+			I.strscroll = { type: "pscroll", stat: "str", g: 8000 };
+			I.sg0_137 = { type: "gloves", stat: 2, upgrade: { stat: 1 }, grades: [7, 9, 10, 12], armor: 5 };  // normal grade at +3
+			I.sg1_137 = { type: "pants", stat: 2, upgrade: { stat: 1 }, grades: [0, 9, 10, 12], armor: 5 };   // high grade at +0
+			I.sg2_137 = { type: "chest", stat: 3, upgrade: { stat: 1 }, grades: [0, 0, 10, 12], armor: 5 };   // rare at +0
+			I.sgx_137 = { type: "helmet", upgrade: { armor: 1 }, grades: [7, 9, 10, 12], armor: 5 };          // no Stat line
+			const ig137 = ctx.item_grade; ctx.item_grade = (it) => { const g = I[it.name]?.grades || []; let n = 0; for (const t of g.slice(0, 3)) if ((it.level || 0) >= t) n++; return n; }; // the game's rule
+			Object.assign(character, { ctype: "paladin", gold: 5_000_000 });
+			character.slots = { gloves: { name: "sg0_137", level: 3 }, pants: { name: "sg1_137", level: 0 }, chest: { name: "sg2_137", level: 0 }, helmet: { name: "sgx_137", level: 0 }, shoes: { name: "sg0_137", level: 0, stat_type: "str" } };
+			R("state.gear_skip = Object.fromEntries(Object.entries(state.gear_skip).filter(([k]) => !k.startsWith('stat:')))");
+			const L = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.stat, r.q, r.cost, r.ok]))"));
+			assert(JSON.stringify(L) === '[["gloves","str",1,8000,true],["pants","str",10,80000,true],["chest","str",100,800000,false]]',
+				`stat scrolls: the class's main stat; 1/10/100 scrolls by grade; the rare piece is over the price cap; scrolled and stat-less pieces aren't listed (${JSON.stringify(L)})`);
+			assert(R("town_due().stat") === true && /chest.*not done: 800k/.test(R("report_facts().find((f) => f.key === 'stat').text").replace(/sg2_137/, "chest")), "...due on a town trip, and the report says what is left and why");
+			for (const n of ["sg0_137", "sg1_137", "sg2_137", "sgx_137"]) delete I[n];
+			ctx.item_grade = ig137;
+			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;
 		}
 		// v24.68: the report's JSON dumps
 		assert(R("JSON.stringify(items_dump([{ name: 'b', q: 3 }, null, { name: 'a', level: 2 }, { name: 'a', level: 2 }, { name: 'c', l: 'l' }, { name: 'b', q: 2 }]))") === '{"a+2":2,"b":5,"c*":1}', "items_dump: name+level → count, stacks summed, * for locked, sorted");
