@@ -1317,3 +1317,95 @@ function refresh_directive() {
 		state.last_pick = 0;
 	}
 }
+// ---- moved from common.js (v24.95): used by the fighters only ----
+// Self-tuning safety (CFG.safety_tune): up a step after every step_h without a death or flee; down on a flee; reset on
+// a death. Checked every minute; the clock restarts on every change.
+function safety_tune(ev) {
+	const T_ = CFG.safety_tune, now = Date.now();
+	if (!T_?.enabled || is_merchant()) return;
+	const own = () => Math.min(CFG.safety * (state.safety_mult || 1), T_.max), was = own();
+	if (!state.safety_at) state.safety_at = now;
+	if (ev === "death") state.safety_mult = 1;
+	else if (ev === "flee") state.safety_mult = Math.max(1, (state.safety_mult || 1) * T_.down);
+	else if (now - state.safety_at >= T_.step_h * 3600_000 && own() < T_.max) state.safety_mult = (state.safety_mult || 1) * T_.up;
+	else return;
+	state.safety_at = now;
+	if (own() !== was) {
+		log_ev("safety", { to: +own().toFixed(3), why: ev || "calm" });
+		game_log(`safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP per kill (${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
+		state.last_pick = 0;
+	}
+}
+setInterval(() => { try { safety_tune(); } catch (e) {} }, 60_000);
+// v19.7/v20.0: a worn piece of ours that's an upgrade for a member near: take it off and send it. The member wears it
+// (equip_upgrades), its old piece drops into its bags and share_gear sends it back (our slot is empty), and we wear
+// that. The receiver gains by the usual margins; we may lose up to gear_swap_loss of its gain (the party total goes
+// up). The member with the alphabetically first name starts, so the two don't both send at once.
+let swap_at = 0;
+async function swap_worn() {
+	if (!CFG.gear_auto || gear_busy || character.rip || is_merchant() || errand_busy() || typeof send_item !== "function" || typeof unequip !== "function") return false;
+	if (Date.now() - swap_at < 60_000 || character.esize < 1) return false;
+	const mine = my_gear(), sl = character.slots || {};
+	for (const p of partners_near(CFG.gear_share_range)) {
+		if (!p.worn || !p.gear?.w || (p.esize ?? 1) < 1) continue;
+		for (const s of GEAR_SLOTS) {
+			// v24.7: weapons/offhands too (priest and mage share staves, sources, misc offhands) — but no two-handers (the
+			// offhand would have to come off first)
+			const X = sl[s], Y = p.worn[s];
+			if ((s === "mainhand" || s === "offhand") && X && Y && (is_2h(X.name, p.ctype) || is_2h(Y.name, character.ctype) || is_2h(X.name, character.ctype) || is_2h(Y.name, p.ctype))) continue;
+			// v24.5: their piece must be free too (a locked one would stay in their bags and ours would be lost to them)
+			if (!X || !Y || X.l || X.b || Y.l || (X.name === Y.name && (X.level || 0) === Y.level)) continue;
+			if (!slots_for(Y.name, character.ctype, mine).includes(s) || !slots_for(X.name, p.ctype, p.gear).includes(s)) continue;
+			const ours = slot_value(Y, character.ctype, mine, s) - (mine.w[s] || 0), theirs = slot_value(X, p.ctype, p.gear, s) - (p.gear.w[s] || 0);
+			const ok = (gain, cur) => gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin;
+			// the receiver must gain by the usual margins; we may lose up to gear_swap_loss of that, so the party gains
+			if (!ok(theirs, p.gear.w[s] || 0) || ours < -theirs * CFG.gear_swap_loss || !(ours + theirs >= 2 * CFG.gear_min_gain)) continue;
+			// v24.7: the giver is whoever's partner gains (it equips what it's sent); when both gain, the earlier name gives.
+			// Only the earlier name started before, checking only the other's gain: a swap where it should receive never ran
+			if (character.name > p.name && ok(ours, mine.w[s] || 0)) continue;
+			swap_at = Date.now();
+			gear_busy = true;
+			try {
+				await T(unequip(s));
+				const k = character.items.findIndex((i) => i && i.name === X.name && (i.level || 0) === (X.level || 0) && !i.l);
+				if (k < 0) return false;
+				await T(send_item(p.name, k, 1));
+				game_log(`gear: swap — gave our ${s} ${X.name}+${X.level || 0} to ${p.name} (+${Math.round(theirs)} for it), its ${Y.name}+${Y.level} comes back (+${Math.round(ours)} for us)`, C.ok);
+				log_ev("gear_swap", { with: p.name, slot: s, gave: `${X.name}+${X.level || 0}`, get: `${Y.name}+${Y.level}` });
+				return true;
+			} catch (e) { game_log(`gear: swap with ${p.name}: ${why(e)}`, C.dim); return false; } finally { gear_busy = false; }
+		}
+	}
+	return false;
+}
+// The event to be at: live in the server's event list, and safe for us (its safe_from monster passes fight_math)
+function event_live() {
+	if (is_merchant() || character.rip) return null;
+	for (const name in CFG.events || {}) {
+		const ev = CFG.events[name];
+		if (!ev.on || !ev_info(name)) continue;
+		const sf = ev.safe_from && G.monsters[ev.safe_from];
+		if (sf && !safe_enough(fight_math(sf), ev.safe_from)) continue;
+		return name;
+	}
+	return null;
+}
+// ---- Stat scrolls on what we wear (CFG.stat_scroll, v24.77) ----
+// Worn pieces with a Stat line and no stat on it: { slot, name, level, stat, scroll, q, cost, pts, ok, why }
+function stat_scroll_list() {
+	const C_ = CFG.stat_scroll, cs = class_stats(character.ctype);
+	if (!C_?.enabled || is_merchant() || !cs) return [];
+	const stat = cs.main, scroll = stat + "scroll", sg = G.items[scroll]?.g, out = [];
+	if (!sg || G.items[scroll]?.type !== "pscroll") return [];
+	for (const slot of GEAR_SLOTS) {
+		const it = character.slots?.[slot], def = it && G.items[it.name];
+		if (!def || !(def.stat > 0) || it.stat_type || it.l || it.b) continue;
+		const q = [1, 10, 100, 1000][Math.max(0, item_grade(it))] || 9999, cost = q * sg;
+		const pts = (def.stat + (it.level || 0) * (def.upgrade?.stat || 0)) * stat_weight(stat, character.ctype);
+		const key = `stat:${it.name}:${it.level || 0}`;
+		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : (it.level || 0) < (C_.min_level || 0) ? `only at +${C_.min_level} or higher` : cost > (C_.max_cost ?? Infinity) ? `${fmt_k(cost)} is over ${fmt_k(C_.max_cost)} for one piece` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
+			: character.gold - cost < CFG.gold_reserve || !gold_ok(cost) ? `gold (${fmt_k(cost)})` : null;
+		out.push({ slot, name: it.name, level: it.level || 0, stat, scroll, q, cost, pts, key, ok: !why_, why: why_ });
+	}
+	return out.sort((a, b) => a.cost / Math.max(a.pts, 0.01) - b.cost / Math.max(b.pts, 0.01)); // cheapest per point first
+}
