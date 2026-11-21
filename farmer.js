@@ -1,4 +1,4 @@
-const VERSION = "24.40"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.41"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -561,15 +561,31 @@ async function go_route(dest, ms) {
 			for (const L of pl.legs) {
 				if (character.map !== L.map) break; // moved some other way meanwhile: the last walk below finishes it
 				if (L.kind === "tp") {
-					// v24.40: beside the transporter, not onto its tile (blocked: "Path not found!" from desertland's door —
-					// the walk failed and the party stood there). The NPC's own position is the second try.
-					await go_raw({ map: L.map, x: L.x, y: L.y + NPC_STAND_Y }, ms).catch((e) => { if (e?.reason === "walk_timeout" || e?.reason === "fleeing") throw e; return go_raw({ map: L.map, x: L.x, y: L.y }, ms); });
+					await go_transporter(L, ms);
 					if (typeof transport === "function") await T(transport(L.to, L.s), 25_000);
 				} else await go_raw({ map: L.to, x: L.tx, y: L.ty }, ms);
 			}
 		}
 	}
 	return go_raw(dest, ms);
+}
+// v24.41: walk to a transporter. The ground nearest one can be 50-60px from the NPC (desertland: nothing walkable within
+// 55px; winterland 48px — measured on the map geometry), so the pathfinder finds no way to the NPC's own point or just
+// below it ("Path not found!", twice, and the party stood at desertland's door). The server lets us use it from 160px
+// (B.transporter_dist): try points 65px out — below, right, left, the diagonals — then the old ones; the one that
+// worked on a map is tried first next time.
+const TP_SPOTS = [[0, 65], [65, 0], [-65, 0], [46, 46], [-46, 46], [0, -65], [0, 30], [0, 0]];
+const tp_spot = {}; // map -> index into TP_SPOTS that worked
+async function go_transporter(L, ms) {
+	const order = [...new Set([tp_spot[L.map] ?? 0, ...TP_SPOTS.keys()])];
+	let err = null;
+	for (const i of order) {
+		// in reach already (160px on the server; 120 leaves room for lag)
+		if (character.map === L.map && Math.hypot(character.x - L.x, character.y - L.y) < 120) return;
+		try { await go_raw({ map: L.map, x: L.x + TP_SPOTS[i][0], y: L.y + TP_SPOTS[i][1] }, ms); tp_spot[L.map] = i; return; }
+		catch (e) { err = e; if (e?.reason !== "failed") throw e; } // "failed" = no path to that point: try the next
+	}
+	throw err || { reason: "failed" };
 }
 async function go_raw(dest, ms = CFG.walk_timeout_ms) {
 	// v24.8: no walks while fleeing — an errand's next step started one each time recover() stopped the last, and moving

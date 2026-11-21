@@ -3359,7 +3359,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.smart_move = (d) => { walks.push(typeof d === "string" ? d : `${d.map}:${d.x},${d.y}`); if (d.map) character.map = d.map; return Promise.resolve(); };
 		ctx.transport = (m, sp) => { tps.push(m); character.map = m; return Promise.resolve({ success: true }); };
 		await vm.runInContext("go({ map: 'sand', x: 100, y: 100 })", ctx);
-		assert(JSON.stringify(walks) === '["town:300,30","sand:100,100"]' && JSON.stringify(tps) === '["sand"]', `beside the transporter (30px below it), across, then the spot — not through the cave (${JSON.stringify([walks, tps])})`);
+		assert(JSON.stringify(walks) === '["town:300,65","sand:100,100"]' && JSON.stringify(tps) === '["sand"]', `beside the transporter (65px below it: within the 160px the server allows), across, then the spot — not through the cave (${JSON.stringify([walks, tps])})`);
 		// the pit: only reachable through the cave → don't go
 		walks.length = 0; character.map = "town";
 		vm.runInContext("rt_cache.clear(); globalThis.__g128 = go({ map: 'pit', x: 0, y: 0 }).then(() => 'went', (e) => e.reason)", ctx);
@@ -3815,6 +3815,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("fight_math(G.monsters.hard141, true, 'party').mates") === 1, "a member on an errand isn't counted");
 		R("CFG.party.tank_leads = false; state.partners = {}"); delete ctx.G.monsters.hard141;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0 });
+	}
+	// 142) v24.41: the transporter leg tries points around the NPC until the pathfinder finds a way; in reach: no walk
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const sm = ctx.smart_move, tried = [];
+		Object.assign(character, { map: "desertland", x: 600, y: -2365, rip: false });
+		R("state.recovering = false; for (const k in tp_spot) delete tp_spot[k]");
+		ctx.smart_move = (d) => { tried.push([d.x, d.y]); return d.x === 51 ? Promise.resolve() : Promise.reject({ reason: "failed" }); }; // only the point to the right is reachable
+		await R("go_transporter({ map: 'desertland', x: -14, y: -477 }, 5000)");
+		assert(JSON.stringify(tried) === "[[-14,-412],[51,-477]]" && R("tp_spot.desertland") === 1, `below fails, right works, and is remembered (${JSON.stringify(tried)})`);
+		tried.length = 0; await R("go_transporter({ map: 'desertland', x: -14, y: -477 }, 5000)");
+		assert(JSON.stringify(tried) === "[[51,-477]]", "next time the point that worked goes first");
+		tried.length = 0; Object.assign(character, { x: 40, y: -470 });
+		await R("go_transporter({ map: 'desertland', x: -14, y: -477 }, 5000)");
+		assert(tried.length === 0, "already within reach of it: no walk");
+		ctx.smart_move = sm; Object.assign(character, { map: "main", x: 0, y: 0 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
