@@ -1,4 +1,4 @@
-const VERSION = "24.67"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.68"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3564,6 +3564,12 @@ const bank_packs_list = () => (typeof bank_packs !== "undefined" && bank_packs) 
 // a fresher one). A changed snapshot is shared with the other characters (at most once a minute), who adopt it when
 // it's newer than theirs: the merchant banks most often, so fighters stop chasing pieces someone already took.
 let bank_hash = "", bank_sent_at = 0;
+// Items as { "name": qty, "name+3": qty, "name*": qty (locked) } — the report's JSON dumps (v24.68)
+function items_dump(items) {
+	const d = {};
+	for (const i of items || []) if (i) { const k = i.name + (i.level ? "+" + i.level : "") + (i.l ? "*" : ""); d[k] = (d[k] || 0) + (i.q || 1); }
+	return Object.fromEntries(Object.entries(d).sort((a, b) => (a[0] < b[0] ? -1 : 1)));
+}
 function remember_bank() {
 	if (!character.bank || !on_bank_floor()) return;
 	const seen = {};
@@ -3577,6 +3583,7 @@ function remember_bank() {
 		if ((GEAR.has(G.items[i.name]?.type) || G.items[i.name]?.type === "elixir") && gear.length < 400) gear.push({ name: i.name, level: i.level || 0, p: i.p, stat_type: i.stat_type });
 	}
 	state.bank_seen = seen;
+	state.bank_dump = items_dump(Object.keys(character.bank).filter((k) => k.startsWith("items")).flatMap((k) => character.bank[k] || [])); // v24.68: everything, for report()
 	state.bank_gear = gear;
 	state.bank_at = Date.now();
 	state.bank_by = character.name;
@@ -3584,7 +3591,7 @@ function remember_bank() {
 	if (h !== bank_hash && Date.now() - bank_sent_at > 60_000 && typeof send_cm === "function") {
 		bank_hash = h; bank_sent_at = Date.now();
 		const to = party_names_all().filter((n) => n !== character.name);
-		if (to.length) Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen, gear, free: state.bank_free })).catch(() => {});
+		if (to.length) Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen, gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
 	}
 }
 // Another character's bank snapshot: adopt it if it's newer than ours
@@ -3593,6 +3600,7 @@ function adopt_bank(m) {
 	if (!(b.at > (state.bank_at || 0)) || !b.seen || !Array.isArray(b.gear)) return;
 	Object.assign(state, { bank_seen: b.seen, bank_gear: b.gear, bank_at: b.at, bank_by: m.name });
 	if (b.free) state.bank_free = b.free;
+	if (b.dump && typeof b.dump === "object") state.bank_dump = b.dump;
 	cmp_cache = null;
 }
 setInterval(remember_bank, 2000);
@@ -5029,7 +5037,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
-		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
+		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -5079,6 +5087,7 @@ function load_state() {
 	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
+	if (d.bank_dump && typeof d.bank_dump === "object") state.bank_dump = d.bank_dump;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.upg_caps && typeof d.upg_caps === "object") state.upg_caps = d.upg_caps;
@@ -5308,6 +5317,10 @@ function report_facts() {
 		if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
 		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[purge_key(i)]).length;
 		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+		// v24.68: everything in the bank (as last seen) and in the merchant's bags, as JSON: "name+level" → count, * = locked
+		F("bank_json", "self", state.bank_dump ? `bank JSON (seen ${ago(state.bank_at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""}): ${JSON.stringify(state.bank_dump)}`
+			: "bank JSON: nothing recorded yet — it's taken on the next bank visit by any character");
+		F("bags_json", "self", `bags JSON: ${JSON.stringify(items_dump(character.items))}`);
 		if (merrit_on()) {
 			const sp = state.mspot, st = state.stand_since ? Math.round((now - state.stand_since) / 1000) : 0;
 			const got = hist.ev.filter((e) => e.type === "parcel" && now - e.t < 86_400_000).reduce((a, e) => a + (e.n || 1), 0);
@@ -5333,9 +5346,10 @@ function report_facts() {
 			const pr = hold_price(n);
 			return M_ ? `${n} missing — a fighter buys it (${pr} tokens)` : `${n} missing — ${tok >= pr ? `buying (${pr} tokens)` : `${tok}/${pr} tokens`}`;
 		});
-		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}`);
+		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}${b.to ? ` (to upgrade to +${b.to})` : ""}`);
+		else parts.push(`monster tokens: ${tok}`); // v24.68: always shown
 		if (Object.keys(state.hold_for).length) parts.push(`for the merchant: ${Object.keys(state.hold_for).join(", ")}`);
-		if (parts.length) F("hold", "self", `hold: ${parts.join(" | ")}`, !miss.length && !(b && !b.hold) && !Object.keys(state.hold_for).length);
+		if (parts.length) F("hold", "self", `hold: ${parts.join(" | ")}`, !miss.length && !(b && !b.hold) && !Object.keys(state.hold_for).length && !(tok > 0));
 	}
 	{
 		const c = CFG.craft_power && craft_pick();
