@@ -1,4 +1,4 @@
-const VERSION = "24.72"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.73"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3083,8 +3083,26 @@ async function run_compound(a, row, floor) {
 const compound_key = (name, level) => `cmp:${name}:${level}`;
 function compound_spare(it, k, needed) {
 	const def = it && G.items[it.name];
+	// v24.73: a copy a member would wear is no longer left out. Three skull amulets sat in the merchant's bags, each
+	// "wanted" for one empty amulet slot, so there was never a set of three; the +1 goes to whoever wanted the +0.
 	return !!def?.compound && !it.l && !it.b && !it.p && !needed.has(k) && (it.level || 0) < cmp_top(it.name) &&
-		!CFG.keep.includes(it.name) && !gear_wanted_by(it);
+		!CFG.keep.includes(it.name);
+}
+// Report: three or more equal copies in the bags that aren't being compounded, and why
+function compound_why() {
+	const by = {}, needed = needed_slots(), groups = compound_groups();
+	character.items.forEach((it, k) => { if (it && G.items[it.name]?.compound) (by[compound_key(it.name, it.level || 0)] = by[compound_key(it.name, it.level || 0)] || []).push([it, k]); });
+	const out = [];
+	for (const key in by) {
+		const L = by[key], [it] = L[0];
+		if (L.length < 3 || groups.some((g) => g.key === key)) continue;
+		const lv = it.level || 0;
+		const why_ = skipped(key) ? `paused ${mins(state.gear_skip[key])} (${skip_why[key] || "?"})` : lv >= cmp_top(it.name) ? `+${lv} is its ceiling here (max +${CFG.compound_max_level}, or the odds were under ${Math.round(CFG.compound_min_chance * 100)}%)`
+			: CFG.keep.includes(it.name) ? "on the keep list" : L.some(([i]) => i.l || i.b) ? "locked or bound copies" : L.some(([i]) => i.p) ? "titled copies" : L.some(([, k]) => needed.has(k)) ? "copies held for a quest or project"
+			: !CFG.compound_auto ? "compound_auto is off" : !is_merchant() && merchant_does_it() ? "the merchant compounds" : "?";
+		out.push(`${it.name}+${lv} x${L.length}: ${why_}`);
+	}
+	return out;
 }
 // Compound ceilings (v24.15): item -> { level, at } where the server's odds were under our floor; 7 days (saved)
 const cmp_cap = (name, level) => { state.cmp_caps[name] = { level, at: Date.now() }; cmp_cache = null; };
@@ -5415,8 +5433,10 @@ function report_facts() {
 	}
 	if (CFG.compound_auto) {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
+		const cw = compound_why();
 		F("compound", "self", `compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
-			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : ""), !gs.length && !paused.length);
+			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : "") +
+			(cw.length ? ` | not compounded: ${cw.join("; ")}` : "") + (town_reason.compound ? ` | last: ${town_reason.compound}` : ""), !gs.length && !paused.length && !cw.length);
 	}
 	if (CFG.probe?.enabled && !M_ && (!in_party_cfg() || leader_name() === character.name)) {
 		const P = state.probe, last = [...hist.ev].reverse().find((e) => e.type === "probe");

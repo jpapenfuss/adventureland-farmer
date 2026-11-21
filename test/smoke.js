@@ -1003,6 +1003,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.needs = new Map(); state.bank_gear = [{ name: 'ringx', level: 0 }]; state.fetch_try = {}; state.gear_skip = {}; state.partners = {}; cmp_cache = null", ctx);
 	const g48 = vm.runInContext("JSON.stringify(compound_groups())", ctx);
 	assert(/"bags":\[2,3\],"bank":1/.test(g48), `group counts 2 bag spares + 1 bank copy, not the locked one (${g48})`);
+	// v24.73: copies a member would wear still make a set (three skull amulets, each "wanted" for one empty slot, never combined)
+	{ const sl = character.slots; character.slots = {}; ctx.G.items.ringx.attack = 60; vm.runInContext("cmp_cache = null; my_gear_cache = null", ctx);
+		assert(vm.runInContext("!!gear_gain({ name: 'ringx', level: 0 }, character.ctype, my_gear())", ctx), "setup: with empty ring slots we'd wear a ringx");
+		assert(/"bags":\[2,3\],"bank":1/.test(vm.runInContext("JSON.stringify(compound_groups())", ctx)), "...and the copies still count toward a set of three");
+		character.items[6] = { name: "ringx", level: 2 }; character.items[7] = { name: "ringx", level: 2 }; character.items[8] = { name: "ringx", level: 2 };
+		vm.runInContext("state.cmp_caps = { ringx: { level: 2, at: Date.now() } }; cmp_cache = null", ctx);
+		assert(/ringx\+2 x3: \+2 is its ceiling/.test(vm.runInContext("compound_why().join('; ')", ctx)), `the report says why three equal copies aren't combined (${vm.runInContext("compound_why().join('; ')", ctx)})`);
+		character.items[6] = character.items[7] = character.items[8] = null;
+		ctx.G.items.ringx.attack = 2; character.slots = sl; vm.runInContext("state.cmp_caps = {}; cmp_cache = null; my_gear_cache = null", ctx); }
 	const fx48 = vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx);
 	assert(/cmp:ringx:0:0/.test(fx48), `missing copy fetched from the bank (${fx48})`);
 	assert(vm.runInContext("bag_class(character.items[2])", ctx) === "keep", "group copies stay in the bags (not banked)");
