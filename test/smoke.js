@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.probe.enabled = true; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -1032,12 +1032,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.items.scroll0 = { type: "uscroll", g: 1000 }; ctx.G.items.scroll1 = { type: "uscroll", g: 40000 };
 	ctx.G.items.nhelm = { type: "helmet", armor: 5, upgrade: { armor: 6 }, g: 2000 };
 	ctx.G.npcs.armorer = { items: ["nhelm"] };
+	ctx.G.items.xhelm49 = { type: "helmet", armor: 50, upgrade: { armor: 20 }, g: 1000 }; // v24.71: far better per gold, but nobody sells it
 	const fn_save = ctx.find_npc; ctx.find_npc = () => ({ map: "main", x: 0, y: 0 });
 	Object.assign(character, { name: "Torlis", ...tor, gold: 5e6, rip: false });
 	character.slots = { helmet: { name: "helm1", level: 0 } }; character.items = Array(42).fill(null);
 	character.items[0] = { name: "computer" }; character.items[1] = { name: "scroll0", q: 20 }; character.items[2] = { name: "nhelm", level: 0 };
 	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null", ctx);
-	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
+	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked — the best piece an NPC sells, though one nobody sells scores higher (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
+	delete ctx.G.items.xhelm49;
 	const to49 = vm.runInContext("state.upg.to", ctx);
 	assert(vm.runInContext("needed_slots().has(2)", ctx), "project copy protected (not equipped/sent/banked mid-project)");
 	const ups49 = [];

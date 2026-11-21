@@ -1,4 +1,4 @@
-const VERSION = "24.70"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.71"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -186,7 +186,7 @@ const CFG = {
 	// ui(w, h, font) in the console sets the log's size and font.
 	// v24.21: off — enlarging the log in place pushed it under the DOCS panel and moved the tutorial/level bars
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14 },
-	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
+	town_soft_gap_ms: 3_600_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 60 min (v24.71: was 20 — the party sits at its camp)
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
 	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
 	                           //   everything bankable, so the next trip isn't a potion/bag one 10 min later
@@ -3213,6 +3213,9 @@ const upg_cap = (name, level) => { state.upg_caps[name] = { level, at: Date.now(
 const upg_cap_level = (name) => { const c = state.upg_caps[name]; return c && Date.now() - c.at < 7 * 86400_000 ? c.level : Infinity; };
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
 // Best project: the NPC-sold piece whose upgraded copy beats a member's worn piece by the most points per gold
+// Is it sold by an NPC we can find? (cached: G doesn't change)
+const sold_c = new Map();
+const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
 function pick_upgrade() {
 	const room = gold_room(), gold = Math.min(upgrade_gold(), room), budget = gold * CFG.upgrade_spend, H = CFG.upgrade_high;
 	if (!CFG.upgrade_auto || budget <= 0) return null;
@@ -3221,6 +3224,9 @@ function pick_upgrade() {
 	for (const name in G.items) {
 		const def = G.items[name];
 		if (!def.upgrade || !GEAR.has(def.type) || def.cash || skipped("upg:" + name) || CFG.quest_craft_skip.includes(name)) continue;
+		// v24.71: only what an NPC sells. The check used to come after the winner was chosen — over every item in the
+		// game: when a piece nobody sells scored best (pyjamas, for Torlis), there was no project at all, ever.
+		if (!sold_by_npc(name)) continue;
 		// normal target (scroll0/1 levels) and, for weapon slots, the high target (scroll2 levels too)
 		const targets = [[upgrade_target(name), budget, false]];
 		if (H?.enabled) targets.push([upgrade_target(name, true), gold * H.spend, true]);
@@ -3244,7 +3250,7 @@ function pick_upgrade() {
 			}
 		}
 	}
-	return best && shop_for(best.name) ? best : null; // shop_for is the slow check: only for the winner
+	return best;
 }
 // Why there's no project (report): our own pieces that would win once upgraded, and the best shop pieces with what
 // stops each
@@ -3259,7 +3265,7 @@ function upgrade_why() {
 		const gold = Math.min(upgrade_gold(), gold_room()), budget = gold * CFG.upgrade_spend, takers = gear_takers().filter((m) => m.ctype !== "merchant"), rows = [];
 		for (const name in G.items) {
 			const def = G.items[name];
-			if (!def.upgrade || !GEAR.has(def.type) || def.cash) continue;
+			if (!def.upgrade || !GEAR.has(def.type) || def.cash || !sold_by_npc(name)) continue;
 			const to = Math.min(upgrade_target(name), upg_cap_level(name));
 			if (!to) continue;
 			let g = null;
@@ -3268,7 +3274,7 @@ function upgrade_why() {
 			const cost = upgrade_cost(name, to);
 			const stop = skipped("upg:" + name) ? "paused" : cost > budget ? `costs ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
 				: best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to) ? "a copy at that level exists already"
-				: !shop_for(name) ? "not sold by an NPC" : "eligible";
+				: "eligible";
 			rows.push({ name, to, g, stop });
 		}
 		rows.sort((a, b) => b.g.gain - a.g.gain);
