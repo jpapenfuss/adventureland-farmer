@@ -1,4 +1,4 @@
-const VERSION = "24.75"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.76"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -56,10 +56,10 @@ const CFG = {
 	// bank purge, not compound pieces at their ceiling. Only the names in `sell` are sold. (What we own can still be
 	// upgraded into something worth wearing.) With the bank full, things then stay in the bags.
 	sell_junk: false,
-	// v24.74: names whose plain copies (+0, untitled, unlocked) are sold to an NPC, also out of the bank (the merchant
-	// pulls them on its bank visits). For bulk leftovers nobody can use: 47 plain staffs, one bank slot each, that an
-	// NPC sells again for 12k apiece. Upgraded or titled copies are never touched.
-	sell_plain: ["staff"],
+	// Names whose plain copies (+0, untitled, unlocked) are sold to an NPC, also out of the bank (the merchant pulls them
+	// on its bank visits). EMPTY by default (v24.76): v24.74 shipped it as ["staff"] without the owner asking — after
+	// the owner had said to stop selling junk — and 22 staffs were sold. Only the owner puts names here.
+	sell_plain: [],
 	auto_sell_gear: false,     // true: sell +0 normal-grade untitled gear (worth <= sell_max_value) instead of banking it
 	sell_max_value: 20_000,    // never auto-sell gear the NPC values above this much gold
 	sell_batch: 4,             // with a computer (sells from anywhere): sell as soon as this many junk items pile up
