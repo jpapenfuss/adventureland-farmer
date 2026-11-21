@@ -1,4 +1,4 @@
-const VERSION = "24.35"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.36"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1295,6 +1295,11 @@ function pick_pack() {
 		const cur_v = (cur.est > 0 ? meas_aged(pack_key(cur), cur.est * state.realism) : meas()[pack_key(cur)] ?? cur.score) * walk_factor(cur); // v24.6: aged; v24.9: walk left
 		if (best.score < cur_v * (occupied(pack_key(cur)) ? CFG.party.split.occupied_mult : 1) * CFG.switch_margin) best = cur;
 	}
+	// v24.36: leaving a spot because it stopped passing the safety check (not for a better one): it rests 5 min. A verdict
+	// near the limit flipped with every small change in the party's stats, and the leader walked between two spots
+	// (72 changes in an hour, cgoo ↔ booboo, through the door between them).
+	if (cur && !cur.boss && !cur.probe && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
+		state.cooldown[pack_key(cur)] = Math.max(state.cooldown[pack_key(cur)] || 0, now + 300_000);
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
 	// split, nothing we can farm alone: follow the leader for a while (is_follower turns true until split_fallback)
 	if (!best && split_now() && leader_name() !== character.name) state.split_fallback = now + CFG.party.split.fallback_min * 60_000;
@@ -2554,7 +2559,8 @@ const travel_off_slots = () => new Set(state.travel_off.map((r) => r.slot));
 const travel_resync = () => { if (character.moving) try { stop("move"); } catch (e) {} };
 // v24.31: our combat stats with everything on (taken as the pieces come off): the heartbeat keeps sending these, so the
 // leader doesn't judge spots on a priest without its staff
-let travel_full = null;
+// v24.36: kept in state and saved with travel_off — after a reload mid-walk the pieces were still off but these were
+// gone, so the heartbeat sent the stripped stats again and the leader's verdicts flipped with every swap
 const HB_COMBAT = ["attack", "frequency", "max_hp", "armor", "resistance", "range", "apiercing", "rpiercing", "max_mp"];
 const travel_stats = { off: 0, on: 0, last: null, at: 0 }; // report: pieces taken off / put back since load, the last action
 let travel_restored_at = 0;
@@ -2562,7 +2568,7 @@ async function travel_strip() {
 	const T_ = CFG.travel_gear;
 	const cands = travel_candidates().slice(0, Math.max(0, character.esize - T_.keep_free)); // each needs a free bag slot
 	let n = 0;
-	if (cands.length && !state.travel_off.length) travel_full = Object.fromEntries(HB_COMBAT.map((k) => [k, character[k] || 0]));
+	if (cands.length && !state.travel_off.length) state.travel_full = Object.fromEntries(HB_COMBAT.map((k) => [k, character[k] || 0]));
 	for (const c of cands) {
 		if (gear_busy || !can_spend(EMIT_COST.unequip, RESERVE.errand)) break;
 		gear_busy = true;
@@ -2624,6 +2630,8 @@ async function travel_gear_tick() {
 	if (channeling()) return; // equip/unequip cancel the town channel (server: player.c = {})
 	travel_busy = true;
 	try {
+		// pieces off but no full-gear stats to report for them (saved by a version before v24.36): back on first
+		if (state.travel_off.length && !state.travel_full) return void (await travel_restore("no full-gear stats"));
 		const long = travel_long();
 		if (!long && !state.travel_off.length) return; // nothing off, no long walk: nothing to judge
 		const danger = travel_danger();
@@ -4709,7 +4717,7 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
+		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -4741,7 +4749,8 @@ function load_state() {
 	if (d.bank_full_at) state.bank_full_at = d.bank_full_at;
 	Object.assign(state.fetched, d.fetched || {});
 	Object.assign(state.fetch_try, d.fetch_try || {});
-	if (Array.isArray(d.travel_off)) state.travel_off = d.travel_off; // v24.27: a reload mid-walk still puts them back on
+	if (Array.isArray(d.travel_off)) state.travel_off = d.travel_off;
+	if (d.travel_full) state.travel_full = d.travel_full; // v24.27: a reload mid-walk still puts them back on
 	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
@@ -5634,7 +5643,7 @@ function heartbeat() {
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
 		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
 		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing() };
-	if (state.travel_off.length && travel_full) Object.assign(msg, travel_full); // v24.31: as with everything on
+	if (state.travel_off.length && state.travel_full) Object.assign(msg, state.travel_full); // v24.31: as with everything on
 	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
 	Promise.resolve(send_cm(to, msg)).catch(() => {});
 }
