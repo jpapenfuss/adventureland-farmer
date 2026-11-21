@@ -27,7 +27,11 @@ In the code as of v24.50:
   Without a live tank nobody starts a fight. A suicide blames no camp.
 - [x] Stage 2 (v24.53): deleted the solo and split code (split mode, A/B, `duo_check`, `hold_grind`, spread, convoy, solo
   judging in the fight model, leadership other than the tank).
-- [ ] Stage 3: followers execute orders; only the tank runs `town_check`, picks targets and camps.
+- [x] Stage 3 (v24.56–v24.58): followers execute. A follower never picks or approaches an untouched monster, never
+  walks to the camp alone, never starts a town trip (it reports `tn` in its heartbeat and the tank takes the party),
+  never joins an event by itself, has no keep-away steps, kiting or route refusal of its own, and the watchdog no
+  longer sends it to town. What a follower still does by itself: heal, hit what already targets the party (closing
+  in on it), stay beside the tank, loot, drink potions, wear its gear.
 - [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.
 
 Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the

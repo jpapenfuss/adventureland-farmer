@@ -1,4 +1,4 @@
-const VERSION = "24.57"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.58"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1643,14 +1643,6 @@ function watchdog() {
 		const away = !!pos && !L.rip && !L.errand && (pos.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far) &&
 			!(state.follow_block && now - state.follow_block.at < 60_000); // v24.16: held back on purpose (a deadly way), not lost
 		wd.lost_since = away ? wd.lost_since || now : null;
-		if (away && now - wd.lost_since > W.lost_min * 60_000) {
-			wd.lost_since = null;
-			wd_act("lost", `${Math.round(W.lost_min)} min away from ${L.name}; town, then back to it`);
-			halt("watchdog");
-			state.travel_block_until = 0;
-			errand("regroup", async () => { await T(use_skill("use_town"), 8000).catch(() => {}); await sleep_ms(4000); const L2 = leader_hb(); if (L2) await go(partner_pos(L2)).catch(() => {}); });
-			return;
-		}
 		const f = since(W.frozen_min);
 		if (still(f) && no_hits(f) && !away) { // a follower glued in place while the leader is near: walk back to it
 			reset();
@@ -4760,6 +4752,18 @@ function town_check() {
 	const townies = partners().filter((p) => p.errand === "town").map((p) => p.name);
 	const due = town_due(townies.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
+	// v24.58: a follower in need of town (bags, potions) says so in its heartbeat; the tank's trip takes the party
+	const asks = is_merchant() ? [] : partners().filter((p) => p.tn).map((p) => `${p.name}: ${p.tn}`);
+	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
+		if (walking()) return void halt("town_check");
+		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
+		if (state.town_runs.length < 6) {
+			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
+			game_log(`Town: the party goes — ${asks.join(", ")}${what.length ? `; ours: ${what.join("+")}` : ""}`, C.dim);
+			if (town_run(due)) ptown_start(what.length ? what : ["a member's needs"]);
+			return;
+		}
+	}
 	if (!what.length) return void (state.town_block = null);
 	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
 	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
@@ -5685,7 +5689,7 @@ function apply_verdict(v, from) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : null, xpm: xp_mult(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, tn: is_follower() && !errand_busy() ? town_urgent(town_due()) || null : null, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : null, xpm: xp_mult(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -6452,10 +6456,6 @@ function follower_tick() {
 		: L.recovering && state.pack ? state.pack : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
-	// v24.14; v24.16: not mid-walk; v24.25: only at our spot (not while following or travelling)
-	const at_spot = !!state.pack && character.map === state.pack.map && in_boundary(state.pack.boundary, 250);
-	const lm = !walking() && at_spot ? looming() : null;
-	if (lm) { keep_away(lm); const a = hit_on_me(); if (a && a !== lm) fight(a, false); return; }
 	// v24.57: a follower never walks to the camp on its own. While the leader is on an errand (a town trip: the party
 	// is in town together) it waits where it is in town — or walks to town if it somehow isn't there; otherwise it
 	// goes to the leader. The old rule (v18.8: "leader on an errand → go and fight at its camp") sent Aspernari off to
@@ -6481,16 +6481,11 @@ function follower_tick() {
 		if (get_targeted_monster() !== t) change_target(t);
 		if (engaged) break_walk_for(t);
 		// close in on targets out of reach; kiting (ranged, when the target is on us) takes precedence
-		if (engaged && !walking() && !errand_busy() && !kite(t) && distance(character, t) > standoff(t).reach) approach(t);
+		if (engaged && !walking() && !errand_busy() && distance(character, t) > standoff(t).reach) approach(t);
 		if (!hold_for_tank(t) && !class_skills(t) && can_attack(t)) fire("attack", t);
 	}
 	if (engaged || walking() || errand_busy()) return;
 	const d = pos.map === character.map ? Math.hypot(pos.x - character.x, pos.y - character.y) : Infinity;
-	// v24.16: not along a way the vampire rats (or the like) make deadly: hold here; the leader picks spots reachable by all
-	if (d > CFG.party.follow_far && pos.map !== character.map) {
-		const rd = route_danger(pos.map, pos.x, pos.y);
-		if (rd) { state.follow_block = { rd, at: Date.now() }; return void set_message(`not following ${L.name}: the way passes ${rd}`); }
-	}
 	state.follow_block = null;
 	if (d > CFG.party.follow_far) travel_as("follower_tick", pos);
 	else if (d > CFG.party.follow) {
@@ -6585,8 +6580,10 @@ function tick() {
 		} else {
 			state.dead_handled = false;
 			if (Date.now() - state.last_guide > CFG.guide_interval_ms) guide_refresh();
-			town_check();
-			if (event_tick()) { loot_chests(); setTimeout(tick, 200); return; }
+			// v24.58: the tank decides. A follower doesn't start a town trip or go to an event by itself: it joins the
+			// party's trip when one is announced, tells the tank what it needs (heartbeat: tn), and follows.
+			if (is_follower()) ptown_join_tick(); else town_check();
+			if (!is_follower() && event_tick()) { loot_chests(); setTimeout(tick, 200); return; }
 			if (is_merchant()) {
 				merchant_tick();
 				loot_chests();

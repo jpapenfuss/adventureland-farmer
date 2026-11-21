@@ -1455,7 +1455,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	hb("Torlis", { ...tor, map: "main", x: 0, y: 0 });
 	town66.length = 0;
 	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; watchdog()", ctx);
-	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) === "regroup", "lost follower regroups via town");
+	assert(!vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) !== "regroup", "v24.58: a follower away from the leader is not sent to town on its own by the watchdog");
 	vm.runInContext("state.errand = null; state.pack = null; wd.pos = []; wd.acts = []; hist.ev = []", ctx);
 	ctx.stop = (a) => calls.push("stop:" + a);
 	// 67) bank housekeeping: free-slot count, purge filter, purged items sold
@@ -3738,6 +3738,31 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("travel = __tv147; state.partners = {}; state.pack = null");
 		ctx.parent.entities = ents; ctx.move = mv0; ctx.distance = () => 0;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });
+	}
+	// 148) v24.58: only the tank starts town trips and goes to events; a follower reports its need and waits to be taken
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const scm = ctx.send_cm, msgs = []; ctx.send_cm = (to, m) => (msgs.push(m), Promise.resolve());
+		const src_tick = R("tick.toString()");
+		assert(/if \(is_follower\(\)\) ptown_join_tick\(\); else town_check\(\);/.test(src_tick) && /if \(!is_follower\(\) && event_tick\(\)\)/.test(src_tick), "tick: a follower runs neither town_check nor event_tick");
+		assert(!/looming\(\)|keep_away\(|kite\(|route_danger\(/.test(R("follower_tick.toString()")), "follower_tick: no keep-away, no kiting, no route refusal of its own");
+		// the follower's heartbeat carries its need; the tank acts on it
+		R("globalThis.__td148 = town_due; globalThis.__tr148 = town_run; globalThis.__n148 = 0; town_run = () => (++globalThis.__n148, true); state.partners = {}; state.errand = null; state.ptown = null; state.town_runs = []; smart_depth = 0");
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 53, map: "main", x: 700, y: 1600, rip: false, esize: 2 });
+		hb("Torlis", { ...tor, ctype: "paladin", level: 53, map: "main", x: 720, y: 1600 });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 680, y: 1600 });
+		R("town_due = () => ({ sell: true, plan: { free: 2, sell: [1], bank: [], fetch: [] }, min_free: 10, pot_min: 100 })");
+		msgs.length = 0; R("heartbeat()");
+		assert(R("is_follower()") && /bags 2 free/.test(msgs.find((m) => m.k === "hb")?.tn || ""), `a follower with full bags says so in its heartbeat (${msgs.find((m) => m.k === "hb")?.tn})`);
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 53, map: "main", x: 720, y: 1600, rip: false, esize: 30 });
+		R("state.partners = {}; town_due = () => ({ plan: { free: 30, sell: [], bank: [], fetch: [] }, min_free: 10, pot_min: 100 }); state.last_town = 0");
+		hb("Sanala", { ...san, ctype: "mage", level: 53, map: "main", x: 700, y: 1600, tn: "bags 2 free" });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 680, y: 1600 });
+		msgs.length = 0; R("town_check()");
+		assert(R("__n148") === 1 && msgs.some((m) => m.k === "ptown") && /for Sanala: bags 2 free/.test(R("state.town_trig")), `the tank starts the party's trip for a member in need (${R("state.town_trig")})`);
+		R("town_due = __td148; town_run = __tr148; state.partners = {}; state.ptown = null; state.town_runs = []; state.last_town = 0");
+		ctx.send_cm = scm;
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0, esize: 30 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
