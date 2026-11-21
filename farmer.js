@@ -1,4 +1,4 @@
-const VERSION = "24.44"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.45"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1034,8 +1034,10 @@ function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x,
 // v24.43: a monster that tangles (ent: "mtangle"; server: a tangled player moves at 24 at most) chases at its charge
 // speed against our 24 — an ent's 48 looked outrunnable against our 50, and it killed five of us in ten minutes
 const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const c = m.charge || m.speed || 0; return m.abilities?.mtangle && c > 24 ? Infinity : c; };
-// Comes at us (any aggro or rage, not only >= 0.5), we can't take it on, and we can't outrun it: its spawn is no place to walk
-const no_go = (t, v) => { const m = G.monsters[t]; return !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !state.safe[t] && chase_speed(t) >= v; };
+// Its spawn is no place to walk: we can't take it on, we can't outrun it, and it comes at us — aggressive (aggro or rage
+// >= 0.5), or a tangler with any aggro at all (an ent's 0.2 was enough, five times). v24.45: not every monster with
+// some aggro — that took in the phoenix, whose possible spawns cover main, and closed the way to half the map.
+const no_go = (t, v) => { const m = G.monsters[t]; return !!m && !state.safe[t] && chase_speed(t) >= v && (aggressive(t) || (!!m.abilities?.mtangle && ((m.aggro || 0) > 0 || (m.rage || 0) > 0))); };
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 const can_take = (e) => !!(state.safe[e.mtype] ? live_ok(e) : fight_profile(e.mtype));
 const rect_gap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
@@ -6800,9 +6802,12 @@ function tick() {
 			// as if alone (duo_check, the periodic re-pick, town_body's reset) — that switched to a solo pack and moved them
 			const cp = state.pack, waiting = in_party_cfg() && !split_now() && !!cp && partners().length > 0 && !partners_near().length &&
 				partners().every((q) => q.pack && valid_boundary(q.pack.boundary) && pack_key(q.pack) === pack_key(cp));
-			if (!waiting) duo_check();
+			// v24.45: nor while a member is in town (a town run, a party trip): it's back in a minute, and a pick made
+			// without it ("1 with us") ruled out the party's spot and walked the rest to a weaker one each time
+			const in_town = in_party_cfg() && !split_now() && !!cp && partners().some((q) => q.errand === "town" || q.pt);
+			if (!waiting && !in_town) duo_check();
 			probe_check();
-			if (!state.pack || (!waiting && Date.now() - state.last_pick > CFG.repick_ms)) pick_pack();
+			if (!state.pack || (!waiting && !in_town && Date.now() - state.last_pick > CFG.repick_ms)) pick_pack();
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
