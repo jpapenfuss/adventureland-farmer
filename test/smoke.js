@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.party.tank_first = false; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -1123,6 +1123,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.partners = {}; live_cache.clear()", ctx);
 	hb("Torlis", { ...tor, x: 40, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000 });
 	ctx.G.monsters.brute = { xp: 900, hp: 4000, attack: 220, respawn: 10, range: 20, speed: 10, frequency: 1, aggro: 0 };
+	vm.runInContext("CFG.party.tank_first = true", ctx);
 	const with_tank = vm.runInContext("!!fight_profile('brute')", ctx);
 	vm.runInContext("CFG.party.tank_first = false", ctx);
 	const without = vm.runInContext("!!fight_profile('brute')", ctx);
@@ -1141,6 +1142,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	delete ctx.parent.entities.b1;
 	handlers.cm({ name: "Torlis", message: { k: "tgt", id: "zz" } });
 	assert(vm.runInContext("state.partners.Torlis.target", ctx) === "zz", "a tgt message updates that member's target at once");
+	vm.runInContext("CFG.party.tank_first = false", ctx);
 
 	// 53) class skills: burst at full MP on a big target; priest absorbs for a hurt non-tank; paladin mana shield
 	ctx.G.skills.burst = { ratio: 0.555 }; ctx.G.skills.absorb = { range: 240, mp: 200 }; ctx.G.skills.mshield = { mp: 0 };
@@ -1195,7 +1197,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null); character.slots = {};
 	// 55) follower with nothing to hit takes its own monster of the leader's pack near the leader
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", x: 0, y: 0, map: "main", rip: false, hp: 2500, max_hp: 2500, attack: 180, range: 200 });
-	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; state.fsafe_at = 0", ctx);
+	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; state.fsafe_at = 0; CFG.party.tank_first = true", ctx);
 	hb("Sanala", { ...san, level: 1, x: 40, y: 0, target: null, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
 	hb("Torlis", { ...tor, x: 40, y: 0 });
 	ctx.parent.entities.g55 = { id: "g55", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 120, y: 0, target: null };
@@ -1211,6 +1213,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.entities.g55.x = 900; atk55.length = 0;
 	vm.runInContext("inflight.attack = false; change_target(null); follower_tick()", ctx);
 	assert(!atk55.includes("g55"), "...but not one beyond wait_radius of the leader");
+	vm.runInContext("CFG.party.tank_first = false", ctx);
 	delete ctx.parent.entities.g55; ctx.distance = dist_save;
 	// 56) transfers between our characters don't count as income/spending
 	ctx.send_cm = () => Promise.resolve();
@@ -1431,7 +1434,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const cms65 = []; ctx.send_cm = (to, m) => (cms65.push([to.join(), m.k, m.id]), Promise.resolve());
 	// Torlis (tank) following Sanala: picks the goo near her, broadcasts it
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", range: 25, x: 0, y: 0, map: "main", rip: false, moving: false, hp: 3000, max_hp: 3000, attack: 300, s: {} });
-	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; announced = null; state.fsafe_at = 0", ctx);
+	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; announced = null; state.fsafe_at = 0; CFG.party.tank_first = true", ctx);
 	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: "far65", v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
 	hb("Aspernari", { ...asp, x: 20, y: 30, v: V });
 	ctx.parent.entities.g65 = { id: "g65", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 120, y: 0, target: null };
@@ -2040,7 +2043,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		globalThis.__td = town_due; globalThis.__tr = town_run; globalThis.__runs = 0;
 		town_run = () => { globalThis.__runs++; return true; };
 		town_due = () => ({ guide: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 50 });
-		state.last_town = Date.now() - 120000`, ctx);
+		state.last_town = Date.now() - 120000; state.regroup_due = false; state.ptown = null`, ctx);
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("globalThis.__runs === 0 && /deferrable/.test(state.town_block.blockers.join())", ctx), "guide-only work 2 min after a trip waits (deferrable)");
 	vm.runInContext("town_due = () => ({ guide: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 50 }); town_check()", ctx);
@@ -2671,7 +2674,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.split_on = false; CFG.party.split.enabled = false; state.safety_mult = 1; state.partners = {}", ctx);
 		// a hunt alone waits for another trip
 		vm.runInContext(`globalThis.__td3 = town_due; globalThis.__tr3 = town_run; globalThis.__runs3 = 0; smart_depth = 0; state.errand = null;
-			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {};
+			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {}; state.regroup_due = false; state.ptown = null;
 			town_due = () => ({ hunt: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()`, ctx);
 		assert(vm.runInContext("globalThis.__runs3 === 0 && /hunt alone/.test(state.town_block.blockers.join())", ctx), "a hunt alone: no trip");
 		vm.runInContext("town_due = () => ({ hunt: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
@@ -3506,7 +3509,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("tank_hold.id = null", ctx); easy.target = "Torlis";
 		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank has it: fire");
 		easy.target = null; hb("Torlis", { ...tor, level: 60, x: 50, y: 0, armor: 400, max_hp: 6000, hp: 6000, recovering: true });
-		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank is fleeing: no holding for it");
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === true, "v24.50: the tank is fleeing: still nobody else starts a fight");
+		hb("Torlis", { ...tor, level: 60, x: 50, y: 0, armor: 400, max_hp: 6000, hp: 0, rip: true });
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank is dead: we fight on our own judgement");
 		delete ctx.parent.entities.e134; ctx.distance = dist0; ctx.send_cm = scm;
 		vm.runInContext("state.partners = {}; tank_hold.id = null", ctx);
 	}
@@ -3854,6 +3859,58 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("choose_target(true)") === null, "nor when it's on a partner");
 		R("state.pack = null; for (const k in hopeless_c) delete hopeless_c[k]");
 		ctx.attack = atk; ctx.parent.entities = ents; delete ctx.G.monsters.ent143;
+	}
+	// 144) v24.50: the tank decides — only it starts a fight, only with the party gathered; a death regroups in town;
+	//      everything learned is cleared once
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const ents = ctx.parent.entities, atk = ctx.attack, hits = [];
+		ctx.attack = (e) => (hits.push(e.id), Promise.resolve());
+		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		R("CFG.party.tank_first = true; CFG.party.tank_leads = true; CFG.party.split.enabled = false; state.partners = {}; state.errand = null; state.recovering = false; inflight.attack = false; for (const k in hopeless_c) delete hopeless_c[k]; state.pack = { mtype: 'goo', map: 'main', boundary: [-300, -300, 300, 300] }");
+		const goo = { id: "g144", type: "monster", mtype: "goo", visible: true, dead: false, hp: 100, max_hp: 100, x: 50, y: 0, target: null };
+		ctx.parent.entities = { g144: goo };
+		// the tank, party not gathered: no first hit
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "main", x: 0, y: 0, rip: false, hp: 6000, max_hp: 6000, range: 30 });
+		hb("Sanala", { ...san, ctype: "mage", level: 51, map: "main", x: 30, y: 0 });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 900, y: 0 });
+		assert(R("party_missing().join()") === "Aspernari" && R("fire('attack', parent.entities.g144)") === false && hits.length === 0, "the tank doesn't start a fight while Aspernari is 900px away");
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: -30, y: 0, errand: "town" });
+		assert(R("fire('attack', parent.entities.g144)") === false, "...nor while a member is in town");
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: -30, y: 0 });
+		assert(R("party_missing().length") === 0 && R("fire('attack', parent.entities.g144)") === true && hits.join() === "g144", "everyone within engage_px: the tank starts the fight");
+		// a monster already on one of us: the tank fights it whoever is missing
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 900, y: 0 });
+		goo.target = "Sanala"; hits.length = 0; R("inflight.attack = false");
+		assert(R("fire('attack', parent.entities.g144)") === true, "a monster already on a member is fought at once");
+		// not the tank: never the first hit, however far the tank is
+		goo.target = null; hits.length = 0;
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 30, y: 0, rip: false, range: 150 });
+		R("state.partners = {}; inflight.attack = false");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 5000, y: 0 });
+		assert(R("party_tank().name") === "Torlis" && R("fire('attack', parent.entities.g144)") === false && hits.length === 0, "a follower never starts a fight, even with the tank on another map");
+		goo.target = "Torlis"; ctx.get_party = () => ({ Torlis: {}, Sanala: {}, Aspernari: {} });
+		assert(R("fire('attack', parent.entities.g144)") === true, "once the monster targets the tank, the follower attacks");
+		ctx.get_party = () => ({});
+		// a death: back on our feet, a party trip to town
+		const runs = [], cms = [], scm = ctx.send_cm; ctx.send_cm = (to, m) => (cms.push(m.k), Promise.resolve());
+		R("globalThis.__tr144 = town_run; globalThis.__td144 = town_due; town_run = (d) => (globalThis.__r144 = (globalThis.__r144 || 0) + 1, true); town_due = () => ({ plan: { free: 30 } }); state.ptown = null; state.regroup_due = true; globalThis.__r144 = 0");
+		R("town_check()");
+		assert(R("__r144") === 1 && R("state.regroup_due === false && state.ptown.joined === true") && cms.includes("ptown"), "after a death: a town run, announced to the party (they all come)");
+		R("town_run = __tr144; town_due = __td144; state.ptown = null");
+		// one-time clear-out: an old save loses what was learned, keeps the rest; the next save is marked
+		const gs = ctx.get, ss = ctx.set; let saved = null;
+		ctx.get = () => ({ v: 1, meas_v: 3, at: Date.now(), measured: { "main:1,2,3,4": 999 }, calib: { goo: { ratio: 3, n: 50 } }, danger: { goo: 0.5 }, cooldown: { k: Date.now() + 1e6 }, safety_mult: 0.5, probe_ok: { goo: { mult: 2, at: Date.now() } }, last_town: 12345 });
+		ctx.set = (k, v) => ((saved = JSON.parse(JSON.stringify(v))), true);
+		R("state.measured = {}; state.calib = {}; state.danger = {}; state.cooldown = {}; state.safety_mult = 1; state.probe_ok = {}; load_state()");
+		assert(R("Object.keys(state.measured).length === 0 && !state.calib.goo && !state.danger.goo && !Object.keys(state.cooldown).length && state.safety_mult === 1 && !state.probe_ok.goo") && R("state.last_town") === 12345, "an old save: spot rates, calibration, penalties, rests, probe verdicts and safety tuning are dropped; the rest loads");
+		R("save_state()");
+		assert(saved && saved.data_v === R("DATA_V"), "the next save carries the marker, so it happens once");
+		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), at: Date.now(), measured: { "main:1,2,3,4": 999 } });
+		R("state.measured = {}; load_state()");
+		assert(R("state.measured['main:1,2,3,4']") === 999, "a save with the marker loads in full");
+		ctx.get = gs; ctx.set = ss; ctx.send_cm = scm; ctx.attack = atk; ctx.parent.entities = ents; ctx.distance = () => 0;
+		R("state.measured = {}; state.partners = {}; state.pack = null; CFG.party.tank_first = false; CFG.party.tank_leads = false");
 	}
 	all_done = true;
 	console.log("ALL PASS");

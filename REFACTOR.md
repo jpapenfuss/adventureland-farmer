@@ -6,6 +6,23 @@ behind each decision are spread over many functions and none of them records why
 
 Rule for every step: behaviour stays the same unless the step says otherwise; tests pass; VERSION is bumped.
 
+## The design (owner, 2026-11-21)
+
+**The tank owns everything.** One point of decision: the tank picks the camp, leads the walk, and starts every
+fight. The party sits at a camp and farms. Moving camp to find a better one is fine; everyone follows the tank
+there. Nobody engages until every member is with the tank. The aim of every change is fewer features, fewer
+exceptions, more stability.
+
+In the code as of v24.50:
+- Only the tank hits a monster that has no target (`tank_first`, enforced in `fire()`), wherever the tank is.
+- The tank does so only when every online fighter is within `CFG.party.engage_px` (`party_missing`).
+- A death triggers a party town trip: everyone meets in town and leaves together.
+- Everything learned before v24.50 was cleared once (`DATA_V`).
+- Off by default: travel gear, spread targets. Removed: the "can the rest keep farming" town judgement.
+
+Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the
+watchdog, convoy and group-hold code paths each steer on their own (step 4b).
+
 ## Rules that were simplified (owner's instruction, v24.46)
 
 - **Town:** together, a town trip is everyone's. One rule; the "could the rest keep farming" judgement is gone.

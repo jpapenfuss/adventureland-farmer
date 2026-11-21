@@ -1,4 +1,4 @@
-const VERSION = "24.49"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.50"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -108,7 +108,7 @@ const CFG = {
 	// Pieces whose removal would cut current HP or MP by more than max_hp_loss / max_mp_loss of max stay on
 	// (the server clamps HP/MP to the lower max, so that much is lost).
 	// .b pieces always stay on (the server deletes them on unequip). Not the merchant.
-	travel_gear: { enabled: true, min_px: 700, min_speed: 1, settle_ms: 10_000, danger_px: 400, keep_free: 2, max_hp_loss: 0.1, max_mp_loss: 0.25, cooldown_ms: 30_000 },
+	travel_gear: { enabled: false, min_px: 700, min_speed: 1, settle_ms: 10_000, danger_px: 400, keep_free: 2, max_hp_loss: 0.1, max_mp_loss: 0.25, cooldown_ms: 30_000 },
 	// Own upgrading (upgrade_auto): one project at a time: an NPC-sold piece, upgraded (spare copies only, never worn
 	// gear) to the level where it beats what a member wears by the most per gold. Each step is gated by the server's
 	// preview (min_chance_rebuyable: a failure only costs gold); at low odds the project stops at the level reached.
@@ -286,11 +286,11 @@ const CFG = {
 		follow_far: 500,       // px; farther than this (or another map) → path-find to the leader instead of stepping
 		heal_at: 0.75,         // priests heal any member below 75% HP
 		heal_bonus: 2.5,       // safety allowance × 2.5 while a priest partner is near (its heals offset damage)
-		// Tank first: with a tank (CFG.gear_tank) within tank_near, nobody else touches a monster that has no target
-		// yet — always, with no time limit (v24.46). Risk is judged against the tank's HP and armour.
+		// The tank decides (v24.50): with a tank (CFG.gear_tank) in the party, only it starts a fight, and only once
+		// every online fighter is within engage_px of it. Nobody else touches a monster that has no target.
 		tank_first: true,
 		tank_leads: true,      // v24.25: together, the tank (warrior, then paladin) leads — walks in front, pulls first
-		tank_near: 600,        // v24.46: px; with the tank this close (same map, not in town, not fleeing) it always hits first
+		engage_px: 400,        // v24.50: px; the tank starts a fight only with every online fighter this close to it
 		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
 		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
 		// trickled in one by one, the leader (lowest level, often the mage) first. Members on their own errand,
@@ -303,7 +303,7 @@ const CFG = {
 		// v20.0: kill xp is split equally among an account's fighters in the party (server: share by owner), so
 		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
 		// their own (near the leader, not one a member is hitting) instead of the leader's target.
-		spread: true, spread_ttk: 3,
+		spread: false, spread_ttk: 3, // v24.50: off — only the tank starts fights
 		// v21.0: the server gives every online party member an equal share of every kill wherever it is (no distance
 		// rule; hunts count party kills too), so on easy content the fighters farm separate spots. Each picks only what
 		// it can kill alone; one that finds nothing follows the leader. The leader calls everyone back for probes,
@@ -756,20 +756,35 @@ function tank_cover(pool = partners_near(300)) {
 	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp && Number.isFinite(p.armor)) || null;
 }
 const tank_hold = { id: null, at: 0 }; // the monster we last told the tank about
-// v24.46: one rule, no exceptions. Together with the tank (group_tank), nobody else touches a monster that has no
-// target yet: the tank hits first (the server gives a monster to whoever hits it first, and it stays on them). There is
-// no time limit and no "we'd survive it" exception; fire() enforces it for every attack and skill. The first time we
-// hold on a monster we tell the tank, which takes it before its own pick.
-function group_tank() {
-	if (!CFG.party.tank_first || !in_party_cfg() || split_now() || CFG.gear_tank.includes(character.ctype)) return null;
-	return partners_near(CFG.party.tank_near).find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && !p.recovering) || null;
+// v24.50: the tank decides. Together, with a tank in the party:
+//  - only the tank starts a fight: nobody else touches a monster that has no target, wherever the tank is (v24.46 had
+//    this only with the tank within reach) — no time limit, no exceptions;
+//  - the tank starts one only when the whole party is with it: every online fighter alive, not in town, not fleeing,
+//    on its map and within CFG.party.engage_px.
+// A monster that already targets one of us may be hit by anyone. fire() enforces both for every attack and skill.
+const is_tank_class = (ct) => CFG.gear_tank.includes(ct);
+const together_now = () => CFG.party.tank_first && in_party_cfg() && !split_now();
+// The party's tank (the first in the order warrior, paladin; alive and online), or null — never ourselves
+function party_tank() {
+	if (!together_now() || is_tank_class(character.ctype)) return null;
+	return partners_any().find((p) => is_tank_class(p.ctype) && !p.rip) || null;
 }
-const tank_first = (t) => !!t && t.type === "monster" && !t.target && !!group_tank();
+// Who the tank is still waiting for before it may start a fight (names), [] when the party is gathered
+function party_missing() {
+	return partners_any().filter((q) => q.rip || q.errand || q.recovering || q.map !== character.map ||
+		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) > CFG.party.engage_px).map((q) => q.name);
+}
+function tank_first(t) {
+	if (!t || t.type !== "monster" || t.target) return false;
+	if (party_tank()) return true; // not the tank: never the first hit
+	return together_now() && is_tank_class(character.ctype) && party_missing().length > 0; // the tank: not before everyone's here
+}
 function hold_for_tank(t) {
-	if (!tank_first(t)) return false;
+	const tank = party_tank();
+	if (!tank || !tank_first(t)) return false;
 	if (tank_hold.id !== t.id) {
 		tank_hold.id = t.id; tank_hold.at = Date.now();
-		if (typeof send_cm === "function") Promise.resolve(send_cm([group_tank().name], { k: "tgt", id: t.id })).catch(() => {});
+		if (typeof send_cm === "function") Promise.resolve(send_cm([tank.name], { k: "tgt", id: t.id })).catch(() => {});
 	}
 	return true;
 }
@@ -4737,6 +4752,13 @@ async function town_hop() {
 let town_block_logged = 0; // last "town needed but waiting" log (at most every 5 min)
 function town_check() {
 	if (ptown_join_tick()) return; // v24.28: a member's trip we're going on
+	// v24.50: after a death nobody walks back alone: a party trip — everyone to town, wait for each other, out together
+	if (state.regroup_due && ptown_on() && others().length && !errand_busy() && !character.rip) {
+		state.regroup_due = false;
+		state.town_trig = "regroup after a death"; state.last_town = Date.now();
+		if (town_run(town_due(true))) { ptown_start(["regroup after a death"]); game_log("Town: regrouping the party after a death", C.dim); }
+		return;
+	}
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
 	if (skipped("town:loop") && character.esize > 3) return;
 	const in_town = partners().filter((p) => p.errand === "town").map((p) => p.name);
@@ -4863,10 +4885,11 @@ if (CFG.park_key && typeof map_key === "function") map_key(CFG.park_key, "snippe
 const SAVE_KEY = "farmer_v9:" + character.name; // historical name — don't change it, or saved state is lost
 // Saved every 60s, after crafts and gold transfers, and in on_destroy (just before the code stops). Expired pauses and
 // cooldowns are dropped on load; stall timers resume where they were (time offline doesn't count against them).
+const DATA_V = 2; // bump to clear everything learned, once per character (load_state)
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), meas_v: 3, measured: state.measured, measured_solo: state.measured_solo, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, meas_v: 3, measured: state.measured, measured_solo: state.measured_solo, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -4880,6 +4903,15 @@ function save_state() {
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
 	if (!d || d.v !== 1) return;
+	// v24.50: one-time clear-out of everything learned so far (owner's instruction). Spot xp/s, the model's realism,
+	// damage calibration, flee/death penalties, spot rests, probe verdicts, the safety self-tuning and the split/together
+	// sample were all gathered while the party wandered, fought with members missing or without their gear, and walked
+	// into fights one by one — none of it describes this party farming a camp together. Each character drops it once,
+	// the first time it loads this version; quests, bank, gear and town state are kept.
+	if (d.data_v !== DATA_V) {
+		for (const k of ["measured", "measured_solo", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at", "mode_ab"]) delete d[k];
+		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
+	}
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
 	// v23.0: measurements are now in one unit (base xp of kills at the spot); older ones mixed received xp (a share of
 	// every party kill) with own kills, so they're dropped once and re-measured
@@ -5227,6 +5259,12 @@ function report_facts() {
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
 	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
+	// v24.50: is the party gathered (may the tank start a fight)?
+	if (!M_ && together_now() && partners_any().length) {
+		const miss = is_tank_class(character.ctype) ? party_missing() : null, tk = party_tank();
+		F("engage", "self", miss ? (miss.length ? `engage: holding — waiting for ${miss.join(", ")} within ${CFG.party.engage_px}px` : "engage: party gathered — the tank may start fights")
+			: tk ? `engage: ${tk.name} (tank) starts every fight; we hit what already targets the party` : "engage: no tank alive — fighting on our own judgement");
+	}
 	// v24.48: who moved us in the last minute, in order, and how often two owners overlapped since load
 	if (mv.log.length) F("moves", "self", `movement (1 min): ${mv.log.slice(-10).map((m) => `${m.who} ${m.kind}${m.n > 1 ? " x" + m.n : ""}`).join(" → ")} | clashes since load: ${mv.clash}`);
 	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out
@@ -6744,6 +6782,7 @@ let next_respawn = 0;
 function on_death() {
 	if (state.dead_handled) return;
 	state.dead_handled = true;
+	state.regroup_due = true; // v24.50: back on our feet, the whole party meets in town and leaves together
 	const pmd = postmortem();
 	// v20.0: a death with no damage seen in the last 10s (dead when the script started, or killed while it wasn't
 	// watching) is logged as unexplained and doesn't blame the pack: it used to cut the pack's safety ×0.6 on no evidence
