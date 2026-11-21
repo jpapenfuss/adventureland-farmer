@@ -3359,7 +3359,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.smart_move = (d) => { walks.push(typeof d === "string" ? d : `${d.map}:${d.x},${d.y}`); if (d.map) character.map = d.map; return Promise.resolve(); };
 		ctx.transport = (m, sp) => { tps.push(m); character.map = m; return Promise.resolve({ success: true }); };
 		await vm.runInContext("go({ map: 'sand', x: 100, y: 100 })", ctx);
-		assert(JSON.stringify(walks) === '["town:300,0","sand:100,100"]' && JSON.stringify(tps) === '["sand"]', `to the transporter, across, then the spot — not through the cave (${JSON.stringify([walks, tps])})`);
+		assert(JSON.stringify(walks) === '["town:300,30","sand:100,100"]' && JSON.stringify(tps) === '["sand"]', `beside the transporter (30px below it), across, then the spot — not through the cave (${JSON.stringify([walks, tps])})`);
 		// the pit: only reachable through the cave → don't go
 		walks.length = 0; character.map = "town";
 		vm.runInContext("rt_cache.clear(); globalThis.__g128 = go({ map: 'pit', x: 0, y: 0 }).then(() => 'went', (e) => e.reason)", ctx);
