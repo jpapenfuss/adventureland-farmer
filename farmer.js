@@ -1,4 +1,4 @@
-const VERSION = "24.48"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.49"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1884,7 +1884,11 @@ setInterval(() => {
 	hist.dirty = true;
 	if (!character.rip) { pm_sample(); calib_tick(); }
 	if (!p || character.rip) return;
-	const here = character.map === p.map && in_boundary(p.boundary, 300);
+	// v24.49: together, a spot's xp/s is only measured while the whole party is at it. Time spent there with a member in
+	// town, dead, a map behind or wandering was booked as the spot's rate, and those rates then steered the next pick.
+	const all_here = split_now() || !in_party_cfg() || partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
+		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700);
+	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
 		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, kc: 0, kc_n: 0, split: split_now(), start: Date.now() };
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
