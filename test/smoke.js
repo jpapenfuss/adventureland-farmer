@@ -3501,10 +3501,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(R("__ppn") === 1 && /30 min at the camp/.test(R("state.review_last.why")), "30 min at the camp: reviewed");
 			R("state.review_at = Date.now() - 11 * 60_000; state.review_pw = { lv: party_power().lv - 1, gs: party_power().gs }; camp_review()");
 			assert(R("__ppn") === 2 && /stronger/.test(R("state.review_last.why")), "a level gained and 10 min there: reviewed early");
+			R("state.review_at = Date.now() - 2 * 60_000; state.review_pw = party_power(); state.review_dir = ''; state.directive = { monster: 'bee', map: 'main', until: Date.now() + 3600_000, reason: 'monster hunt 483 left' }; camp_review()");
+			assert(R("__ppn") === 3 && /goal: monster hunt/.test(R("state.review_last.why")), `v24.88: a new goal (a hunt taken) → reviewed after a minute (${R("state.review_last && state.review_last.why")})`);
+			R("state.directive = null; state.review_dir = ''");
 			R("state.review_at = Date.now() - 31 * 60_000");
 			ctx.parent.entities = { m84: { id: "m84", type: "monster", mtype: "croc", visible: true, dead: false, target: character.name, x: 0, y: 0 } };
 			R("camp_review()");
-			assert(R("__ppn") === 2, "...never while a monster is on a member");
+			assert(R("__ppn") === 3, "...never while a monster is on a member");
 			ctx.parent.entities = {};
 			// a measurement loses weight as the party grows
 			R(`state.measured['k84'] = 500; state.meas_at['p:k84'] = Date.now(); state.meas_at['w:k84'] = { lv: party_power().lv, gs: party_power().gs }`);

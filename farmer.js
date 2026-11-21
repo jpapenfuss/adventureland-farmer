@@ -1,4 +1,4 @@
-const VERSION = "24.87"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.88"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -225,7 +225,7 @@ const CFG = {
 	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1 },
 	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
 	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
-	hunt_min_xp: 0.7,          // v23.5: 70% (was off since v18.8, when measured rates still included time lost to town
+	hunt_min_xp: 0,            // v24.88 (owner: pivot to hunts and quests for upgrades): any hunt is chased (was 0.7 of the best xp/s)          // v23.5: 70% (was off since v18.8, when measured rates still included time lost to town
 	                           //   trips; they're kills at the spot now). A hunt's tokens aren't worth a third of our xp.
 	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
 	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
@@ -266,7 +266,7 @@ const CFG = {
 	quest_npcs: ["mcollector"], // own (non-guide) quests only from these NPCs (Cole); guide quests from anyone
 	quest_craft_max: 1,        // craft each quest recipe at most this many times (remembered across reloads)
 	quest_craft_skip: [],      // recipe ids never to craft
-	quest_farm: false,         // v24.60: off — the party sits at its camp; quests don't move it (was: farm what drops a quest's materials)
+	quest_farm: true,          // v24.88 (owner): on again — a quest's materials are farmed (quest_park_h still parks one that would take longer)
 	quest_farm_max_h: 3,       // own quests: skip if finishing would take longer than 3h at our kill rate
 	quest_park_h: 12,          // v18.1: a quest (guide ones too) that would take > 12h to farm is parked: its materials
 	quest_unpark_h: 8,         //   stop being held (they're banked, never sold) until the estimate drops under 8h
@@ -279,7 +279,8 @@ const CFG = {
 	// v24.67: hunts are still taken and turned in at Daisy on town trips made for something else — never chased. One
 	// whose monster is the camp's completes by itself; monster tokens (the Monster Hunter set pieces) only come this way.
 	hunt_passive: true,
-	auto_monster_hunt: false,  // v24.60: off — a hunt pulled the party off its camp after one kill (was: take hunts and farm their target)
+	auto_monster_hunt: true,   // v24.88 (owner): on again — hunts are taken and chased (tokens: Hunter set pieces, Concord Mace). The camp
+	                           //   moves for a goal only at a camp review, which now also comes a minute after the goal changes
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
 	// --- merchant (same script; a merchant-class character named here works for the party instead of fighting) ---------
 	merchant: {
@@ -1325,13 +1326,16 @@ function camp_review() {
 	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
 	if (!cur || cur.boss || cur.probe || errand_busy() || walking() || party_hit()) return false;
 	const pw = party_power(), p0 = state.review_pw;
+	// v24.88: a new goal (a hunt taken, a quest's material) or one ended → review after a minute, not up to 30
+	const dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : "";
+	const goal_changed = dir !== (state.review_dir || "") && since >= 60_000;
 	const stronger = !!(pw && p0 && (pw.lv - p0.lv >= 1 || (p0.gs > 0 && pw.gs / p0.gs - 1 >= CFG.camp_review_gear)));
-	if (!(since >= CFG.camp_review_min * 60_000 || (stronger && since >= CFG.camp_review_early_min * 60_000))) return false;
+	if (!(goal_changed || since >= CFG.camp_review_min * 60_000 || (stronger && since >= CFG.camp_review_early_min * 60_000))) return false;
 	const before = pack_key(cur);
 	pick_pack();
 	const moved = !!state.pack && pack_key(state.pack) !== before;
 	const other = (state.pick_table || []).filter((c) => !c.out && c.key !== before).sort((a, b) => (b.score || 0) - (a.score || 0))[0];
-	state.review_last = { at: now, why: stronger ? "the party is stronger" : `${CFG.camp_review_min} min at the camp`, moved,
+	state.review_last = { at: now, why: goal_changed ? (dir ? `goal: ${state.directive.reason}` : "the goal ended") : stronger ? "the party is stronger" : `${CFG.camp_review_min} min at the camp`, moved,
 		text: moved ? `moved to ${state.pack.mtype}@${state.pack.map}` : `kept ${cur.mtype}@${cur.map}${other ? ` (next best ${other.mtype}@${other.map} ${Math.round(other.score)}${other.m ? " measured" : " est"})` : ""}` };
 	log_ev("review", { moved, to: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: state.review_last.why });
 	return moved;
@@ -1503,6 +1507,7 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
+	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
 	state.best_score = best ? best.rate : 0;
 	state.best_at = now;
 	if (probe_ready()) {
