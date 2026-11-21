@@ -3352,6 +3352,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("CFG.sell_junk = true; state.bank_full_at = 0");
 			character.items = items0; character.slots = {};
 		}
+		// v24.74: plain copies on the sell_plain list are sold — sell_junk off, fetched a minute ago or not; upgraded ones never
+		{
+			const items0 = character.items, I = ctx.G.items; I.stf137 = { type: "weapon", wtype: "staff", attack: 25, upgrade: { attack: 5 }, g: 12400 };
+			character.items = Array(42).fill(null); character.items[0] = { name: "stf137", level: 0 }; character.items[1] = { name: "stf137", level: 5 }; character.items[2] = { name: "stf137", level: 0, p: "shiny" };
+			R("globalThis.__sp137 = CFG.sell_plain; CFG.sell_plain = ['stf137']; CFG.sell_junk = false; state.fetched.stf137 = Date.now(); state.upg = null; spp_cache.clear(); cmp_cache = null");
+			assert(R("bag_class(character.items[0])") === "sell" && R("bag_class(character.items[1])") !== "sell" && R("bag_class(character.items[2])") !== "sell", `sell_plain: the +0 copy is sold, the +5 and the titled one aren't (${R("[0,1,2].map((k) => bag_class(character.items[k])).join()")})`);
+			R("CFG.sell_plain = __sp137; CFG.sell_junk = true; delete state.fetched.stf137");
+			delete I.stf137; character.items = items0;
+		}
 		// v24.68: the report's JSON dumps
 		assert(R("JSON.stringify(items_dump([{ name: 'b', q: 3 }, null, { name: 'a', level: 2 }, { name: 'a', level: 2 }, { name: 'c', l: 'l' }, { name: 'b', q: 2 }]))") === '{"a+2":2,"b":5,"c*":1}', "items_dump: name+level → count, stacks summed, * for locked, sorted");
 		delete ctx.G.sets; character.slots = {}; ctx.G.classes.mage = mc; ctx.G.classes.paladin = pc; ctx.G.classes.priest = prc;

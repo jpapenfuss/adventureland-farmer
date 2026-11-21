@@ -1,4 +1,4 @@
-const VERSION = "24.73"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.74"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -56,6 +56,10 @@ const CFG = {
 	// bank purge, not compound pieces at their ceiling. Only the names in `sell` are sold. (What we own can still be
 	// upgraded into something worth wearing.) With the bank full, things then stay in the bags.
 	sell_junk: false,
+	// v24.74: names whose plain copies (+0, untitled, unlocked) are sold to an NPC, also out of the bank (the merchant
+	// pulls them on its bank visits). For bulk leftovers nobody can use: 47 plain staffs, one bank slot each, that an
+	// NPC sells again for 12k apiece. Upgraded or titled copies are never touched.
+	sell_plain: ["staff"],
 	auto_sell_gear: false,     // true: sell +0 normal-grade untitled gear (worth <= sell_max_value) instead of banking it
 	sell_max_value: 20_000,    // never auto-sell gear the NPC values above this much gold
 	sell_batch: 4,             // with a computer (sells from anywhere): sell as soon as this many junk items pile up
@@ -1853,9 +1857,9 @@ const gold_ok = (cost) => (cost || 0) <= gold_room() && (!is_merchant() || chara
 const bag_gear_names = () => [...new Set(character.items.filter((i) => i && GEAR.has(G.items[i.name]?.type)).map((i) => i.name))].slice(0, 40);
 // gear name -> highest level in our bags (heartbeats; v23.2: upgrade projects skip pieces someone already has at the target)
 const bag_gear_levels = () => { const o = {}; for (const i of character.items) if (i && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); return o; };
-function party_holds_level(name, level) {
+function party_holds_level(name, level, spare_only = false) {
 	const M = state.merchant && fresh(state.merchant) ? [state.merchant] : [];
-	return [...partners_any(), ...M].some((p) => (p.bag_lv?.[name] ?? -1) >= level || Object.values(p.worn || {}).some((w) => w?.name === name && (w.level || 0) >= level));
+	return [...partners_any(), ...M].some((p) => (p.bag_lv?.[name] ?? -1) >= level || (!spare_only && Object.values(p.worn || {}).some((w) => w?.name === name && (w.level || 0) >= level)));
 }
 function party_holds(name) {
 	if (held_any(name) > 0 || (state.bank_gear || []).some((i) => i.name === name)) return true;
@@ -3195,6 +3199,7 @@ async function task_compound() {
 			// v24.15: odds don't change — that level is this item's compound ceiling (7 days): no more fetching the copies
 			// out of the bank every 6h to be refused again
 			if (why(e) === "low_chance") cmp_cap(g.name, g.level);
+			if (item_verdict) n++; // v24.74: a verdict on one set is a result — it used to pause all compounding 15 min ("achieved nothing")
 			skip(g.key, item_verdict ? 6 * 3600_000 : 600_000, `${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}`); // no gold: retry in 10 min
 			town_reason.compound = `${g.name}+${g.level}: ${why(e)}`;
 			game_log(`compound ${g.name}+${g.level}: ${why(e)}; retrying in ${item_verdict ? "6h" : "10 min"}`, C.dim);
@@ -3259,7 +3264,8 @@ function pick_upgrade() {
 			const cost = upgrade_cost(name, to);
 			if (cost > cap) continue;
 			// a copy at the target level already exists: ours, the bank's, or (v23.2) in another member's bags or worn
-			if (best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to)) continue;
+			// (v24.74: a copy another member WEARS no longer counts — a wand+7 on one caster blocked the other's for good)
+			if (best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to, true)) continue;
 			// v24.7: a lower copy that's already an upgrade for a fighter is delivered first (then judged against): a project
 			// held it as its input, undelivered, and rolled it at 50% odds
 			const ready = (i) => i && i.name === name && !i.l && (i.level || 0) < to && takers.some((m) => gear_gain(i, m.ctype, m.g));
@@ -3295,7 +3301,7 @@ function upgrade_why() {
 			if (!g) continue;
 			const cost = upgrade_cost(name, to);
 			const stop = skipped("upg:" + name) ? "paused" : cost > budget ? `costs ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
-				: best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to) ? "a copy at that level exists already"
+				: best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to, true) ? "a spare copy at that level exists already"
 				: "eligible";
 			rows.push({ name, to, g, stop });
 		}
@@ -3497,9 +3503,10 @@ async function task_exchange() {
 // =====================================================================
 // Junk: CFG.sell names, or (if auto_sell_gear, or while the bank is full) plain gear: +0, no title (.p), normal grade
 // (item_grade 0), NPC value <= sell_max_value. Never locked/bound/kept/needed items.
+const sell_plain_item = (it) => !!it && (CFG.sell_plain || []).includes(it.name) && !(it.level > 0) && !it.p && !it.l && !it.b;
 function is_junk(item) {
 	if (!item || item.l || item.b || CFG.keep.includes(item.name) || needed_slots().has(character.items.indexOf(item))) return false;
-	if (CFG.sell.includes(item.name)) return true;
+	if (CFG.sell.includes(item.name) || sell_plain_item(item)) return true;
 	const def = G.items[item.name];
 	if (!CFG.sell_junk) return false;
 	if (!(CFG.auto_sell_gear || bank_is_full()) || !def || !GEAR.has(def.type)) return false; // bank full: selling is the only way to make room
@@ -3513,6 +3520,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 	if ((held_cmp || compound_slots(needed)).has(character.items.indexOf(item))) return "keep"; // waiting to be compounded
 	if (is_merchant() && stand_hold().has(character.items.indexOf(item))) return "keep"; // stock for the stand
 	const def = G.items[item.name];
+	if (sell_plain_item(item) && !needed.has(character.items.indexOf(item)) && !CFG.keep.includes(item.name)) return "sell"; // before "fetched within the hour → keep"
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
@@ -3579,6 +3587,11 @@ function bag_plan() {
 	const bu_ = bank_upgrades(); // a piece that wins as it is comes first: nothing is fetched to be upgraded meanwhile
 	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
+	// v24.74: plain copies on the sell_plain list come out of the bank to be sold (the merchant; as many as fit)
+	if (is_merchant()) for (const name of CFG.sell_plain || []) {
+		const n = Math.min((state.bank_gear || []).filter((i) => i.name === name && !(i.level > 0) && !i.p).length, Math.max(0, character.esize - 8));
+		for (let i = 0; i < n; i++) if (Date.now() - (state.fetch_try[`sellp:${name}:${i}`] || 0) > 600_000) fetch.push({ name, level: 0, exact: true, key: `sellp:${name}:${i}` });
+	}
 	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
 	if (CFG.sell_junk && is_merchant() && CFG.merchant.sell_dead_compounds) {
 		let room = Math.max(0, character.esize - 8);
@@ -4711,7 +4724,7 @@ function town_due(relaxed = false) {
 		elixir: elixir_buy_due(),
 		guide: !!next_guide_row(state.guide),
 		sell: !skipped("town:sell") && plan.sell.length > 0 && (short || (has_computer() && plan.sell.length >= CFG.sell_batch) ||
-			(is_merchant() && plan.sell.some((k) => character.items[k] && state.purge[purge_key(character.items[k])]))),
+			(is_merchant() && plan.sell.some((k) => character.items[k] && (state.purge[purge_key(character.items[k])] || sell_plain_item(character.items[k]))))),
 		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
 		// fetches of our bank upgrades alone don't send us while the merchant is online: it fetches and delivers them
 		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) ||
@@ -6916,7 +6929,9 @@ function tick() {
 				setTimeout(tick, 250);
 				return;
 			}
-			const t = hit_on_me() || (!i_am_tank() && caller_target()) || choose_target(in_area || !pack, true);
+			// v24.74: on its walk to town (a party trip) the tank only fights what is already on a member. It kept starting
+			// fights on the camp's monsters, each one stopping the walk: 12 minutes "on a town errand" without leaving the camp.
+			const t = hit_on_me() || (!i_am_tank() && caller_target()) || (state.lead_walk ? choose_target(false) : choose_target(in_area || !pack, true));
 			announce_target(t);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
