@@ -1,4 +1,4 @@
-const VERSION = "24.41"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.42"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1244,6 +1244,16 @@ function probe_check() {
 	state.probe = null;
 	state.last_pick = 0;
 }
+// "over the safety limit x1.27 (calibration x0.74, incidents x0.70, 2 with us)": by how much a type fails, and what
+// scales its limit — the fight model's risk against the HP pool x safety x calibration x incidents (flees, deaths: they
+// fade) x the priest's bonus, judged as fight_profile judges it
+function over_text(mt) {
+	const m = G.monsters[mt], f = m && fight_math(m, true, solo_now() ? true : in_party_cfg() ? "party" : false);
+	if (!f) return "over the safety limit (no damage on it)";
+	const lim = (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mt, f) * heal_mult(f);
+	const inc = state.danger[mt] || 1, cal = calib_factor(mt, f);
+	return `over the safety limit x${(fight_risk(f) / lim).toFixed(2)} (calibration x${cal.toFixed(2)}${inc !== 1 ? `, incidents x${inc.toFixed(2)}` : ""}, ${f.mates} with us${f.priest ? "" : ", no priest"})`;
+}
 function pick_pack() {
 	state.safe = {};
 	for (const t in G.monsters) { const f = fight_profile(t); if (f) state.safe[t] = f; }
@@ -1262,7 +1272,7 @@ function pick_pack() {
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
 		if (CFG.force_type && t !== CFG.force_type) return;
-		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, "over the safety limit"); } return; }
+		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, over_text(t)); } return; }
 		if (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count)) return;
 		if (seen.has(key)) return;
 		if ((state.cooldown[key] || 0) > now) { seen.add(key); note(key, t, area.map, `resting ${mins(state.cooldown[key])} (a flee, a death, or it ran dry)`); return; }
