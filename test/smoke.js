@@ -3315,6 +3315,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			character.items[1] = { name: "mmg137", level: 0 };
 			assert(R("upgrade_due()") === true && R("state.upg.own") === true, "our own project on it is upgrade work for the next town trip, merchant or not");
 			assert(R("token_pick()") === null, "...and no second copy is bought meanwhile");
+			// v24.69: the same piece lying in the bank at +0: fetched, then our own project
+			character.items[1] = null; character.items[0] = null;
+			R("state.upg = null; state.upg_pick_at = Date.now(); state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.fetch_try = {}");
+			assert(R("JSON.stringify(set_piece_fetch().map((f) => f.name + '+' + f.level))") === '["mmg137+0"]', `a set piece in the bank that wins once upgraded is fetched (${R("JSON.stringify(set_piece_fetch())")})`);
+			assert(R("bag_plan().fetch.some((f) => f.key === 'setp:mmg137')"), "...it's on the bank visit's fetch list");
+			character.items[1] = { name: "mmg137", level: 0 };
+			assert(R("set_piece_fetch().length") === 0, "...not fetched again once a copy is in the bags");
+			assert(R("upgrade_due()") === true && R("state.upg && state.upg.own && state.upg.name") === "mmg137" && R("state.upg.to") >= 1, `...and in the bags it becomes our own upgrade project (${R("JSON.stringify(state.upg)")})`);
+			R("state.bank_gear = []");
 			for (const n of ["mmh137", "mma137", "mmp137", "mms137", "mmg137", "gl137"]) delete I[n];
 			delete ctx.G.sets.mm137; ctx.G.tokens = keep.tokens; character.items = keep.items; character.ctype = keep.ctype; character.gold = keep.gold;
 			R("state.upg = null; state.upg_pick_at = 0");

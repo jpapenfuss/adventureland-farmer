@@ -1,4 +1,4 @@
-const VERSION = "24.68"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.69"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3249,6 +3249,7 @@ function pick_upgrade() {
 // Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
 function upgrade_due() {
 	if (!CFG.upgrade_auto) return false;
+	set_piece_start(); // v24.69: a set piece in our bags that wins once upgraded
 	if (merchant_does_it()) {
 		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags
 		// (v24.67: except our own project on a token piece — the copy is ours, and the merchant can't buy one)
@@ -3457,6 +3458,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && self_taker_ok() && gear_gain(item, character.ctype, my_gear())) ||
+		(GEAR.has(def.type) && def.set && !is_merchant() && !state.upg && (my_gear().sets || {})[def.set] && set_piece_plan(item.name, item.level || 0)) ||
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
@@ -3515,7 +3517,7 @@ function bag_plan() {
 		for (const it of (state.bank_gear || []).filter((i) => stand_worthy(i, -1, nd, cm)).slice(0, Math.max(0, Math.min(free, character.esize - 6))))
 			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
 	}
-	for (const u of [...bank_upgrades(), ...compound_fetches(compound_groups())])
+	for (const u of [...bank_upgrades(), ...set_piece_fetch(), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
 	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
 	if (is_merchant() && CFG.merchant.sell_dead_compounds) {
@@ -4731,6 +4733,8 @@ async function town_body(due) {
 			did += await bag_step("bank", () => task_bank(after.fetch));
 		// the bank visit may have fetched the missing copies of a group: compound now, while still in town
 		if (compound_town_due()) did += await bag_step("compound", task_compound);
+		// ...or a set piece to upgrade (v24.69)
+		if (!skipped("town:upgrade") && upgrade_due()) did += await bag_step("upgrade", task_upgrade);
 		state.last_pick = 0; // re-evaluate where to fight
 		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000), trig: state.town_trig || "?", v: VERSION });
 		return did;
@@ -6162,15 +6166,40 @@ function token_pick() {
 	return best;
 }
 // The lowest level (1..what scroll0/scroll1 reach, under a past ceiling) at which an upgradable piece beats what we wear
-function set_piece_plan(name) {
-	if (!CFG.upgrade_auto || !G.items[name]?.upgrade || state.upg || skipped("upg:" + name)) return null;
+// (from: the level of a copy we have — in the bags or the bank; 0 for one still to buy)
+function set_piece_plan(name, from = 0) {
+	if (!CFG.upgrade_auto || !CFG.gear_auto || is_merchant() || !G.items[name]?.upgrade || !GEAR.has(G.items[name].type) || state.upg || skipped("upg:" + name)) return null;
 	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name));
-	if (gear_gain({ name, level: 0 }, character.ctype, g)) return null; // wins as it is: the ordinary pick
-	for (let to = 1; to <= max; to++) {
+	if (gear_gain({ name, level: from }, character.ctype, g)) return null; // wins as it is: the ordinary pick
+	for (let to = from + 1; to <= max; to++) {
 		const r = gear_gain({ name, level: to }, character.ctype, g);
-		if (r) return upgrade_cost(name, to) - (G.items[name].g || 0) <= upgrade_gold() ? { to, slot: r.slot, gain: Math.round(r.gain) } : null;
+		if (r) return upgrade_cost(name, to) - upgrade_cost(name, from) <= upgrade_gold() ? { to, slot: r.slot, gain: Math.round(r.gain) } : null;
 	}
 	return null;
+}
+// v24.69: a piece of a set we wear that lies in the bank below the level at which it would win (Sanala's fifth
+// Monster Hunter piece sat there at +0): fetched, then upgraded as our own project. One at a time.
+function set_piece_fetch() {
+	if (state.upg || is_merchant()) return [];
+	const worn = my_gear().sets || {};
+	for (const it of state.bank_gear || []) {
+		const set = G.items[it.name]?.set;
+		if (!set || !worn[set] || character.items.some((i) => i && i.name === it.name)) continue;
+		if (set_piece_plan(it.name, it.level || 0)) return [{ name: it.name, level: it.level || 0, exact: true, key: `setp:${it.name}` }];
+	}
+	return [];
+}
+// A copy in our bags that would win once upgraded → our own project
+function set_piece_start() {
+	if (state.upg || is_merchant()) return;
+	for (const i of character.items) {
+		if (!i || i.l || !G.items[i.name]?.set || !(my_gear().sets || {})[G.items[i.name].set]) continue;
+		const pl = set_piece_plan(i.name, i.level || 0);
+		if (!pl) continue;
+		state.upg = { name: i.name, to: pl.to, for: character.name, slot: pl.slot, gain: pl.gain, cost: upgrade_cost(i.name, pl.to) - upgrade_cost(i.name, i.level || 0), own: true };
+		state.upg_pick_at = Date.now();
+		return void game_log(`upgrade project (ours): ${i.name} +${i.level || 0} → +${pl.to}, then worn (+${pl.gain} pts)`, C.info);
+	}
 }
 async function task_tokens() {
 	let n = 0;
