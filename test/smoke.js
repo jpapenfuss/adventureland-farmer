@@ -3755,6 +3755,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("choose_target(true).id") !== "ok1", "v24.64: a monster of another type is never started on, even one that passes the check");
 		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
 		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
+		// v24.65: where the camp time goes
+		assert(R("gap_kind()") === "monsters alive, walking to the next one" || R("gap_kind()") === "monsters alive, none chosen" || R("gap_kind()") === "monsters alive, in reach, swing on cooldown", `the tank with untouched camp monsters around: ${R("gap_kind()")}`);
+		R("gaps.min = [{ m: Math.floor(Date.now() / 60_000), by: { 'nothing alive here (respawn)': 45_000, 'in a fight, target in reach': 15_000 } }]");
+		assert(/camp time \(1 min\): nothing alive here \(respawn\) 75% \| in a fight, target in reach 25%/.test(R("gaps_text()")), `the report line: ${R("gaps_text()")}`);
+		R("gaps.min = []");
 		assert(R("camp_overgrown(state.pack)") === 1, "v24.61: every monster of the camp's type in view is past the limit → the camp counts as overgrown (left at once)");
 		ctx.parent.entities.n4 = mild("n4", 200, 4); R("live_cache.clear()");
 		assert(R("camp_overgrown(state.pack)") === 0, "...not while one of them can still be taken");

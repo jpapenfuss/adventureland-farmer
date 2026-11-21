@@ -1,4 +1,4 @@
-const VERSION = "24.64"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.65"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2018,6 +2018,48 @@ function grown_ok(e) {
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
 	const f = fight_math({ ...def, ...live, hp: e.max_hp || def.hp });
 	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
+}
+// ---- Where the time at the camp goes (v24.65; report line "camp time") ----
+// Sampled 4x a second, kept per minute for 10 min. It answers "why is a member idle": nothing alive (respawn), monsters
+// alive but the tank's first hit hasn't landed (its walk, its swing, or holding for the party), or a fight is on.
+const gaps = { t: 0, min: [] }; // min: [{ m: minute number, by: { kind: ms } }], newest first
+function gap_kind() {
+	const pk = state.pack;
+	if (character.rip || is_merchant() || !pk || !valid_boundary(pk.boundary)) return null;
+	if (errand_busy() || walking() || character.map !== pk.map || !in_boundary(pk.boundary, 250)) return "away from the camp (walk, town)";
+	const party = party_names(), b = pk.boundary, P_ = CFG.near_pad, box = [b[0] - P_, b[1] - P_, b[2] + P_, b[3] + P_];
+	let alive = 0, on_us = 0;
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (e?.type !== "monster" || e.dead || !e.visible) continue;
+		if (e.target && party.has(e.target)) on_us++;
+		else if (e.mtype === pk.mtype && !e.target && in_rect(e.x, e.y, box)) alive++;
+	}
+	const t = get_targeted_monster();
+	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";
+	if (!alive) return "nothing alive here (respawn)";
+	if (is_follower()) return "monsters alive, waiting for the tank's first hit";
+	if (!t) return "monsters alive, none chosen";
+	if (tank_first(t)) return "monsters alive, holding for the party";
+	return in_reach(t, "attack") ? "monsters alive, in reach, swing on cooldown" : "monsters alive, walking to the next one";
+}
+function gap_tick() {
+	const now = Date.now(), dt = Math.min(now - (gaps.t || now), 1000);
+	gaps.t = now;
+	const k = dt > 0 ? gap_kind() : null;
+	if (!k) return;
+	const m = Math.floor(now / 60_000);
+	if (gaps.min[0]?.m !== m) { gaps.min.unshift({ m, by: {} }); gaps.min.length = Math.min(gaps.min.length, 10); }
+	gaps.min[0].by[k] = (gaps.min[0].by[k] || 0) + dt;
+}
+function gaps_text() {
+	const by = {};
+	for (const b of gaps.min) for (const k in b.by) by[k] = (by[k] || 0) + b.by[k];
+	const tot = sum_obj(by);
+	if (tot < 30_000) return null;
+	const pk = state.pack, spawn = pk && (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype).reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
+	const cap = spawn && rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
+	return `camp time (${Math.round(tot / 60_000)} min): ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / tot * 100)}%`).join(" | ") + cap;
 }
 // How many of the camp's monsters are in view when every one of them is over the limit (0: none in view, or one is takeable)
 function camp_overgrown(pack) {
@@ -5349,6 +5391,7 @@ function report_facts() {
 		F("engage", "self", miss ? (miss.length ? `engage: holding — waiting for ${miss.join(", ")} within ${CFG.party.engage_px}px` : "engage: party gathered — the tank may start fights")
 			: tk ? `engage: ${tk.name} (tank) starts every fight; we hit what already targets the party` : "engage: no tank alive — fighting on our own judgement");
 	}
+	if (!M_) { const g = gaps_text(); if (g) F("camp_time", "self", g); }
 	// v24.48: who moved us in the last minute, in order, and how often two owners overlapped since load
 	if (mv.log.length) F("moves", "self", `movement (1 min): ${mv.log.slice(-10).map((m) => `${m.who} ${m.kind}${m.n > 1 ? " x" + m.n : ""}`).join(" → ")} | clashes since load: ${mv.clash}`);
 	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out
@@ -6763,6 +6806,7 @@ function tick() {
 }
 
 setInterval(() => { if (spent() <= BUDGET.soft) sustain(); }, 250); // potions/regen checked 4x a second
+setInterval(gap_tick, 250);
 tick();
 
 // =====================================================================
