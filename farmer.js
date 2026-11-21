@@ -1,4 +1,4 @@
-const VERSION = "24.25"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.26"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -79,15 +79,16 @@ const CFG = {
 	gear_input_gain: 0.15,     // v20.0: a copy the guide holds as an upgrade input is still worn if it beats the slot by 15%+
 	gear_swap_loss: 0.5,       // v20.0: a swap may cost the giver up to this share of what the receiver gains (party total up)
 	gear_share_range: 300,     // px; hand a spare to a party member this close (server limit: same map, 400px)
-	// Points per unit of each stat. main_stat = the class's own (str/dex/int: each point is ~1 attack and some HP/MP);
-	// the other two main stats count off_stat. Defensive stats count × tank_mult for tank classes.
-	gear_w: { attack: 1, main_stat: 1.2, off_stat: 0.2, vit: 1, for: 0.6, hp: 0.05, mp: 0.02, armor: 0.3, resistance: 0.3,
+	// Points per unit of each stat (gear evaluation, v24.26). main_stat: one point of the class's main stat; its other
+	// primary stats (str dex int vit for) scale by the class's own lstats (G.classes, the game's data docs) — not
+	// listed here. Defensive stats count x gear_tank_mult for tank classes. xp: xp_weight (gear_xp_value).
+	gear_w: { attack: 1, main_stat: 1.2, hp: 0.05, mp: 0.02, armor: 0.3, resistance: 0.3,
 		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
-		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, xp: 0.6, luck: 0.15, gold: 0.15, output: 3 },
+		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, luck: 0.15, gold: 0.15, output: 3 },
 	gear_tank: ["paladin", "warrior"],
 	// v23.4: the xp stat (+1% of the wearer's kill xp per point; server: xpm) is worth what that much more damage would
 	// earn: each fighter gets 1/n of every party kill, so +1% damage adds ~1/n % xp while +1 xp adds 1%. One point counts
-	// as gear_xp_value x attack x fighters (attack = 1 point). Merchants get no kill xp: 0. Replaces gear_w.xp.
+	// as gear_xp_value x attack (attack = 1 point; v24.7: not x fighters). Merchants get no kill xp: 0.
 	gear_xp_value: 0.01,
 	// Own compounding (rings, earrings, amulets, belts, orbs...): three spare copies at one level → one a level higher.
 	// Spares = bags + bank, never worn, locked, titled, guide-needed, or wanted by a member as an upgrade.
@@ -2075,7 +2076,7 @@ function can_wear(name) {
 	return true;
 }
 // =====================================================================
-// Own gear: score items by class-weighted stats (CFG.gear_w), wear upgrades from the bags or the account-wide bank,
+// Own gear: score items per class (gear evaluation below), wear upgrades from the bags or the account-wide bank,
 // and hand spares to party members who'd wear them. Worn scores travel in the heartbeat, so every member can judge
 // an item for any other (same formula, same version).
 // =====================================================================
@@ -2084,20 +2085,67 @@ const GEAR_SLOTS = ["mainhand", "offhand", "helmet", "chest", "pants", "shoes", 
 const SLOT_OF = { helmet: ["helmet"], chest: ["chest"], pants: ["pants"], shoes: ["shoes"], gloves: ["gloves"], amulet: ["amulet"],
 	belt: ["belt"], cape: ["cape"], orb: ["orb"], ring: ["ring1", "ring2"], earring: ["earring1", "earring2"] };
 const OFFHAND_TYPES = new Set(["shield", "quiver", "source", "misc_offhand"]);
-const DEF_STATS = new Set(["armor", "resistance", "hp", "vit", "evasion", "avoidance", "reflection", "for"]);
-const MAIN_STATS = ["str", "dex", "int"];
+// ---- Gear evaluation (v24.26) ----
+// Points per unit of each item stat, per class (1 attack = 1 point):
+//  - primary stats (str dex int vit for): the class's per-level growth, G.classes[c].lstats — the stat weighting in
+//    the game's data docs (/docs/code/data/classes) — relative to its main_stat, which counts CFG.gear_w.main_stat.
+//    Mage: int 1.2, str/dex 0.24, vit 0.36; paladin: str and its side_stat int 1.2 each; warrior: dex/int 0.3.
+//  - every other stat: CFG.gear_w; xp: xp_weight (from the wearer's live attack).
+//  - tanks (CFG.gear_tank): defence (DEF_STATS) x CFG.gear_tank_mult. Not fortitude: the server applies it only
+//    against players (server.js: attacker.is_player && target.for).
+// What a piece is worth in a slot also counts the class's modifiers for its weapon/offhand type (server: applied on
+// equip — a mage's wand +60 frequency, a priest's shield -5 speed) and what it adds to set bonuses for that wearer.
+const PRIMARY_STATS = ["str", "dex", "int", "vit", "for"];
+const DEF_STATS = new Set(["armor", "resistance", "hp", "vit", "evasion", "avoidance", "reflection"]);
+// The docs' values (design/classes.py), used only when the client's G.classes lacks lstats (an old client, a test)
+const CLASS_DOC = {
+	warrior: ["str", { str: 1, dex: 0.25, int: 0.25, vit: 0.4, for: 0.025 }],
+	paladin: ["str", { str: 1, dex: 0.05, int: 1, vit: 0.4, for: 0.2 }, "int"],
+	rogue: ["dex", { str: 0.2, dex: 1, int: 0.2, vit: 0.3, for: 0.025 }],
+	ranger: ["dex", { str: 0.2, dex: 1, int: 0.25, vit: 0.3, for: 0.02 }],
+	mage: ["int", { str: 0.2, dex: 0.2, int: 1, vit: 0.3, for: 0.02 }],
+	priest: ["int", { str: 0.2, dex: 0.2, int: 1, vit: 0.4, for: 0.025 }],
+	merchant: ["int", { str: 0.1, dex: 0.4, int: 1, vit: 0.25, for: 0 }],
+};
+// { main, side, l (lstats), src: "G" | "doc" } or null for an unknown class
+function class_stats(ctype) {
+	const c = G.classes?.[ctype], d = CLASS_DOC[ctype], live = c?.lstats && typeof c.lstats === "object";
+	const l = live ? c.lstats : d?.[1], main = c?.main_stat || d?.[0];
+	return l && main && l[main] > 0 ? { main, side: c?.side_stat || d?.[2] || null, l, src: live ? "G" : "doc" } : null;
+}
+function stat_weight(k, ctype) {
+	let w;
+	if (PRIMARY_STATS.includes(k)) { const cs = class_stats(ctype); w = cs ? CFG.gear_w.main_stat * (cs.l[k] || 0) / cs.l[cs.main] : 0; }
+	else if (k === "xp") w = xp_weight(ctype);
+	else w = k === "main_stat" ? 0 : CFG.gear_w[k] || 0;
+	if (w && CFG.gear_tank.includes(ctype) && DEF_STATS.has(k)) w *= CFG.gear_tank_mult;
+	return w;
+}
+// The full table for a class (gear_check, report)
+function gear_weights(ctype) {
+	const out = {};
+	for (const k of new Set([...PRIMARY_STATS, ...Object.keys(CFG.gear_w), "xp"])) { const w = stat_weight(k, ctype); if (w) out[k] = Math.round(w * 1000) / 1000; }
+	return out;
+}
 // Item stats at its level: the game's own calculator when the runner exposes it, else base + per-level increments
 function item_props(item, ctype) {
 	const f = typeof calculate_item_properties === "function" ? calculate_item_properties
 		: typeof parent !== "undefined" && typeof parent.calculate_item_properties === "function" ? parent.calculate_item_properties : null;
 	if (f) try { return f(item, { class: ctype }); } catch (e) {}
 	const def = G.items[item.name] || {}, out = {}, lv = item.level || 0, inc = def.upgrade || def.compound || {};
-	for (const k in CFG.gear_w) if (typeof def[k] === "number") out[k] = def[k];
-	for (const k of MAIN_STATS) if (typeof def[k] === "number") out[k] = def[k];
+	for (const k of [...PRIMARY_STATS, ...Object.keys(CFG.gear_w), "xp"]) if (typeof def[k] === "number") out[k] = def[k];
 	for (const k in inc) if (typeof inc[k] === "number") out[k] = (out[k] || 0) + inc[k] * lv;
 	return out;
 }
-// Points per xp stat point for a class (v23.4): its attack (ours, or a partner's from its heartbeat) x fighters x value
+// What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type
+function gear_stats(item, ctype) {
+	const p = { ...item_props(item, ctype) }, d = G.items[item.name], cls = G.classes[ctype];
+	const mod = !cls || !d ? null : d.type === "weapon" ? cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype]
+		: OFFHAND_TYPES.has(d.type) ? cls.offhand?.[d.wtype] || cls.offhand?.[d.type] : null;
+	for (const [k, v] of Object.entries(mod || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
+	return p;
+}
+// Points per xp stat point for a class (v23.4): its attack (ours, or a partner's from its heartbeat) x value
 function xp_weight(ctype) {
 	if (ctype === "merchant") return 0;
 	const atk = ctype === character.ctype ? character.attack : partners().find((p) => p.ctype === ctype)?.attack;
@@ -2105,23 +2153,63 @@ function xp_weight(ctype) {
 	// speeds every member's share); x n made xp gear outscore real armour, and differ on the merchant (party_n 1)
 	return CFG.gear_xp_value * (atk || character.attack || 100);
 }
-function gear_score(item, ctype = character.ctype) {
-	if (!item || !G.items[item.name]) return 0;
-	const p = { ...item_props(item, ctype) }, W = CFG.gear_w, main = G.classes[ctype]?.main_stat, tank = CFG.gear_tank.includes(ctype);
-	// v24.7: the class's own modifiers for this weapon type (server: applied on equip) — a mage's wand +60 frequency,
-	// a paladin's sword -5 output — weren't counted, so the staff scored above the faster wand
-	const d = G.items[item.name], cls = G.classes[ctype];
-	if (d?.type === "weapon" && cls) for (const [k, v] of Object.entries(cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype] || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
-	let s = 0;
+// Points of a stat bag for a class, and each stat's share (largest first)
+function stat_terms(p, ctype) {
+	const out = [];
 	for (const k in p) {
 		if (!p[k] || typeof p[k] !== "number") continue;
-		// paladin attack = item attack x (str/20 + int/40) (server): int is worth half of str to it, not an off-stat
-		let w = MAIN_STATS.includes(k) ? (k === main ? W.main_stat : ctype === "paladin" && k === "int" ? W.main_stat / 2 : W.off_stat) : k === "xp" ? xp_weight(ctype) : W[k];
-		if (!w) continue;
-		if (tank && DEF_STATS.has(k)) w *= CFG.gear_tank_mult;
-		s += p[k] * w;
+		const w = stat_weight(k, ctype);
+		if (w) out.push({ k, v: p[k], w, pts: p[k] * w });
 	}
-	return Math.round(s * 10) / 10;
+	return out.sort((a, b) => Math.abs(b.pts) - Math.abs(a.pts));
+}
+const round1 = (x) => Math.round(x * 10) / 10;
+const stat_points = (p, ctype) => stat_terms(p, ctype).reduce((a, t) => a + t.pts, 0);
+// A piece on its own (no set bonus): the same for every slot it fits
+function gear_score(item, ctype = character.ctype) {
+	if (!item || !G.items[item.name]) return 0;
+	return round1(stat_points(gear_stats(item, ctype), ctype));
+}
+// Set bonus with n pieces worn: the server adds up the levels 1..n of G.sets[set] (server_functions.js, at boot; the
+// client's G holds them per level)
+function set_bonus(set, n) {
+	const S = G.sets?.[set], out = {};
+	if (!S) return out;
+	for (let i = 1; i <= n; i++) for (const [k, v] of Object.entries(S[i] || {})) if (typeof v === "number") out[k] = (out[k] || 0) + v;
+	return out;
+}
+// Points the piece adds to its set's bonus in this slot: the set as worn in the other slots, plus this one
+function set_gain(item, ctype, g, slot) {
+	const set = G.items[item?.name]?.set;
+	if (!set || !G.sets?.[set]) return 0;
+	const others = Math.max(0, (g?.sets?.[set] || 0) - (g?.sset?.[slot] === set ? 1 : 0));
+	return stat_points(set_bonus(set, others + 1), ctype) - stat_points(set_bonus(set, others), ctype);
+}
+// What a piece is worth to a member (g: its my_gear, or a partner's heartbeat gear) in a slot: alone + set bonus
+function slot_value(item, ctype, g, slot) {
+	if (!item || !G.items[item.name]) return 0;
+	return round1(gear_score(item, ctype) + set_gain(item, ctype, g, slot));
+}
+// Sets worn: set -> pieces, slot -> set (my_gear, heartbeat)
+function worn_sets(sl) {
+	const sets = {}, sset = {};
+	for (const s of GEAR_SLOTS) { const set = sl[s] && G.items[sl[s].name]?.set; if (set) { sets[set] = (sets[set] || 0) + 1; sset[s] = set; } }
+	return { sets, sset };
+}
+// "int 10×1.2=12, vit 4×0.48=1.9 (+set wanderers 2pc 20)": why a piece scores what it does
+function gear_why(item, ctype = character.ctype, g = null, slot = null) {
+	if (!item || !G.items[item.name]) return "";
+	const t = stat_terms(gear_stats(item, ctype), ctype).slice(0, 4).map((x) => `${x.k} ${round1(x.v)}×${+x.w.toFixed(2)}=${round1(x.pts)}`);
+	const sg = g && slot ? round1(set_gain(item, ctype, g, slot)) : 0;
+	return t.join(", ") + (sg ? ` (+set ${G.items[item.name].set} ${sg})` : "");
+}
+// "weights paladin (G.classes lstats, main str, side int): str 1.2 int 1.2 vit 0.96 ... | attack 1 armor 0.6 ..."
+function gear_weights_text(ctype) {
+	const cs = class_stats(ctype), w = gear_weights(ctype);
+	const prim = PRIMARY_STATS.filter((k) => w[k]).map((k) => `${k} ${w[k]}`).join(" ");
+	const rest = Object.entries(w).filter(([k]) => !PRIMARY_STATS.includes(k)).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${v}`).join(" ");
+	return `weights ${ctype}${cs ? ` (${cs.src === "G" ? "G.classes" : "docs copy"} lstats, main ${cs.main}${cs.side ? `, side ${cs.side}` : ""})` : " (unknown class)"}` +
+		`${CFG.gear_tank.includes(ctype) ? `, defence x${CFG.gear_tank_mult}` : ""}: ${prim} | ${rest}`;
 }
 // What a member (us, or a partner from its heartbeat) wears: slot -> score; slots the guide owns right now count as
 // unbeatable (1e9); dh = mainhand is two-handed, off = offhand occupied
@@ -2136,10 +2224,11 @@ function my_gear() {
 	const owned = (s) => now - (state.guide_equip[s] || 0) < CFG.gear_guide_respect_h * 3600_000 && guide_plans_slot(s);
 	const key = GEAR_SLOTS.map((s) => (sl[s] ? sl[s].name + (sl[s].level || 0) : "") + (owned(s) ? "!" : "")).join();
 	if (my_gear_cache && now - my_gear_cache.at < 1000 && my_gear_cache.key === key) return my_gear_cache.g;
-	const w = {}, own = {};
-	for (const s of GEAR_SLOTS) { w[s] = gear_score(sl[s]); if (owned(s)) own[s] = true; }
+	const w = {}, own = {}, ws = worn_sets(sl);
+	// v24.26: a worn piece's score includes what it adds to its set's bonus (taking it off loses that)
+	for (const s of GEAR_SLOTS) { w[s] = slot_value(sl[s], character.ctype, ws, s); if (owned(s)) own[s] = true; }
 	const mh = sl.mainhand && G.items[sl.mainhand.name];
-	const g = { w, own, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), off: !!sl.offhand };
+	const g = { w, own, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), off: !!sl.offhand, sets: ws.sets, sset: ws.sset };
 	my_gear_cache = { at: now, key, g };
 	return g;
 }
@@ -2158,9 +2247,10 @@ function slots_for(name, ctype, g) {
 const is_2h = (name, ctype) => { const d = G.items[name]; return d?.type === "weapon" && !!G.classes[ctype]?.doublehand?.[d.wtype] && !G.classes[ctype]?.mainhand?.[d.wtype]; };
 function gear_gain(item, ctype, g) {
 	if (!item || !g?.w) return null;
-	const score = gear_score(item, ctype);
 	let best = null;
 	for (const s of slots_for(item.name, ctype, g)) {
+		// v24.26: valued in that slot for that member: alone + what it adds to a set it'd complete there
+		const score = slot_value(item, ctype, g, s);
 		// a two-hander replaces the offhand too: it must beat both
 		const cur = (g.w[s] ?? 0) + (s === "mainhand" && is_2h(item.name, ctype) && !g.dh ? g.w.offhand ?? 0 : 0), gain = score - cur;
 		// a slot the guide is actively working on only takes a clearly better item (gear_guide_override)
@@ -2234,9 +2324,9 @@ async function equip_upgrades() {
 			if (!it || equip_paused(it) || needed.has(k) || (M_ && (!CFG.merchant.wear_gear || for_fighter(it)))) return;
 			const d = G.items[it.name], cls = G.classes[character.ctype] || {};
 			if (!d) return;
-			const sc = gear_score(it);
-			if (d.type === "weapon" && cls.mainhand?.[d.wtype] && !is_2h(it.name, character.ctype) && (!one || sc > one.sc)) one = { k, it, sc };
-			if (OFFHAND_TYPES.has(d.type) && cls.offhand?.[d.type] && (!off || sc > off.sc)) off = { k, it, sc };
+			const sc = (s) => slot_value(it, character.ctype, g, s);
+			if (d.type === "weapon" && cls.mainhand?.[d.wtype] && !is_2h(it.name, character.ctype) && (!one || sc("mainhand") > one.sc)) one = { k, it, sc: sc("mainhand") };
+			if (OFFHAND_TYPES.has(d.type) && cls.offhand?.[d.type] && (!off || sc("offhand") > off.sc)) off = { k, it, sc: sc("offhand") };
 		});
 		const cur = g.w.mainhand || 0, sum = (one?.sc || 0) + (off?.sc || 0);
 		if (one && off && character.esize >= 1 && sum - cur >= CFG.gear_min_gain && sum - cur >= cur * CFG.gear_margin)
@@ -2330,7 +2420,7 @@ async function swap_worn() {
 			// v24.5: their piece must be free too (a locked one would stay in their bags and ours would be lost to them)
 			if (!X || !Y || X.l || X.b || Y.l || (X.name === Y.name && (X.level || 0) === Y.level)) continue;
 			if (!slots_for(Y.name, character.ctype, mine).includes(s) || !slots_for(X.name, p.ctype, p.gear).includes(s)) continue;
-			const ours = gear_score(Y) - (mine.w[s] || 0), theirs = gear_score(X, p.ctype) - (p.gear.w[s] || 0);
+			const ours = slot_value(Y, character.ctype, mine, s) - (mine.w[s] || 0), theirs = slot_value(X, p.ctype, p.gear, s) - (p.gear.w[s] || 0);
 			const ok = (gain, cur) => gain >= CFG.gear_min_gain && gain >= cur * CFG.gear_margin;
 			// the receiver must gain by the usual margins; we may lose up to gear_swap_loss of that, so the party gains
 			if (!ok(theirs, p.gear.w[s] || 0) || ours < -theirs * CFG.gear_swap_loss || !(ours + theirs >= 2 * CFG.gear_min_gain)) continue;
@@ -3927,8 +4017,9 @@ async function run_row(row) {
 			const k = a.num !== undefined && character.items[a.num]?.name === a.name ? a.num : find_slot(a.name, a.level);
 			if (k < 0) throw { reason: "input_missing" };
 			// v19.7: never wear something that scores lower than what's in the slot (the guide doesn't own the slot)
-			if (CFG.gear_auto && a.slot && character.slots?.[a.slot] && gear_score(character.items[k]) < (my_gear().w[a.slot] || 0))
-				throw { reason: "worse_than_worn", want: `${a.name}+${a.level || 0} ${Math.round(gear_score(character.items[k]))} < ${Math.round(my_gear().w[a.slot])} pts` };
+			const sv = a.slot && slot_value(character.items[k], character.ctype, my_gear(), a.slot);
+			if (CFG.gear_auto && a.slot && character.slots?.[a.slot] && sv < (my_gear().w[a.slot] || 0))
+				throw { reason: "worse_than_worn", want: `${a.name}+${a.level || 0} ${Math.round(sv)} < ${Math.round(my_gear().w[a.slot])} pts` };
 			await wait_budget(EMIT_COST.equip, RESERVE.errand);
 			game_log(`equip ${a.name} +${a.level || 0} → ${a.slot}`, C.ok);
 			if (a.slot) state.guide_equip[a.slot] = Date.now();
@@ -4554,7 +4645,8 @@ function report_facts() {
 		// v24.19: why a member isn't moving (a refused walk, a follower holding back)
 		if (state.walk_refused && Date.now() - state.walk_refused.at < 600_000) F("walk", "self", `walk refused ${ago(state.walk_refused.at)} ago: to ${state.walk_refused.to}, every way passes ${state.walk_refused.why}`, true);
 		if (state.follow_block && Date.now() - state.follow_block.at < 600_000) F("follow", "self", `not following the leader (${ago(state.follow_block.at)} ago): the way passes ${state.follow_block.rd}`, true);
-		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${locked.length ? ` (guide working on ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
+		const sets_txt = Object.entries(g.sets || {}).map(([k, n]) => `${k} ${n}pc`).join(", ");
+		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${sets_txt ? ` (sets: ${sets_txt})` : ""}${locked.length ? ` (guide working on ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
 	}
 	{
 		const acts = wd.acts.filter((a) => now - a.t < 3600_000);
@@ -4702,11 +4794,14 @@ function gear_check(solo) {
 }
 function gear_check_lines() {
 	const g = my_gear(), sl = character.slots || {}, L = [`— gear_check ${character.name} (${character.ctype} ${character.level}) —`];
-	const cand = {}; // slot -> best { name, level, score, where }
+	L.push(gear_weights_text(character.ctype));
+	const cand = {}; // slot -> best { it, name, level, score, where }
 	const look = (it, where) => {
 		if (!it || !G.items[it.name] || !GEAR.has(G.items[it.name].type)) return;
-		const sc = gear_score(it);
-		for (const s of slots_for(it.name, character.ctype, g)) if (!cand[s] || sc > cand[s].score) cand[s] = { name: it.name, level: it.level || 0, score: sc, where };
+		for (const s of slots_for(it.name, character.ctype, g)) {
+			const sc = slot_value(it, character.ctype, g, s);
+			if (!cand[s] || sc > cand[s].score) cand[s] = { it, name: it.name, level: it.level || 0, score: sc, where };
+		}
 	};
 	character.items.forEach((it) => look(it, "bags"));
 	for (const it of state.bank_gear || []) look(it, "bank");
@@ -4716,6 +4811,9 @@ function gear_check_lines() {
 			c.score > cur ? `+${Math.round(c.score - cur)} pts, below the ${g.own?.[s] ? Math.round(CFG.gear_guide_override * 100) + "% guide" : Math.round(CFG.gear_margin * 100) + "%"} margin` : "worse";
 		L.push(`${s.padEnd(9)} ${w ? `${w.name}+${w.level || 0}` : "(empty)"} ${Math.round(cur)} pts${g.own?.[s] ? " [guide working on it]" : ""}` +
 			`${c ? ` | best owned: ${c.name}+${c.level} ${Math.round(c.score)} pts (${c.where})` : ""} — ${verdict}`);
+		// v24.26: where the points come from (worn, and a better piece owned)
+		if (w && cur < 1e9) L.push(`          worn: ${gear_why(w, character.ctype, g, s) || "no weighted stats"}`);
+		if (c && c.score > cur) L.push(`          best: ${gear_why(c.it, character.ctype, g, s)}`);
 	}
 	if (!state.bank_gear?.length) L.push("(no bank snapshot yet: it's taken on the next bank visit)");
 	// pieces in our bags that are upgrades for another member (handed over when near, merchant delivers)
@@ -4743,6 +4841,8 @@ function selftest() {
 	ok(typeof character.on === "function", "character.on (events)");
 	ok(typeof calculate_item_properties === "function" || typeof parent.calculate_item_properties === "function", "item stat calculator (exact gear scores)", true);
 	ok(typeof calculate_item_value === "function" || typeof parent.calculate_item_value === "function", "item value calculator (stand / secondhands prices)", true);
+	ok(class_stats(character.ctype)?.src === "G", `G.classes.${character.ctype}.lstats + main_stat (gear stat weights${class_stats(character.ctype) ? "" : ": missing"}${class_stats(character.ctype)?.src === "doc" ? ": using the built-in docs copy" : ""})`, true);
+	ok(!!G.sets && typeof G.sets === "object", `G.sets (set bonuses in gear scores: ${Object.keys(G.sets || {}).length} sets)`, true);
 	ok(typeof damage_multiplier === "function", "damage_multiplier (fight model)", true);
 	ok(!!parent.S && typeof parent.S === "object", `server event list parent.S (${Object.keys(parent.S || {}).join(", ") || "no events now"})`);
 	ok(!!G.tokens?.monstertoken?.tracker, `Tracktrix price (${G.tokens?.monstertoken?.tracker ?? "?"} tokens)`);
@@ -6318,7 +6418,8 @@ tick();
 //   SELL: CFG.sell names; +0 plain gear only if auto_sell_gear or the bank is full; the merchant's bank purge.
 //   BANK: everything else. Needed items, gear upgrades and compound copies in the bank are fetched back.
 //
-// Gear: items are scored by class-weighted stats (CFG.gear_w; tanks weigh defence double). Every 5s wear the best
+// Gear: items are scored per class: primary stats by the class's lstats (G.classes, the game's data docs), the rest
+//   by CFG.gear_w (tanks weigh defence double), plus class weapon/offhand modifiers and set bonuses. Every 5s wear the best
 //   bag upgrade, drink the best elixir, else hand a spare to a nearby member it upgrades (send_item). The bank is
 //   account-wide, so upgrades seen there are fetched for whoever they fit. Slots the guide equipped are left to it
 //   for gear_guide_respect_h. Compounding: three spare copies at one level (bags + bank) up to +compound_max_level

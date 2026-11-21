@@ -3041,7 +3041,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.classes.mage = mc;
 		ctx.G.items.intorb119 = { type: "orb", int: 10 }; ctx.G.items.strorb119 = { type: "orb", str: 10 };
 		const pc = ctx.G.classes.paladin; ctx.G.classes.paladin = { ...pc, main_stat: "str" };
-		assert(vm.runInContext("gear_score({ name: 'intorb119', level: 0 }, 'paladin') * 2 === gear_score({ name: 'strorb119', level: 0 }, 'paladin')", ctx), "paladin: int is worth half of str");
+		// v24.26: the docs' lstats weigh a paladin's int (its side_stat) the same as str
+		assert(vm.runInContext("gear_score({ name: 'intorb119', level: 0 }, 'paladin') === gear_score({ name: 'strorb119', level: 0 }, 'paladin')", ctx), "paladin: int counts as much as str (lstats)");
 		ctx.G.classes.paladin = pc;
 		// upgrade project: a transient error pauses it; the odds cap is the highest level reached
 		character.items[1] = { name: "helm119", level: 3 };
@@ -3520,6 +3521,54 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(f.hp_pool === 4000 && g.hp_pool === 6000, `aggressive: Sanala's 4000 HP is the pool (passive: ours) (${f.hp_pool}, ${g.hp_pool})`);
 		vm.runInContext("CFG.party.tank_leads = false; state.partners = {}; state.pack = null", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55, hp: 1000, max_hp: 1000 });
+	}
+	// 136) v24.26: gear evaluation from the class stat weights (G.classes lstats), offhand modifiers, set bonuses
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const mc = ctx.G.classes.mage, pc = ctx.G.classes.paladin, prc = ctx.G.classes.priest;
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, esize: 30, attack: 400 });
+		R("state.partners = {}; state.guide = null; state.guide_equip = {}; state.gear_skip = {}; my_gear_cache = null; gear_busy = false");
+		// weights come from G.classes[c].lstats, relative to main_stat (main = CFG.gear_w.main_stat)
+		ctx.G.classes.mage = { ...mc, main_stat: "int", lstats: { str: 0.2, dex: 0.5, int: 1, vit: 0.3, for: 0.02 } };
+		const wm = R("gear_weights('mage')");
+		assert(wm.int === 1.2 && wm.dex === 0.6 && wm.str === 0.24 && wm.vit === 0.36, `mage weights from G lstats: int 1.2, dex 0.5→0.6, str 0.24, vit 0.36 (${JSON.stringify(wm)})`);
+		assert(R("class_stats('mage').src") === "G" && /G\.classes lstats, main int/.test(R("gear_weights_text('mage')")), "the weights say where they come from");
+		// no lstats in G (an old client): the built-in docs copy, same values as design/classes.py
+		ctx.G.classes.priest = { damage_type: "magical", offhand: { shield: { speed: -5 }, source: {} } };
+		const wp = R("gear_weights('priest')");
+		assert(R("class_stats('priest').src") === "doc" && wp.int === 1.2 && wp.str === 0.24 && wp.vit === 0.48 && Math.abs(wp.for - 0.03) < 1e-9, `priest from the docs copy (${JSON.stringify(wp)})`);
+		// tanks: defence x gear_tank_mult, fortitude not (PvP only); side_stat int = str
+		ctx.G.classes.paladin = { damage_type: "physical", main_stat: "str", side_stat: "int", lstats: { str: 1, dex: 0.05, int: 1, vit: 0.4, for: 0.2 } };
+		const wl = R("gear_weights('paladin')");
+		assert(wl.str === 1.2 && wl.int === 1.2 && wl.vit === 0.96 && wl.for === 0.24 && wl.armor === 0.6, `paladin: str = int 1.2, vit 0.48 x2, for 0.24 (not x2), armor 0.3 x2 (${JSON.stringify(wl)})`);
+		// offhand class modifiers count (priest shield -5 speed): armor 10 x 0.3 - 5 x 0.5
+		ctx.G.items.shield136 = { type: "shield", armor: 10 };
+		assert(R("gear_score({ name: 'shield136', level: 0 }, 'priest')") === 0.5, `a priest's shield pays its -5 speed (${R("gear_score({ name: 'shield136', level: 0 }, 'priest')")})`);
+		// set bonuses: levels add up (server); a piece is worth what it adds to the set where it'd go
+		ctx.G.sets = { wan136: { items: ["wcap136", "wat136"], 1: {}, 2: { hp: 200 }, 3: { mp: 100 } } };
+		R("set_bonus('wan136', 3).hp === 200 && set_bonus('wan136', 3).mp === 100") || assert(false, "set bonus is cumulative");
+		ctx.G.items.wcap136 = { type: "helmet", armor: 5, set: "wan136" }; ctx.G.items.wat136 = { type: "chest", armor: 5, set: "wan136" };
+		ctx.G.items.helm136 = { type: "helmet", armor: 6 };
+		character.slots = { helmet: { name: "helm136", level: 0 }, chest: { name: "wat136", level: 0 } };
+		R("my_gear_cache = null");
+		const g1 = R("my_gear()");
+		assert(g1.sets.wan136 === 1 && g1.sset.chest === "wan136" && g1.w.chest === 1.5, `worn sets tracked; one piece alone adds no bonus (${JSON.stringify(g1)})`);
+		const r1 = R("gear_gain({ name: 'wcap136', level: 0 }, 'mage', my_gear())");
+		assert(r1 && r1.slot === "helmet" && r1.score === 11.5 && Math.round(r1.gain * 10) === 97, `the cap completes 2pc (+200 hp = 10): 1.5 + 10 beats the 1.8 helmet (${JSON.stringify(r1)})`);
+		character.slots = { helmet: { name: "helm136", level: 0 } }; R("my_gear_cache = null");
+		assert(!R("gear_gain({ name: 'wcap136', level: 0 }, 'mage', my_gear())"), "without the chest piece the cap is just a worse helmet");
+		character.slots = { helmet: { name: "wcap136", level: 0 }, chest: { name: "wat136", level: 0 } }; R("my_gear_cache = null");
+		const g2 = R("my_gear()");
+		assert(g2.w.helmet === 11.5 && g2.w.chest === 11.5, `wearing both: each piece's score holds the bonus it would take with it (${JSON.stringify(g2.w)})`);
+		assert(!R("gear_gain({ name: 'helm136', level: 0 }, 'mage', my_gear())"), "a plain helmet doesn't replace a set piece it scores above alone");
+		// a partner's heartbeat carries its sets: the same judgement for it
+		assert(R("!!gear_gain({ name: 'wcap136', level: 0 }, 'mage', { w: { helmet: 1.8 }, sets: { wan136: 1 }, sset: { chest: 'wan136' } })"), "judged for a partner from its heartbeat sets");
+		assert(/armor 5×0\.3=1\.5/.test(R("gear_why({ name: 'wcap136', level: 0 }, 'mage', my_gear(), 'helmet')")) && /\+set wan136 10/.test(R("gear_why({ name: 'wcap136', level: 0 }, 'mage', { sets: { wan136: 1 }, sset: { chest: 'wan136' } }, 'helmet')")),
+			`gear_why explains the points (${R("gear_why({ name: 'wcap136', level: 0 }, 'mage', { sets: { wan136: 1 }, sset: { chest: 'wan136' } }, 'helmet')")})`);
+		const gc = R("gear_check_lines()").join("\n");
+		assert(/weights mage \(G\.classes lstats/.test(gc) && /worn: armor 5×0\.3=1\.5 \(\+set wan136 10\)/.test(gc), "gear_check shows the weights and where each worn piece's points come from");
+		delete ctx.G.sets; character.slots = {}; ctx.G.classes.mage = mc; ctx.G.classes.paladin = pc; ctx.G.classes.priest = prc;
+		R("my_gear_cache = null");
 	}
 	all_done = true;
 	console.log("ALL PASS");
