@@ -1048,6 +1048,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items[0] = { name: "computer" }; character.items[1] = { name: "scroll0", q: 20 }; character.items[2] = { name: "nhelm", level: 0 };
 	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null", ctx);
 	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked — the best piece an NPC sells, though one nobody sells scores higher (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
+	// v24.86: a shop weapon a fighter would hold goes to +7 first, with no budget
+	ctx.G.items.nmace = { type: "weapon", wtype: "mace", attack: 20, upgrade: { attack: 4 }, g: 3700 };
+	ctx.G.npcs.armorer.items.push("nmace");
+	{ const cls = ctx.G.classes.paladin; ctx.G.classes.paladin = { ...(cls || {}), mainhand: { mace: {} } }; vm.runInContext("sold_c.clear()", ctx);
+		vm.runInContext("globalThis.__gr86 = gold_room; gold_room = () => 0", ctx);
+		const pw = vm.runInContext("JSON.stringify(pick_upgrade())", ctx);
+		vm.runInContext("gold_room = __gr86", ctx);
+		assert(/"name":"nmace","to":7/.test(pw) && /"weapon":true/.test(pw), `a weapon project goes to +7 ahead of the helmet, with the budget at 0 (${pw})`);
+		ctx.G.classes.paladin = cls; }
+	ctx.G.npcs.armorer.items.pop(); delete ctx.G.items.nmace; vm.runInContext("sold_c.clear()", ctx);
 	delete ctx.G.items.xhelm49;
 	// v24.82: the target comes from the expected cost with failures (2000 gold copy, 1000 scrolls, base odds 100/98/95/70%)
 	assert(vm.runInContext("upgrade_expected('nhelm', 1)", ctx) === 3000 && vm.runInContext("upgrade_expected('nhelm', 4)", ctx) === 9070 && vm.runInContext("upgrade_expected('nhelm', 7)", ctx) > 150_000,
@@ -1104,7 +1114,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(/elixir:elixirstr0/.test(vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx)), "fetches an elixir from the bank when none is active");
 	vm.runInContext("state.bank_gear = []", ctx);
 	assert(vm.runInContext("elixir_buy_due()", ctx), "rich and none owned → buy Liquid Luck");
-	character.gold = 1e6;
+	character.gold = 3e5; // (v24.86: the floor is 500k)
 	assert(!vm.runInContext("elixir_buy_due()", ctx), "...not below elixir_buy_min_gold");
 
 	// 51) exchange: a full set of an exchangeable item, but never needed/kept ones
@@ -1575,7 +1585,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null); character.slots = {};
 	vm.runInContext("state.bank_gear = []; state.fetch_try = {}; cmp_cache = null", ctx);
 	// 70) merchant online: a guide step alone doesn't send a fighter to town within guide_gap_ms of the last run
-	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30, rip: false, s: { monsterhunt: { id: "goo", c: 5 } } });
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30, rip: false, gold: 1e5, s: { monsterhunt: { id: "goo", c: 5 } } }); // (gold under the elixir floor: no elixir buy due)
 	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 300 }; character.items[1] = { name: "mpot1", q: 300 };
 	vm.runInContext("state.guide = { rows: [{ id: 'g70', kind: 'buy', action: {} }] }; state.gear_skip = {}; state.needs = new Map(); state.fetch_try = {}; state.bank_gear = []; cmp_cache = null; state.upg = null; state.upg_pick_at = Date.now()", ctx);
 	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 1e6 }; state.last_town = Date.now() - 60000", ctx);
