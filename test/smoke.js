@@ -2500,7 +2500,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.monsters.minimush = { xp: 20, hp: 50, attack: 1, frequency: 1, range: 20, speed: 10, respawn: 5, armor: 0, resistance: 0 };
 		vm.runInContext("G.maps.main.monsters.push({ type: 'minimush', count: 6, boundary: [500, 500, 700, 700] }); state.measured = {}; state.measured_solo = {}", ctx);
 		const solo_ips = vm.runInContext("best_source('spores').ips", ctx);
-		hb("Aspernari", { ...asp, x: 3000, y: 0 }); hb("Torlis", { ...tor, level: 60, x: 3000, y: 0 });
+		hb("Aspernari", { ...asp, x: 3000, y: 0, attack: 0 }); hb("Torlis", { ...tor, level: 60, x: 3000, y: 0, attack: 0 }); // (no damage of theirs: v24.35 counts the party's)
 		const party_ips = vm.runInContext("best_source('spores').ips", ctx);
 		assert(Math.abs(solo_ips / party_ips - 3) < 0.01, `3 fighters: a third of the spores reach us (${solo_ips} vs ${party_ips})`);
 		vm.runInContext("state.partners = {}; G.maps.main.monsters = G.maps.main.monsters.filter((p) => p.type !== 'minimush')", ctx);
@@ -3799,6 +3799,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("smart_depth = 0; last_move = 0; approach(parent.entities.g140)");
 		assert(steps.length === 1 && R("approach_path === null"), `clear line: a straight step, as before (${JSON.stringify(steps)})`);
 		R("travel = __tv; approach_path = null"); delete ctx.parent.entities.g140; ctx.can_move_to = cm; ctx.distance = ds; ctx.move = mv;
+	}
+	// 141) v24.35: together, a monster type is judged for the party wherever its members are (the leader through a door first)
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; state.partners = {}; state.errand = null; state.recovering = false");
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "level2", x: 0, y: 0, rip: false, hp: 6000, max_hp: 6000, attack: 300, frequency: 1, armor: 400, resistance: 200 });
+		ctx.G.monsters.hard141 = { hp: 60000, attack: 500, frequency: 1, aggro: 0, damage_type: "physical", xp: 5000, speed: 20, range: 50, respawn: 10 };
+		hb("Sanala", { ...san, ctype: "mage", level: 51, map: "level2s", x: 0, y: 0, hp: 4000, max_hp: 4000, attack: 900, frequency: 1.5, damage_type: "magical" });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "level2s", x: 0, y: 0, hp: 5000, max_hp: 5000, attack: 500, frequency: 1, damage_type: "magical" });
+		const near = R("fight_math(G.monsters.hard141, true, false)"), party = R("fight_math(G.monsters.hard141, true, 'party')");
+		assert(near.mates === 0 && party.mates === 2 && party.priest === true && party.ttk < near.ttk / 3, `the others are a map away: nobody near, but the party is still three (${near.mates}/${party.mates})`);
+		assert(R("!!fight_profile('hard141')") && !R("safe_enough(fight_math(G.monsters.hard141, true, false), 'hard141')"), "the spot stays safe for the party while the leader is through the door first");
+		hb("Sanala", { ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 4000, max_hp: 4000, attack: 900, frequency: 1.5, damage_type: "magical", errand: "town" });
+		assert(R("fight_math(G.monsters.hard141, true, 'party').mates") === 1, "a member on an errand isn't counted");
+		R("CFG.party.tank_leads = false; state.partners = {}"); delete ctx.G.monsters.hard141;
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0 });
 	}
 	all_done = true;
 	console.log("ALL PASS");

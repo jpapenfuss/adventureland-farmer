@@ -1,4 +1,4 @@
-const VERSION = "24.34"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.35"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -642,7 +642,9 @@ function farmable_entity(e) {
 // exclude (v24.28): names left out (members about to leave: would the rest still fight it?)
 function fight_math(m, use_tank = true, solo = solo_now(), exclude = null) {
 	const keep = (arr) => (exclude?.length ? arr.filter((p) => !exclude.includes(p.name)) : arr);
-	const mates = keep(solo === true ? [] : solo === "all" ? partners() : partners_near());
+	// "party" (v24.35): the members travelling with us wherever they are right now (not on an errand, not fleeing)
+	const with_us = () => partners().filter((p) => !p.errand && !p.recovering);
+	const mates = keep(solo === true ? [] : solo === "all" ? partners() : solo === "party" ? with_us() : partners_near());
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -652,7 +654,7 @@ function fight_math(m, use_tank = true, solo = solo_now(), exclude = null) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(keep(solo === "all" ? partners() : partners_near(300)));
+	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(keep(solo === "all" ? partners() : solo === "party" ? with_us() : partners_near(300)));
 	// v24.25: we're the tank (leading, picking for everyone) and it's aggressive: it goes for whoever is near, so judge it
 	// on the squishiest member counted, not on our armour
 	const squish = !tank && solo !== true && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
@@ -755,7 +757,10 @@ function announce_target(t) {
 }
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
-	const f = fight_math(G.monsters[mtype]);
+	// v24.35: together, a monster type is judged for the party, not for whoever is within 400px this second. The leader
+	// stepped through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another
+	// spot and walked back — at every door. (A monster in front of us is still judged with who is near: entity_profile.)
+	const f = fight_math(G.monsters[mtype], true, solo_now() ? true : in_party_cfg() ? "party" : false);
 	return safe_enough(f, mtype) ? { ttk: f.ttk, xp: f.xp } : null;
 }
 // Live-stat check per entity: monsters level up when left alive, and an elite can be several times stronger than its
