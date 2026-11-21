@@ -1,4 +1,4 @@
-const VERSION = "24.77"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.78"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -55,7 +55,10 @@ const CFG = {
 	// at the scroll seller; the server takes 1 scroll for a normal-grade piece, 10 for high, 100 for rare; it can't
 	// fail). Done on town trips, never a reason for one. max_gold_per_pt: the most a point of gear score may cost —
 	// 100k covers normal and high grade pieces; a rare one (800k for +3 of a stat) needs it raised.
-	stat_scroll: { enabled: true, max_gold_per_pt: 100_000, per_run: 3 },
+	// v24.78 (owner): only pieces at +min_level or higher (ones we'll keep), and never more than max_cost for one piece.
+	// Note the server counts scrolls by the piece's grade AT ITS LEVEL: most gear turns a grade higher at +7 (10x the
+	// scrolls of +6), and a piece that's rare by then takes 100 (800k) — over max_cost, so it's left.
+	stat_scroll: { enabled: true, min_level: 7, max_cost: 100_000, max_gold_per_pt: 100_000, per_run: 3 },
 	sell: [],                  // item names to always sell
 	// v24.72 (owner): false = nothing is sold as "junk" — not plain +0 gear when the bank is full, not the merchant's
 	// bank purge, not compound pieces at their ceiling. Only the names in `sell` are sold. (What we own can still be
@@ -4530,7 +4533,7 @@ function stat_scroll_list() {
 		const q = [1, 10, 100, 1000][Math.max(0, item_grade(it))] || 9999, cost = q * sg;
 		const pts = (def.stat + (it.level || 0) * (def.upgrade?.stat || 0)) * stat_weight(stat, character.ctype);
 		const key = `stat:${it.name}:${it.level || 0}`;
-		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
+		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : (it.level || 0) < (C_.min_level || 0) ? `only at +${C_.min_level} or higher` : cost > (C_.max_cost ?? Infinity) ? `${fmt_k(cost)} is over ${fmt_k(C_.max_cost)} for one piece` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
 			: character.gold - cost < CFG.gold_reserve || !gold_ok(cost) ? `gold (${fmt_k(cost)})` : null;
 		out.push({ slot, name: it.name, level: it.level || 0, stat, scroll, q, cost, pts, key, ok: !why_, why: why_ });
 	}
