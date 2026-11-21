@@ -1,4 +1,4 @@
-const VERSION = "24.21"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.22"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -335,7 +335,7 @@ function recipe_input(name) {
 // Failures that say nothing about the item or goal (walks, distance, timing, bank, money): retry soon instead of
 // pausing for hours. Everything else (low odds, not combinable, invalid...) is a real verdict.
 const TRANSIENT = new Set(["interrupted", "walk_timeout", "timeout", "distance", "bank_not_loaded", "no_space", "gold_reserve",
-	"buy_cost", "scroll_missing", "no_scroll", "inputs_not_ready", "player_gone", "cant_in_bank", "no_mp", "not_found", "failed", "fleeing"]);
+	"buy_cost", "scroll_missing", "no_scroll", "inputs_not_ready", "player_gone", "cant_in_bank", "no_mp", "not_found", "failed", "fleeing", "bank_busy"]);
 const pause_ms = (e, long) => (TRANSIENT.has(why(e)) ? 600_000 : long);
 const BAG_TYPES = new Set(["pot", "elixir", "uscroll", "cscroll", "pscroll", "offering", "stand", "tool", "tracker", "token", "misc", "throw",
 	"booster", "skill_item", "bank_key", "spawner", "placeholder", "computer"]);
@@ -3021,6 +3021,12 @@ const floor_loaded = (map) => until(() => character.map === map && character.ban
 async function task_bank(fetch_names) {
 	const store = slots_where((i) => bag_class(i) === "bank");
 	if (!store.length && !fetch_names.length) return (town_reason.bank = "nothing to store or fetch"), 0;
+	// v24.22: one character of an account in the bank at a time (server: "X is in the bank"); walking at its door with
+	// another inside retried the door until the walk timed out, flooding the log
+	if (character.map !== "bank") {
+		const inside = [...partners_any(), ...(is_merchant() ? [] : [merchant_hb()].filter(Boolean))].filter((p) => fresh(p) && /^bank/.test(p.map || "")).map((p) => p.name);
+		if (inside.length) { town_reason.bank = `${inside.join(", ")} in the bank: waiting`; throw { reason: "bank_busy" }; }
+	}
 	try { if (character.map !== "bank") await go({ map: "bank" }); } catch (e) { town_reason.bank = "can't reach the bank: " + why(e); throw e; }
 	// the bank's contents arrive separately after entering; if they haven't after 20s, walk out and back in once
 	if (!(await floor_loaded("bank"))) {
@@ -5003,14 +5009,32 @@ function xp_mult_text() {
 // spot and everyone follows it. The leader setting off at its own pace and holding when someone fell 450px behind made
 // a stop-start string, the fast members arriving first. Ends once that member is at the spot. Everyone computes the same
 // head from the heartbeats' speeds (ties: name order).
+// The members a convoy moves (us included): not on an errand, recovering or dead. v24.22: one with no speed in its
+// heartbeat (an older version) counts at a normal 55 instead of dropping out
+function convoy_members() {
+	return [{ name: character.name, speed: character.speed || 55, map: character.map, x: character.x, y: character.y, ok: !state.recovering && !errand_busy() && !character.rip },
+		...partners().map((p) => { const q = partner_pos(p); return { name: p.name, speed: p.speed > 0 ? p.speed : 55, map: q.map, x: q.x, y: q.y, ok: !p.errand && !p.recovering && !p.rip }; })]
+		.filter((m) => m.ok);
+}
+// v24.22: the head gathers the convoy before it walks and waits for one that falls behind (radius, then 0.6x radius to go
+// on; wait_s at most, then go_s on regardless): it used to set off at once and the others chased it from wherever they
+// were — after a respawn or a town trip they still arrived one by one. Returns who it waits for, or null.
+function convoy_muster() {
+	const G_ = CFG.party.group, now = Date.now();
+	const r = state.convoy_wait ? G_.radius * 0.6 : G_.radius;
+	const far = convoy_members().filter((m) => m.name !== character.name && (m.map !== character.map || Math.hypot(m.x - character.x, m.y - character.y) > r));
+	if (!far.length) return void (state.convoy_wait = null), null;
+	const W = state.convoy_wait || (state.convoy_wait = { since: now, go_until: 0 });
+	if (W.go_until > now) return null;
+	if (now - W.since > G_.wait_s * 1000) { W.go_until = now + G_.go_s * 1000; W.since = W.go_until; log_ev("convoy_timeout", { who: far.map((m) => m.name).join(",") }); return null; }
+	return (W.who = far.map((m) => m.name).join(", "));
+}
 function convoy_head() {
 	if (!CFG.party.group?.enabled || !CFG.party.group.convoy || !in_party_cfg() || split_now()) return null;
 	const me_lead = leader_name() === character.name, L = me_lead ? null : leader_hb();
 	const pk = me_lead ? state.pack : L?.pack;
 	if (!pk || !valid_boundary(pk.boundary) || pk.boss || (!me_lead && (L.errand || L.recovering || L.rip))) return null;
-	const members = [{ name: character.name, speed: character.speed, map: character.map, x: character.x, y: character.y, ok: !state.recovering && !errand_busy() && !character.rip },
-		...partners().map((p) => { const q = partner_pos(p); return { name: p.name, speed: p.speed, map: q.map, x: q.x, y: q.y, ok: !p.errand && !p.recovering && !p.rip }; })]
-		.filter((m) => m.ok && m.speed > 0);
+	const members = convoy_members();
 	if (members.length < 2) return null;
 	members.sort((a, b) => a.speed - b.speed || (a.name < b.name ? -1 : 1));
 	const H = members[0], b = pk.boundary;
@@ -5902,8 +5926,19 @@ function follower_tick() {
 	let pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
 	// v24.18: convoy — the slowest of us walks to the spot; the others follow it (not the leader)
 	const CH = !away && state.pack ? convoy_head() : null;
-	if (CH === character.name) pos = { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 };
-	else if (CH && CH !== L.name && state.partners[CH]) pos = partner_pos(state.partners[CH]);
+	if (CH === character.name) {
+		const wait = convoy_muster();
+		if (wait) { // gather first: hold here (they're following us), fight what's on us
+			if (walking() && !errand_busy()) { try { stop("smart"); } catch (e) {} }
+			const a = hit_on_me() || choose_target(false);
+			if (a) fight(a, true);
+			return void set_message(`convoy: waiting for ${wait}`);
+		}
+		pos = { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 };
+	} else {
+		state.convoy_wait = null;
+		if (CH && CH !== L.name && state.partners[CH]) pos = partner_pos(state.partners[CH]);
+	}
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader

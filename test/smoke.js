@@ -3378,7 +3378,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("convoy_head()", ctx) === null, "split: none");
 		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false", ctx);
 		// a follower that is the head walks to the spot; one that isn't follows the head, not the leader
-		assert(/if \(CH === character\.name\) pos = \{ map: state\.pack\.map/.test(src) && /else if \(CH && CH !== L\.name && state\.partners\[CH\]\) pos = partner_pos\(state\.partners\[CH\]\)/.test(src)
+		assert(/if \(CH === character\.name\) \{\s*const wait = convoy_muster\(\);/.test(src) && /if \(CH && CH !== L\.name && state\.partners\[CH\]\) pos = partner_pos\(state\.partners\[CH\]\)/.test(src)
 			&& /convoy: following \$\{CH\}/.test(src), "followers: the head walks to the spot, the others follow it; the leader follows it too");
 		const sent129 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent129.push(m); return Promise.resolve(); };
 		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
@@ -3427,6 +3427,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("CFG.ui.enabled = false", ctx);
 		[ctx.set, ctx.get] = sg; ctx.parent.document = pd0;
 		assert(vm.runInContext("map_ok('jail') === false", ctx) && /if \(!\(p\.score > 0\)\) return;/.test(src), "jail is never a pick, nor a spot with no way there");
+	}
+	// 132) v24.22: the convoy's head gathers everyone before it walks; members without a speed still count; one in the bank at a time
+	{
+		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "main", x: 0, y: 0, speed: 41, rip: false });
+		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}; state.errand = null; state.recovering = false; state.convoy_wait = null", ctx);
+		hb("Sanala", { ...san, level: 51, x: 900, y: 0, speed: 58 }); hb("Torlis", { ...tor, level: 60, x: 60, y: 0 }); // Torlis: no speed (older version)
+		assert(vm.runInContext("convoy_members().find((m) => m.name === 'Torlis').speed", ctx) === 55, "a member with no speed in its heartbeat counts at 55 (not dropped)");
+		assert(vm.runInContext("convoy_muster()", ctx) === "Sanala", "the head waits for Sanala (900px away) before walking");
+		hb("Sanala", { ...san, level: 51, x: 400, y: 0, speed: 58 });
+		assert(vm.runInContext("convoy_muster()", ctx) === "Sanala", "...until she's well in (400px: not yet, once waiting)");
+		hb("Sanala", { ...san, level: 51, x: 200, y: 0, speed: 58 });
+		assert(vm.runInContext("convoy_muster() === null && state.convoy_wait === null", ctx), "everyone close: go");
+		hb("Sanala", { ...san, level: 51, x: 3000, y: 0, speed: 58 });
+		vm.runInContext("convoy_muster(); state.convoy_wait.since = Date.now() - CFG.party.group.wait_s * 1000 - 1", ctx);
+		assert(vm.runInContext("convoy_muster() === null && state.convoy_wait.go_until > Date.now()", ctx), "a stuck one: wait_s, then on");
+		// the bank: wait while another of ours is inside
+		hb("Torlis", { ...tor, level: 60, map: "bank", x: 0, y: 0 });
+		character.items = Array(42).fill(null); character.items[3] = { name: "gslime", q: 2 };
+		vm.runInContext("globalThis.__bk = task_bank(['gslime']).then(() => 'went', (e) => e.reason)", ctx);
+		assert(await vm.runInContext("globalThis.__bk", ctx) === "bank_busy", "Torlis is in the bank: we wait (no hammering at the door)");
+		character.items = Array(42).fill(null);
+		vm.runInContext("state.partners = {}; state.convoy_wait = null", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
