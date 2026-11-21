@@ -1,4 +1,4 @@
-const VERSION = "24.24"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.25"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -22,7 +22,8 @@ const CFG = {
 	switch_margin: 1.15,       // change packs only if the new one scores 15% better (walking there isn't free)
 	near_pad: 450,             // px around the pack area a target may be picked from (and chased to)
 	danger_px: 400,            // v24.10: spots this close to a spawn of an aggressive monster we can't take on aren't farmed
-	keep_px: 300,              // v24.14: step away from a monster we can't take on that may attack, once it's this close
+	keep_px: 220,              // v24.14: step away from a monster we can't take on that may attack, once it's this close
+	keep_close_px: 120,        // v24.25: ...and coming our way, or already this close (was 300, whatever its direction)
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
@@ -275,6 +276,7 @@ const CFG = {
 		// tank_hold_ms so the tank takes its aggro; risk is then judged against the tank's HP and armour, so the party
 		// can take spots the leader couldn't survive alone. Not for aggressive monsters (G.monsters[].aggro > 0.3).
 		tank_first: true,
+		tank_leads: true,      // v24.25: together, the tank (warrior, then paladin) leads — walks in front, pulls first
 		tank_hold_ms: 12000,   // how long the others hold fire on an untouched monster for the tank (v24.24: was 4000)
 		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
 		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
@@ -617,7 +619,12 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? partners() : undefined), D = tank || character; // who the monster will be hitting
+	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? partners() : undefined);
+	// v24.25: we're the tank (leading, picking for everyone) and it's aggressive: it goes for whoever is near, so judge it
+	// on the squishiest member counted, not on our armour
+	const squish = !tank && solo !== true && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
+		? mates.filter((p) => p.max_hp > 0).sort((a, b) => a.max_hp - b.max_hp)[0] : null;
+	const D = tank || (squish && squish.max_hp < character.max_hp ? squish : null) || character; // who the monster will be hitting
 	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
 	const their_dps = their_hit * (m.frequency || 1);
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
@@ -634,7 +641,7 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 		// returns dreturn % of each physical hit to attackers with range < 75 (melee)
 	const chase = m.charge || m.speed || 0; // targeted monsters move at charge speed
 	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
-	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : character.max_hp,
+	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : D !== character ? D.max_hp : character.max_hp,
 		solo: solo === true, team: solo === true ? "solo" : solo === "all" ? "all" : "near", tank: tank ? tank.name : null, mates: mates.length };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
@@ -944,7 +951,12 @@ function looming() {
 		if (!e || e.type !== "monster" || !e.visible || e.dead || (e.target && party.has(e.target))) continue; // on us: fight()'s escape
 		if (e.mtype === state.pack?.mtype) continue; // what the party came for (a boss, a probe): not something to avoid
 		const d = distance(character, e);
-		if (d < bd && deadly_type(e.mtype)) (best = e), (bd = d);
+		if (d >= bd) continue;
+		// v24.25: only one coming our way (moving, its next point nearer us) or already very close — a wandering ent
+		// 300px off made Torlis step away and walk back over and over ("afraid of trees")
+		const gx = Number.isFinite(e.going_x) ? e.going_x : e.x, gy = Number.isFinite(e.going_y) ? e.going_y : e.y;
+		const coming = !!e.moving && Math.hypot(gx - character.x, gy - character.y) < d - 10;
+		if ((coming || d < CFG.keep_close_px) && deadly_type(e.mtype)) (best = e), (bd = d);
 	}
 	return best;
 }
@@ -4846,8 +4858,7 @@ function party_header_lines() {
 		...partners_any()].sort((a, b) => (a.name < b.name ? -1 : 1));
 	if (!fighters.length) return out;
 	out.push(`roster: ${fighters.map((f) => `${f.name} ${f.ctype} ${f.level} @${f.map}${f.errand ? " (" + f.errand + ")" : ""}${f.rip ? " DEAD" : ""}`).join(" | ")}`);
-	const lead = CFG.party.leader && fighters.some((f) => f.name === CFG.party.leader) ? CFG.party.leader
-		: [...fighters].sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1))[0].name;
+	const lead = pick_leader(fighters);
 	const lp = fighters.find((f) => f.name === lead)?.pack;
 	out.push(`leader: ${lead}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
 	const gw = lead === character.name ? state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null : state.partners[lead]?.grp_wait;
@@ -4934,10 +4945,19 @@ function partners_near(maxd = 400) {
 // still the leader, so followers hold position instead of wandering off). Ties: alphabetical, so all agree.
 function leader_name() {
 	if (!in_party_cfg()) return character.name;
-	const all = [{ name: character.name, level: character.level }, ...partners_any()];
+	return pick_leader([{ name: character.name, level: character.level, ctype: character.ctype }, ...partners_any()]);
+}
+// v24.25: together, the tank leads — a warrior, else a paladin (the higher level, then name) — so it walks in front and
+// pulls first; with no tank online (or splitting), the lowest level leads as before. CFG.party.leader overrides both.
+const TANK_ORDER = ["warrior", "paladin"];
+function pick_leader(all) {
 	if (CFG.party.leader && all.some((m) => m.name === CFG.party.leader)) return CFG.party.leader;
-	all.sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1));
-	return all[0].name;
+	if (CFG.party.tank_leads && !CFG.party.split?.enabled) {
+		const tk = all.filter((m) => TANK_ORDER.includes(m.ctype))
+			.sort((a, b) => TANK_ORDER.indexOf(a.ctype) - TANK_ORDER.indexOf(b.ctype) || (b.level || 0) - (a.level || 0) || (a.name < b.name ? -1 : 1));
+		if (tk.length) return tk[0].name;
+	}
+	return [...all].sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1))[0].name;
 }
 const leader_name_any = leader_name;
 const leader_hb = () => state.partners[leader_name()];
@@ -5049,6 +5069,9 @@ function convoy_muster() {
 }
 function convoy_head() {
 	if (!CFG.party.group?.enabled || !CFG.party.group.convoy || !in_party_cfg() || split_now()) return null;
+	// v24.25: a tank leading walks in front itself (and waits for stragglers: group_hold); the convoy is for parties without one
+	const ln = leader_name(), lc = ln === character.name ? character.ctype : state.partners[ln]?.ctype;
+	if (TANK_ORDER.includes(lc)) return null;
 	const me_lead = leader_name() === character.name, L = me_lead ? null : leader_hb();
 	const pk = me_lead ? state.pack : L?.pack;
 	if (!pk || !valid_boundary(pk.boundary) || pk.boss || (!me_lead && (L.errand || L.recovering || L.rip))) return null;
@@ -5932,7 +5955,9 @@ function follower_tick() {
 		: L.recovering && state.pack ? state.pack : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
-	const lm = !walking() ? looming() : null; // v24.14; v24.16: not mid-walk
+	// v24.14; v24.16: not mid-walk; v24.25: only at our spot (not while following or travelling)
+	const at_spot = !!state.pack && character.map === state.pack.map && in_boundary(state.pack.boundary, 250);
+	const lm = !walking() && at_spot ? looming() : null;
 	if (lm) { keep_away(lm); const a = hit_on_me(); if (a && a !== lm) fight(a, false); return; }
 	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
 	// and back (every leader trip used to move the whole party)

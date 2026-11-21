@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; globalThis.__run_row_real = run_row", ctx); // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -3249,7 +3249,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("for (const k in deadly_c) delete deadly_c[k]; state.safe = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [-100, -100, 100, 100] }; state.keep_log = []; state.keep_at = 0; state.cooldown = {}; hist.ev = []", ctx);
 		ctx.parent.entities.e125 = { id: "e125", type: "monster", mtype: "ent125", visible: true, x: 200, y: 0 };
 		ctx.parent.entities.c125 = { id: "c125", type: "monster", mtype: "calm125", visible: true, x: 50, y: 0 };
-		assert(vm.runInContext("looming()?.id", ctx) === "e125", "an ent 200px away (can't take it, aggro 0.2) looms; a never-aggressive giant doesn't");
+		assert(vm.runInContext("looming()", ctx) === null, "v24.25: an ent standing 200px away doesn't loom (only one coming at us, or within 120px)");
+		Object.assign(ctx.parent.entities.e125, { moving: true, going_x: 100, going_y: 0 });
+		assert(vm.runInContext("looming()?.id", ctx) === "e125", "an ent walking our way (can't take it, aggro 0.2) looms; a never-aggressive giant doesn't");
 		vm.runInContext("last_move = 0; smart_depth = 0; keep_away(looming())", ctx);
 		assert(mv.length === 1 && mv[0][0] < 0, `stepped away from it (${JSON.stringify(mv)})`);
 		ctx.parent.entities.e125.target = "Torlis";
@@ -3492,6 +3494,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank is fleeing: no holding for it");
 		delete ctx.parent.entities.e134; ctx.distance = dist0; ctx.send_cm = scm;
 		vm.runInContext("state.partners = {}; tank_hold.id = null", ctx);
+	}
+	// 135) v24.25: together, the tank leads (warrior, then paladin); it judges aggressive monsters on the squishiest member
+	{
+		vm.runInContext("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null", ctx);
+		const L = (arr) => vm.runInContext(`pick_leader(${JSON.stringify(arr)})`, ctx);
+		const sana = { name: "Sanala", level: 51, ctype: "mage" }, tor = { name: "Torlis", level: 52, ctype: "paladin" }, asp = { name: "Aspernari", level: 58, ctype: "priest" };
+		assert(L([sana, tor, asp]) === "Torlis", "the paladin leads, not the lowest level");
+		assert(L([sana, tor, asp, { name: "Wally", level: 40, ctype: "warrior" }]) === "Wally", "a warrior before a paladin");
+		assert(L([sana, asp]) === "Sanala", "no tank online: the lowest level, as before");
+		vm.runInContext("CFG.party.split.enabled = true", ctx);
+		assert(L([sana, tor, asp]) === "Sanala", "splitting: the lowest level");
+		vm.runInContext("CFG.party.split.enabled = false; CFG.party.leader = 'Aspernari'", ctx);
+		assert(L([sana, tor, asp]) === "Aspernari", "CFG.party.leader overrides");
+		vm.runInContext("CFG.party.leader = null", ctx);
+		// the tank leading: no slowest-first convoy (it walks in front and waits for stragglers itself)
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "main", x: 0, y: 0, speed: 50, hp: 6000, max_hp: 6000, rip: false, attack: 300, frequency: 1, armor: 400, resistance: 200 });
+		vm.runInContext("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [3000, 3000, 3200, 3200] }; state.errand = null; state.recovering = false", ctx);
+		hb("Sanala", { ...san, level: 51, ctype: "mage", x: 30, y: 0, speed: 58, max_hp: 4000, hp: 4000, armor: 50, resistance: 50 });
+		hb("Aspernari", { ...asp, level: 58, ctype: "priest", x: -30, y: 0, speed: 41, max_hp: 5000, hp: 5000, armor: 80, resistance: 80 });
+		assert(vm.runInContext("leader_name() === 'Torlis' && convoy_head() === null", ctx), "Torlis leads; no convoy behind the slowest");
+		// an aggressive monster: judged on Sanala (4000 hp, the squishiest near), not on the tank's 6000 and armour
+		const f = vm.runInContext("fight_math({ hp: 1000, attack: 200, frequency: 1, aggro: 1, damage_type: 'physical', xp: 10 })", ctx);
+		const g = vm.runInContext("fight_math({ hp: 1000, attack: 200, frequency: 1, aggro: 0, damage_type: 'physical', xp: 10 })", ctx);
+		assert(f.hp_pool === 4000 && g.hp_pool === 6000, `aggressive: Sanala's 4000 HP is the pool (passive: ours) (${f.hp_pool}, ${g.hp_pool})`);
+		vm.runInContext("CFG.party.tank_leads = false; state.partners = {}; state.pack = null", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55, hp: 1000, max_hp: 1000 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
