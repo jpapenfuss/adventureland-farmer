@@ -1,4 +1,4 @@
-const VERSION = "24.54"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.55"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1061,10 +1061,12 @@ function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x,
 // v24.43: a monster that tangles (ent: "mtangle"; server: a tangled player moves at 24 at most) chases at its charge
 // speed against our 24 — an ent's 48 looked outrunnable against our 50, and it killed five of us in ten minutes
 const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const c = m.charge || m.speed || 0; return m.abilities?.mtangle && c > 24 ? Infinity : c; };
-// Its spawn is no place to walk: we can't take it on, we can't outrun it, and it comes at us — aggressive (aggro or rage
-// >= 0.5), or a tangler with any aggro at all (an ent's 0.2 was enough, five times). v24.45: not every monster with
-// some aggro — that took in the phoenix, whose possible spawns cover main, and closed the way to half the map.
-const no_go = (t, v) => { const m = G.monsters[t]; return !!m && !state.safe[t] && chase_speed(t) >= v && (aggressive(t) || (!!m.abilities?.mtangle && ((m.aggro || 0) > 0 || (m.rage || 0) > 0))); };
+// Its spawn is no place to walk: an aggressive monster (aggro or rage >= 0.5: it comes at anyone near) that we can't
+// take on and can't outrun. v24.55: not ents. v24.43 added tanglers with any aggro after five deaths to ents — but
+// those began with the party hitting the ent (it was "a monster on a party member", so everyone shot it). Since
+// v24.44 nobody attacks a monster the party can't kill, and an ent left alone leaves room to walk past (owner).
+// Listing it closed the only way to level2s and the walk from its door.
+const no_go = (t, v) => !!G.monsters[t] && aggressive(t) && !state.safe[t] && chase_speed(t) >= v;
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 const can_take = (e) => !!(state.safe[e.mtype] ? live_ok(e) : fight_profile(e.mtype));
 const rect_gap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
