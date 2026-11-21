@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -3331,6 +3331,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			for (const n of ["mmh137", "mma137", "mmp137", "mms137", "mmg137", "gl137"]) delete I[n];
 			delete ctx.G.sets.mm137; ctx.G.tokens = keep.tokens; character.items = keep.items; character.ctype = keep.ctype; character.gold = keep.gold;
 			R("state.upg = null; state.upg_pick_at = 0");
+		}
+		// v24.72: with sell_junk off nothing is sold as junk, bank full or not
+		{
+			const it = { name: "helm1", level: 0 }, items0 = character.items;
+			character.items = Array(42).fill(null); character.items[0] = it; character.slots = { helmet: { name: "helm3", level: 5 } };
+			R("state.bank_full_at = Date.now(); state.upg = null; spp_cache.clear()");
+			const on = R("is_junk(character.items[0])");
+			R("CFG.sell_junk = false");
+			assert(R("is_junk(character.items[0])") === false && R("bag_class(character.items[0])") !== "sell", `sell_junk off: a plain +0 piece isn't sold even with the bank full (it was junk before: ${on})`);
+			R("CFG.sell_junk = true; state.bank_full_at = 0");
+			character.items = items0; character.slots = {};
 		}
 		// v24.68: the report's JSON dumps
 		assert(R("JSON.stringify(items_dump([{ name: 'b', q: 3 }, null, { name: 'a', level: 2 }, { name: 'a', level: 2 }, { name: 'c', l: 'l' }, { name: 'b', q: 2 }]))") === '{"a+2":2,"b":5,"c*":1}', "items_dump: name+level → count, stacks summed, * for locked, sorted");

@@ -1,4 +1,4 @@
-const VERSION = "24.71"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.72"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -52,6 +52,10 @@ const CFG = {
 	// --- bags ------------------------------------------------------------------------------------------------------
 	bag_min_free: 10,          // town run (sell + bank) when free bag slots drop below this (bags hold 42)
 	sell: [],                  // item names to always sell
+	// v24.72 (owner): false = nothing is sold as "junk" — not plain +0 gear when the bank is full, not the merchant's
+	// bank purge, not compound pieces at their ceiling. Only the names in `sell` are sold. (What we own can still be
+	// upgraded into something worth wearing.) With the bank full, things then stay in the bags.
+	sell_junk: false,
 	auto_sell_gear: false,     // true: sell +0 normal-grade untitled gear (worth <= sell_max_value) instead of banking it
 	sell_max_value: 20_000,    // never auto-sell gear the NPC values above this much gold
 	sell_batch: 4,             // with a computer (sells from anywhere): sell as soon as this many junk items pile up
@@ -3479,6 +3483,7 @@ function is_junk(item) {
 	if (!item || item.l || item.b || CFG.keep.includes(item.name) || needed_slots().has(character.items.indexOf(item))) return false;
 	if (CFG.sell.includes(item.name)) return true;
 	const def = G.items[item.name];
+	if (!CFG.sell_junk) return false;
 	if (!(CFG.auto_sell_gear || bank_is_full()) || !def || !GEAR.has(def.type)) return false; // bank full: selling is the only way to make room
 	if (gear_wanted_by(item)) return false; // an upgrade for us or a party member
 	return !(item.level > 0) && !item.p && item_grade(item) === 0 && item_value(item) <= CFG.sell_max_value;
@@ -3498,8 +3503,8 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
-	if (is_merchant() && Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return "sell";
-	if (is_merchant() && CFG.merchant.sell_dead_compounds && dead_compound(item)) return "sell"; // v24.15
+	if (CFG.sell_junk && is_merchant() && Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return "sell";
+	if (CFG.sell_junk && is_merchant() && CFG.merchant.sell_dead_compounds && dead_compound(item)) return "sell"; // v24.15
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -3557,7 +3562,7 @@ function bag_plan() {
 	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
 	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
-	if (is_merchant() && CFG.merchant.sell_dead_compounds) {
+	if (CFG.sell_junk && is_merchant() && CFG.merchant.sell_dead_compounds) {
 		let room = Math.max(0, character.esize - 8);
 		for (const it of state.bank_gear || []) {
 			if (room <= 0) break;
@@ -3702,7 +3707,7 @@ async function task_bank(fetch_names) {
 		state.bank_full_at = Date.now();
 		town_reason.bank = "every bank pack you can use is full";
 		const has_key = character.items.some((i) => i && (i.name === "bkey" || i.name === "ukey"));
-		game_log(`Bank full (floors: ${unlocked_floors.join(", ")}): selling plain +0 junk until there's room.` +
+		game_log(`Bank full (floors: ${unlocked_floors.join(", ")}): ${CFG.sell_junk ? "selling plain +0 junk until there's room" : "nothing is sold (sell_junk is off) — what doesn't fit stays in the bags"}.` +
 			(has_key ? " You hold a bank key: use it in the bank to unlock another floor." : " A Bank Key (bkey) unlocks the bank_b floor."), C.bad);
 	} else if (!stored && store.length) town_reason.bank = "store calls failed (see gray bank: lines)";
 	// pull back what bags need: packs on this floor first, then other unlocked floors that hold what's left (v18.1:
@@ -5357,7 +5362,7 @@ function report_facts() {
 		const f = merchant_job(), D = CFG.merchant.donate;
 		if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
 		const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[purge_key(i)]).length;
-		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? " — purging low-value items" : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+		if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? (CFG.sell_junk ? " — purging low-value items" : " — nearly full; nothing is sold (sell_junk off)") : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
 		// v24.68: everything in the bank (as last seen) and in the merchant's bags, as JSON: "name+level" → count, * = locked
 		F("bank_json", "self", state.bank_dump ? `bank JSON (seen ${ago(state.bank_at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""}): ${JSON.stringify(state.bank_dump)}`
 			: "bank JSON: nothing recorded yet — it's taken on the next bank visit by any character");
@@ -5516,7 +5521,7 @@ function report_facts() {
 		`${plan.fetch.length ? ` | to fetch: ${Object.entries(fetch_names).map(([n, c]) => (c > 1 ? `${n} x${c}` : n)).join(", ")}` : ""}`);
 	if (Object.keys(fetched_n).length) F("fetched", "self", `  fetched (kept 1h): ${Object.entries(fetched_n).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(", ")}`);
 	for (const k of Object.keys(state.gear_skip).filter((x) => x.startsWith("town:")).sort()) if (skipped(k)) F("pause:" + k, "self", `${k} paused ${mins(state.gear_skip[k])}: ${skip_why[k] || "?"}`);
-	if (bank_is_full()) F("bank_full", "self", `bank marked full ${Math.round((now - state.bank_full_at) / 60_000)}m ago: selling +0 junk meanwhile`);
+	if (bank_is_full()) F("bank_full", "self", `bank marked full ${Math.round((now - state.bank_full_at) / 60_000)}m ago: ${CFG.sell_junk ? "selling +0 junk meanwhile" : "nothing is sold (sell_junk off); it stays in the bags"}`);
 	F("footer", "self", `level ${character.level} ${character.ctype} | ${fmt_k(character.gold)} gold | at ${character.map} ${Math.round(character.x)},${Math.round(character.y)} | calls ${spent().toFixed(0)}/${BUDGET.soft} per 4s`);
 	return out;
 }
@@ -6345,6 +6350,7 @@ function purge_ok(it) {
 }
 // In the bank with it nearly full: pull the least valuable purgeable items (this floor's packs)
 async function bank_purge() {
+	if (!CFG.sell_junk) return 0;
 	const M = CFG.merchant, bf = state.bank_free;
 	if (!bf || bf.free >= bf.total * M.purge_below || character.esize < M.purge_n + 4) return 0;
 	const packs = bank_packs_list(), cands = [];
