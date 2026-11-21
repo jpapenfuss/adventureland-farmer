@@ -1,4 +1,4 @@
-const VERSION = "24.39"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.40"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -561,7 +561,9 @@ async function go_route(dest, ms) {
 			for (const L of pl.legs) {
 				if (character.map !== L.map) break; // moved some other way meanwhile: the last walk below finishes it
 				if (L.kind === "tp") {
-					await go_raw({ map: L.map, x: L.x, y: L.y }, ms);
+					// v24.40: beside the transporter, not onto its tile (blocked: "Path not found!" from desertland's door —
+					// the walk failed and the party stood there). The NPC's own position is the second try.
+					await go_raw({ map: L.map, x: L.x, y: L.y + NPC_STAND_Y }, ms).catch((e) => { if (e?.reason === "walk_timeout" || e?.reason === "fleeing") throw e; return go_raw({ map: L.map, x: L.x, y: L.y }, ms); });
 					if (typeof transport === "function") await T(transport(L.to, L.s), 25_000);
 				} else await go_raw({ map: L.to, x: L.tx, y: L.ty }, ms);
 			}
