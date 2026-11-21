@@ -1,4 +1,4 @@
-const VERSION = "24.65"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.66"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -6608,16 +6608,21 @@ function follower_tick() {
 		if (get_targeted_monster() !== t) change_target(t);
 		if (engaged) break_walk_for(t);
 		// close in on targets out of reach; kiting (ranged, when the target is on us) takes precedence
-		if (engaged && !walking() && !errand_busy() && distance(character, t) > standoff(t).reach) approach(t);
+		// v24.66: only when it's out of range. It used to step in from 90% of range — a caster that had just cast on
+		// its target then walked closer to it.
+		if (engaged && !walking() && !errand_busy() && distance(character, t) > character.range) approach(t);
 		if (!hold_for_tank(t) && !class_skills(t) && can_attack(t)) fire("attack", t);
 	}
 	if (engaged || walking() || errand_busy()) return;
 	const d = pos.map === character.map ? Math.hypot(pos.x - character.x, pos.y - character.y) : Infinity;
 	state.follow_block = null;
+	// v24.66: a caster stays within 70% of its range of the tank (what the tank fights is beside it: in range, and the
+	// tank in heal range), not within `follow` px — it stepped after the tank on every monster while already in range
+	const fol = RANGED ? Math.max(CFG.party.follow, Math.min(character.range * 0.7, CFG.party.engage_px * 0.5)) : CFG.party.follow;
 	if (d > CFG.party.follow_far) travel_as("follower_tick", pos);
-	else if (d > CFG.party.follow) {
+	else if (d > fol) {
 		const ang = Math.atan2(character.y - pos.y, character.x - pos.x);
-		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
+		const want = { x: pos.x + Math.cos(ang) * fol * 0.6, y: pos.y + Math.sin(ang) * fol * 0.6 };
 		if (can_move_to(want.x, want.y)) move_to_as("follower_tick", want.x, want.y, 300); else travel_as("follower_tick", pos);
 	}
 }

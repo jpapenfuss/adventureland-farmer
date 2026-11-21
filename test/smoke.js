@@ -3794,6 +3794,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.ptown = { id: 'Torlis:1', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], pending: true }");
 		assert(R("ptown_join_tick()") === false && R("state.errand") === null && R("state.ptown.pending") === true, "a follower out in the field with a party trip pending starts no town run of its own: it follows the tank in");
 		R("state.ptown = null");
+		// v24.66: a caster in range doesn't step closer — not toward the tank, not toward its target
+		if (R("RANGED")) {
+			R("state.partners = {}; __d147 = null; last_move = 0; smart_depth = 0"); steps.length = 0;
+			Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0, range: 200, moving: false });
+			hb("Torlis", { ...tor, ctype: "paladin", level: 53, map: "main", x: 120, y: 0, pack: pk });
+			hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 60, y: 0 });
+			ctx.parent.entities = { c147: { id: "c147", type: "monster", mtype: "croc", x: 190, y: 0, hp: 100, max_hp: 100, visible: true, target: "Torlis" } };
+			R("follower_tick()");
+			assert(steps.length === 0 && R("__d147") === null, `a caster 120px from the tank with its target at 95% of range: it stands and casts (${JSON.stringify(steps)})`);
+			hb("Torlis", { ...tor, ctype: "paladin", level: 53, map: "main", x: 170, y: 300, pack: pk });
+			ctx.parent.entities = {};
+			R("last_move = 0; follower_tick()");
+			assert(steps.length === 1, `...and steps after the tank once it's beyond 70% of its range (${JSON.stringify(steps)})`);
+			steps.length = 0; R("last_move = 0");
+		}
 		// v24.62: a member the tank hasn't heard from is missing: no fight is started, and holding fire isn't "no progress"
 		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 53, map: "main", x: 0, y: 0 });
 		R("state.partners = {}; CFG.party.tank_first = true; state.prog = null; state.bad_ids = {}");
