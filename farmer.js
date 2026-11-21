@@ -1,4 +1,4 @@
-const VERSION = "24.38"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.39"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -537,6 +537,12 @@ function dest_point(dest) {
 // way crosses a map with an aggressive monster we can't take on or outrun (vampire rats in level1), walk the shortest
 // way around it leg by leg — through doors, and the transporter where it's on that way; no way around: don't go
 async function go(dest, ms = CFG.walk_timeout_ms) {
+	{
+		// v24.39: the whole walk decides, not each leg. A trip to town by the transporter is three short legs (to the
+		// transporter, through it, to the NPC): judged leg by leg none was "long", and the gear stayed on all the way.
+		const dp = dest_point(dest);
+		trip.long = !dp || dp.map !== character.map || Math.hypot(dp.x - character.x, dp.y - character.y) > CFG.travel_gear.min_px;
+	}
 	try { return await go_route(dest, ms); }
 	finally { if (errand_busy() && state.travel_off.length) await travel_restore("arrived").catch(() => {}); } // v24.27
 }
@@ -567,10 +573,6 @@ async function go_raw(dest, ms = CFG.walk_timeout_ms) {
 	// v24.8: no walks while fleeing — an errand's next step started one each time recover() stopped the last, and moving
 	// cancelled the town channel until the errand ran out of steps
 	if (state.recovering) throw { reason: "fleeing" };
-	{
-		const dp = dest_point(dest);
-		trip.long = !dp || dp.map !== character.map || Math.hypot(dp.x - character.x, dp.y - character.y) > CFG.travel_gear.min_px;
-	}
 	smart_depth++;
 	let timer, timed_out = false;
 	try {
