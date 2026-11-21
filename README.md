@@ -17,3 +17,10 @@ of what it does is at the bottom.
 
 ## Tests
 `node test/smoke.js` and `node test/loader.js` (mocked game client; no game connection needed).
+
+## Layout
+- `farmer.js` — the bot (every character runs it); `loader.js` — the paste-once loader.
+- `test/` — `smoke.js` (the bot against a mocked game client), `loader.js`, `fixtures/`.
+- `tools/` — diagnostic scripts (route simulator on the live map data, map geometry checks, a test runner that
+  lists every failure). See `tools/README.md`.
+- `REFACTOR.md` — the design the code is being brought to (the tank decides; the party stays together) and its status.
