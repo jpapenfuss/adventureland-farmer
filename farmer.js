@@ -1,4 +1,4 @@
-const VERSION = "24.51"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.52"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -291,8 +291,8 @@ const CFG = {
 		tank_first: true,
 		tank_leads: true,      // v24.25: together, the tank (warrior, then paladin) leads — walks in front, pulls first
 		// v24.51: one party or nothing. Every member of `members` must be online and alive. If one is offline or dead,
-		// or we're under flee_hp with a monster on us, we use the suicide command (free: no XP loss, unlike dying to a
-		// monster) and wait at the respawn in town; nobody fights, flees or walks back alone. town_px: how close to
+		// the others use the suicide command (free: no XP loss) and wait at the respawn in town, so the party is
+		// together again. Low HP changes nothing: a party fighter neither flees nor suicides. town_px: how close to
 		// main's spawn counts as "in town" (the respawn points are within 700px of it).
 		all_or_nothing: true, town_px: 1000,
 		engage_px: 400,        // v24.50: px; the tank starts a fight only with every online fighter this close to it
@@ -782,9 +782,9 @@ function suicide(why_) {
 	log_ev("suicide", { why: why_, at: `${state.pack?.mtype || "?"}@${character.map}` });
 	parent.socket.emit("harakiri");
 }
-// Why the party isn't whole: a member offline or dead, or we're about to die — else null
+// Why the party isn't whole: a member offline or dead — else null. (v24.52: low HP is not a reason. v24.51 had a
+// member under flee_hp use the suicide command; the owner's rule is that only a member's DEATH sends the others.)
 function party_break() {
-	if (character.hp < character.max_hp * CFG.flee_hp && hit_on_me()) return "low HP with a monster on us";
 	const off = others().filter((n) => !fresh(state.partners[n]));
 	if (off.length) return `${off.join(", ")} offline`;
 	const dead = partners_any().filter((q) => q.rip).map((q) => q.name);

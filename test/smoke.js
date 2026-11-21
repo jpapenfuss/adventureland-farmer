@@ -3922,7 +3922,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// about to die: suicide is free, dying to the monster isn't
 		emits.length = 0; R("suicide_at = 0"); character.hp = 500;
 		ctx.parent.entities = { m144: { id: "m144", type: "monster", mtype: "goo", visible: true, dead: false, target: "Sanala", x: 400, y: -1400 } };
-		assert(R("party_break_tick()") === true && emits.join() === "harakiri", "under flee_hp with a monster on us: suicide, not a flee");
+		assert(R("party_break_tick()") === false && emits.length === 0, "v24.52: low HP with a monster on us is no reason to suicide — only a member's death is");
 		ctx.parent.entities = {}; character.hp = 3650; emits.length = 0; R("suicide_at = 0; seen.since = Date.now()");
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400, rip: true });
 		assert(R("party_break_tick()") === false && emits.length === 0, "the first 30s after loading: no suicide (heartbeats still arriving)");
