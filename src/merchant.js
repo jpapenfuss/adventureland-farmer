@@ -549,3 +549,9 @@ function merchant_tick() {
 		travel_as("merchant_tick", { map: "main", x: home[0], y: home[1] });
 	} else if (!character.moving) stand_tick().catch(() => {});
 }
+// ---- moved from common.js (v24.95): used by the merchant only ----
+// Item types that always stay in the bags: consumables, scrolls, tools, keys
+// Item types the bot may ever sell, list on the stand or purge from the bank: gear, plain materials, gems. Everything
+// else (dungeon keys, licences, cosmetics, quest items, tomes, flutes, containers...) is only ever kept or banked.
+const TRADE_TYPES = new Set(["material", "gem"]);
+const tradeable = (name) => { const d = G.items[name]; return !!d && (GEAR.has(d.type) || TRADE_TYPES.has(d.type)) && !recipe_input(name); };
