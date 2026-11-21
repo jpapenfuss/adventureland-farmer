@@ -1,4 +1,4 @@
-const VERSION = "24.26"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.27"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -98,6 +98,15 @@ const CFG = {
 	compound_min_chance_rebuyable: 0.6, // ...or >= 60% when an NPC sells the item (failure only costs gold)
 	compound_per_run: 6,       // compounds per town run at most
 	gear_tank_mult: 2,
+	// v24.27: travel gear. Worn pieces that slow us come off for long walks and go back on when the walk ends. "Slow" counts
+	// the piece's own speed and the class's modifier for its type (priest staff -4, shield -5; paladin sword -7, shield -3).
+	// A long walk is one to another map or farther than min_px; a follower uses its leader's.
+	// They go back on at once: at the spot, when an errand arrives (before any NPC work), when a monster near targets
+	// one of us (danger_px), or below half HP. Otherwise they go back on settle_ms after the long walk ends.
+	// Pieces whose removal would cut current HP or MP by more than max_hp_loss / max_mp_loss of max stay on
+	// (the server clamps HP/MP to the lower max, so that much is lost).
+	// .b pieces always stay on (the server deletes them on unequip). Not the merchant.
+	travel_gear: { enabled: true, min_px: 700, min_speed: 1, settle_ms: 10_000, danger_px: 400, keep_free: 2, max_hp_loss: 0.1, max_mp_loss: 0.25, cooldown_ms: 5000 },
 	// Own upgrading (upgrade_auto): one project at a time: an NPC-sold piece, upgraded (spare copies only, never worn
 	// gear) to the level where it beats what a member wears by the most per gold. Each step is gated by the server's
 	// preview (min_chance_rebuyable: a failure only costs gold); at low odds the project stops at the level reached.
@@ -365,6 +374,7 @@ const PACE_MS = 150;    // pause between consecutive bulk calls (selling, bankin
 // Runtime state. Fields marked (saved) persist across code reloads via save_state()/load_state().
 const state = {
 	pack: null,              // where we fight: { mtype, map, boundary, count, est, score, directive? }
+	travel_off: [],          // v24.27: worn pieces taken off for a long walk: [{ slot, name, level, p, stat_type, speed, at }]
 	safe: {},                // monster id -> { ttk, xp } for every type that passed the safety check at the last pick
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
 	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
@@ -497,6 +507,8 @@ async function wait_budget(cost, reserve) { while (!can_spend(cost, reserve)) aw
 // Every walk has a deadline: the game's pathfinder retries a locked door ("The door is locked!" → "Lost the path"
 // → "Path found!") forever, which would hang an errand (e.g. in front of the locked bank_b door).
 let smart_depth = 0; // number of go() walks in flight; > 0 means "walking" (nothing else may steer)
+// v24.27: the walk in flight, for travel gear: long = another map, a named place we can't place, or > travel_gear.min_px
+const trip = { long: false, at: 0, end: 0 };
 // Where smart_move would take a destination (its own table for named places), or null if we can't tell
 function dest_point(dest) {
 	if (dest && typeof dest === "object" && Number.isFinite(dest.x)) return { map: dest.map || character.map, x: dest.x, y: dest.y };
@@ -516,6 +528,10 @@ function dest_point(dest) {
 // way crosses a map with an aggressive monster we can't take on or outrun (vampire rats in level1), walk the shortest
 // way around it leg by leg — through doors, and the transporter where it's on that way; no way around: don't go
 async function go(dest, ms = CFG.walk_timeout_ms) {
+	try { return await go_route(dest, ms); }
+	finally { if (errand_busy() && state.travel_off?.length) await travel_restore("arrived").catch(() => {}); } // v24.27
+}
+async function go_route(dest, ms) {
 	if (state.recovering) throw { reason: "fleeing" };
 	const T_ = CFG.travel.safe_routes && G.maps[character.map]?.doors ? dest_point(dest) : null;
 	if (T_ && T_.map !== character.map) {
@@ -542,6 +558,11 @@ async function go_raw(dest, ms = CFG.walk_timeout_ms) {
 	// v24.8: no walks while fleeing — an errand's next step started one each time recover() stopped the last, and moving
 	// cancelled the town channel until the errand ran out of steps
 	if (state.recovering) throw { reason: "fleeing" };
+	{
+		const dp = dest_point(dest);
+		trip.long = !dp || dp.map !== character.map || Math.hypot(dp.x - character.x, dp.y - character.y) > CFG.travel_gear.min_px;
+		trip.at = Date.now();
+	}
 	smart_depth++;
 	let timer, timed_out = false;
 	try {
@@ -554,7 +575,7 @@ async function go_raw(dest, ms = CFG.walk_timeout_ms) {
 		// v24.8: stop("smart") rejects the walk with "interrupted" first, which won the race: a timeout looked like an interruption
 		if (timed_out) throw { reason: "walk_timeout", dest: typeof dest === "string" ? dest : dest.map };
 		throw e;
-	} finally { clearTimeout(timer); smart_depth--; }
+	} finally { clearTimeout(timer); smart_depth--; if (!smart_depth) trip.end = Date.now(); }
 }
 const walking = () => smart_depth > 0;
 // An errand (town run, park) owns NPC visits and pack travel while it runs. A hung one stops counting as busy after
@@ -564,7 +585,8 @@ function errand(name, fn) {
 	if (errand_busy()) return false;
 	const token = {};
 	Object.assign(state, { errand: name, errand_at: Date.now(), errand_token: token });
-	Promise.resolve().then(fn).catch((e) => game_log(`${name}: ${why(e)}`))
+	// v24.27: pieces off for travel go back on before the errand touches the bags
+	Promise.resolve().then(() => state.travel_off?.length && travel_restore("errand").catch(() => {})).then(() => fn()).catch((e) => game_log(`${name}: ${why(e)}`))
 		.finally(() => {
 			if (state.errand_token !== token) return;
 			state.errand = null;
@@ -2219,8 +2241,14 @@ function guide_plans_slot(slot) {
 	return (state.guide?.rows || []).some((r) => CFG.gear_actions.includes(r.kind) && !skipped(r.id) &&
 		(r.action?.slot || String(r.id || "").split(":")[1]) === slot);
 }
+// Worn pieces, plus those off for a long walk (v24.27: still ours — judged, reported and protected as worn)
+function gear_slots_v() {
+	const sl = { ...(character.slots || {}) };
+	for (const r of state.travel_off || []) if (!sl[r.slot]) sl[r.slot] = { name: r.name, level: r.level, p: r.p || undefined, stat_type: r.stat_type || undefined };
+	return sl;
+}
 function my_gear() {
-	const now = Date.now(), sl = character.slots || {};
+	const now = Date.now(), sl = gear_slots_v();
 	const owned = (s) => now - (state.guide_equip[s] || 0) < CFG.gear_guide_respect_h * 3600_000 && guide_plans_slot(s);
 	const key = GEAR_SLOTS.map((s) => (sl[s] ? sl[s].name + (sl[s].level || 0) : "") + (owned(s) ? "!" : "")).join();
 	if (my_gear_cache && now - my_gear_cache.at < 1000 && my_gear_cache.key === key) return my_gear_cache.g;
@@ -2306,19 +2334,20 @@ let gear_busy = false;
 let m_release_at = 0;
 async function equip_upgrades() {
 	if (!CFG.gear_auto || gear_busy || character.rip || errand_busy()) return false;
-	const needed = needed_slots(), g = my_gear(), M_ = is_merchant();
+	const needed = needed_slots(), g = my_gear(), M_ = is_merchant(), off_s = travel_off_slots();
 	const fighters = M_ ? gear_takers().slice(1).filter((m) => m.ctype !== "merchant") : [];
 	const for_fighter = (it) => fighters.some((m) => gear_gain(it, m.ctype, m.g));
 	let best = null;
 	character.items.forEach((it, k) => {
 		if (!it || equip_paused(it) || (M_ && (!CFG.merchant.wear_gear || needed.has(k) || for_fighter(it)))) return;
 		const r = gear_gain(it, character.ctype, g);
+		if (r && off_s.has(r.slot)) return; // v24.27: its piece is off for a walk and goes back on after it
 		// a copy the guide holds as an upgrade/compound input is worn only when clearly better (v20.0)
 		if (r && needed.has(k) && r.gain < (g.w[r.slot] || 0) * CFG.gear_input_gain) return;
 		if (r && (!best || r.gain > best.gain)) best = { ...r, k, it };
 	});
 	// (c) wearing a two-hander: a one-hander + offhand from the bags may beat it together (the offhand goes on next)
-	if (!best && g.dh) {
+	if (!best && g.dh && !off_s.has("mainhand") && !off_s.has("offhand")) {
 		let one = null, off = null;
 		character.items.forEach((it, k) => {
 			if (!it || equip_paused(it) || needed.has(k) || (M_ && (!CFG.merchant.wear_gear || for_fighter(it)))) return;
@@ -2442,6 +2471,126 @@ async function swap_worn() {
 	}
 	return false;
 }
+// ---- Travel gear (v24.27): pieces that slow us come off for long walks, and go back on when they end ----
+// Our own long walk (go_raw's trip), or the walk just ended a moment ago (between a route's legs, a group hold)
+const own_long_walk = () => !!trip.long && (walking() || Date.now() - trip.end < CFG.travel_gear.settle_ms);
+// Are we on a long walk now? A follower walks with its leader (heartbeat lw), not through go()
+function travel_long() {
+	if (state.pack && character.map === state.pack.map && in_boundary(state.pack.boundary, 250)) return false; // at the spot
+	if (own_long_walk() && !(errand_busy() && !walking())) return true; // an errand at its NPC isn't travelling
+	if (errand_busy() || !is_follower()) return false;
+	const L = leader_hb(), lp = L && partner_pos(L);
+	// walking with it: same map, within reach of it (a member holding somewhere else isn't travelling)
+	return !!(fresh(L) && L.lw && !L.rip && L.map === character.map && Math.hypot(lp.x - character.x, lp.y - character.y) <= 2 * CFG.party.follow_far);
+}
+// Why the travel gear must go back on now (null: no reason)
+function travel_danger() {
+	if (character.hp < character.max_hp * 0.5) return "low HP";
+	const party = party_names();
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (e && e.type === "monster" && e.visible && !e.dead && e.target && party.has(e.target) && distance(character, e) <= CFG.travel_gear.danger_px)
+			return `${e.mtype} on ${e.target === character.name ? "us" : e.target}`;
+	}
+	if (character.ctype === "priest" && partners_near(400).some((p) => p.max_hp && p.hp < p.max_hp * 0.6)) return "a member needs heals";
+	return null;
+}
+// Worn pieces worth taking off: speed they cost us (own speed + class modifier, and the dex/str speed they give),
+// the HP/MP the server would clamp away, biggest speed first
+function travel_candidates() {
+	const T_ = CFG.travel_gear, out = [], sl = character.slots || {};
+	for (const s of GEAR_SLOTS) {
+		const it = sl[s];
+		if (!it || it.b || !G.items[it.name] || skipped(`tgear:${s}`)) continue;
+		const p = gear_stats(it, character.ctype);
+		const speed = -(p.speed || 0) - Math.max(0, p.dex || 0) / 32 - Math.max(0, p.str || 0) / 64;
+		if (speed < T_.min_speed) continue;
+		const dhp = (p.hp || 0) + (p.str || 0) * 21 + (p.vit || 0) * (48 + character.level / 3), dmp = (p.mp || 0) + (p.int || 0) * 15;
+		const hp_loss = Math.max(0, character.hp - (character.max_hp - dhp)), mp_loss = Math.max(0, character.mp - (character.max_mp - dmp));
+		if (hp_loss > character.max_hp * T_.max_hp_loss || mp_loss > character.max_mp * T_.max_mp_loss) continue;
+		out.push({ slot: s, it, speed: Math.round(speed * 10) / 10, hp_loss: Math.round(hp_loss), mp_loss: Math.round(mp_loss) });
+	}
+	return out.sort((a, b) => b.speed - a.speed);
+}
+// Bag slot of a piece we took off (exact copy), -1 if it's gone
+const travel_bag_slot = (r) => character.items.findIndex((i) => i && i.name === r.name && (i.level || 0) === (r.level || 0) &&
+	(i.p || null) === (r.p || null) && (i.stat_type || null) === (r.stat_type || null));
+const travel_slots_held = () => new Set((state.travel_off || []).map(travel_bag_slot).filter((k) => k >= 0));
+const travel_off_slots = () => new Set((state.travel_off || []).map((r) => r.slot));
+const travel_stats = { off: 0, on: 0, last: null, at: 0 }; // report: pieces taken off / put back since load, the last action
+let travel_restored_at = 0;
+async function travel_strip() {
+	const T_ = CFG.travel_gear;
+	let cands = travel_candidates();
+	cands = cands.slice(0, Math.max(0, character.esize - T_.keep_free)); // each needs a free bag slot
+	let n = 0;
+	for (const c of cands) {
+		if (gear_busy || !can_spend(EMIT_COST.unequip, RESERVE.errand)) break;
+		gear_busy = true;
+		try { await T(unequip(c.slot)); } catch (e) { game_log(`travel gear: unequip ${c.slot}: ${why(e)}`, C.dim); } finally { gear_busy = false; }
+		if (character.slots?.[c.slot]) { skip(`tgear:${c.slot}`, 600_000, "unequip failed"); continue; }
+		state.travel_off.push({ slot: c.slot, name: c.it.name, level: c.it.level || 0, p: c.it.p || null, stat_type: c.it.stat_type || null, speed: c.speed, at: Date.now() });
+		n++;
+	}
+	if (n) {
+		my_gear_cache = null;
+		const txt = state.travel_off.map((r) => `${r.name}+${r.level} (${r.speed} speed)`).join(", ");
+		travel_stats.off += n; travel_stats.last = `took off ${txt}`; travel_stats.at = Date.now();
+		game_log(`travel gear: took off ${txt} for the walk`, C.dim);
+		save_state(); // a reload mid-walk must still know to put them back on
+	}
+	return n > 0;
+}
+// Put everything back on (mainhand first: a two-hander needs the offhand free, as it was). A slot something else went
+// into meanwhile, or a piece no longer in the bags, is dropped from the list (the piece is judged as any bag item).
+let restore_p = null; // one restore at a time (the tick, an errand's start and its walk's end can all ask)
+function travel_restore(why_) {
+	if (!restore_p) restore_p = travel_restore_run(why_).finally(() => { restore_p = null; });
+	return restore_p;
+}
+async function travel_restore_run(why_) {
+	if (!state.travel_off?.length || character.rip) return false;
+	if (channeling() && why_ !== "errand" && why_ !== "arrived") return false; // equip would cancel the town channel
+	const list = [...state.travel_off].sort((a, b) => (b.slot === "mainhand") - (a.slot === "mainhand"));
+	let n = 0;
+	for (const r of list) {
+		const drop = () => { state.travel_off = state.travel_off.filter((x) => x !== r); };
+		await wait_budget(EMIT_COST.equip, RESERVE.skill);
+		while (gear_busy) await sleep_ms(100);
+		if (character.slots?.[r.slot]) { drop(); continue; }
+		const k = travel_bag_slot(r);
+		if (k < 0) { drop(); game_log(`travel gear: ${r.name}+${r.level} is no longer in the bags`, C.warn); continue; }
+		gear_busy = true;
+		try { await T(equip(k, r.slot)); } catch (e) { game_log(`travel gear: equip ${r.name}: ${why(e)}`, C.dim); } finally { gear_busy = false; }
+		if (character.slots?.[r.slot]?.name === r.name) { drop(); n++; }
+		else if (!character.items[k] || character.items[k].name !== r.name) drop(); // moved/consumed: stop chasing it
+		else if ((r.fails = (r.fails || 0) + 1) >= 3) { // refused 3 times: leave it to the gear loop (it's the slot's best piece)
+			drop(); skip(`tgear:${r.slot}`, 3600_000, "re-equip refused");
+			game_log(`travel gear: ${r.name}+${r.level} wouldn't go back on — left to the gear loop; not taking ${r.slot} off for 1h`, C.warn);
+		}
+	}
+	if (n) {
+		my_gear_cache = null; travel_restored_at = Date.now();
+		travel_stats.on += n; travel_stats.last = `put ${n} back on (${why_})`; travel_stats.at = Date.now();
+		game_log(`travel gear: back on (${why_})`, C.dim);
+		save_state();
+	}
+	return n > 0;
+}
+let travel_busy = false;
+async function travel_gear_tick() {
+	const T_ = CFG.travel_gear;
+	if (travel_busy || character.rip || typeof equip !== "function" || typeof unequip !== "function") return;
+	if (!T_.enabled || is_merchant()) { if (state.travel_off?.length && !channeling()) { travel_busy = true; try { await travel_restore("disabled"); } finally { travel_busy = false; } } return; }
+	if (channeling()) return; // equip/unequip cancel the town channel (server: player.c = {})
+	travel_busy = true;
+	try {
+		const long = travel_long(), danger = travel_danger();
+		if (state.travel_off.length) { if (!long || danger) await travel_restore(danger || "walk over"); }
+		else if (long && !danger && !gear_busy && Date.now() - travel_restored_at > T_.cooldown_ms) await travel_strip();
+	} finally { travel_busy = false; }
+}
+setInterval(() => { travel_gear_tick().catch(() => {}); }, 500);
 setInterval(() => { equip_upgrades().then((did) => did || drink_elixir()).then((did) => did || share_gear()).then((did) => did || swap_worn()).catch(() => {}); }, 5_000);
 // A computer (or supercomputer) in the bags lets shop/upgrade/compound/craft/exchange work from anywhere
 const has_computer = () => character.items.some((i) => i && (i.name === "computer" || i.name === "supercomputer"));
@@ -2996,7 +3145,7 @@ function keep_reason(item, k, needed, cmp) {
 	if (!def) return "unknown";
 	if (CFG.keep.includes(item.name)) return "keep-list";
 	if (BAG_TYPES.has(def.type) || item.name === CFG.hp_pot || item.name === CFG.mp_pot) return "supplies";
-	if (needed.has(k)) return state.upg && item.name === state.upg.name ? "upgrade" : "guide/quest";
+	if (needed.has(k)) return travel_slots_held().has(k) ? "travel gear (worn)" : state.upg && item.name === state.upg.name ? "upgrade" : "guide/quest";
 	if (Date.now() - (state.fetched[item.name] || 0) < 3600_000) return "fetched";
 	if (Date.now() - (state.fetched[item.name] || 0) < 7200_000 && self_taker_ok()) return "fetched (for us)";
 	if (GEAR.has(def.type) && wanted_by_member(item)) return "for party";
@@ -3890,6 +4039,7 @@ function needed_slots() {
 	const keep = new Set(), by = {};
 	const P = state.upg; // the upgrade project's copies below its target stay put (not equipped/sent/banked/compounded)
 	if (P) character.items.forEach((i, k) => { if (i && i.name === P.name && (i.level || 0) < P.to) keep.add(k); });
+	for (const k of travel_slots_held()) keep.add(k); // v24.27: worn pieces off for a walk
 	character.items.forEach((i, k) => { if (i && state.needs.has(i.name)) (by[i.name] = by[i.name] || []).push(k); });
 	for (const n in by) {
 		if (G.items[n]?.s) { by[n].forEach((k) => keep.add(k)); continue; }
@@ -4399,7 +4549,7 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
+		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
@@ -4431,6 +4581,7 @@ function load_state() {
 	if (d.bank_full_at) state.bank_full_at = d.bank_full_at;
 	Object.assign(state.fetched, d.fetched || {});
 	Object.assign(state.fetch_try, d.fetch_try || {});
+	if (Array.isArray(d.travel_off)) state.travel_off = d.travel_off; // v24.27: a reload mid-walk still puts them back on
 	if (d.gold_xfer_at) state.gold_xfer_at = d.gold_xfer_at;
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
@@ -4646,6 +4797,13 @@ function report_facts() {
 		if (state.walk_refused && Date.now() - state.walk_refused.at < 600_000) F("walk", "self", `walk refused ${ago(state.walk_refused.at)} ago: to ${state.walk_refused.to}, every way passes ${state.walk_refused.why}`, true);
 		if (state.follow_block && Date.now() - state.follow_block.at < 600_000) F("follow", "self", `not following the leader (${ago(state.follow_block.at)} ago): the way passes ${state.follow_block.rd}`, true);
 		const sets_txt = Object.entries(g.sets || {}).map(([k, n]) => `${k} ${n}pc`).join(", ");
+		// v24.27: travel gear — what's off now, the last swap, and what would come off on a long walk
+		{
+			const off = (state.travel_off || []).map((r) => `${r.name}+${r.level}`), tc = travel_candidates().map((c) => `${c.it.name} ${c.speed}`);
+			if (CFG.travel_gear.enabled && !is_merchant() && (off.length || travel_stats.at || tc.length))
+				F("tgear", "self", `travel gear: ${off.length ? `OFF for the walk: ${off.join(", ")}` : "all on"}${tc.length ? ` | comes off on long walks: ${tc.join(", ")} speed` : ""}` +
+					`${travel_stats.at ? ` | ${travel_stats.off} off / ${travel_stats.on} on since load, last ${ago(travel_stats.at)} ago: ${travel_stats.last}` : ""}`);
+		}
 		F("gear", "self", `gear: ${total.toFixed(0)} pts worn${sets_txt ? ` (sets: ${sets_txt})` : ""}${locked.length ? ` (guide working on ${locked.join(", ")})` : ""}${bu.length ? ` | bank upgrades: ${bu.join(", ")}` : ""}${held_for.length ? ` | for party: ${held_for.join(", ")}` : ""}`);
 	}
 	{
@@ -4803,13 +4961,15 @@ function gear_check_lines() {
 			if (!cand[s] || sc > cand[s].score) cand[s] = { it, name: it.name, level: it.level || 0, score: sc, where };
 		}
 	};
-	character.items.forEach((it) => look(it, "bags"));
+	const held = travel_slots_held(); // a piece off for the walk is the worn one, not a candidate
+	character.items.forEach((it, k) => held.has(k) || look(it, "bags"));
 	for (const it of state.bank_gear || []) look(it, "bank");
+	const off_s = travel_off_slots();
 	for (const s of GEAR_SLOTS) {
-		const w = sl[s], c = cand[s], cur = g.w[s] || 0;
+		const w = sl[s] || (off_s.has(s) ? gear_slots_v()[s] : null), c = cand[s], cur = g.w[s] || 0;
 		const verdict = !c ? "nothing better owned" : gear_gain(c, character.ctype, g) ? `UPGRADE +${Math.round(gear_gain(c, character.ctype, g).gain)} pts → equips${c.where === "bank" ? " once fetched" : ""}` :
 			c.score > cur ? `+${Math.round(c.score - cur)} pts, below the ${g.own?.[s] ? Math.round(CFG.gear_guide_override * 100) + "% guide" : Math.round(CFG.gear_margin * 100) + "%"} margin` : "worse";
-		L.push(`${s.padEnd(9)} ${w ? `${w.name}+${w.level || 0}` : "(empty)"} ${Math.round(cur)} pts${g.own?.[s] ? " [guide working on it]" : ""}` +
+		L.push(`${s.padEnd(9)} ${w ? `${w.name}+${w.level || 0}` : "(empty)"} ${Math.round(cur)} pts${g.own?.[s] ? " [guide working on it]" : ""}${off_s.has(s) ? " [off for the walk]" : ""}` +
 			`${c ? ` | best owned: ${c.name}+${c.level} ${Math.round(c.score)} pts (${c.where})` : ""} — ${verdict}`);
 		// v24.26: where the points come from (worn, and a better piece owned)
 		if (w && cur < 1e9) L.push(`          worn: ${gear_why(w, character.ctype, g, s) || "no weighted stats"}`);
@@ -5287,7 +5447,7 @@ function mode_why(M = state.mode_ab) {
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, xpm: xp_mult(), speed: character.speed, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, lw: travel_long() ? 1 : 0, xpm: xp_mult(), speed: character.speed, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -6420,7 +6580,8 @@ tick();
 //
 // Gear: items are scored per class: primary stats by the class's lstats (G.classes, the game's data docs), the rest
 //   by CFG.gear_w (tanks weigh defence double), plus class weapon/offhand modifiers and set bonuses. Every 5s wear the best
-//   bag upgrade, drink the best elixir, else hand a spare to a nearby member it upgrades (send_item). The bank is
+//   bag upgrade, drink the best elixir, else hand a spare to a nearby member it upgrades (send_item). Travel gear: worn
+//   pieces that cost speed come off for long walks and go back on at the destination or when something attacks. The bank is
 //   account-wide, so upgrades seen there are fetched for whoever they fit. Slots the guide equipped are left to it
 //   for gear_guide_respect_h. Compounding: three spare copies at one level (bags + bank) up to +compound_max_level
 //   behind the server's preview, up to compound_per_run sets per trip; done only by the merchant while it's online.

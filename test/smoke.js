@@ -3570,6 +3570,94 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		delete ctx.G.sets; character.slots = {}; ctx.G.classes.mage = mc; ctx.G.classes.paladin = pc; ctx.G.classes.priest = prc;
 		R("my_gear_cache = null");
 	}
+	// 137) v24.27: travel gear — pieces that slow us come off for long walks and go back on when they end
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const mc = ctx.G.classes.mage, eq_s = ctx.equip, uq_s = ctx.unequip, ents = ctx.parent.entities;
+		ctx.G.classes.mage = { ...mc, main_stat: "int", mainhand: { staff: { speed: -4 }, wand: {} }, offhand: { source: {}, misc_offhand: { speed: -4 } } };
+		ctx.G.items.staff137 = { type: "weapon", wtype: "staff", attack: 30, int: 2 }; ctx.G.items.orb137 = { type: "orb", int: 5 };
+		ctx.G.items.misc137 = { type: "misc_offhand", hp: 300 };
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, esize: 30, hp: 1000, max_hp: 1000, mp: 1000, max_mp: 1000, c: {} });
+		character.items = Array(42).fill(null);
+		character.slots = { mainhand: { name: "staff137", level: 0 }, orb: { name: "orb137", level: 0 }, offhand: { name: "misc137", level: 0 } };
+		const calls137 = [];
+		ctx.unequip = (slot) => { const k = character.items.indexOf(null); character.items[k] = character.slots[slot]; character.slots[slot] = null; calls137.push(["unequip", slot]); return Promise.resolve(); };
+		ctx.equip = (k, slot) => { character.slots[slot] = character.items[k]; character.items[k] = null; calls137.push(["equip", slot]); return Promise.resolve(); };
+		ctx.parent.entities = {};
+		R("state.partners = {}; state.pack = null; state.errand = null; state.recovering = false; state.travel_off = []; state.town_at = 0; state.gear_skip = {}; state.guide = null; my_gear_cache = null; gear_busy = false; travel_busy = false; travel_restored_at = 0");
+		// candidates: the staff (-4 speed, mage class rule); not the orb; not the misc offhand (its 300 HP would be clamped away)
+		const tc = R("travel_candidates()");
+		assert(tc.length === 1 && tc[0].slot === "mainhand" && tc[0].speed === 4 && tc[0].mp_loss === 30, `only the staff comes off (${JSON.stringify(tc.map((c) => [c.slot, c.speed, c.hp_loss, c.mp_loss]))})`);
+		const w0 = R("my_gear().w.mainhand");
+		// a short walk: nothing comes off; a long one (another map): the staff does
+		R("trip.long = false; trip.end = 0; smart_depth = 1");
+		await R("travel_gear_tick()");
+		assert(calls137.length === 0, "a short walk: everything stays on");
+		R("trip.long = true; trip.at = Date.now()");
+		await R("travel_gear_tick()");
+		assert(JSON.stringify(calls137) === '[["unequip","mainhand"]]' && R("state.travel_off.length === 1 && state.travel_off[0].name === 'staff137'"), `long walk: the staff comes off (${JSON.stringify(calls137)})`);
+		assert(R("travel_long()") === true, "on a long walk (the heartbeat's lw: followers take theirs off too)");
+		// still ours: scored as worn, kept out of bank/sell/give, not re-equipped by the gear loop
+		R("my_gear_cache = null");
+		const k137 = character.items.findIndex((i) => i && i.name === "staff137");
+		assert(R("my_gear().w.mainhand") === w0 && R(`needed_slots().has(${k137})`) && R(`bag_class(character.items[${k137}])`) === "keep", "the staff off for the walk still counts as worn and is kept");
+		calls137.length = 0;
+		await R("equip_upgrades()");
+		assert(calls137.length === 0, "the gear loop doesn't put it back on mid-walk");
+		const tg = R("report_facts()").find((f) => f.key === "tgear");
+		assert(tg && /^travel gear: OFF for the walk: staff137\+0 \| 1 off \/ 0 on since load/.test(tg.text), `the report says what's off (${tg && tg.text})`);
+		// the town channel: no equip/unequip (it would cancel it)
+		character.c = { town: { ms: 3000 } };
+		ctx.parent.entities = { m137: { id: "m137", type: "monster", mtype: "goo", visible: true, dead: false, target: "Sanala", x: 0, y: 0 } };
+		await R("travel_gear_tick()");
+		assert(calls137.length === 0 && R("state.travel_off.length") === 1, "channelling town: nothing changes");
+		character.c = {};
+		// a monster on us: back on at once
+		await R("travel_gear_tick()");
+		assert(JSON.stringify(calls137) === '[["equip","mainhand"]]' && character.slots.mainhand?.name === "staff137" && R("state.travel_off.length") === 0, `a monster on us: the staff goes back on (${JSON.stringify(calls137)})`);
+		ctx.parent.entities = {}; calls137.length = 0;
+		// cooldown, then off again; the walk ends: back on after settle_ms
+		await R("travel_gear_tick()");
+		assert(calls137.length === 0, "not off again within cooldown_ms");
+		R("travel_restored_at = 0"); await R("travel_gear_tick()");
+		assert(R("state.travel_off.length") === 1, "off again on the same walk");
+		R("smart_depth = 0; trip.end = Date.now() - 2000"); calls137.length = 0;
+		await R("travel_gear_tick()");
+		assert(calls137.length === 0, "between legs (walk ended 2s ago): stays off");
+		R("trip.end = Date.now() - CFG.travel_gear.settle_ms - 1");
+		await R("travel_gear_tick()");
+		assert(JSON.stringify(calls137) === '[["equip","mainhand"]]' && R("state.travel_off.length") === 0, "walk over: back on");
+		// at the spot: back on at once, walking or not
+		R("travel_restored_at = 0; smart_depth = 1; trip.long = true; trip.end = 0"); await R("travel_gear_tick()");
+		R("state.pack = { mtype: 'goo', map: 'main', boundary: [-100, -100, 100, 100] }"); calls137.length = 0;
+		await R("travel_gear_tick()");
+		assert(JSON.stringify(calls137) === '[["equip","mainhand"]]', "arrived at the spot: back on");
+		R("state.pack = null; travel_restored_at = 0"); await R("travel_gear_tick()");
+		// an errand puts it back on before its work
+		const saved137 = {}, set_s = ctx.set; ctx.set = (k, v) => ((saved137[k] = JSON.parse(JSON.stringify(v))), true);
+		R("save_state()"); ctx.set = set_s;
+		assert(R("state.travel_off.length") === 1 && Object.values(saved137)[0]?.travel_off?.[0]?.name === "staff137", "what's off is saved (a reload mid-walk still puts it back on)");
+		R("globalThis.__mh137 = 'unset'; errand('t137', async () => { globalThis.__mh137 = character.slots.mainhand ? character.slots.mainhand.name : null; })");
+		for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+		assert(R("globalThis.__mh137") === "staff137", `the errand starts with the staff back on (${R("globalThis.__mh137")})`);
+		R("state.errand = null; smart_depth = 0; trip.long = false");
+		// a follower: its leader's long walk counts, while it walks with it
+		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; state.partners = {}");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 300, y: 0, lw: 1 });
+		assert(R("is_follower() && travel_long()") === true, "follower: the leader's long walk is ours");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 3000, y: 0, lw: 1 });
+		assert(R("travel_long()") === false, "...not when we're nowhere near it");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 300, y: 0, lw: 0 });
+		assert(R("travel_long()") === false, "...nor once it has arrived");
+		R("CFG.party.tank_leads = false; state.partners = {}");
+		// a .b piece never comes off (the server deletes it on unequip)
+		character.slots.mainhand.b = true;
+		assert(R("travel_candidates().length") === 0, "a .b piece stays on");
+		delete character.slots.mainhand.b;
+		ctx.G.classes.mage = mc; ctx.equip = eq_s; ctx.unequip = uq_s; ctx.parent.entities = ents;
+		character.slots = {}; character.items = Array(42).fill(null);
+		R("state.travel_off = []; my_gear_cache = null; travel_restored_at = 0");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
