@@ -1,4 +1,4 @@
-const VERSION = "24.45"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.46"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -285,12 +285,11 @@ const CFG = {
 		follow_far: 500,       // px; farther than this (or another map) → path-find to the leader instead of stepping
 		heal_at: 0.75,         // priests heal any member below 75% HP
 		heal_bonus: 2.5,       // safety allowance × 2.5 while a priest partner is near (its heals offset damage)
-		// Tank first: with a tank (CFG.gear_tank) near, the others hold fire on an untouched monster for up to
-		// tank_hold_ms so the tank takes its aggro; risk is then judged against the tank's HP and armour, so the party
-		// can take spots the leader couldn't survive alone. Not for aggressive monsters (G.monsters[].aggro > 0.3).
+		// Tank first: with a tank (CFG.gear_tank) within tank_near, nobody else touches a monster that has no target
+		// yet — always, with no time limit (v24.46). Risk is judged against the tank's HP and armour.
 		tank_first: true,
 		tank_leads: true,      // v24.25: together, the tank (warrior, then paladin) leads — walks in front, pulls first
-		tank_hold_ms: 12000,   // how long the others hold fire on an untouched monster for the tank (v24.24: was 4000)
+		tank_near: 600,        // v24.46: px; with the tank this close (same map, not in town, not fleeing) it always hits first
 		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
 		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
 		// trickled in one by one, the leader (lowest level, often the mage) first. Members on their own errand,
@@ -322,13 +321,10 @@ const CFG = {
 			ab: { enabled: true, sample_min: 40, hold_min: 30, margin: 1.1, half_life_h: 8, settle_min: 3 } },
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
-		// v24.28: party town trips (together). A fighter going to town tells the others. Each one goes too if it has any
-		// town work due (relaxed thresholds), or if its spot isn't safe without the members leaving — the fight model
-		// without them, as the stay-behinds would fight: a follower whose leader leaves judges alone. Those are the
-		// cases where it would only stand around. Joiners tell the rest, who judge again without them too.
-		// Everyone who went waits in town until all are done (town_wait_s at most), then they walk back together.
-		// "always": every fighter goes on every trip; false: off (each goes alone, as before).
-		town_together: "idle", town_join_s: 90, town_wait_s: 240,
+		// Party town trips (v24.28; v24.46: one rule). Together, a fighter going to town tells the others and they all go:
+		// each does whatever town work it has, all wait in town for each other (town_wait_s at most) and walk back
+		// together. false: off (each goes alone).
+		town_together: true, town_join_s: 90, town_wait_s: 240,
 		turn_min: 15,          // with no mutual goal, the leader alternates 15-min turns between its goal and its partner's
 		mutual_max_h: 6,       // a goal counts toward "mutual" only if it would finish within 6h
 		// gold balance: if the poorer member has < min_ratio of the richer's gold, the richer sends give × its gold.
@@ -669,12 +665,10 @@ function farmable_entity(e) {
 // alone (split mode) — partners passing by, or still near as a split starts, aren't there for the fight.
 // solo = "all" (v23.1): every online member counts wherever it is — planning something that regroups the party
 // (a boss, a probe); false: the members near now
-// exclude (v24.28): names left out (members about to leave: would the rest still fight it?)
-function fight_math(m, use_tank = true, solo = solo_now(), exclude = null) {
-	const keep = (arr) => (exclude?.length ? arr.filter((p) => !exclude.includes(p.name)) : arr);
+function fight_math(m, use_tank = true, solo = solo_now()) {
 	// "party" (v24.35): the members travelling with us wherever they are right now (not on an errand, not fleeing)
 	const with_us = () => partners().filter((p) => !p.errand && !p.recovering);
-	const mates = keep(solo === true ? [] : solo === "all" ? partners() : solo === "party" ? with_us() : partners_near());
+	const mates = solo === true ? [] : solo === "all" ? partners() : solo === "party" ? with_us() : partners_near();
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -684,7 +678,7 @@ function fight_math(m, use_tank = true, solo = solo_now(), exclude = null) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(keep(solo === "all" ? partners() : solo === "party" ? with_us() : partners_near(300)));
+	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? partners() : solo === "party" ? with_us() : partners_near(300));
 	// v24.25: we're the tank (leading, picking for everyone) and it's aggressive: it goes for whoever is near, so judge it
 	// on the squishiest member counted, not on our armour
 	const squish = !tank && solo !== true && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
@@ -750,23 +744,23 @@ function tank_cover(pool = partners_near(300)) {
 	// v24.24: any version (a rollout with mixed versions turned tanking off for everyone)
 	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp && Number.isFinite(p.armor)) || null;
 }
-// Hold fire on an untouched monster while the tank engages it (tells the tank the target right away, not at the
-// next heartbeat). Gives up after tank_hold_ms, so a tank that doesn't come can't stall us.
-const tank_hold = { id: null, at: 0 };
-// v24.24: a monster attacks whoever hits it first and keeps them (server: target_player on the first hit; only a warrior's
-// taunt or a priest's absorb moves it) — a paladin holds aggro only by striking first. The others pulled first: they
-// didn't wait on a monster they'd survive alone, and gave up after 4s, by which time the tank was on its own pick. Now,
-// with the tank near (and not dead or fleeing), nobody else touches an untouched monster for tank_hold_ms; and the
-// first time we hold on one, we tell the tank, which takes our pick before its own.
+const tank_hold = { id: null, at: 0 }; // the monster we last told the tank about
+// v24.46: one rule, no exceptions. Together with the tank (group_tank), nobody else touches a monster that has no
+// target yet: the tank hits first (the server gives a monster to whoever hits it first, and it stays on them). There is
+// no time limit and no "we'd survive it" exception; fire() enforces it for every attack and skill. The first time we
+// hold on a monster we tell the tank, which takes it before its own pick.
+function group_tank() {
+	if (!CFG.party.tank_first || !in_party_cfg() || split_now() || CFG.gear_tank.includes(character.ctype)) return null;
+	return partners_near(CFG.party.tank_near).find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && !p.recovering) || null;
+}
+const tank_first = (t) => !!t && t.type === "monster" && !t.target && !!group_tank();
 function hold_for_tank(t) {
-	if (!t || t.target) return false;
-	const tank = tank_cover();
-	if (!tank || tank.rip || tank.recovering) return false;
+	if (!tank_first(t)) return false;
 	if (tank_hold.id !== t.id) {
 		tank_hold.id = t.id; tank_hold.at = Date.now();
-		if (typeof send_cm === "function") Promise.resolve(send_cm([tank.name], { k: "tgt", id: t.id })).catch(() => {});
+		if (typeof send_cm === "function") Promise.resolve(send_cm([group_tank().name], { k: "tgt", id: t.id })).catch(() => {});
 	}
-	return Date.now() - tank_hold.at < CFG.party.tank_hold_ms;
+	return true;
 }
 // The leader's target if nobody has it yet (the tank should take it first) — else null
 const leader_untouched = (lt) => (lt && !lt.target && farmable_entity(lt) ? lt : null);
@@ -1918,7 +1912,7 @@ function hopeless(t) {
 	return v;
 }
 function fire(skill, target, extra) {
-	if (hopeless(target)) return false;
+	if (hopeless(target) || tank_first(target)) return false;
 	const key = G.skills[skill]?.share || skill;
 	if (inflight[key] || is_on_cooldown(skill)) return false;
 	const reserve = skill === "attack" ? RESERVE.attack : skill.startsWith("use_") || skill.startsWith("regen_") ? RESERVE.potion : RESERVE.skill;
@@ -4612,21 +4606,11 @@ function ptown_joined(P, why_) {
 	if (why_) P.why = why_;
 	ptown_tell(P);
 }
-// Why we'd go with them (null: we keep farming). The stay-behinds would fight as the code does: with the leader gone a
-// follower picks alone (follower_pick judges solo); otherwise the members near without the leavers.
-function ptown_reason(P) {
-	if (!ptown_on() || character.rip) return null;
-	if (CFG.party.town_together === "always") return "always together";
-	const what = due_tasks(town_due(true));
-	if (what.length) return `work due: ${what.join("+")}`;
-	const mt = state.pack?.mtype, m = mt && G.monsters[mt];
-	if (!m) return "no spot of our own";
-	const lead_out = P.leavers.includes(leader_name()) && leader_name() !== character.name;
-	const f = lead_out ? fight_math(m, false, true) : fight_math(m, true, false, P.leavers);
-	if (!safe_enough(f, mt)) return lead_out ? `${mt} isn't safe alone (${leader_name()} leads and is going)` : `${mt} isn't safe without ${P.leavers.join(", ")}`;
-	return null;
+// v24.46: one rule — together, a town trip is everyone's. (It used to judge whether the stay-behinds could keep farming.)
+function ptown_reason() {
+	return ptown_on() && !character.rip ? "the party goes to town together" : null;
 }
-// We start a trip: tell the others (each judges whether to come)
+// We start a trip: tell the others (they come)
 function ptown_start(what) {
 	if (!ptown_on() || !others().length) return;
 	if (state.ptown?.joined && !state.ptown.done) return; // already on one (we joined someone's)
@@ -4645,8 +4629,8 @@ function ptown_recv(msg, from) {
 	if (msg.by && !P.leavers.includes(msg.by)) P.leavers.push(msg.by);
 	if (P.joined || P.pending) return;
 	if (state.errand === "town" && errand_busy()) return void ptown_joined(P, "in town already");
-	const why_ = ptown_reason(P);
-	P.why = why_ || `staying: our spot is fine without ${P.leavers.join(", ")}`;
+	const why_ = ptown_reason();
+	P.why = why_ || "staying (party trips are off, or we're dead)";
 	log_ev("ptown", { by: P.by, join: why_ || null });
 	if (why_) { P.pending = true; game_log(`party trip: going to town with ${P.leavers.join(", ")} (${why_})`, C.dim); }
 }

@@ -1134,8 +1134,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.entities.b1 = tg;
 	const cms = []; ctx.send_cm = (to, m) => (cms.push([to.join(), m.k]), Promise.resolve());
 	assert(vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "holds fire on an untouched monster while Torlis is near");
-	vm.runInContext("tank_hold.at -= CFG.party.tank_hold_ms + 1", ctx);
-	assert(!vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "gives up holding after tank_hold_ms");
+	vm.runInContext("tank_hold.at -= 3600_000", ctx);
+	assert(vm.runInContext("hold_for_tank(parent.entities.b1) && fire('attack', parent.entities.b1) === false", ctx), "v24.46: and keeps holding — no time limit, no attack");
 	tg.target = "Torlis";
 	assert(!vm.runInContext("hold_for_tank(parent.entities.b1)", ctx), "fires once the tank has it");
 	delete ctx.parent.entities.b1;
@@ -1202,7 +1202,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const atk55 = []; ctx.attack = (e) => (atk55.push(e.id), Promise.resolve());
 	ctx.can_attack = () => true; ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
-	assert(atk55.includes("g55"), `idle follower attacks a goo near the leader on its own (${atk55})`);
+	assert(!atk55.includes("g55"), `v24.46: the tank is with us — an untouched goo is the tank's to hit first (${atk55})`);
+	ctx.parent.entities.g55.target = "Torlis";
+	const gp55 = ctx.get_party; ctx.get_party = () => ({ Torlis: {}, Sanala: {}, Aspernari: {} });
+	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
+	assert(atk55.includes("g55"), `once the tank has it, the follower attacks (${atk55})`);
+	ctx.get_party = gp55; ctx.parent.entities.g55.target = null; atk55.length = 0;
 	ctx.parent.entities.g55.x = 900; atk55.length = 0;
 	vm.runInContext("inflight.attack = false; change_target(null); follower_tick()", ctx);
 	assert(!atk55.includes("g55"), "...but not one beyond wait_radius of the leader");
@@ -2484,7 +2489,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(atk107.length === 0, "boss: waits for the party before engaging");
 		hb("Torlis", { ...tor, level: 60, x: 20, y: 0, max_hp: 20000, hp: 20000, armor: 900, resistance: 900, v: V });
 		vm.runInContext("inflight.attack = false; boss_tick({ mtype: 'bossx', map: 'main', boundary: [0,0,10,10], boss: true })", ctx);
-		assert(atk107.includes("b1"), `boss: the tank is here → engage (${atk107})`);
+		assert(atk107.length === 0, "v24.46: the tank is here but hasn't hit it yet: still nobody else does");
+		ctx.parent.entities.b1.target = "Torlis";
+		vm.runInContext("inflight.attack = false; boss_tick({ mtype: 'bossx', map: 'main', boundary: [0,0,10,10], boss: true })", ctx);
+		assert(atk107.includes("b1"), `boss: the tank has it → engage (${atk107})`);
 		ctx.attack = atk_s; ctx.parent.entities = {}; vm.runInContext("state.partners = {}", ctx);
 		// the shared bank, shared out: fighters short of a material claim the bank's copies in name order
 		ctx.G.items.spores = { type: "material", s: 9999 };
@@ -3487,8 +3495,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("tank_cover() && tank_cover().name", ctx) === "Torlis", "the tank counts whatever version it runs");
 		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === true, "an untouched goo (one we'd solo): we hold for the tank anyway");
 		assert(sent.some(([to, k, id]) => to === "Torlis" && k === "tgt" && id === "e134"), "...and tell the tank our pick at once");
-		vm.runInContext("tank_hold.at = Date.now() - CFG.party.tank_hold_ms - 1", ctx);
-		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank never came (tank_hold_ms): we go");
+		vm.runInContext("tank_hold.at = Date.now() - 3600_000; inflight.attack = false", ctx);
+		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === true && vm.runInContext("fire('attack', parent.entities.e134)", ctx) === false, "v24.46: an hour later we still hold: the tank always hits first");
 		vm.runInContext("tank_hold.id = null", ctx); easy.target = "Torlis";
 		assert(vm.runInContext("hold_for_tank(parent.entities.e134)", ctx) === false, "the tank has it: fire");
 		easy.target = null; hb("Torlis", { ...tor, level: 60, x: 50, y: 0, armor: 400, max_hp: 6000, hp: 6000, recovering: true });
@@ -3664,7 +3672,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const scm = ctx.send_cm, ents = ctx.parent.entities, cms = [];
 		ctx.send_cm = (to, m) => (cms.push([to.join(), m.k, m.id, m.by]), Promise.resolve());
 		ctx.parent.entities = {};
-		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; CFG.party.town_together = 'idle'; state.partners = {}; state.ptown = null; state.ptown_last = null; state.errand = null; state.recovering = false");
+		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; CFG.party.town_together = true; state.partners = {}; state.ptown = null; state.ptown_last = null; state.errand = null; state.recovering = false");
 		R("globalThis.__td = town_due; town_due = () => ({ plan: { free: 30 }, min_free: 10, pot_min: 100, relaxed: true }); globalThis.__trun = town_run; globalThis.__runs = []; town_run = (due) => (__runs.push(due), true)");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 4000, max_hp: 4000, attack: 300, frequency: 1, armor: 50, resistance: 50, speed: 55 });
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 30, y: 0, hp: 6000, max_hp: 6000, armor: 600, resistance: 300, attack: 300, frequency: 1 });
@@ -3673,13 +3681,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.monsters.easy138 = { hp: 300, attack: 10, frequency: 1, aggro: 0, damage_type: "physical", xp: 50, speed: 20, range: 50 };
 		R("state.pack = { mtype: 'hard138', map: 'main', boundary: [-100, -100, 100, 100] }");
 		assert(R("is_follower() && leader_name() === 'Torlis'"), "setup: Torlis (the tank) leads, Sanala follows");
-		// the fight model can leave members out
-		const f_all = R("fight_math(G.monsters.hard138, true, false)"), f_wo = R("fight_math(G.monsters.hard138, true, false, ['Torlis'])");
+		const f_all = R("fight_math(G.monsters.hard138, true, false)"), f_wo = { mates: 1, tank: null };
 		assert(f_all.mates === 2 && f_wo.mates === 1 && f_all.tank === "Torlis" && f_wo.tank === null && f_all.priest === true, `fight_math without Torlis: no tank, one mate (${f_all.mates}/${f_wo.mates}, ${f_all.tank}/${f_wo.tank})`);
-		// the leader goes to town: a hard spot isn't safe for us alone → we go too
+		// v24.46: one rule — a member goes to town, we all go
 		cms.length = 0;
 		R("ptown_recv({ k: 'ptown', id: 'Torlis:1', by: 'Torlis' }, 'Torlis')");
-		assert(R("state.ptown.pending === true && /isn't safe alone/.test(state.ptown.why)"), `the leader leaves a spot we can't solo: we go (${R("state.ptown.why")})`);
+		assert(R("state.ptown.pending === true && /together/.test(state.ptown.why)"), `the leader goes: we go (${R("state.ptown.why")})`);
 		// pending: not while something is on us; then the run starts, and we tell the others (with the same trip id)
 		ctx.parent.entities = { m138: { id: "m138", type: "monster", mtype: "easy138", visible: true, dead: false, target: "Sanala", x: 0, y: 0 } };
 		assert(R("ptown_join_tick()") === true && R("__runs.length") === 0, "a monster on us: finish it first");
@@ -3688,22 +3695,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(cms.some(([to, k, id, by]) => k === "ptown" && id === "Torlis:1" && by === "Torlis" && to.includes("Aspernari")), `we tell the others we're going (${JSON.stringify(cms)})`);
 		const hb_s = R("heartbeat.toString()");
 		assert(/pt: state\.ptown\?\.joined \? \{ id: state\.ptown\.id, done: !!state\.ptown\.done \}/.test(hb_s), "our heartbeat carries the trip (pt)");
-		// an easy spot: we keep farming (it's fine without the leavers)
+		// an easy spot we could farm without them, nothing of our own due: we go all the same
 		R("state.ptown = null; state.pack = { mtype: 'easy138', map: 'main', boundary: [-100, -100, 100, 100] }");
 		R("ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Aspernari')");
-		assert(R("!state.ptown.pending && !state.ptown.joined && /staying/.test(state.ptown.why)"), `a spot we can farm without Aspernari: we stay (${R("state.ptown.why")})`);
-		// ...until the leader joins that trip: then judged again, alone
-		R("state.pack = { mtype: 'hard138', map: 'main', boundary: [-100, -100, 100, 100] }");
-		R("ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Torlis')");
-		assert(R("state.ptown.pending === true && state.ptown.leavers.join() === 'Aspernari,Torlis'"), `the leader joins too: we go as well (${R("state.ptown.leavers.join()")})`);
-		// work due of our own: we go even from an easy spot
-		R("state.ptown = null; state.pack = { mtype: 'easy138', map: 'main', boundary: [-100, -100, 100, 100] }; town_due = () => ({ hunt: true, plan: { free: 30 } })");
-		R("ptown_recv({ k: 'ptown', id: 'Aspernari:3', by: 'Aspernari' }, 'Aspernari')");
-		assert(R("state.ptown.pending && /work due: hunt/.test(state.ptown.why)"), "our own town work rides along");
+		assert(R("state.ptown.pending === true"), `an easy spot, a follower leaving: we go too (${R("state.ptown.why")})`);
 		// off: nobody joins
 		R("state.ptown = null; CFG.party.town_together = false"); R("ptown_recv({ k: 'ptown', id: 'Aspernari:4', by: 'Aspernari' }, 'Aspernari')");
 		assert(R("!state.ptown.pending"), "town_together off: each goes alone");
-		R("CFG.party.town_together = 'idle'");
+		R("CFG.party.town_together = true");
 		// too late: we couldn't get away within town_join_s
 		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
 		assert(R("ptown_join_tick()") === false && R("!state.ptown.pending && /in time/.test(state.ptown.why)"), "the join window closes");

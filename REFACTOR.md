@@ -6,6 +6,13 @@ behind each decision are spread over many functions and none of them records why
 
 Rule for every step: behaviour stays the same unless the step says otherwise; tests pass; VERSION is bumped.
 
+## Rules that were simplified (owner's instruction, v24.46)
+
+- **Town:** together, a town trip is everyone's. One rule; the "could the rest keep farming" judgement is gone.
+- **Tank first:** with the tank within `tank_near`, nobody else touches a monster that has no target. No time
+  limit, no exceptions; enforced in `fire()`.
+- **Hopeless monsters** (v24.44): never attacked; enforced in `fire()`.
+
 ## Steps
 
 1. **Decisions explain themselves.** Each decision produces a table of what it considered and why each option
