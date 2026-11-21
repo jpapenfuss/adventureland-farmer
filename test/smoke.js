@@ -3161,11 +3161,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.monsters = { ...mons0, roamer: { xp: 100, hp: 100, attack: 5, respawn: 2, speed: 20, aggro: 0.2 }, boar: { xp: 10, hp: 12000, attack: 240, speed: 20, charge: 40, aggro: 1, rage: 1 },
 			prat: { xp: 10, hp: 9200, attack: 320, speed: 12, charge: 86, aggro: 1 }, mouse: { xp: 1, hp: 10, attack: 1, speed: 10, aggro: 1 } };
 		ctx.G.maps = { town: { doors: [[0, 0, 1, 1, "cave", 0], [0, 0, 1, 1, "snow", 0]], spawns: [[0, 0]], monsters: [] },
-			cave: { doors: [[0, 0, 1, 1, "town", 0], [0, 0, 1, 1, "deep", 0]], spawns: [[0, 0]], monsters: [{ type: "prat", count: 3, boundary: [500, 500, 700, 700] }] },
+			cave: { doors: [[0, 0, 1, 1, "town", 0], [0, 0, 1, 1, "deep", 0]], spawns: [[0, 0]], monsters: [{ type: "prat", count: 3, boundary: [0, 100, 200, 300] }] }, // v24.19: by the way through
 			deep: { doors: [[0, 0, 1, 1, "cave", 1]], spawns: [[0, 0]], monsters: [{ type: "roamer", count: 5, boundary: [0, 0, 200, 200] }] },
 			snow: { doors: [[0, 0, 1, 1, "town", 1]], spawns: [[0, 0]], monsters: [{ type: "roamer", count: 5, boundary: [0, 0, 200, 200] }, { type: "boar", count: 4, boundary: [400, 0, 600, 200] },
 				{ type: "roamer", count: 5, boundary: [2000, 2000, 2200, 2200] }, { type: "mouse", count: 3, boundary: [2300, 2000, 2400, 2100] }] } };
-		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); deadly_maps_c = null; state.safe = { roamer: { ttk: 1, xp: 100 }, mouse: { ttk: 0.1, xp: 1 } }", ctx);
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); dz_cache.clear(); state.safe = { roamer: { ttk: 1, xp: 100 }, mouse: { ttk: 0.1, xp: 1 } }", ctx);
 		assert(vm.runInContext("area_danger({ map: 'snow', boundary: [0, 0, 200, 200] }, 'roamer')", ctx) === "boar", "roamers 200px from boars: dangerous");
 		assert(vm.runInContext("area_danger({ map: 'snow', boundary: [2000, 2000, 2200, 2200] }, 'roamer')", ctx) === null, "...far from them, or next to an aggressive one we can take (mice): fine");
 		assert(vm.runInContext("route_danger('deep')", ctx) === "prat @ cave" && vm.runInContext("route_danger('snow')", ctx) === null, "the way to deep passes prats (faster than us); snow's boars are slower");
@@ -3298,7 +3298,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			camp: { doors: [], spawns: [[0, 0]], monsters: [] }, far: { doors: [[0, 0, 10, 10, "rats", 0]], spawns: [[0, 0]], monsters: [] },
 			tube: { doors: [[30, 0, 10, 10, "dest", 0]], spawns: [[0, 0]], monsters: [] },
 			dest: { doors: [], spawns: [[0, 0]], monsters: [] } };
-		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); deadly_maps_c = null; state.safe = {}; state.partners = {}", ctx);
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); dz_cache.clear(); state.safe = {}; state.partners = {}", ctx);
 		assert(JSON.stringify(vm.runInContext("route_to('dest', 0, 0).maps", ctx)) === '["rats","tube","dest"]', "the route smart_move takes: the short way, through the rats");
 		// v24.17: there's a way around (the long hall): not dangerous, and go() walks that way
 		const pl127 = vm.runInContext("route_plan('dest', 0, 0)", ctx);
@@ -3312,7 +3312,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			`camp: safe for us (its own door), but Torlis's only way there is through the rats (${vm.runInContext("party_route_danger('camp')", ctx)})`);
 		vm.runInContext("state.partners = {}", ctx);
 		ctx.G.maps = maps0; ctx.G.monsters = { ...mons0, hawk127: ctx.G.monsters.hawk127 };
-		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); deadly_maps_c = null; for (const k in deadly_c) delete deadly_c[k]", ctx);
+		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); dz_cache.clear(); for (const k in deadly_c) delete deadly_c[k]", ctx);
 		// a hawk (faster than us, can't take it) on us mid-walk: the walk goes on; standing, we fight back
 		Object.assign(character, { map: "main", x: 0, y: 0, speed: 50 });
 		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -3346,7 +3346,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			sand: { doors: [[0, 0, 10, 10, "cave128", 0]], spawns: [[0, 0]], monsters: [], npcs: [{ id: "transporter", position: [0, 50] }] },
 			pit: { doors: [[0, 0, 10, 10, "cave128", 0]], spawns: [[0, 0]], monsters: [] } };
 		ctx.G.maps.cave128.doors.push([20, 0, 10, 10, "pit", 0]);
-		vm.runInContext("rt_cache.clear(); deadly_maps_c = null; state.safe = {}; state.recovering = false", ctx);
+		vm.runInContext("rt_cache.clear(); dz_cache.clear(); state.safe = {}; state.recovering = false", ctx);
 		const walks = [], tps = [];
 		ctx.smart_move = (d) => { walks.push(typeof d === "string" ? d : `${d.map}:${d.x},${d.y}`); if (d.map) character.map = d.map; return Promise.resolve(); };
 		ctx.transport = (m, sp) => { tps.push(m); character.map = m; return Promise.resolve({ success: true }); };
@@ -3359,7 +3359,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// named places resolve like smart_move's table
 		assert(JSON.stringify(vm.runInContext("dest_point('potions')", ctx)) === '{"map":"main","x":56,"y":-122}' && vm.runInContext("dest_point('goo')", ctx) === null, "dest_point: named places as smart_move resolves them (a monster: smart_move picks one, unknown)");
 		ctx.G.maps = maps0; ctx.G.monsters = mons0; ctx.G.npcs = npcs0; ctx.smart_move = sm0; delete ctx.transport;
-		vm.runInContext("rt_cache.clear(); deadly_maps_c = null", ctx);
+		vm.runInContext("rt_cache.clear(); dz_cache.clear()", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0 });
 	}
 	// 129) v24.18: travelling together, the slowest member leads the walk and the rest (the leader too) follow it
@@ -3384,6 +3384,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
 		assert(sent129.some((m) => m.k === "hb" && m.speed === 58), "the heartbeat carries our speed");
 		vm.runInContext("state.partners = {}; state.pack = null", ctx);
+	}
+	// 130) v24.19: danger is judged by the stretches a route walks, not whole maps — the priest left the bank through a map
+	// with hawks in a far corner
+	{
+		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "bankx", x: 0, y: 0, speed: 41, rip: false });
+		const maps0 = ctx.G.maps, mons0 = ctx.G.monsters, npcs0 = ctx.G.npcs;
+		ctx.G.monsters = { ...mons0, hawk130: { xp: 30000, hp: 32000, attack: 480, speed: 24, charge: 52, aggro: 1 } };
+		ctx.G.npcs = { ...npcs0, transporter: { places: { mainx: 0, sand: 0 } } };
+		ctx.G.maps = { bankx: { doors: [[0, 0, 10, 10, "mainx", 0]], spawns: [[0, 0]], monsters: [] },
+			mainx: { doors: [[0, 0, 10, 10, "bankx", 0]], spawns: [[0, 0]], npcs: [{ id: "transporter", position: [-300, -300] }],
+				monsters: [{ type: "hawk130", count: 4, boundary: [1100, 160, 1586, 336] }] },
+			sand: { doors: [], spawns: [[0, 0]], monsters: [], npcs: [{ id: "transporter", position: [0, 0] }] } };
+		vm.runInContext("rt_cache.clear(); dz_cache.clear(); state.safe = {}", ctx);
+		const pl = vm.runInContext("route_plan('sand', 0, 0)", ctx);
+		assert(pl && pl.danger === null && vm.runInContext("route_danger('sand')", ctx) === null, `bank → main (hawks in the far corner) → transporter → sand: safe (${JSON.stringify(pl)})`);
+		character.map = "sand";
+		vm.runInContext("rt_cache.clear()", ctx);
+		assert(/hawk130 @ mainx/.test(vm.runInContext("route_danger('mainx', 1300, 250) || ''", ctx)), "a walk into the hawks' corner is dangerous");
+		ctx.G.maps = maps0; ctx.G.monsters = mons0; ctx.G.npcs = npcs0;
+		vm.runInContext("rt_cache.clear(); dz_cache.clear()", ctx);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
 	all_done = true;
 	console.log("ALL PASS");
