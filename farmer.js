@@ -1,4 +1,4 @@
-const VERSION = "24.84"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.85"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3368,6 +3368,11 @@ function upgrade_expected(name, to) {
 	for (let l = 1; l <= to; l++) c = (c + (G.items[upgrade_scroll(name, l - 1)]?.g || 1e9)) / Math.max(0.01, upg_odds(name, l));
 	return Math.round(c);
 }
+// The most one step of a project can cost: the scroll (the next one up when the boost is used) and a copy if none is held
+const upg_step_cost = (name, top) => {
+	const lv = Math.max(0, top), g = Math.max(0, item_grade({ name, level: lv }));
+	return (G.items["scroll" + (g + 1)]?.g <= (CFG.upgrade_boost_max || 0) ? G.items["scroll" + (g + 1)].g : G.items["scroll" + g]?.g || 0) + (top < 0 ? G.items[name]?.g || 0 : 0);
+};
 // Is it sold by an NPC we can find? (cached: G doesn't change)
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
@@ -3470,6 +3475,7 @@ async function task_upgrade() {
 		if (top >= P.to) {
 			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
 			state.upg = null;
+			state.upg_pick_at = 0; // v24.85: the next project is picked at once (there was a 10-min gap per project)
 			break;
 		}
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
@@ -3487,7 +3493,8 @@ async function task_upgrade() {
 		// sales, potion buys and the fighters' funding move it
 		if (P.spent === undefined) P.spent = 0;
 		P.max = Math.max(P.max ?? -1, top); // v24.7: the highest level this project reached (a failure destroys the copy)
-		if (P.spent > P.cost * CFG.upgrade_abort_x) {
+		// (v24.85: against the expected cost with failures, not the cost if every step succeeds)
+		if (P.spent > Math.max(P.cost || 0, upgrade_expected(P.name, P.to) - (P.own ? G.items[P.name]?.g || 0 : 0)) * CFG.upgrade_abort_x) {
 			upg_cap(P.name, Math.max(0, P.max));
 			skip("upg:" + P.name, 24 * 3600_000, "over budget");
 			game_log(`upgrade ${P.name}: failures pushed the cost past ${CFG.upgrade_abort_x}x the estimate; stopped${top >= 1 ? ` at +${top}` : ""}`, C.bad);
@@ -3497,10 +3504,12 @@ async function task_upgrade() {
 		const g0 = character.gold;
 		try {
 			await run_upgrade({ name: P.name }, { request: { name: P.name, level: P.to } });
-			P.spent += Math.max(0, g0 - character.gold);
+			// v24.85: at most what the step can cost (a scroll, a copy if one was bought). The gold delta alone counted a
+			// transfer to the merchant made meanwhile: Torlis's shoes1 project "cost 2.5x its estimate" at +1 and stopped.
+			P.spent += Math.min(Math.max(0, g0 - character.gold), upg_step_cost(P.name, top));
 			n++;
 		} catch (e) {
-			P.spent += Math.max(0, g0 - character.gold);
+			P.spent += Math.min(Math.max(0, g0 - character.gold), upg_step_cost(P.name, top));
 			// v24.7: a transient error (walk/call timeout, distance...) pauses the project, it doesn't end it: ending it freed the
 			// copy (banked, never a project input again), and the re-pick rebought from +0 with the abort budget reset
 			if (TRANSIENT.has(why(e))) { skip("upg:" + P.name, pause_ms(e, 600_000), why(e)); game_log(`upgrade ${P.name}: ${why(e)}; retrying in 10 min`, C.dim); break; }
@@ -3714,6 +3723,16 @@ function bag_plan() {
 		const free = TRADE_SLOTS.length - Object.keys(state.stand).length - stand_hold().size, nd = new Set(), cm = new Set();
 		for (const it of (state.bank_gear || []).filter((i) => stand_worthy(i, -1, nd, cm)).slice(0, Math.max(0, Math.min(free, character.esize - 6))))
 			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
+	}
+	// v24.85: an upgrade project starts from the best copy we own below its target — the bank's too. It bought a +0 and
+	// upgraded it from scratch while a +5 of the same piece lay in the bank (Torlis's mace+7 project: mace+5 banked).
+	{
+		const P = state.upg;
+		if (P && !skipped("upg:" + P.name)) {
+			const have = best_level_held(P.name);
+			const b = (state.bank_gear || []).filter((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > have).sort((x, y) => (y.level || 0) - (x.level || 0))[0];
+			if (b && Date.now() - (state.fetch_try[`upgin:${P.name}`] || 0) > 1_800_000) fetch.push({ name: P.name, level: b.level || 0, exact: true, key: `upgin:${P.name}` });
+		}
 	}
 	const bu_ = bank_upgrades(); // a piece that wins as it is comes first: nothing is fetched to be upgraded meanwhile
 	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
@@ -5279,7 +5298,7 @@ const DATA_V = 2; // bump to clear everything learned, once per character (load_
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, upg_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, upg_v: 3, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -5360,7 +5379,7 @@ function load_state() {
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
 	// v24.82: upgrade ceilings and pauses recorded under the 50%/80% rules go once (a wand "capped at +4" would stay there)
-	if (d.upg_v !== 2) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	if (d.upg_v !== 3) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();

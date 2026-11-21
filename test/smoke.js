@@ -1061,6 +1061,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	}
 	const to49 = vm.runInContext("state.upg.to", ctx);
 	assert(vm.runInContext("needed_slots().has(2)", ctx), "project copy protected (not equipped/sent/banked mid-project)");
+	// v24.85: a better copy in the bank (below the target) is fetched to start from, not a +0 upgraded from scratch
+	vm.runInContext("state.bank_gear = [{ name: 'nhelm', level: Math.max(1, state.upg.to - 1) }]; state.fetch_try = {}", ctx);
+	assert(/"key":"upgin:nhelm"/.test(vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx)), `the project fetches the banked copy below its target to start from (${vm.runInContext("JSON.stringify([state.upg, bag_plan().fetch])", ctx)})`);
+	vm.runInContext("state.bank_gear = []", ctx);
 	const ups49 = [];
 	ctx.upgrade = (k, sk, off, preview) => {
 		if (preview) return Promise.resolve({ chance: 0.95 });
@@ -2449,11 +2453,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_item = si_s; character.items = Array(42).fill(null); character.slots = {};
 		vm.runInContext("state.merchant = null; state.partners = {}", ctx);
 		// upgrade projects count what their steps cost, not total gold changes
-		vm.runInContext(`state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 3e6 }; state.gear_skip = {};
+		vm.runInContext(`state.upg = { name: 'wbow', to: 3, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 3e6 }; state.gear_skip = {};
 			globalThis.__ru = run_upgrade; run_upgrade = async () => ({ success: true });`, ctx);
 		Object.assign(character, { gold: 9e6 });
 		await vm.runInContext("task_upgrade()", ctx);
 		assert(vm.runInContext("state.upg === null && skipped('upg:wbow')", ctx), "3M spent on a 1M project → stopped, whatever our gold");
+		// v24.85: gold that leaves during a step for something else (a transfer to the merchant) isn't the project's
+		vm.runInContext(`state.upg = { name: 'wbow', to: 3, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 0 }; state.gear_skip = {};
+			run_upgrade = async () => { character.gold -= 971316; return { success: true }; };`, ctx);
+		Object.assign(character, { gold: 9e6 });
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg !== null && state.upg.spent < 1e6 && !skipped('upg:wbow')", ctx), `a 971k transfer during the steps isn't counted as the project's spending (spent ${vm.runInContext("JSON.stringify([state.upg, best_level_held('wbow'), Object.keys(state.gear_skip)])", ctx)} ${JSON.stringify(log.slice(-4))})`);
+		vm.runInContext("state.upg = null; state.gear_skip = {}", ctx);
 		vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6 }; state.gear_skip = {}; run_upgrade = async () => { character.gold -= 4000; return { success: true }; }", ctx);
 		character.items = Array(42).fill(null); character.items[0] = { name: "computer" };
 		await vm.runInContext("task_upgrade()", ctx);
