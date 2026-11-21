@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -2057,6 +2057,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.craft.wattire_t = { items: [[200, "crabclaw"]], cost: 0, quest: "mcollector" };
 	vm.runInContext(`globalThis.__bs = best_source; best_source = () => ({ monster: "crab", map: "main", boundary: [0,0,10,10], count: 5, ips: 1 / 3600 }); quest_park_cache.clear(); state.quest_park = {}`, ctx);
 	assert(vm.runInContext("quest_parked('wattire_t') && !recipe_wanted('wattire_t')", ctx), "200 crabclaw at 1/h → parked, not wanted");
+	vm.runInContext("CFG.quest_park_h = 0; quest_park_cache.clear(); state.quest_park = {}", ctx);
+	assert(vm.runInContext("!quest_parked('wattire_t')", ctx), "v24.89 (default quest_park_h 0): no quest is parked on an estimate");
+	vm.runInContext("CFG.quest_park_h = 12; quest_park_cache.clear(); state.quest_park = {}", ctx);
 	vm.runInContext("best_source = () => ({ monster: 'crab', map: 'main', boundary: [0,0,10,10], count: 5, ips: 1 }); quest_park_cache.clear()", ctx);
 	assert(vm.runInContext("!quest_parked('wattire_t') && !state.quest_park.wattire_t", ctx), "200 at 1/s (~3 min) → unparked");
 	vm.runInContext("best_source = () => ({ monster: 'crab', map: 'main', boundary: [0,0,10,10], count: 5, ips: 200 / 10 / 3600 }); quest_park_cache.clear(); state.quest_park = { wattire_t: { at: Date.now() } }", ctx);

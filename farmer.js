@@ -1,4 +1,4 @@
-const VERSION = "24.88"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.89"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -199,6 +199,9 @@ const CFG = {
 	// v24.81: Ponty routes — copies bought there (with ours) to compound into a piece a fighter would wear, up to +2 (the
 	// server's base odds: +1 99%, +2 75%, +3 40%); a route may cost this per gear point, weighed by its odds
 	ponty_routes: true,
+	// v24.89: the merchant buys at Ponty the quest materials the fighters are short of (their heartbeats' qshort, less
+	// what the bank and its bags hold) — a listing at most ponty_material_max gold (Ponty sells a whole listing)
+	ponty_materials: true, ponty_material_max: 250_000,
 	// v24.81: an upgrade step under the odds floor is tried with the next scroll up (the server: x1.2 + 1%, so +4 goes
 	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
@@ -267,10 +270,13 @@ const CFG = {
 	quest_craft_max: 1,        // craft each quest recipe at most this many times (remembered across reloads)
 	quest_craft_skip: [],      // recipe ids never to craft
 	quest_farm: true,          // v24.88 (owner): on again — a quest's materials are farmed (quest_park_h still parks one that would take longer)
-	quest_farm_max_h: 3,       // own quests: skip if finishing would take longer than 3h at our kill rate
-	quest_park_h: 12,          // v18.1: a quest (guide ones too) that would take > 12h to farm is parked: its materials
+	// v24.89 (owner: the farm-time estimates are old and unreliable): no quest is skipped or parked on them any more —
+	// quest_farm_max_h / quest_park_h / quest_farm_min_xp off. A material that doesn't drop in quest_stall_min of
+	// actual farming still pauses its quest for quest_shelve_h.
+	quest_farm_max_h: Infinity,
+	quest_park_h: 0,          // v18.1: a quest (guide ones too) that would take > 12h to farm is parked: its materials
 	quest_unpark_h: 8,         //   stop being held (they're banked, never sold) until the estimate drops under 8h
-	quest_farm_min_xp: 0.7,    // own quests: skip while that pack gives < 70% of the best pack's xp/s (v23.5: was 25% —
+	quest_farm_min_xp: 0,    // own quests: skip while that pack gives < 70% of the best pack's xp/s (v23.5: was 25% —
 	                           //   the party farmed minimush for Cole's newbie gloves at a fraction of croc's xp)
 	quest_stall_min: 60,       // a material that hasn't dropped in 60 min of farming pauses its recipe/row...
 	quest_shelve_h: 2,         // ...for 2h, then it's retried (nothing the guide asks for is dropped for good)
@@ -5656,7 +5662,7 @@ function report_facts() {
 		F("stats_json", "self", `stats JSON: ${JSON.stringify(Object.fromEntries(pick.filter((k) => typeof c[k] === "number" && c[k] !== 0).map((k) => [k, +c[k].toFixed(3)])))}`);
 	}
 	if (M_ && state.ponty) {
-		F("ponty_json", "self", `ponty JSON (seen ${ago(state.ponty.at)} ago; name+level → [count, price each]): ${JSON.stringify(state.ponty.items)}`);
+		F("ponty_json", "self", `ponty JSON (seen ${ago(state.ponty.at)} ago; name+level → [count, price each, listings, smallest listing]): ${JSON.stringify(state.ponty.items)}`);
 		F("ponty_routes", "self", `ponty routes: ${state.ponty.routes?.length ? state.ponty.routes.join(" | ") : "none — nothing there compounds (at 75% or better) into a piece a fighter would wear within the price per point"}`);
 	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
@@ -6663,6 +6669,7 @@ function ponty_dump(list) {
 		const k = it.name + (it.level ? "+" + it.level : "") + (it.p ? ":" + it.p : "") + (it.stat_type ? ":" + it.stat_type : "");
 		const q = it.q || 1, e = d[k] || (d[k] = [0, 0]);
 		e[0] += q; e[1] = Math.round(shop_price(it) / q);
+		if (G.items[it.name]?.s) { e[2] = (e[2] || 0) + 1; e[3] = Math.min(e[3] ?? Infinity, q); } // stackables: listings, smallest
 	}
 	return Object.fromEntries(Object.entries(d).sort((a, b) => (a[0] < b[0] ? -1 : 1)));
 }
@@ -6686,6 +6693,30 @@ async function task_secondhands() {
 	for (const r of routes) if (!routes.some((q) => q !== r && q.name === r.name && routes.indexOf(q) < routes.indexOf(r))) for (const it of r.buy) route_of.set(it, r);
 	state.ponty = { at: Date.now(), items: ponty_dump(list), routes: routes.slice(0, 5).map((r) => r.text) };
 	let n = 0;
+	// v24.89: quest materials the fighters are short of
+	if (CFG.ponty_materials && is_merchant()) {
+		const short = {};
+		for (const p of partners()) for (const [nm, q] of Object.entries(p.qshort || {})) short[nm] = (short[nm] || 0) + q;
+		for (const nm in short) {
+			let need = short[nm] - (state.bank_seen[nm] || 0) - held_any(nm);
+			const offers = list.filter((it) => it.name === nm).sort((a, b) => (a.q || 1) - (b.q || 1));
+			for (const it of offers) {
+				if (need <= 0) break;
+				const price = shop_price(it);
+				if (price > CFG.ponty_material_max || character.gold - price < CFG.merchant.donate.keep || character.esize < 3) continue;
+				await wait_budget(1, RESERVE.errand);
+				const before = held_any(nm);
+				tag_spend("ponty");
+				parent.socket.emit("sbuy", { rid: it.rid });
+				await until(() => held_any(nm) > before, 3000);
+				if (held_any(nm) > before) {
+					n++; need -= it.q || 1;
+					game_log(`secondhands: bought ${it.q || 1} ${nm} for ${fmt_k(price)} (quest material the fighters are short of)`, C.ok);
+					log_ev("buy", { item: `${nm}x${it.q || 1}`, src: "secondhands", price });
+				}
+			}
+		}
+	}
 	for (const it of list) {
 		if (state.errand) state.errand_at = Date.now();
 		const rt = route_of.get(it);
