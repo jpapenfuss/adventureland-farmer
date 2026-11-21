@@ -610,3 +610,41 @@ function recover() {
 		}
 	}
 }
+// ---- bag_plan's merchant parts (v25.0): bank fetches only the merchant makes, added to `fetch` in bag_plan's order ----
+// a must-hold item a fighter lacks (the merchant hands it over)
+function merchant_fetch_give(fetch) {
+	for (const n of Object.keys(CFG.hold || {})) {
+		const cur = CFG.hold[n];
+		if (partners().some((f) => (f.need || []).includes(n)) && (state.bank_seen[cur] || 0) > 0 && held_any(cur) === 0 &&
+			Date.now() - (state.fetch_try["give:" + cur] || 0) > 1_800_000) fetch.push({ name: cur, key: "give:" + cur });
+	}
+}
+// stock for the stand
+function merchant_fetch_stand(fetch) {
+	if (CFG.merchant.stand?.enabled) {
+		const free = TRADE_SLOTS.length - Object.keys(state.stand).length - stand_hold().size, nd = new Set(), cm = new Set();
+		for (const it of (state.bank_gear || []).filter((i) => stand_worthy(i, -1, nd, cm)).slice(0, Math.max(0, Math.min(free, character.esize - 6))))
+			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
+	}
+}
+// copies to sell: the sell_plain list, dead compound pieces
+function merchant_fetch_sale(fetch) {
+	// v24.74: plain copies on the sell_plain list come out of the bank to be sold (the merchant; as many as fit)
+	for (const name of CFG.sell_plain || []) {
+		const n = Math.min((state.bank_gear || []).filter((i) => i.name === name && !(i.level > 0) && !i.p).length, Math.max(0, character.esize - 8));
+		for (let i = 0; i < n; i++) if (Date.now() - (state.fetch_try[`sellp:${name}:${i}`] || 0) > 600_000) fetch.push({ name, level: 0, exact: true, key: `sellp:${name}:${i}` });
+	}
+	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
+	if (CFG.sell_junk && CFG.merchant.sell_dead_compounds) {
+		let room = Math.max(0, character.esize - 8);
+		for (const it of state.bank_gear || []) {
+			if (room <= 0) break;
+			const key = `dead:${it.name}:${it.level || 0}`;
+			if (!dead_compound(it) || Date.now() - (state.fetch_try[key] || 0) < 600_000) continue;
+			fetch.push({ name: it.name, level: it.level || 0, key }); room--;
+		}
+	}
+}
+// ---- moved from common.js (v24.95): used by the merchant only ----
+// ---- Stand (CFG.merchant.stand) ----
+const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));

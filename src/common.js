@@ -1,4 +1,4 @@
-const VERSION = "24.99"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
+const VERSION = "25.0"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3239,19 +3239,11 @@ function bag_plan() {
 		if (c) for (const [q, n] of G.craft[c.id].items || []) if (held_any(n) < q && (state.bank_seen[n] || 0) > 0 &&
 			Date.now() - (state.fetch_try["craft:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "craft:" + n });
 	}
-	if (is_merchant()) for (const n of Object.keys(CFG.hold || {})) {
-		const cur = CFG.hold[n];
-		if (partners().some((f) => (f.need || []).includes(n)) && (state.bank_seen[cur] || 0) > 0 && held_any(cur) === 0 &&
-			Date.now() - (state.fetch_try["give:" + cur] || 0) > 1_800_000) fetch.push({ name: cur, key: "give:" + cur });
-	}
+	merchant_fetch_give(fetch); // v25.0: merchant.js
 	for (const n of hold_missing()) if (state.bank_seen[n] > 0 && Date.now() - (state.fetch_try["hold:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "hold:" + n });
 	const bx = CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && bank_elixir();
 	if (bx) fetch.push({ name: bx.name, key: "elixir:" + bx.name });
-	if (is_merchant() && CFG.merchant.stand?.enabled) {
-		const free = TRADE_SLOTS.length - Object.keys(state.stand).length - stand_hold().size, nd = new Set(), cm = new Set();
-		for (const it of (state.bank_gear || []).filter((i) => stand_worthy(i, -1, nd, cm)).slice(0, Math.max(0, Math.min(free, character.esize - 6))))
-			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
-	}
+	merchant_fetch_stand(fetch); // v25.0: merchant.js
 	// v24.85: an upgrade project starts from the best copy we own below its target — the bank's too. It bought a +0 and
 	// upgraded it from scratch while a +5 of the same piece lay in the bank (Torlis's mace+7 project: mace+5 banked).
 	{
@@ -3265,21 +3257,7 @@ function bag_plan() {
 	const bu_ = bank_upgrades(); // a piece that wins as it is comes first: nothing is fetched to be upgraded meanwhile
 	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
-	// v24.74: plain copies on the sell_plain list come out of the bank to be sold (the merchant; as many as fit)
-	if (is_merchant()) for (const name of CFG.sell_plain || []) {
-		const n = Math.min((state.bank_gear || []).filter((i) => i.name === name && !(i.level > 0) && !i.p).length, Math.max(0, character.esize - 8));
-		for (let i = 0; i < n; i++) if (Date.now() - (state.fetch_try[`sellp:${name}:${i}`] || 0) > 600_000) fetch.push({ name, level: 0, exact: true, key: `sellp:${name}:${i}` });
-	}
-	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
-	if (CFG.sell_junk && is_merchant() && CFG.merchant.sell_dead_compounds) {
-		let room = Math.max(0, character.esize - 8);
-		for (const it of state.bank_gear || []) {
-			if (room <= 0) break;
-			const key = `dead:${it.name}:${it.level || 0}`;
-			if (!dead_compound(it) || Date.now() - (state.fetch_try[key] || 0) < 600_000) continue;
-			fetch.push({ name: it.name, level: it.level || 0, key }); room--;
-		}
-	}
+	merchant_fetch_sale(fetch); // v25.0: merchant.js
 	return { sell, bank, fetch, free: character.esize };
 }
 // Nearest NPC with a shop on this map (any shop buys anything), else one on main
@@ -5240,9 +5218,6 @@ const hold_price = (n) => G.tokens?.[CFG.hold?.[n]]?.[n];
 const hold_missing = () => Object.keys(CFG.hold || {}).filter((n) => G.items[n] && held_any(n) === 0);
 // ---- Merrit: a stand spot that earns Market Parcels ----
 const in_rect = (x, y, r) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
-// ---- Stand (CFG.merchant.stand) ----
-const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
-
 function why_not(mtype) {
 	const lines = [];
 	const L = (s) => { lines.push(s); game_log(s, C.note); };
@@ -5274,6 +5249,9 @@ function why_not(mtype) {
 // =====================================================================
 // merchant.js
 function merchant_tick() {}
+function merchant_fetch_give() {}
+function merchant_fetch_stand() {}
+function merchant_fetch_sale() {}
 function recover() {}
 function facts_merchant() {}
 function merchant_job() { return null; }
