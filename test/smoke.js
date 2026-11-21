@@ -3719,6 +3719,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("choose_target(true).id") === "ok1", "a monster that passes is there: that one first");
 		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
 		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
+		assert(R("camp_overgrown(state.pack)") === 1, "v24.61: every monster of the camp's type in view is past the limit → the camp counts as overgrown (left at once)");
+		ctx.parent.entities.n4 = mild("n4", 200, 4); R("live_cache.clear()");
+		assert(R("camp_overgrown(state.pack)") === 0, "...not while one of them can still be taken");
+		delete ctx.parent.entities.n4; delete ctx.parent.entities.n10; R("live_cache.clear()");
+		assert(R("camp_overgrown(state.pack)") === 0, "...and not when none is in view (that's the idle time's case)");
+		ctx.parent.entities.n10 = mk("n10", 40, 10); R("live_cache.clear()");
 		// the tank stands and fights what it started: no stepping away from a monster that only fails the per-monster check
 		ctx.parent.entities.n10.target = "Torlis"; steps.length = 0; R("last_move = 0; smart_depth = 0");
 		R("fight(parent.entities.n10, false)");
@@ -3742,7 +3748,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("__d147") === null && steps.length === 0, `leader still on its town run, we're in town: wait here — no walk to the camp (${JSON.stringify(R("__d147"))})`);
 		Object.assign(character, { map: "main", x: 700, y: 1600 });
 		R("follower_tick()");
-		assert(R("__d147 && __d147.map === 'main' && Math.hypot(__d147.x, __d147.y) < 50"), `...and if we're out in the field: to town, not to the camp (${JSON.stringify(R("__d147"))})`);
+		assert(R("__d147 && __d147.map === 'main' && __d147.x === -200 && __d147.y === -130"), `...and if we're out in the field: to the leader (v24.61), not to town alone and not to the camp (${JSON.stringify(R("__d147"))})`);
+		// v24.61: a party trip pending while we're out in the field doesn't start our own walk to town
+		R("state.ptown = { id: 'Torlis:1', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], pending: true }");
+		assert(R("ptown_join_tick()") === false && R("state.errand") === null && R("state.ptown.pending") === true, "a follower out in the field with a party trip pending starts no town run of its own: it follows the tank in");
+		R("state.ptown = null");
 		R("travel = __tv147; state.partners = {}; state.pack = null");
 		ctx.parent.entities = ents; ctx.move = mv0; ctx.distance = () => 0;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });
