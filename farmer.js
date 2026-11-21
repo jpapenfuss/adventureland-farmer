@@ -1,4 +1,4 @@
-const VERSION = "24.74"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.75"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -257,6 +257,10 @@ const CFG = {
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
 		fighter_pot_min: 10,   //   slots / potions of either kind (the merchant brings potions and takes loot)
 		guide_gap_ms: 1_800_000, // ...and walk to town for guide steps alone at most every 30 min
+		// v24.75 (owner): the merchant holding a piece that's an upgrade for a fighter brings the party to town for it —
+		// checked from the first tick after loading and on every tick after (a party trip, ahead of work that can wait;
+		// one try per piece per collect_retry_min). The merchant then stays in town with it instead of walking out.
+		collect: true, collect_retry_min: 30, collect_wait_s: 30,
 		fund_keep: 2_000_000,  // the merchant's projects (upgrades, crafts) may count on fighters' gold above this each;
 		                       //   the richest fighter near sends what the next steps need
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
@@ -4765,6 +4769,7 @@ async function town_body(due) {
 		};
 		let did = 0;
 		const town_t0 = Date.now();
+		if (!is_merchant() && collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
@@ -4974,11 +4979,15 @@ function town_check() {
 	// v24.58: a follower in need of town (bags, potions) says so in its heartbeat; the tank's trip takes the party
 	const asks = is_merchant() ? [] : partners().filter((p) => p.tn).map((p) => `${p.name}: ${p.tn}`);
 	if (party_hit() && !errand_busy() && in_party_cfg() && !is_merchant()) return; // v24.62: no trip starts while a monster is on any member
+	// v24.75: the merchant holds an upgrade for one of us → the party goes to town for it, ahead of deferrable work
+	const coll = is_merchant() || is_follower() ? [] : collect_due();
+	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
 		if (walking()) return void halt("town_check");
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
 		if (state.town_runs.length < 6) {
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
+			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
 			game_log(`Town: the party goes — ${asks.join(", ")}${what.length ? `; ours: ${what.join("+")}` : ""}`, C.dim);
 			if (town_run(due)) ptown_start(what.length ? what : ["a member's needs"]);
 			return;
@@ -6039,7 +6048,8 @@ function merchant_beat() {
 	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
 	const msg = { k: "mhb", v: VERSION, b: BUILD, worn: CFG.gear_auto ? worn_items() : null, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
-		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0 };
+		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0,
+		give: CFG.merchant.collect ? gear_to_give() : null };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
@@ -6049,8 +6059,46 @@ const can_supply_hold = (p) => (p.need || []).some((n) => held_any(n) > 0 || (ho
 // Gear in the merchant's bags that's an upgrade for a fighter (bought at Ponty, fetched from the bank): deliver it
 // (share_gear hands it over once near); one trip per piece per 20 min (v18.6)
 const gear_trip_at = {};
+// Merchant: the pieces in its bags that are an upgrade for a fighter, and for whom ({ to, name, level, gain }) — not
+// project copies, compound sets or stand stock. Sent in its heartbeat (v24.75): the party comes to town for them.
+function gear_to_give() {
+	if (!is_merchant() || !CFG.gear_auto) return [];
+	const needed = needed_slots(), cmp = compound_slots(needed), st = stand_hold(), out = [];
+	character.items.forEach((it, k) => {
+		if (!it || it.l || it.b || !GEAR.has(G.items[it.name]?.type) || needed.has(k) || cmp.has(k) || st.has(k) || out.length >= 6) return;
+		const to = best_fighter_for(it);
+		if (to) out.push({ to: to.name, name: it.name, level: it.level || 0, gain: Math.round(to.gain) });
+	});
+	return out;
+}
+// Fighters: what the merchant (in town) holds for us / for anyone, from its heartbeat
+const collect_list = (mine = false) => {
+	const M = merchant_hb();
+	if (!CFG.merchant?.collect || !M || !Array.isArray(M.give) || M.map !== "main" || Math.hypot(M.x, M.y) > CFG.party.town_px) return [];
+	return M.give.filter((g) => (CFG.party.members || []).includes(g.to) && (!mine || g.to === character.name));
+};
+const collect_key = (g) => `${g.to}:${g.name}:${g.level}`;
+// The tank: pieces not tried within collect_retry_min → a party trip for them
+function collect_due() {
+	const now = Date.now(), T_ = CFG.merchant.collect_retry_min * 60_000;
+	return collect_list().filter((g) => now - ((state.collect_try || {})[collect_key(g)] || 0) > T_);
+}
+// On a town run: walk to the merchant and wait for our piece (its share_gear hands it over within gear_share_range)
+async function task_collect() {
+	const mine = collect_list(true);
+	if (!mine.length) return 0;
+	const M = merchant_hb();
+	await go({ map: M.map, x: M.x, y: M.y });
+	const t0 = Date.now(), have = () => mine.filter((g) => character.items.some((i) => i && i.name === g.name && (i.level || 0) === g.level) ||
+		Object.values(character.slots || {}).some((i) => i && i.name === g.name && (i.level || 0) === g.level)).length;
+	while (Date.now() - t0 < CFG.merchant.collect_wait_s * 1000 && have() < mine.length && collect_list(true).length) { state.errand_at = Date.now(); set_message(`town: collecting ${mine.map((g) => g.name).join(", ")} from ${M.name}`); await sleep_ms(1000); }
+	const got = have();
+	game_log(got ? `collected ${got} piece${got === 1 ? "" : "s"} from ${M.name}` : `${M.name} didn't hand over ${mine.map((g) => g.name).join(", ")} in ${CFG.merchant.collect_wait_s}s`, got ? C.ok : C.warn);
+	log_ev("collect", { got, want: mine.map((g) => `${g.name}+${g.level}`).join(",") });
+	return got;
+}
 function gear_target() {
-	if (!is_merchant() || !CFG.gear_auto) return null;
+	if (!is_merchant() || !CFG.gear_auto || CFG.merchant.collect) return null; // v24.75: the party comes for it
 	const needed = needed_slots(), now = Date.now();
 	for (const it of character.items) {
 		if (!it || it.l || it.b || !GEAR.has(G.items[it.name]?.type)) continue;

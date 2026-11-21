@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -2096,6 +2096,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.calculate_item_value = sp_save;
 	character.items[4] = { name: "gpants", level: 0 };
 	assert(vm.runInContext("gear_target() && gear_target().name", ctx) === "Torlis", "merchant holding a fighter's upgrade: a delivery trip to it");
+	// v24.75: with collect on the merchant doesn't walk out with it; its heartbeat says what it holds for whom
+	vm.runInContext("CFG.merchant.collect = true; cmp_cache = null", ctx);
+	assert(vm.runInContext("gear_target()", ctx) === null && vm.runInContext("JSON.stringify(gear_to_give().map((g) => g.to + ':' + g.name + '+' + g.level))", ctx) === '["Torlis:gpants+0"]',
+		`collect: no delivery walk; the heartbeat lists the piece for Torlis (${vm.runInContext("JSON.stringify(gear_to_give())", ctx)})`);
+	{ // the tank's side: a piece for a member at the merchant (in town) is a reason for a party trip, once per retry time
+		const me = { name: character.name, ctype: character.ctype, x: character.x, y: character.y, map: character.map };
+		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 700, y: 1600 });
+		vm.runInContext("globalThis.__m75 = state.merchant; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: -8, give: [{ to: 'Sanala', name: 'gpants', level: 0, gain: 18 }] }; state.collect_try = {}", ctx);
+		assert(vm.runInContext("collect_due().length", ctx) === 1 && vm.runInContext("collect_list(true).length", ctx) === 0, "the tank sees a piece waiting for Sanala at the merchant (none for itself)");
+		vm.runInContext("state.collect_try[collect_key(collect_due()[0])] = Date.now()", ctx);
+		assert(vm.runInContext("collect_due().length", ctx) === 0, "...and doesn't go again for the same piece within the retry time");
+		vm.runInContext("state.collect_try = {}; state.merchant.map = 'bank'", ctx);
+		assert(vm.runInContext("collect_due().length", ctx) === 0, "...nor while the merchant isn't in town");
+		vm.runInContext("state.merchant = __m75; state.collect_try = {}", ctx);
+		Object.assign(character, me);
+	}
+	vm.runInContext("CFG.merchant.collect = false; cmp_cache = null", ctx);
 	character.items = Array(42).fill(null); vm.runInContext("state.partners = {}", ctx);
 	// 96) v18.8: the leader's town run doesn't drag followers to town; they hold its pack
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "main", x: 0, y: 0, rip: false, hp: 2500, max_hp: 2500 });
