@@ -1409,3 +1409,71 @@ function stat_scroll_list() {
 	}
 	return out.sort((a, b) => a.cost / Math.max(a.pts, 0.01) - b.cost / Math.max(b.pts, 0.01)); // cheapest per point first
 }
+// ---- town_check's party part (v24.99): the tank takes the party to town for the members' needs and for what the merchant
+// holds for one of them. true = town_check is done for this tick ----
+function party_trip_check(due, what) {
+	// v24.58: a follower in need of town (bags, potions) says so in its heartbeat; the tank's trip takes the party
+	const asks = partners().filter((p) => p.tn).map((p) => `${p.name}: ${p.tn}`);
+	if (party_hit() && !errand_busy() && in_party_cfg()) return true; // v24.62: no trip starts while a monster is on any member
+	// v24.75: the merchant holds an upgrade for one of us → the party goes to town for it, ahead of deferrable work
+	const coll = is_follower() ? [] : collect_due();
+	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
+	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
+		if (walking()) { halt("town_check"); return true; }
+		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
+		if (state.town_runs.length < 6) {
+			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
+			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
+			game_log(`Town: the party goes — ${asks.join(", ")}${what.length ? `; ours: ${what.join("+")}` : ""}`, C.dim);
+			if (town_run(due)) ptown_start(what.length ? what : ["a member's needs"]);
+			return true;
+		}
+	}
+	return false;
+}
+// ---- moved from common.js (v24.95): used by the fighters only ----
+// A monster on any party member that the party fights (not one it never attacks)
+function party_hit() {
+	const party = party_names();
+	for (const id in parent.entities || {}) { const e = parent.entities[id]; if (e?.type === "monster" && !e.dead && e.target && party.has(e.target) && !hopeless(e)) return e; }
+	return null;
+}
+// ---- moved from common.js (v24.95): used by the fighters only ----
+let event_join_at = 0, event_logged = null;
+// Leader and followers alike: join, then fight the event's monsters (they're cooperative, which normal targeting
+// skips). Leaving: off the event map once it's over. Returns true when it took the tick.
+function event_tick() {
+	if (in_party_cfg() && !is_merchant()) return false; // v24.60: party fighters don't go to events (the tank joined alone; the others couldn't follow)
+	const name = event_live(), now = Date.now();
+	if (!name) {
+		event_logged = null;
+		if (character.map === "goobrawl" && !walking() && !errand_busy()) { travel_as("event_tick", { map: "main" }); return true; } // event over
+		return false;
+	}
+	if (errand_busy() || state.recovering) return false;
+	const ev = CFG.events[name];
+	if (event_logged !== name) { event_logged = name; log_ev("event", { name }); game_log(`event: ${name} — joining`, C.info); }
+	if (!event_here(name)) {
+		if (now - event_join_at > 20_000 && typeof join === "function") {
+			event_join_at = now;
+			if (walking()) halt("event_tick");
+			Promise.resolve(join(name)).catch((e) => game_log(`event ${name}: ${why(e)}`, C.dim));
+		}
+		set_message(`→ event ${name}`);
+		return true;
+	}
+	const party = party_names();
+	const ok = (e) => e.type === "monster" && valid(e) && (ev.targets.includes(e.mtype) || (e.mtype === ev.extra && boss_safe(ev.extra)));
+	const t = Object.values(parent.entities || {}).filter(ok)
+		.sort((a, b) => (party.has(b.target) ? 1 : 0) - (party.has(a.target) ? 1 : 0) || distance(character, a) - distance(character, b))[0];
+	if (t) {
+		state.last_target_at = now;
+		fight(t, true);
+		set_message(`event ${name}: ${t.mtype} ${t.hp}/${t.max_hp}`);
+	} else {
+		const e = ev_info(name);
+		if (!walking() && Number.isFinite(e?.x) && e.map === character.map) move_to_as("event_tick", e.x, e.y, 1000);
+		set_message(`event ${name}: waiting for spawns`);
+	}
+	return true;
+}

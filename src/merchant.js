@@ -575,3 +575,38 @@ function facts_merchant(F, ctx) {
 	F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
 	F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
 }
+// ---- moved from common.js (v24.95): used by the merchant only ----
+function recover() {
+	if (!state.recovering) {
+		const pmf = postmortem();
+		log_ev("flee", pmf);
+		bucket().flees++;
+		const fk = pmf.killer && G.monsters[pmf.killer] ? pmf.killer : state.pack?.mtype;
+		incident(fk, 0.8);
+		share_verdict({ kind: "incident", mtype: fk, mult: 0.8 }); // v24.6: the leader picks for the party from its own tables
+		if (!state.pack?.probe) safety_tune("flee"); // a probe's flee is the probe's verdict, not the everyday limit's
+		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
+		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
+	}
+	const threat = get_nearest_monster({ target: character.name });
+	const done = character.hp >= character.max_hp * CFG.recover_hp && character.mp >= character.max_mp * CFG.recover_mp;
+	if (done && !threat) {
+		Object.assign(state, { recovering: false, fled_home: false, last_target_at: Date.now() });
+		return void game_log("Recovered; resuming", C.ok);
+	}
+	if (channeling()) return void set_message("Teleporting to town…"); // nothing that would cancel it
+	if (threat || hurt_ms() < CFG.flee_quiet_ms) {
+		const t = choose_target(false); // what's hitting us (then a partner)
+		if (t) fight(t, true); // steer: a melee fighter walks to a ranged attacker; a ranged one kites
+		else if (threat && Number.isFinite(threat.x)) { // v24.8: one we ignore as immune: step away from it (stood still before)
+			const a = Math.atan2(character.y - threat.y, character.x - threat.x), x = character.x + Math.cos(a) * 120, y = character.y + Math.sin(a) * 120;
+			if (can_move_to(x, y)) move_to_as("recover", x, y, 300);
+		}
+	} else if (!done && !state.fled_home && Date.now() - (state.town_at || 0) > 1500) {
+		if (at_town_spot()) state.fled_home = true;
+		else {
+			if (walking() || is_moving(character)) halt("recover"), stop("move");
+			if (fire("use_town")) (state.fled = true), (state.town_at = Date.now());
+		}
+	}
+}
