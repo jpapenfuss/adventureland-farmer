@@ -3675,7 +3675,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("is_follower() && leader_name() === 'Torlis'"), "setup: Torlis (the tank) leads, Sanala follows");
 		// the fight model can leave members out
 		const f_all = R("fight_math(G.monsters.hard138, true, false)"), f_wo = R("fight_math(G.monsters.hard138, true, false, ['Torlis'])");
-		assert(f_all.mates === 2 && f_wo.mates === 1 && f_all.tank === "Torlis" && f_wo.tank === null && f_wo.excl[0] === "Torlis", `fight_math without Torlis: no tank, one mate (${f_all.mates}/${f_wo.mates}, ${f_all.tank}/${f_wo.tank})`);
+		assert(f_all.mates === 2 && f_wo.mates === 1 && f_all.tank === "Torlis" && f_wo.tank === null && f_all.priest === true, `fight_math without Torlis: no tank, one mate (${f_all.mates}/${f_wo.mates}, ${f_all.tank}/${f_wo.tank})`);
 		// the leader goes to town: a hard spot isn't safe for us alone → we go too
 		cms.length = 0;
 		R("ptown_recv({ k: 'ptown', id: 'Torlis:1', by: 'Torlis' }, 'Torlis')");
