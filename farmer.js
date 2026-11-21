@@ -1,4 +1,4 @@
-const VERSION = "24.37"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.38"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1236,20 +1236,25 @@ function pick_pack() {
 	let best = null;
 	const seen = new Set(), route_cache = new Map();
 	state.pick_skips = {};
+	// v24.38: every spot considered and what became of it (report: "spot choice"). out: why it's out, null = a candidate
+	const table = (state.pick_table = []);
+	const note = (key, t, map, out, extra) => table.push({ key, mtype: t, map, out, m: meas()[key] || 0, ...extra });
 	each_area((pack, area) => {
-		const t = pack.type;
-		if ((CFG.force_type && t !== CFG.force_type) || !state.safe[t]) return;
+		const t = pack.type, key = pack_key(area);
+		if (CFG.force_type && t !== CFG.force_type) return;
+		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, "over the safety limit"); } return; }
 		if (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count)) return;
-		const key = pack_key(area);
-		if (seen.has(key) || (state.cooldown[key] || 0) > now) return;
+		if (seen.has(key)) return;
+		if ((state.cooldown[key] || 0) > now) { seen.add(key); note(key, t, area.map, `resting ${mins(state.cooldown[key])} (a flee, a death, or it ran dry)`); return; }
 		seen.add(key);
 		// v24.10: not next to aggressive monsters we can't take on, nor past ones we can't outrun
 		const nb = area_danger(area, t), rd = nb ? null : route_cache.has(area.map) ? route_cache.get(area.map) : (route_cache.set(area.map, party_route_danger(area.map)), route_cache.get(area.map));
-		if (nb || rd) { state.pick_skips[key] = nb ? `${nb} spawns within ${CFG.danger_px}px` : `the way there passes ${rd}`; return; }
+		if (nb || rd) { state.pick_skips[key] = nb ? `${nb} spawns within ${CFG.danger_px}px` : `the way there passes ${rd}`; note(key, t, area.map, state.pick_skips[key]); return; }
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
 		p.rate = p.score; // its xp/s there (the side-goal and probe reference)
 		p.score *= walk_factor(area); // v24.9: counting the walk there
 		if (!(p.score > 0)) return; // v24.20: unreachable (no way there) or worthless: never the pick (it took "jrat @ jail")
+		note(key, t, area.map, null, { rate: p.rate, score: p.score });
 		// split: a spot a partner is already farming scores lower, so we spread over different spots. Only partners with an
 		// earlier name count (v23.2), as for hunt/quest targets: the first keeps a spot, the rest move — counting everyone
 		// made two fighters on one spot both look elsewhere
@@ -5084,6 +5089,13 @@ function report_facts() {
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
 	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
+	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out
+	if (!M_ && !is_follower() && state.pick_table?.length) {
+		const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
+		const cur = p ? pack_key(p) : null;
+		F("picks", "self", `spot choice (${ago(state.last_pick)} ago): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+			(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
+	}
 	// v24.37: why the monsters in view are or aren't targets (the spot's type): attackable, or skipped and why
 	if (p && !M_ && character.map === p.map) {
 		const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, unsafe: [], far: 0, taken: 0, ignored: 0, wall: 0 };
