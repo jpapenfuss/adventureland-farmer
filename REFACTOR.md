@@ -13,6 +13,28 @@ Rule for every step: behaviour stays the same unless the step says otherwise; te
   limit, no exceptions; enforced in `fire()`.
 - **Hopeless monsters** (v24.44): never attacked; enforced in `fire()`.
 
+## What the published bots do instead (read 2026-11-21)
+
+Read: earthiverse/adventureland-bots (`source/strategy_pattern/`), Spadar/AdventureLand (`Movement/`).
+
+- **No fight model, no spot picker.** earthiverse has a hand-written table: monster → ordered party configs
+  (which classes, which attack flags, which move strategy, what gear/level is required). The first config the
+  available characters satisfy is used. Which monster to farm is chosen by hand.
+- **One slot per kind of action.** Each character has exactly one `move` loop and one `attack` loop. A single
+  1-second if-chain (event → bags full → potions low → farm) decides which strategy fills each slot, so two
+  pieces of code can never both move a character.
+- **Tank-first is a flag.** Only the tank's config may hit a monster that has no target (`enableGreedyAggro`,
+  capped by `maximumTargets`); everyone else has `targetingPartyMember: true`.
+- **A whitelist per spot** (`typeList`) instead of "is this safe?". Anything else that targets a character
+  triggers an escape.
+- **One panic rule:** summed maximum incoming hit >= current HP → leave. No prediction.
+- **Fixed positions** (hold a point, or a spawn centre with a per-character offset) instead of re-picking.
+- **The merchant supplies the fighters**, so they rarely go to town.
+- They do **not** avoid monsters while travelling, and they do not travel as a group; their characters are much
+  stronger than ours. Spadar's avoidance (push away from listed monsters, layered on the path) is ~100 lines.
+
+Direction taken from this: steps 2b and 4 below.
+
 ## Steps
 
 1. **Decisions explain themselves.** Each decision produces a table of what it considered and why each option
@@ -23,13 +45,17 @@ Rule for every step: behaviour stays the same unless the step says otherwise; te
 2. **One target judge.** `choose_target`, `spread_pick`, `follower_pick`, `hold_grind` and the report's
    `targets` line each repeat the same checks (farmable, ignored, someone else's, inside the spot, per-monster
    safety, walking line). One function returns a verdict with a reason per monster; all five use it.
+2b. **A spot table instead of the picker.** `CFG.spots`: an ordered list of spots the owner approves (monster,
+   map, who must be present). The party farms the first one it is allowed at and stays; the generic picker,
+   probes and the fight model only rank spots when the table is empty. Removes spot wandering by construction.
 3. **Offline simulator on live game data.** A harness that loads `adventure.land/data.js` (trimmed fixture in
    `test/`) and replays a situation: where is everyone, what does the leader pick, which route, which target.
    First scenarios, from this evening: desertland → croc (transporter), the leader through a door ahead of the
    party, a spot whose monsters have levelled up.
-4. **One owner of movement per tick.** Walking is started and stopped from errands, pack travel, following,
-   approach, kiting, keep-away, patrol, group holds and travel gear, each with its own guards. One arbiter takes
-   requests with a priority and a reason, and is the only caller of `move` / `smart_move` / `stop`.
+4. **One owner of movement per tick** (earthiverse's model). One `move` slot and one `attack` slot per character,
+   filled by a single if-chain: dead → flee → town trip → travel with the party → fight at the spot. Today walking
+   is started and stopped from errands, pack travel, following, approach, kiting, keep-away, patrol, group holds
+   and travel gear, each with its own guards.
 5. **Game rules in one place.** Server formulas (stats, aggro, channels, doors, transporter, sets) as one
    section, each with its source line in the game repo, instead of restated in comments where they're used.
 6. **Prune.** Features that are switched off (the guide, split mode's A/B) and version-history comments.
