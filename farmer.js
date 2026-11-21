@@ -1,4 +1,4 @@
-const VERSION = "24.62"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.63"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -38,7 +38,7 @@ const CFG = {
 	// the best normal xp/s by min_gain, for `minutes`. A member dying or dropping below abort_hp ends it as a failure
 	// (fail_cooldown_h before that monster is tried again);
 	// lasting the time is a success (win_cooldown_h). Calibration learns from the fights either way.
-	probe: { enabled: true, every_min: 45, minutes: 10, max_over: 2.0, min_gain: 1.25, abort_hp: 0.4, fail_cooldown_h: 6, win_cooldown_h: 2 },
+	probe: { enabled: false, every_min: 45, minutes: 10, max_over: 2.0, min_gain: 1.25, abort_hp: 0.4, fail_cooldown_h: 6, win_cooldown_h: 2 },
 	recover_hp: 0.85,          // ...and stay out until HP is back to 85%
 	recover_mp: 0.4,           //    and MP to 40% (enough for heals/skills on the way back)
 	loot_range: 400,           // px; the server pays a chest's gold multiplier only within 400px of the opener
@@ -796,7 +796,8 @@ function party_tank() {
 function party_missing() {
 	// v24.62: a member not heard from (just loaded, or offline) is missing too — the tank used to start fights and
 	// pick its camp alone in the seconds before the first heartbeats
-	const unheard = in_party_cfg() ? others().filter((n) => !fresh(state.partners[n])) : [];
+	// v24.63: for starting a fight, three missed beats is enough (a disconnected member counted as present for 20s)
+	const unheard = in_party_cfg() ? others().filter((n) => !fresh(state.partners[n]) || Date.now() - state.partners[n].t > 3 * CFG.party.beat_ms) : [];
 	return unheard.concat(partners_any().filter((q) => q.rip || q.errand || q.recovering || q.map !== character.map ||
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) > CFG.party.engage_px).map((q) => q.name));
 }
@@ -1943,11 +1944,14 @@ let boss_type = null; // the boss boss_tick is on (a long fight the party chose)
 function hopeless(t) {
 	// not what we came for (the spot's own type, a boss), nor an event monster everyone hits together (cooperative)
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || state.pack?.mtype === t.mtype || boss_type === t.mtype || G.monsters[t.mtype].cooperative) return false;
-	const c = hopeless_c[t.mtype], now = Date.now();
+	// v24.63: judged at the monster's level (its live stats), not the type's level-1 stats
+	const lv = t.level || 1, key = `${t.mtype}:${lv}`, c = hopeless_c[key], now = Date.now();
 	if (c && now - c.at < 30_000) return c.v;
-	const f = fight_math(G.monsters[t.mtype]);
+	const live = {};
+	if (lv > 1) for (const k of ["attack", "frequency", "armor", "resistance", "speed", "level"]) if (t[k] !== undefined) live[k] = t[k];
+	const f = fight_math({ ...G.monsters[t.mtype], ...live, ...(lv > 1 && t.max_hp ? { hp: t.max_hp } : {}) });
 	const v = !f || f.ttk > CFG.hopeless_ttk_s;
-	hopeless_c[t.mtype] = { at: now, v };
+	hopeless_c[key] = { at: now, v };
 	return v;
 }
 function fire(skill, target, extra) {
@@ -2016,7 +2020,7 @@ function grown_ok(e) {
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
 	const f = fight_math({ ...def, ...live, hp: e.max_hp || def.hp });
-	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over;
+	return !!f && f.ttk <= CFG.hopeless_ttk_s && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // v24.63: the 3-minute rule too
 }
 // How many of the camp's monsters are in view when every one of them is over the limit (0: none in view, or one is takeable)
 function camp_overgrown(pack) {
@@ -6517,7 +6521,7 @@ function party_heal() {
 	if (!low.length) return false;
 	if (low.length >= 2 && can_use("partyheal")) return fire("partyheal"), true;
 	const m = low[0];
-	if (m !== character && distance(character, m) > character.range) { if (!walking()) move_to_as("party_heal", m.x, m.y, 300); return false; } // close in
+	if (m !== character && distance(character, m) > character.range) return false; // v24.63: no walk to it — a follower's place is by the tank
 	return !is_on_cooldown("heal") && fire("heal", m);
 }
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal

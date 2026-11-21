@@ -32,7 +32,7 @@ In the code as of v24.50:
   never joins an event by itself, has no keep-away steps, kiting or route refusal of its own, and the watchdog no
   longer sends it to town. What a follower still does by itself: heal, hit what already targets the party (closing
   in on it), stay beside the tank, loot, drink potions, wear its gear.
-- [x] v24.60–v24.62 (v24.62: the second audit's findings): the camp is sticky (no periodic re-pick; hunts and quest farming off). The tank never goes on
+- [x] v24.60–v24.63 (v24.62–v24.63: the second audit's findings): the camp is sticky (no periodic re-pick; hunts and quest farming off). The tank never goes on
   without a member: no group-hold timeout, no join window or wait limit on town trips, no teleports. On a town trip
   the tank walks to town with the party behind it; a follower follows it in and starts its town work on arrival. A
   camp where every monster has levelled past the limit is rested at once.
