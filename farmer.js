@@ -1,4 +1,4 @@
-const VERSION = "24.89"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.90"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -313,6 +313,9 @@ const CFG = {
 		// an elixir (240k) and its potion bills — and sends the merchant the rest a project asks for, whatever the
 		// richest one near can give (it used to send all of it or nothing).
 		fund_keep: 500_000,
+		// v24.90 (owner): every fighter near the merchant hands it ALL its gold above fund_keep — the
+		// merchant runs the upgrades. (It used to top the merchant up to `float` only, from the richest fighter.)
+		dump_gold: true,
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
 		// Stand: while idle at home the merchant lists spare valuables for other players (16 trade slots) at
 		// markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value
@@ -7006,7 +7009,13 @@ async function merchant_handoff() {
 			state.fund_sent_at = Date.now();
 			await send_own_gold(M.name, spare).then(() => game_log(`merchant: funded its project with ${fmt_k(spare)}`, C.ok)).catch(() => {});
 		}
-		if (richest.name === character.name && M.gold < CFG.merchant.float && character.gold > CFG.merchant.float * 3 &&
+		// v24.90: all our gold above fund_keep, whoever is richest (pending potion bills paid first, above)
+		const dump = Math.floor(character.gold - CFG.merchant.fund_keep);
+		if (CFG.merchant.dump_gold && dump >= 50_000 && Date.now() - (state.dump_at || 0) > 60_000 && typeof send_gold === "function") {
+			state.dump_at = Date.now();
+			await send_own_gold(M.name, dump).then(() => game_log(`merchant: handed ${M.name} ${fmt_k(dump)} (all but ${fmt_k(CFG.merchant.fund_keep)})`, C.ok)).catch(() => {});
+		}
+		if (!CFG.merchant.dump_gold && richest.name === character.name && M.gold < CFG.merchant.float && character.gold > CFG.merchant.float * 3 &&
 			Date.now() - merchant_gold_at > 1800_000 && typeof send_gold === "function") {
 			merchant_gold_at = Date.now();
 			const g = Math.round(CFG.merchant.float - M.gold);

@@ -1202,7 +1202,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const golds = []; ctx.send_gold = (to, g) => (golds.push([to, g]), Promise.resolve());
 	gave.length = 0;
 	await vm.runInContext("merchant_handoff()", ctx);
-	assert(JSON.stringify(golds) === '[["DoWhatNow",999900]]' && gave.length === 1 && gave[0][1] === "gslime", `richest tops up the merchant and hands loot (${JSON.stringify(golds)} ${JSON.stringify(gave)})`);
+	assert(JSON.stringify(golds) === `[["DoWhatNow",${Math.floor(character.gold - 500_000)}]]` && gave.length === 1 && gave[0][1] === "gslime", `v24.90: hands the merchant all its gold but 500k, and the loot (${JSON.stringify(golds)} ${JSON.stringify(gave)})`);
 	assert(vm.runInContext("town_due().min_free", ctx) === 3, "fighters' own town threshold drops while the merchant is online");
 	vm.runInContext("state.merchant = null", ctx);
 	const rep_ok = (() => { try { vm.runInContext("report()", ctx); return true; } catch (e) { console.error(e); return false; } })();
