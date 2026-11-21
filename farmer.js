@@ -1,4 +1,4 @@
-const VERSION = "24.30"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.31"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -106,7 +106,7 @@ const CFG = {
 	// Pieces whose removal would cut current HP or MP by more than max_hp_loss / max_mp_loss of max stay on
 	// (the server clamps HP/MP to the lower max, so that much is lost).
 	// .b pieces always stay on (the server deletes them on unequip). Not the merchant.
-	travel_gear: { enabled: true, min_px: 700, min_speed: 1, settle_ms: 10_000, danger_px: 400, keep_free: 2, max_hp_loss: 0.1, max_mp_loss: 0.25, cooldown_ms: 5000 },
+	travel_gear: { enabled: true, min_px: 700, min_speed: 1, settle_ms: 10_000, danger_px: 400, keep_free: 2, max_hp_loss: 0.1, max_mp_loss: 0.25, cooldown_ms: 30_000 },
 	// Own upgrading (upgrade_auto): one project at a time: an NPC-sold piece, upgraded (spare copies only, never worn
 	// gear) to the level where it beats what a member wears by the most per gold. Each step is gated by the server's
 	// preview (min_chance_rebuyable: a failure only costs gold); at low odds the project stops at the level reached.
@@ -2486,7 +2486,9 @@ async function swap_worn() {
 }
 // ---- Travel gear (v24.27): pieces that slow us come off for long walks, and go back on when they end ----
 // Our own long walk (go_raw's trip), or the walk just ended a moment ago (between a route's legs, a group hold)
-const own_long_walk = () => !!trip.long && (walking() || Date.now() - trip.end < CFG.travel_gear.settle_ms);
+// v24.31: ...or we're the leader holding for stragglers on the way (group_hold): still the same trip — the followers'
+// gear went on and off with every hold
+const own_long_walk = () => !!trip.long && (walking() || Date.now() - trip.end < CFG.travel_gear.settle_ms || !!state.group_wait);
 // Are we on a long walk now? A follower walks with its leader (heartbeat lw), not through go()
 function travel_long() {
 	if (state.pack && character.map === state.pack.map && in_boundary(state.pack.boundary, 250)) return false; // at the spot
@@ -2530,12 +2532,20 @@ const travel_bag_slot = (r) => character.items.findIndex((i) => i && i.name === 
 	(i.p || null) === (r.p || null) && (i.stat_type || null) === (r.stat_type || null));
 const travel_slots_held = () => new Set(state.travel_off.map(travel_bag_slot).filter((k) => k >= 0));
 const travel_off_slots = () => new Set(state.travel_off.map((r) => r.slot));
+// v24.31: a swap changes our speed mid-step; the client keeps walking its old step and drifts off the server's position
+// (the pathfinder then clips a corner and stands there). Stop the step: the walk in flight re-plans from where we are.
+const travel_resync = () => { if (character.moving) try { stop("move"); } catch (e) {} };
+// v24.31: our combat stats with everything on (taken as the pieces come off): the heartbeat keeps sending these, so the
+// leader doesn't judge spots on a priest without its staff
+let travel_full = null;
+const HB_COMBAT = ["attack", "frequency", "max_hp", "armor", "resistance", "range", "apiercing", "rpiercing", "max_mp"];
 const travel_stats = { off: 0, on: 0, last: null, at: 0 }; // report: pieces taken off / put back since load, the last action
 let travel_restored_at = 0;
 async function travel_strip() {
 	const T_ = CFG.travel_gear;
 	const cands = travel_candidates().slice(0, Math.max(0, character.esize - T_.keep_free)); // each needs a free bag slot
 	let n = 0;
+	if (cands.length && !state.travel_off.length) travel_full = Object.fromEntries(HB_COMBAT.map((k) => [k, character[k] || 0]));
 	for (const c of cands) {
 		if (gear_busy || !can_spend(EMIT_COST.unequip, RESERVE.errand)) break;
 		gear_busy = true;
@@ -2545,7 +2555,7 @@ async function travel_strip() {
 		n++;
 	}
 	if (n) {
-		my_gear_cache = null;
+		my_gear_cache = null; travel_resync();
 		const txt = state.travel_off.map((r) => `${r.name}+${r.level} (${r.speed} speed)`).join(", ");
 		travel_stats.off += n; travel_stats.last = `took off ${txt}`; travel_stats.at = Date.now();
 		game_log(`travel gear: took off ${txt} for the walk`, C.dim);
@@ -2582,7 +2592,7 @@ async function travel_restore_run(why_) {
 		}
 	}
 	if (n) {
-		my_gear_cache = null; travel_restored_at = Date.now();
+		my_gear_cache = null; travel_restored_at = Date.now(); travel_resync();
 		travel_stats.on += n; travel_stats.last = `put ${n} back on (${why_})`; travel_stats.at = Date.now();
 		game_log(`travel gear: back on (${why_})`, C.dim);
 		save_state();
@@ -5607,6 +5617,7 @@ function heartbeat() {
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
 		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
 		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing() };
+	if (state.travel_off.length && travel_full) Object.assign(msg, travel_full); // v24.31: as with everything on
 	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
 	Promise.resolve(send_cm(to, msg)).catch(() => {});
 }

@@ -3746,6 +3746,38 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_cm = scm; ctx.parent.entities = ents;
 		delete ctx.G.monsters.hard138; delete ctx.G.monsters.easy138;
 	}
+	// 139) v24.31: a gear swap mid-step stops the step (resync); the heartbeat keeps full-gear stats; the leader's hold is the same trip
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const mc = ctx.G.classes.mage, eq_s = ctx.equip, uq_s = ctx.unequip, scm = ctx.send_cm, ents = ctx.parent.entities;
+		ctx.G.classes.mage = { ...mc, main_stat: "int", mainhand: { staff: { speed: -4 } } };
+		ctx.G.items.staff139 = { type: "weapon", wtype: "staff", attack: 30 };
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, esize: 30, hp: 1000, max_hp: 1000, mp: 1000, max_mp: 1000, c: {}, attack: 400, moving: true });
+		character.items = Array(42).fill(null); character.slots = { mainhand: { name: "staff139", level: 0 } };
+		ctx.unequip = (slot) => { character.items[0] = character.slots[slot]; character.slots[slot] = null; character.attack = 50; return Promise.resolve(); };
+		ctx.equip = (k, slot) => { character.slots[slot] = character.items[k]; character.items[k] = null; character.attack = 400; return Promise.resolve(); };
+		const hbs = []; ctx.send_cm = (to, m) => (hbs.push(m), Promise.resolve());
+		ctx.parent.entities = {};
+		R("CFG.party.tank_leads = false; state.partners = {}; state.pack = null; state.errand = null; state.recovering = false; state.travel_off = []; state.group_wait = null; my_gear_cache = null; gear_busy = false; travel_busy = false; travel_restored_at = 0; trip.long = true; trip.end = 0; smart_depth = 1");
+		calls.length = 0;
+		await R("travel_gear_tick()");
+		assert(R("state.travel_off.length") === 1 && calls.includes("stop:move"), `the staff came off mid-step: the step is stopped so the walk re-plans from our real position (${calls.join()})`);
+		hbs.length = 0; R("heartbeat()");
+		const h139 = hbs.find((m) => m.k === "hb");
+		assert(character.attack === 50 && (!h139 || h139.attack === 400), `the heartbeat still says attack 400 while the staff is off (${h139 && h139.attack})`);
+		// the leader holding for stragglers after its walk stopped: still the long walk (followers keep theirs off)
+		R("smart_depth = 0; trip.end = Date.now() - CFG.travel_gear.settle_ms - 1");
+		assert(R("travel_long()") === false, "walk over, no hold: not travelling");
+		R("state.group_wait = { since: Date.now(), who: 'Aspernari' }");
+		assert(R("travel_long()") === true, "holding for a straggler on the way: still travelling");
+		R("state.group_wait = null");
+		calls.length = 0; character.moving = true;
+		await R("travel_gear_tick()");
+		assert(R("state.travel_off.length") === 0 && calls.includes("stop:move") && character.attack === 400, "back on: resynced again");
+		character.moving = false; ctx.G.classes.mage = mc; ctx.equip = eq_s; ctx.unequip = uq_s; ctx.send_cm = scm; ctx.parent.entities = ents;
+		character.slots = {}; character.items = Array(42).fill(null);
+		R("state.travel_off = []; my_gear_cache = null; travel_restored_at = 0; trip.long = false");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
