@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -1337,8 +1337,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	for (let i = 0; i < 25; i++) vm.runInContext(`cal.cur.croc = ${pred62 * 0.2}; calib_record('croc')`, ctx);
 	assert(Math.abs(vm.runInContext("calib_factor('croc')", ctx) - 1.5) < 1e-9, `fights at 20% of predicted damage relax croc to x1.5 (${vm.runInContext("calib_factor('croc')", ctx)})`);
 	ctx.G.monsters.newmob = { xp: 10, hp: 100, attack: 5, frequency: 1, range: 20, speed: 10, respawn: 5 };
+	// v24.47: a monster with no fights is never judged better than the model — here: model_distrust, as nothing we
+	// measured went worse than predicted; then as bad as the worst we have measured (3x → x0.33)
+	vm.runInContext("CFG.model_distrust = 2", ctx);
 	const g62 = vm.runInContext("calib_factor('newmob')", ctx);
-	assert(g62 > 1 && g62 <= 1.2, `a monster with no fights uses the all-monster ratio, capped at 1.2 (${g62})`);
+	assert(Math.abs(g62 - 0.5) < 1e-9, `no fights against it: assumed to deal twice the prediction (${g62})`);
+	vm.runInContext("state.calib['bad62'] = { ratio: 3, n: 3, pred: 100, act: 300 }", ctx);
+	assert(Math.abs(vm.runInContext("calib_factor('newmob')", ctx) - 1 / 3) < 1e-9 && Math.abs(vm.runInContext("calib_factor('bad62')", ctx) - 1 / 3) < 1e-9, "...or as bad as the worst monster measured; and three fights are enough to count");
+	vm.runInContext("delete state.calib['bad62']; CFG.model_distrust = 1", ctx);
 	vm.runInContext("incident('croc', 0.8)", ctx);
 	assert(Math.abs(vm.runInContext("danger_of('croc')", ctx) - 1.2) < 1e-9, "a flee multiplies the safety by 0.8");
 	vm.runInContext("incident('croc', 0.6)", ctx);

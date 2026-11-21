@@ -1,4 +1,4 @@
-const VERSION = "24.46"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.47"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -11,6 +11,7 @@ const CFG = {
 	kite_slack: 4,             // a mob we can kite still counts 1/kite_slack of its damage: kiting isn't perfect
 	                           //   (other mobs, walls, missed steps), so it lowers the risk 4x rather than to zero
 	max_ttk_s: 20,             // a monster that isn't the pack's type is only attacked if it dies within this many s
+	model_distrust: 2,         // v24.47: a monster we have no fights against is assumed to deal this many times the predicted damage
 	hopeless_ttk_s: 180,       // v24.44: a monster the party couldn't kill in 3 min is never attacked at all (ents)
 	                           //   (long fights block the pack's respawns and hunt progress)
 	max_respawn: 120,          // s; packs whose monster respawns slower than this aren't farmed (too much idle time)
@@ -713,13 +714,23 @@ const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.s
 // taking the hits — our own fights under cover say nothing and aren't recorded.
 const calib_key = (mt, solo) => (solo ? mt : mt + "@p");
 const fought_alone = (f) => (f ? f.solo || !f.mates : solo_now() || !partners_near().length); // nobody else counted: a solo fight
+// v24.47: measured damage decides, from the third fight on; the fight model alone is never trusted. The model has
+// under-predicted every monster this party fought (actual / predicted: gscorpion 1.3, cgoo 1.8, croc 2.7 — and it
+// counts one monster hitting one member, when a spot has several). Before, a monster got no correction until 20
+// fights, the correction was clamped, and a new monster was judged on the raw model: that is where the deaths at new
+// spots came from.
+//  - 3+ fights against it (ours, or under our tank: its own): 1 / (actual / predicted), down to 0.1, up to 1.5
+//  - fewer: as bad as the worst monster we have measured, and never better than model_distrust (2x the prediction)
+const CALIB_MIN_N = 3;
 function calib_factor(mtype, f) {
-	const solo = fought_alone(f);
-	if (f && f.tank) { const r = state.partners[f.tank]?.calp?.[mtype]; return r > 0 ? Math.min(1.5, Math.max(0.4, 1 / Math.max(r, 0.3))) : 1; }
-	const c = state.calib[calib_key(mtype, solo)], g = state.calib_all;
-	if (c && c.n >= 20) return Math.min(1.5, Math.max(0.4, 1 / Math.max(c.ratio, 0.3)));
-	if (g && g.n >= 20) return Math.min(1.2, Math.max(0.6, 1 / Math.max(g.ratio, 0.3)));
-	return 1;
+	const solo = fought_alone(f), own = (r) => Math.min(1.5, Math.max(0.1, 1 / Math.max(r, 0.1)));
+	const tr = f && f.tank ? state.partners[f.tank]?.calp?.[mtype] : 0;
+	if (tr > 0) return own(tr);
+	const c = state.calib[calib_key(mtype, solo)];
+	if (c && c.n >= CALIB_MIN_N) return own(c.ratio);
+	let worst = CFG.model_distrust;
+	for (const k in state.calib) if (k.endsWith("@p") !== solo && state.calib[k].n >= CALIB_MIN_N) worst = Math.max(worst, state.calib[k].ratio);
+	return 1 / Math.min(worst, 4);
 }
 // v24.6: a probe that held (probe_ok, 24h, shared) widens the party verdict for that monster by the risk it held at
 const probe_ok_mult = (mtype, f) => { const o = state.probe_ok[mtype]; return o && (f ? !f.solo : !solo_now()) && Date.now() - o.at < 24 * 3600_000 ? o.mult : 1; };
@@ -1524,8 +1535,8 @@ function postmortem() {
 }
 function calib_text(mt) {
 	const c = state.calib[calib_key(mt, fought_alone())]; // v24.6: the table for how we fight now (alone / with the party)
-	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < 20 ? ", needs 20" : ""})`
-		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet${state.calib_all.n >= 20 ? `; all monsters: ratio ${state.calib_all.ratio.toFixed(2)}` : ""})`;
+	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < CALIB_MIN_N ? `, needs ${CALIB_MIN_N}: judged as an unknown monster` : ""})`
+		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet: judged as the worst we've measured, at least x${CFG.model_distrust} the prediction)`;
 }
 // ---- Calibration (v15.1): damage actually taken per fight vs the model's prediction ----
 // Hits are summed per attacker type; a fight with type M ends when our target of type M dies or we switch away from
@@ -5615,7 +5626,7 @@ function lead_lost() {
 // Our party-fight calibration ratios (20+ fights), for the leader's verdicts under our cover (tanks only, v24.6)
 function calp_share() {
 	const o = {};
-	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= 20) o[k.slice(0, -2)] = +state.calib[k].ratio.toFixed(3);
+	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= CALIB_MIN_N) o[k.slice(0, -2)] = +state.calib[k].ratio.toFixed(3);
 	return o;
 }
 // v24.13: the server's xp multiplier (1 + gear/party/other xp% / 100): party kill xp is split equally among an account's
