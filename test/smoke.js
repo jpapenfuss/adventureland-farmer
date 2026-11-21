@@ -3406,6 +3406,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("rt_cache.clear(); dz_cache.clear()", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
+	// 131) v24.20: bigger game panels (log size/font/resize handle, the status box) and ui(); no picks in jail / unreachable
+	{
+		const els = {}, pd0 = ctx.parent.document;
+		const mk = (id) => ({ id, style: {}, textContent: "", offsetWidth: 128, offsetHeight: 60 });
+		els.gamelog = mk("gamelog");
+		ctx.parent.document = { getElementById: (id) => els[id] || null, createElement: () => mk(""), head: { appendChild: (e) => (els[e.id || "farmer-ui"] = e) } };
+		const store131 = {}, sg = [ctx.set, ctx.get];
+		ctx.set = (k, v) => ((store131[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in store131 ? JSON.parse(store131[k]) : null);
+		assert(vm.runInContext("apply_ui()", ctx) === true && /#gamelog\{width:560px !important;height:360px/.test(els["farmer-ui"]?.textContent || "") && /resize:both/.test(els["farmer-ui"].textContent),
+			`the log gets CFG.ui's size, font and a resize handle (${els["farmer-ui"] && els["farmer-ui"].textContent.slice(0, 80)})`);
+		vm.runInContext("ui(700, 450, 17)", ctx);
+		assert(/width:700px !important;height:450px[^}]*font-size:17px/.test(els["farmer-ui"].textContent) && JSON.parse(store131.farmer_ui).log_w === 700, "ui(700, 450, 17): applied and saved");
+		vm.runInContext("ui()", ctx);
+		assert(/width:560px/.test(els["farmer-ui"].textContent), "ui(): back to CFG.ui");
+		[ctx.set, ctx.get] = sg; ctx.parent.document = pd0;
+		assert(vm.runInContext("map_ok('jail') === false", ctx) && /if \(!\(p\.score > 0\)\) return;/.test(src), "jail is never a pick, nor a spot with no way there");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

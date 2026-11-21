@@ -1,4 +1,4 @@
-const VERSION = "24.19"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.20"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -165,6 +165,10 @@ const CFG = {
 	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
 	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
+	// v24.20: bigger game panels. log_*: the game log (#gamelog; drag its corner to resize — the size is remembered);
+	// status_*: the code runner's box under CODE (our set_message text; the game draws it 128x60 with no drag handle).
+	// ui(w, h, font) in the console sets the log's size and font.
+	ui: { enabled: true, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14 },
 	town_soft_gap_ms: 1_200_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 20 min
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
 	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
@@ -582,7 +586,7 @@ function in_boundary([x1, y1, x2, y2], pad = 150) {
 	return character.x > x1 - pad && character.x < x2 + pad && character.y > y1 - pad && character.y < y2 + pad;
 }
 // Maps we may farm on: not ignored, not an instance (dungeons need keys/parties), not PvP
-const map_ok = (name) => { const m = G.maps[name]; return !!m && !m.ignore && !m.instance && !m.pvp; };
+const map_ok = (name) => { const m = G.maps[name]; return !!m && !m.ignore && !m.instance && !m.pvp && name !== "jail"; }; // v24.20: not jail
 
 // Normal respawning XP mobs only: no dummies, pets, bosses, events, immune/passive specials
 function farmable_type(mtype) {
@@ -1170,6 +1174,7 @@ function pick_pack() {
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
 		p.rate = p.score; // its xp/s there (the side-goal and probe reference)
 		p.score *= walk_factor(area); // v24.9: counting the walk there
+		if (!(p.score > 0)) return; // v24.20: unreachable (no way there) or worthless: never the pick (it took "jrat @ jail")
 		// split: a spot a partner is already farming scores lower, so we spread over different spots. Only partners with an
 		// earlier name count (v23.2), as for hunt/quest targets: the first keeps a spot, the rest move — counting everyone
 		// made two fighters on one spot both look elsewhere
@@ -4388,6 +4393,51 @@ function quiet_logs() {
 	return n > 0;
 }
 quiet_logs();
+// ---- Bigger panels (CFG.ui, v24.20) ----
+// A style rule in the game page for the log (size, font, a resize handle) and our own iframe's size for the status box.
+// A size dragged with the log's handle is saved (shared by every character in this browser) and reapplied on reload.
+function apply_ui() {
+	const U = CFG.ui;
+	if (!U?.enabled || typeof parent === "undefined" || !parent.document) return false;
+	try {
+		const pd = parent.document, saved = (typeof get === "function" && get("farmer_ui")) || {};
+		let st = pd.getElementById("farmer-ui");
+		if (!st) { st = pd.createElement("style"); st.id = "farmer-ui"; (pd.head || pd.documentElement).appendChild(st); }
+		const w = saved.log_w || U.log_w, h = saved.log_h || U.log_h, f = saved.log_font || U.log_font;
+		st.textContent = `#gamelog{width:${w}px !important;height:${h}px !important;max-height:none !important;max-width:none !important;` +
+			`font-size:${f}px !important;line-height:1.25 !important;resize:both !important;overflow:auto !important}` +
+			`#gamelog .gameentry{font-size:inherit !important}`;
+		const fe = typeof window !== "undefined" ? window.frameElement : null; // our iframe: the status box under CODE
+		if (fe && fe.style && fe.offsetWidth > 2) { fe.style.width = U.status_w + "px"; fe.style.height = U.status_h + "px"; }
+		const gg = typeof document !== "undefined" && document.getElementById ? document.getElementById("gg") : null;
+		if (gg) { gg.style.fontSize = U.status_font + "px"; gg.style.lineHeight = "1.25"; gg.style.whiteSpace = "normal"; }
+		const gl = pd.getElementById("gamelog");
+		const W_ = typeof window !== "undefined" ? window : globalThis;
+		if (gl && gl.__farmer_ro_win !== W_ && typeof ResizeObserver === "function") {
+			let tmr = null;
+			const ro = new ResizeObserver(() => {
+				clearTimeout(tmr);
+				tmr = setTimeout(() => {
+					const cw = Math.round(gl.offsetWidth), ch = Math.round(gl.offsetHeight);
+					const cur = (typeof get === "function" && get("farmer_ui")) || {};
+					if (cw > 100 && ch > 60 && (cw !== cur.log_w || ch !== cur.log_h) && typeof set === "function") set("farmer_ui", { ...cur, log_w: cw, log_h: ch });
+				}, 800);
+			});
+			ro.observe(gl);
+			gl.__farmer_ro_win = W_;
+		}
+		return true;
+	} catch (e) { return false; } // another origin, or no such panel: leave the game's own layout
+}
+// Console: ui(560, 360, 15) — the log's width, height and font size (saved); ui() — back to CFG.ui
+function ui(w, h, font) {
+	const cur = (typeof get === "function" && get("farmer_ui")) || {};
+	const next = w === undefined ? {} : { ...cur, log_w: w || cur.log_w, log_h: h || cur.log_h, log_font: font || cur.log_font };
+	if (typeof set === "function") set("farmer_ui", next);
+	apply_ui();
+	return next;
+}
+apply_ui();
 // report(): one-screen summary of what the bot is doing and why (also as copyable text)
 // ---- Report (v17): facts once, two renderers ----
 // report_facts(): this character's state as { key, scope, text, quiet } in display order.
