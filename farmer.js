@@ -1,4 +1,4 @@
-const VERSION = "24.47"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.48"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -603,7 +603,7 @@ async function go_raw(dest, ms = CFG.walk_timeout_ms) {
 	try {
 		return await Promise.race([smart_move(dest), new Promise((_, rej) => (timer = setTimeout(() => {
 			timed_out = true;
-			try { stop("smart"); } catch (e) {}
+			halt("go_raw");
 			rej({ reason: "walk_timeout", dest: typeof dest === "string" ? dest : dest.map });
 		}, ms)))]);
 	} catch (e) {
@@ -1133,7 +1133,7 @@ function party_route_danger(to) {
 function step_away(e) {
 	if (!e || !Number.isFinite(e.x)) return false;
 	const p = best_escape(e, 140);
-	return p ? move_to(p.x, p.y, 300) : false;
+	return p ? move_to_as("step_away", p.x, p.y, 300) : false;
 }
 // v24.23: where to move away from a monster: of 12 directions around us, the ones we can walk (and keep walking another
 // `step` beyond — not into a dead end), the one ending farthest from it. Straight away and ±45/90° only, a party backed
@@ -1629,7 +1629,7 @@ function watchdog() {
 		if (away && now - wd.lost_since > W.lost_min * 60_000) {
 			wd.lost_since = null;
 			wd_act("lost", `${Math.round(W.lost_min)} min away from ${L.name}; town, then back to it`);
-			try { stop("smart"); } catch (e) {}
+			halt("watchdog");
 			state.travel_block_until = 0;
 			errand("regroup", async () => { await T(use_skill("use_town"), 8000).catch(() => {}); await sleep_ms(4000); await go(partner_pos(leader_hb())).catch(() => {}); });
 			return;
@@ -1638,7 +1638,7 @@ function watchdog() {
 		if (still(f) && no_hits(f) && !away) { // a follower glued in place while the leader is near: walk back to it
 			reset();
 			wd_act("frozen", `follower stuck ${W.frozen_min} min; walking to ${L?.name}`);
-			try { stop("smart"); } catch (e) {}
+			halt("watchdog");
 			state.travel_block_until = 0;
 		}
 		return;
@@ -1647,7 +1647,7 @@ function watchdog() {
 	if (state.pack && still(f) && no_hits(f)) { // no pack = nothing safe to fight: waiting is correct, not a stall
 		reset();
 		wd_act("frozen", `no movement and no hits for ${W.frozen_min} min${state.pack ? " at " + state.pack.mtype : ""}`);
-		try { stop("smart"); } catch (e) {}
+		halt("watchdog");
 		state.travel_block_until = 0;
 		if (state.pack) state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
 		state.last_pick = 0;
@@ -1664,7 +1664,7 @@ function watchdog() {
 		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
 		state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
 		state.last_pick = 0;
-		if (repeat) { try { stop("smart"); } catch (e) {} use_skill("use_town"); }
+		if (repeat) { halt("watchdog"); use_skill("use_town"); }
 	}
 }
 setInterval(() => { try { watchdog(); } catch (e) { log_error("watchdog: " + e); } }, 30_000);
@@ -1936,6 +1936,21 @@ function fire(skill, target, extra) {
 }
 let last_move = 0;
 // Every move costs 2.5 call units: at most one per min_gap ms, and none if we're already heading within 30px of there
+// ---- Who moved us (v24.48, refactor step 4a) ----
+// Every step (move_to_as), walk (travel_as) and stop of a walk (halt) names the piece of code asking for it. Nothing is
+// decided here yet: it is the one place all movement passes through, with a short record of who asked for what — so a
+// report can show two owners pulling the character different ways, and so one arbiter can replace them here later.
+const mv = { log: [], clash: 0 }; // log: [{ t, who, kind }] of the last minute
+function mv_note(who, kind) {
+	const now = Date.now(), last = mv.log[mv.log.length - 1];
+	// a clash: a different owner steps or stops within 1.5s of another's step or walk
+	if (last && last.who !== who && now - last.t < 1500 && !(last.kind === "halt" && kind !== "halt")) mv.clash++;
+	if (last && last.who === who && last.kind === kind) { last.t = now; last.n++; } else mv.log.push({ t: now, who, kind, n: 1 });
+	while (mv.log.length && now - mv.log[0].t > 60_000) mv.log.shift();
+}
+function move_to_as(who, x, y, min_gap) { const ok = move_to(x, y, min_gap); if (ok) mv_note(who, "step"); return ok; }
+function travel_as(who, dest) { if (!walking() && Date.now() >= (state.travel_block_until || 0)) mv_note(who, "walk"); return travel(dest); }
+function halt(who) { mv_note(who, "halt"); try { stop("smart"); } catch (e) {} }
 function move_to(x, y, min_gap = 300) {
 	if (Date.now() - last_move < min_gap) return false;
 	if (character.moving && Math.hypot(character.going_x - x, character.going_y - y) < 30) return false;
@@ -2039,15 +2054,15 @@ function kite(t) {
 	if (!so.can_kite || t.target !== character.name || distance(character, t) >= so.keep) return false;
 	// v24.23: the open direction that ends farthest from it (best_escape), far enough to get back to `want`
 	const p = best_escape(t, Math.max(80, so.want - distance(character, t) + 40));
-	if (p) { move_to(p.x, p.y, 250); return true; } // kiting may re-steer every 250ms
+	if (p) { move_to_as("kite", p.x, p.y, 250); return true; } // kiting may re-steer every 250ms
 	return false;
 }
 function approach(t) {
 	const so = standoff(t);
 	if (distance(character, t) <= so.reach) return;
 	const p = point_at(t, so.want);
-	if (can_move_to(p.x, p.y)) { approach_path = null; move_to(p.x, p.y, 400); } // re-steer at most every 400ms while closing in
-	else if (can_move_to(t.x, t.y)) { approach_path = null; move_to(t.x, t.y, 400); } // only the standoff point is blocked: straight at it
+	if (can_move_to(p.x, p.y)) { approach_path = null; move_to_as("approach", p.x, p.y, 400); } // re-steer at most every 400ms while closing in
+	else if (can_move_to(t.x, t.y)) { approach_path = null; move_to_as("approach", t.x, t.y, 400); } // only the standoff point is blocked: straight at it
 	// v24.32: a wall between us (a ledge above the monster's pool): walking straight at it ran us into the corner, where we
 	// stood for good. Path-find to it; break_walk_for leaves that walk alone until we can reach it or see a clear line.
 	else {
@@ -2058,7 +2073,7 @@ function approach(t) {
 			state.bad_ids[t.id] = now + 120_000; approach_path = null;
 			return void game_log(`can't get to that ${t.mtype}; leaving it for 2 min`, C.dim);
 		}
-		approach_path = t.id; travel({ map: character.map, x: t.x, y: t.y });
+		approach_path = t.id; travel_as("approach", { map: character.map, x: t.x, y: t.y });
 	}
 }
 let approach_try = { id: null, at: 0, d: 0 };
@@ -2083,8 +2098,8 @@ function patrol() {
 	if (is_moving(character) || walking() || !state.waypoints.length) return;
 	if (distance(character, state.waypoints[state.wp]) < 30) state.wp = (state.wp + 1) % state.waypoints.length; // reached
 	const next = state.waypoints[state.wp];
-	if (can_move_to(next.x, next.y)) move_to(next.x, next.y, 500); // patrol is low priority: a move per 500ms at most
-	else travel({ map: state.pack.map, x: next.x, y: next.y });
+	if (can_move_to(next.x, next.y)) move_to_as("patrol", next.x, next.y, 500); // patrol is low priority: a move per 500ms at most
+	else travel_as("patrol", { map: state.pack.map, x: next.x, y: next.y });
 }
 function can_use(skill) {
 	const s = G.skills[skill];
@@ -2197,7 +2212,7 @@ function break_walk_for(t) {
 	const attacking_us = !!t.target && party_names().has(t.target);
 	if (!attacking_us && state.pack?.boss) return false; // on the way to a boss: only stop for attackers
 	if (t.target === character.name && !can_take(t)) return false; // v24.10: outrun it; v24.16: keep walking whatever its speed
-	try { stop("smart"); } catch (e) {}
+	halt("break_walk_for");
 	return true;
 }
 function fight(t, steer = true) {
@@ -4018,7 +4033,7 @@ function boss_tick(pack) {
 	}
 	const b = parent.S?.[pack.mtype];
 	if (!b || b.live !== true) { state.last_pick = 0; return false; }
-	if (!walking() && !errand_busy()) travel({ map: b.map, x: b.x, y: b.y });
+	if (!walking() && !errand_busy()) travel_as("boss_tick", { map: b.map, x: b.x, y: b.y });
 	set_message(`→ BOSS ${pack.mtype} @ ${b.map}`);
 	return true;
 }
@@ -4057,7 +4072,7 @@ function event_tick() {
 	const name = event_live(), now = Date.now();
 	if (!name) {
 		event_logged = null;
-		if (character.map === "goobrawl" && !walking() && !errand_busy()) { travel({ map: "main" }); return true; } // event over
+		if (character.map === "goobrawl" && !walking() && !errand_busy()) { travel_as("event_tick", { map: "main" }); return true; } // event over
 		return false;
 	}
 	if (errand_busy() || state.recovering) return false;
@@ -4066,7 +4081,7 @@ function event_tick() {
 	if (!event_here(name)) {
 		if (now - event_join_at > 20_000 && typeof join === "function") {
 			event_join_at = now;
-			if (walking()) try { stop("smart"); } catch (e) {}
+			if (walking()) halt("event_tick");
 			Promise.resolve(join(name)).catch((e) => game_log(`event ${name}: ${why(e)}`, C.dim));
 		}
 		set_message(`→ event ${name}`);
@@ -4082,7 +4097,7 @@ function event_tick() {
 		set_message(`event ${name}: ${t.mtype} ${t.hp}/${t.max_hp}`);
 	} else {
 		const e = ev_info(name);
-		if (!walking() && Number.isFinite(e?.x) && e.map === character.map) move_to(e.x, e.y, 1000);
+		if (!walking() && Number.isFinite(e?.x) && e.map === character.map) move_to_as("event_tick", e.x, e.y, 1000);
 		set_message(`event ${name}: waiting for spawns`);
 	}
 	return true;
@@ -4656,7 +4671,7 @@ function ptown_join_tick() {
 	if (late) { P.pending = false; P.why += " — couldn't get away in time"; return false; }
 	if (errand_busy()) { if (state.errand === "town") ptown_joined(P); return true; }
 	if (character.rip || state.recovering || hit_on_me()) return true; // finish this fight first
-	if (walking()) { try { stop("smart"); } catch (e) {} return true; } // the next tick starts the run
+	if (walking()) { halt("ptown_join_tick"); return true; } // the next tick starts the run
 	state.town_runs = (state.town_runs || []).filter((t) => now - t < 600_000);
 	if (state.town_runs.length >= 6) { P.pending = false; P.why += " — town loop brake"; return false; }
 	const due = town_due(true), what = due_tasks(due);
@@ -4696,7 +4711,7 @@ async function ptown_wait() {
 // main's town by town_hop_px. 3s channel; a hit or a move cancels it, and it fails with more than 5 monsters on us.
 // Channel the town teleport (3s) to this map's spawn: true if we arrived
 async function town_teleport() {
-	if (walking()) { try { stop("smart"); } catch (e) {} }
+	if (walking()) { halt("town_teleport"); }
 	state.town_at = Date.now();
 	await T(use_skill("use_town"), 8000).catch(() => {});
 	await until(() => !character.c?.town && Date.now() - state.town_at > 1500, 6000);
@@ -4748,7 +4763,7 @@ function town_check() {
 	if (character.hp < character.max_hp * floor) blockers.push(`HP ${Math.round((character.hp / character.max_hp) * 100)}% < ${floor * 100}%`);
 	// a patrol/pack walk yields to town — only when nothing else holds the trip (v24.4: stopped every tick otherwise, and
 	// with HP under the floor the walk to the pack froze until regen)
-	if (!blockers.length && walking() && !errand_busy()) { stop("smart"); blockers.push("stopping a pack walk"); }
+	if (!blockers.length && walking() && !errand_busy()) { halt("town_check"); blockers.push("stopping a pack walk"); }
 	state.town_block = { what: what.join("+"), blockers, at: Date.now() };
 	if (blockers.length) {
 		if (critical && Date.now() - town_block_logged > 300_000) {
@@ -4813,12 +4828,12 @@ function recover() {
 		if (t) fight(t, true); // steer: a melee fighter walks to a ranged attacker; a ranged one kites
 		else if (threat && Number.isFinite(threat.x)) { // v24.8: one we ignore as immune: step away from it (stood still before)
 			const a = Math.atan2(character.y - threat.y, character.x - threat.x), x = character.x + Math.cos(a) * 120, y = character.y + Math.sin(a) * 120;
-			if (can_move_to(x, y)) move_to(x, y, 300);
+			if (can_move_to(x, y)) move_to_as("recover", x, y, 300);
 		}
 	} else if (!done && !state.fled_home && Date.now() - (state.town_at || 0) > 1500) {
 		if (at_town_spot()) state.fled_home = true;
 		else {
-			if (walking() || is_moving(character)) stop("smart"), stop("move");
+			if (walking() || is_moving(character)) halt("recover"), stop("move");
 			if (fire("use_town")) (state.fled = true), (state.town_at = Date.now());
 		}
 	}
@@ -4829,7 +4844,7 @@ function resume() { state.parked = false; state.last_pick = 0; state.last_target
 // While parked: one trip to town, then stand and defend
 function park_tick() {
 	if (!errand_busy() && !state.park_home) {
-		if (walking()) stop("smart");
+		if (walking()) halt("park_tick");
 		state.park_home = errand("park", async () => { await go("town"); });
 	}
 	const t = choose_target(false);
@@ -5208,6 +5223,8 @@ function report_facts() {
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
 	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
+	// v24.48: who moved us in the last minute, in order, and how often two owners overlapped since load
+	if (mv.log.length) F("moves", "self", `movement (1 min): ${mv.log.slice(-10).map((m) => `${m.who} ${m.kind}${m.n > 1 ? " x" + m.n : ""}`).join(" → ")} | clashes since load: ${mv.clash}`);
 	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out
 	if (!M_ && !is_follower() && state.pick_table?.length) {
 		const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
@@ -6068,7 +6085,7 @@ async function serve(f) {
 			if (state.errand) state.errand_at = Date.now();
 			mluck_near();
 			const q = state.partners[f.name], pos = q && partner_pos(q);
-			if (pos && pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) > 200) move_to(pos.x, pos.y, 500);
+			if (pos && pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) > 200) move_to_as("serve", pos.x, pos.y, 500);
 			await sleep_ms(1000);
 		}
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
@@ -6431,14 +6448,14 @@ function merchant_tick() {
 			}
 			if (here) return;
 			if (character.stand) return void stand_close();
-			if (character.map === "main" && Math.hypot(character.x - sp.x, character.y - sp.y) < 150 && can_move_to(sp.x, sp.y)) return void move_to(sp.x, sp.y, 1000);
-			return void travel({ map: "main", x: sp.x, y: sp.y });
+			if (character.map === "main" && Math.hypot(character.x - sp.x, character.y - sp.y) < 150 && can_move_to(sp.x, sp.y)) return void move_to_as("merchant_tick", sp.x, sp.y, 1000);
+			return void travel_as("merchant_tick", { map: "main", x: sp.x, y: sp.y });
 		}
 	}
 	const home = G.maps.main?.spawns?.[0] || [0, 0];
 	if (character.map !== "main" || Math.hypot(character.x - home[0], character.y - home[1]) > 250) {
 		if (character.stand) return void stand_close();
-		travel({ map: "main", x: home[0], y: home[1] });
+		travel_as("merchant_tick", { map: "main", x: home[0], y: home[1] });
 	} else if (!character.moving) stand_tick().catch(() => {});
 }
 // Fighter side: with the merchant within 300px, hand it bankable/sellable items (one per 0.7s, never what a member
@@ -6546,7 +6563,7 @@ function party_heal() {
 	if (!low.length) return false;
 	if (low.length >= 2 && can_use("partyheal")) return fire("partyheal"), true;
 	const m = low[0];
-	if (m !== character && distance(character, m) > character.range) { if (!walking()) move_to(m.x, m.y, 300); return false; } // close in
+	if (m !== character && distance(character, m) > character.range) { if (!walking()) move_to_as("party_heal", m.x, m.y, 300); return false; } // close in
 	return !is_on_cooldown("heal") && fire("heal", m);
 }
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
@@ -6576,7 +6593,7 @@ function follower_tick() {
 	if (CH === character.name) {
 		const wait = convoy_muster();
 		if (wait) { // gather first: hold here (they're following us), fight what's on us
-			if (walking() && !errand_busy()) { try { stop("smart"); } catch (e) {} }
+			if (walking() && !errand_busy()) { halt("follower_tick"); }
 			const a = hit_on_me() || choose_target(false);
 			if (a) fight(a, true);
 			return void set_message(`convoy: waiting for ${wait}`);
@@ -6616,11 +6633,11 @@ function follower_tick() {
 		if (rd) { state.follow_block = { rd, at: Date.now() }; return void set_message(`not following ${L.name}: the way passes ${rd}`); }
 	}
 	state.follow_block = null;
-	if (d > CFG.party.follow_far) travel(pos);
+	if (d > CFG.party.follow_far) travel_as("follower_tick", pos);
 	else if (d > CFG.party.follow) {
 		const ang = Math.atan2(character.y - pos.y, character.x - pos.x);
 		const want = { x: pos.x + Math.cos(ang) * CFG.party.follow * 0.6, y: pos.y + Math.sin(ang) * CFG.party.follow * 0.6 };
-		if (can_move_to(want.x, want.y)) move_to(want.x, want.y, 300); else travel(pos);
+		if (can_move_to(want.x, want.y)) move_to_as("follower_tick", want.x, want.y, 300); else travel_as("follower_tick", pos);
 	}
 }
 // Easy enough to split up on: we'd kill it ALONE within spread_ttk, safely (v23.0: judged solo — no partner damage,
@@ -6692,7 +6709,7 @@ function hold_grind() {
 		return true;
 	}
 	// nothing to do: drift back toward the waiting spot so the partner finds us
-	if (!walking() && Math.hypot(character.x - h.x, character.y - h.y) > R / 2 && can_move_to(h.x, h.y)) move_to(h.x, h.y, 800);
+	if (!walking() && Math.hypot(character.x - h.x, character.y - h.y) > R / 2 && can_move_to(h.x, h.y)) move_to_as("hold_grind", h.x, h.y, 800);
 	return false;
 }
 // Leader: never waits. The follower always knows where the leader is (heartbeat) and walks to it. What changes when
@@ -6815,8 +6832,8 @@ function tick() {
 				if (a) fight(a, true);
 				else if (!walking() && !errand_busy()) {
 					const d = q.map === character.map ? Math.hypot(q.x - character.x, q.y - character.y) : Infinity;
-					if (d > CFG.party.follow_far) travel(q);
-					else if (d > CFG.party.follow) move_to(q.x + (character.x - q.x) * (CFG.party.follow * 0.6 / d), q.y + (character.y - q.y) * (CFG.party.follow * 0.6 / d), 300);
+					if (d > CFG.party.follow_far) travel_as("tick", q);
+					else if (d > CFG.party.follow) move_to_as("tick", q.x + (character.x - q.x) * (CFG.party.follow * 0.6 / d), q.y + (character.y - q.y) * (CFG.party.follow * 0.6 / d), 300);
 				}
 				set_message(`convoy: following ${CH} to ${pack ? pack.mtype : "?"}`);
 				loot_chests();
@@ -6838,7 +6855,7 @@ function tick() {
 			if (hold) {
 				const a = hit_on_me() || choose_target(false); // what's attacking one of us still gets fought
 				if (a) fight(a, true);
-				else if (walking() && !errand_busy()) { try { stop("smart"); } catch (e) {} }
+				else if (walking() && !errand_busy()) { halt("tick"); }
 				set_message(`waiting for ${hold} (${Math.round((Date.now() - state.group_wait.since) / 1000)}s)`);
 				loot_chests();
 				setTimeout(tick, 250);
@@ -6858,7 +6875,7 @@ function tick() {
 				if (!in_area) {
 					if (!state.waypoints.length) state.waypoints = make_waypoints(pack.boundary);
 					const w = state.waypoints[state.wp % state.waypoints.length];
-					travel({ map: pack.map, x: w.x, y: w.y });
+					travel_as("tick", { map: pack.map, x: w.x, y: w.y });
 				// v24.6: at least one respawn (packs up to max_respawn are farmed, scored as if we wait for them)
 				} else if (Date.now() - state.last_target_at > Math.max(CFG.idle_giveup_ms, Math.min(CFG.max_respawn, G.monsters[pack.mtype]?.respawn || 0) * 1000 + 5000)) {
 					game_log(`Idle at ${pack.mtype}; cooling down this pack`, C.dim);
