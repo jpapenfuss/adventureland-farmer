@@ -1,4 +1,4 @@
-const VERSION = "24.13"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.14"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -22,6 +22,7 @@ const CFG = {
 	switch_margin: 1.15,       // change packs only if the new one scores 15% better (walking there isn't free)
 	near_pad: 450,             // px around the pack area a target may be picked from (and chased to)
 	danger_px: 400,            // v24.10: spots this close to a spawn of an aggressive monster we can't take on aren't farmed
+	keep_px: 300,              // v24.14: step away from a monster we can't take on that may attack, once it's this close
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
@@ -763,6 +764,50 @@ function route_danger(to) {
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) return `${t} @ ${m}`;
 	}
 	return null;
+}
+// ---- Keep away (v24.14) ----
+// A monster we can't take on that may attack at all (any aggro or rage), within keep_px and not yet on one of us:
+// step away before it picks someone. An ent (8M HP, 3600 a hit, aggro 0.2) wandering into the gscorpion spot killed
+// Sanala and made Aspernari flee; with aggro under 0.5 it passed the spawn check, and it roams anyway.
+const deadly_c = {};
+function deadly_type(mt) {
+	const c = deadly_c[mt], now = Date.now();
+	if (c && now - c.at < 30_000) return c.v;
+	const m = G.monsters[mt];
+	const v = !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !state.safe[mt] && !fight_profile(mt);
+	deadly_c[mt] = { at: now, v };
+	return v;
+}
+function looming() {
+	const party = party_names();
+	let best = null, bd = CFG.keep_px;
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (!e || e.type !== "monster" || !e.visible || e.dead || (e.target && party.has(e.target))) continue; // on us: fight()'s escape
+		if (e.mtype === state.pack?.mtype) continue; // what the party came for (a boss, a probe): not something to avoid
+		const d = distance(character, e);
+		if (d < bd && deadly_type(e.mtype)) (best = e), (bd = d);
+	}
+	return best;
+}
+// Step away from a looming one; repeated at the same spot (3 times in 5 min), that spot cools down (it lives there)
+function keep_away(e) {
+	const now = Date.now(), P = state.pack, key = P && valid_boundary(P.boundary) ? pack_key(P) : null;
+	if (walking() && !errand_busy()) { try { stop("smart"); } catch (er) {} }
+	step_away(e);
+	set_message(`keeping away from ${e.mtype}`);
+	if (now - (state.keep_at || 0) > 5000) { // one count per 5s episode
+		state.keep_log = (state.keep_log || []).filter((k) => now - k.t < 300_000);
+		state.keep_log.push({ t: now, key, mt: e.mtype });
+		log_ev("keep_away", { mtype: e.mtype, pack: P?.mtype || null });
+		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 3) {
+			state.cooldown[key] = now + CFG.pack_cooldown_ms;
+			state.keep_log = [];
+			state.last_pick = 0;
+			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);
+		}
+	}
+	state.keep_at = now;
 }
 // Step away from a monster (it's slower than us): ~120px straight away, or sideways if that's blocked
 function step_away(e) {
@@ -5571,6 +5616,8 @@ function follower_tick() {
 		: L.recovering && state.pack ? state.pack : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
+	const lm = looming(); // v24.14
+	if (lm) { keep_away(lm); const a = hit_on_me(); if (a && a !== lm) fight(a, false); return; }
 	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
 	// and back (every leader trip used to move the whole party)
 	// v24.10: also, while split (a member with nothing of its own to farm follows for a while), straight to the leader's
@@ -5786,6 +5833,16 @@ function tick() {
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
 			if (pack && state.group_ok && state.group_ok !== pack_key(pack)) state.group_ok = null;
+			// v24.14: something we can't take on is close and may attack: step away first (still fight what's on us)
+			const lm = looming();
+			if (lm) {
+				keep_away(lm);
+				const a = hit_on_me();
+				if (a && a !== lm) fight(a, false);
+				loot_chests();
+				setTimeout(tick, 200);
+				return;
+			}
 			// v24.11: travel as a group — wait for stragglers before (and while) walking, and before pulling at the spot
 			const hold = group_hold(pack, in_area);
 			if (hold) {

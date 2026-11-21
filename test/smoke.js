@@ -3226,6 +3226,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(sent124.some((m) => m.k === "hb" && m.xpm === 1.36), "the heartbeat carries it");
 		ctx.get_party = gp0; delete character.xpm; character.slots = {}; delete ctx.G.items.xamulet124;
 	}
+	// 125) v24.14: keep away from a monster we can't take on that may attack, before it picks one of us
+	{
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, map: "main", x: 0, y: 0, speed: 55, rip: false, hp: 4000, max_hp: 4000 });
+		const mons0 = ctx.G.monsters, dist0 = ctx.distance, mv0 = ctx.move;
+		ctx.G.monsters = { ...mons0, ent125: { xp: 9200000, hp: 8000000, attack: 3600, speed: 12, charge: 48, aggro: 0.2, range: 64, frequency: 1.2 }, calm125: { xp: 1, hp: 8000000, attack: 3600, speed: 12, aggro: 0 } };
+		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		const mv = []; ctx.move = (x, y) => (mv.push([x, y]), Promise.resolve());
+		vm.runInContext("for (const k in deadly_c) delete deadly_c[k]; state.safe = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [-100, -100, 100, 100] }; state.keep_log = []; state.keep_at = 0; state.cooldown = {}; hist.ev = []", ctx);
+		ctx.parent.entities.e125 = { id: "e125", type: "monster", mtype: "ent125", visible: true, x: 200, y: 0 };
+		ctx.parent.entities.c125 = { id: "c125", type: "monster", mtype: "calm125", visible: true, x: 50, y: 0 };
+		assert(vm.runInContext("looming()?.id", ctx) === "e125", "an ent 200px away (can't take it, aggro 0.2) looms; a never-aggressive giant doesn't");
+		vm.runInContext("last_move = 0; smart_depth = 0; keep_away(looming())", ctx);
+		assert(mv.length === 1 && mv[0][0] < 0, `stepped away from it (${JSON.stringify(mv)})`);
+		ctx.parent.entities.e125.target = "Torlis";
+		assert(vm.runInContext("looming()", ctx) === null, "already on one of us: that's fight()'s escape, not this");
+		delete ctx.parent.entities.e125.target;
+		vm.runInContext("state.pack.mtype = 'ent125'", ctx);
+		assert(vm.runInContext("looming()", ctx) === null, "what the party came for (a boss, a probe) isn't avoided");
+		vm.runInContext("state.pack.mtype = 'goo'", ctx);
+		// the same spot three times in 5 min: it cools down
+		vm.runInContext("for (let i = 0; i < 3; i++) { state.keep_at = 0; keep_away(parent.entities.e125); }", ctx);
+		assert(vm.runInContext("state.cooldown['main:-100,-100,100,100'] > Date.now()", ctx), "an ent that keeps coming: the spot cools down");
+		for (const k of ["e125", "c125"]) delete ctx.parent.entities[k];
+		ctx.G.monsters = mons0; ctx.distance = dist0; ctx.move = mv0;
+		vm.runInContext("state.pack = null; state.cooldown = {}; state.keep_log = []; hist.ev = []; for (const k in deadly_c) delete deadly_c[k]", ctx);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
