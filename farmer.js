@@ -1,4 +1,4 @@
-const VERSION = "24.33"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.34"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -551,7 +551,7 @@ async function go_route(dest, ms) {
 			throw { reason: "deadly_route", why: pl.danger };
 		}
 		if (pl?.legs?.length) {
-			game_log(`walk to ${T_.map}: around ${pl.around} (${pl.legs.map((l) => (l.kind === "tp" ? "transporter → " : "") + l.to).join(", ")})`, C.dim);
+			game_log(`walk to ${T_.map}: ${pl.around ? "around " + pl.around : "by the transporter"} (${pl.legs.map((l) => (l.kind === "tp" ? "transporter → " : "") + l.to).join(", ")})`, C.dim);
 			for (const L of pl.legs) {
 				if (character.map !== L.map) break; // moved some other way meanwhile: the last walk below finishes it
 				if (L.kind === "tp") {
@@ -927,7 +927,11 @@ function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x,
 	let why = null;
 	for (const L of r.legs) if (L.fx !== undefined && (why = seg_danger(L.map, L.fx, L.fy, L.x, L.y))) break;
 	if (!why && r.last) why = seg_danger(to_map, r.last.x, r.last.y, tx, ty);
-	if (!why) return { d: r.d, legs: null, danger: null, around: null };
+	// v24.34: a safe shortest way that uses the transporter is walked leg by leg too. smart_move only takes the
+	// transporter when its own path passes the NPC, so from desertland it went by the door instead (level2s → level2 →
+	// level1's prats); in level2s the plan said "back to desertland, transporter", and in desertland smart_move left by
+	// the door again — the party walked in and out of that door.
+	if (!why) return { d: r.d, legs: r.legs.some((l) => l.kind === "tp") ? r.legs : null, danger: null, around: null };
 	const s = route_to(to_map, tx, ty, from, true);
 	return s ? { d: s.d, legs: s.legs, danger: null, around: why } : { d: r.d, legs: null, danger: why, around: null };
 }
