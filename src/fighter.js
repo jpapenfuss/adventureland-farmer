@@ -1055,3 +1055,265 @@ function probe_why() {
 	if (lp) return `${lp.name} potions under ${CFG.pot_min * 2}`;
 	return "ready (next pick)";
 }
+// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- One party or nothing (v24.51) ----
+const in_town = () => character.map === "main" && Math.hypot(character.x, character.y) < CFG.party.town_px;
+const ptown_tell = (P) => tell_party({ k: "ptown", id: P.id, by: P.by });
+// We're on the trip: our heartbeat shows it (pt), and the others are told (they judge again without us)
+function ptown_joined(P, why_) {
+	P.pending = false; P.joined = true;
+	if (why_) P.why = why_;
+	ptown_tell(P);
+}
+// v24.46: one rule — together, a town trip is everyone's. (It used to judge whether the stay-behinds could keep farming.)
+function ptown_reason() {
+	return ptown_on() && !character.rip ? "the party goes to town together" : null;
+}
+// We start a trip: tell the others (they come)
+function ptown_start(what) {
+	if (!ptown_on() || !others().length) return;
+	if (state.ptown?.joined && !state.ptown.done) return; // already on one (we joined someone's)
+	state.ptown = { id: `${character.name}:${Date.now()}`, by: character.name, at: Date.now(), leavers: [character.name], joined: true, why: `started it: ${what.join("+")}` };
+	ptown_tell(state.ptown);
+	log_ev("ptown", { by: character.name, join: "started", what: what.join("+") });
+}
+// A member is going (it started a trip, or joined one)
+function ptown_recv(msg, from) {
+	if (!msg?.id || is_merchant()) return;
+	let P = state.ptown;
+	// another trip while we're on one: same thing — everyone on any trip waits for everyone (ptown_wait)
+	if (P && P.id !== msg.id && !(P.joined || P.pending)) P = null;
+	if (!P) P = state.ptown = { id: msg.id, by: msg.by || from, at: Date.now(), leavers: [] };
+	if (!P.leavers.includes(from)) P.leavers.push(from);
+	if (msg.by && !P.leavers.includes(msg.by)) P.leavers.push(msg.by);
+	if (P.joined || P.pending) return;
+	if (state.errand === "town" && errand_busy()) return void ptown_joined(P, "in town already");
+	const why_ = ptown_reason();
+	P.why = why_ || "staying (party trips are off, or we're dead)";
+	log_ev("ptown", { by: P.by, join: why_ || null });
+	if (why_) { P.pending = true; game_log(`party trip: going to town with ${P.leavers.join(", ")} (${why_})`, C.dim); }
+}
+// v24.61: the tank's walk to town on a party trip. It stops while a member is behind (another map, or beyond the group
+// radius) and goes on when they're all with it; no time limit. Its town work starts once it's in town.
+async function ptown_lead() {
+	const town = dest_point("main"), r = CFG.party.group.radius;
+	const behind = () => partners().filter((p) => p.ctype !== "merchant" && !hb_in_town(p)).filter((p) => {
+		const q = partner_pos(p);
+		return q.map !== character.map || Math.hypot(q.x - character.x, q.y - character.y) > r;
+	}).map((p) => p.name);
+	let dead_end = false;
+	// v24.62: lead_walk — on this walk the tank fights like at the camp: the tick stops the walk for, and closes in on,
+	// whatever is on a member (during any other errand step it doesn't)
+	state.lead_walk = true;
+	try {
+		while (!character.rip && !in_town() && !dead_end) {
+			state.errand_at = Date.now(); // a long walk isn't a hung errand
+			const who = behind();
+			if (who.length) { if (walking()) halt("ptown_lead"); set_message(`to town: waiting for ${who.join(", ")}`); }
+			else if (!walking() && !party_hit()) go(town).catch((e) => { if (e?.reason === "deadly_route") dead_end = true; });
+			await sleep_ms(500);
+		}
+	} finally { state.lead_walk = false; }
+	// no safe way to town: the trip is off for everyone (it used to leave the others waiting for it without end)
+	if (dead_end) { tell_party({ k: "ptown_off" }); state.ptown = null; throw { reason: "deadly_route" }; }
+}
+const hb_in_town = (p) => { const q = partner_pos(p); return q.map === "main" && Math.hypot(q.x, q.y) < CFG.party.town_px; };
+// Our town work is done: wait in town until every member on a trip is done too, then all walk back together
+async function ptown_wait() {
+	const P = state.ptown;
+	if (!P?.joined || character.rip) return;
+	P.done = true;
+	try { heartbeat(); } catch (e) {} // tell them now, not at the next beat
+	const t0 = Date.now();
+	// v24.61: a member not yet on the trip counts until it's in town (it's following the tank in, or still fighting)
+	// v24.62: every fighter must say its work is done. A member in town whose heartbeat didn't show the trip yet counted
+	// as done: the tank's trip ended at once and it left for the camp while the others were still at the shops.
+	const busy = () => partners().filter((p) => p.ctype !== "merchant" && !p.pt?.done).map((p) => p.name);
+	// nothing of ours took us to town (no work, no teleport): walk there, so we gather with them and leave together
+	const town = dest_point("main"), rt = town && route_to(town.map, town.x, town.y);
+	if (rt && rt.d > CFG.town_hop_px && busy().length) await go(town).catch(() => {});
+	let who = [];
+	while (!character.rip) { // v24.60: no time limit — the party leaves town together or not at all (a member offline or dead is party_break's case)
+		who = busy();
+		if (!who.length) break;
+		// a follower whose tank is already off its trip (we missed its "done"): the trip is over — follow it
+		if (is_follower()) { const L = leader_hb(); if (L && !L.rip && !L.errand && !L.pt) break; }
+		state.errand_at = Date.now(); // a long wait isn't a hung errand
+		if (Date.now() - (P.told || 0) > 5000 && partners().some((p) => p.ctype !== "merchant" && !p.pt)) { P.told = Date.now(); ptown_tell(P); } // one that missed the call
+		set_message(`town: waiting for ${who.join(", ")}`);
+		await sleep_ms(1000);
+	}
+	const waited = Math.round((Date.now() - t0) / 1000);
+	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
+	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
+	if (who.length) game_log(`party trip: waited ${waited}s; going back without ${who.join(", ")}`, C.warn);
+	state.ptown = null;
+	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
+}
+// ---- moved from common.js (v24.95): used by the fighters only ----
+const drop_rate = (mt, item) => (drop_sources(item).find(([m]) => m === mt) || [, 0])[1];
+// Farm the quickest missing drop of the first open quest recipe (guide quests: no time/xp limits)
+function quest_directive(guide_only) {
+	if (!CFG.quest_farm || !CFG.quest_crafts) return null;
+	for (const id of quest_recipes()) {
+		const r = G.craft[id], guided = is_guide_quest(id);
+		if (guided !== !!guide_only || !recipe_open(id)) continue;
+		const missing = r.items.filter(([q, n, l]) => owned_in_bags_or_bank(n, l) < q);
+		if (!missing.length || missing.some(([, n, l]) => l || GEAR.has(G.items[n]?.type))) continue;
+		let total_s = 0, pickm = null;
+		for (const [q, n, l] of missing) {
+			const src = best_source(n);
+			if (!src || !(src.ips > 0)) { total_s = Infinity; break; }
+			const have = owned_in_bags_or_bank(n, l), secs = (q - have) / src.ips;
+			total_s += secs;
+			if (!pickm || secs < pickm.secs) pickm = { ...src, secs, item: n, have, need: q };
+		}
+		if (!pickm || (!guided && total_s > CFG.quest_farm_max_h * 3600)) continue;
+		const f = fight_profile(pickm.monster);
+		// xp/s at that pack (items/s ÷ chance per kill = kills/s; × xp per kill); 1e-9 avoids dividing by zero
+		const qxp = meas_aged(pack_key(pickm), f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
+		const bk = best_known_xps();
+		if (!guided && bk > 0 && qxp < CFG.quest_farm_min_xp * bk) continue;
+		const sk = id + ":" + pickm.item, now = Date.now();
+		if (!state.qprog || state.qprog.key !== sk || pickm.have > state.qprog.have) state.qprog = { key: sk, have: pickm.have, t: now };
+		else if (now - state.qprog.t > Math.max(CFG.quest_stall_min * 60_000, 3000 / Math.max(pickm.ips, 1e-9))) { // or 3 expected drops' time
+			skip("qc:" + id, CFG.quest_shelve_h * 3600_000);
+			game_log(`quest: no ${pickm.item} in ${CFG.quest_stall_min} min at ${pickm.monster}; retrying ${id} in ${CFG.quest_shelve_h}h`, C.bad);
+			state.qprog = null;
+			continue;
+		}
+		return { monster: pickm.monster, map: pickm.map, boundary: pickm.boundary, count: pickm.count, guide_safe: false,
+			reason: `${guided ? "guide quest " : ""}${id}: ${pickm.item} ${pickm.have}/${pickm.need}, ~${Math.ceil(total_s / 60)} min` };
+	}
+	return null;
+}
+function hunt_directive() {
+	const h = character.s.monsterhunt;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
+	const best = resolve_area(h.id);
+	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
+}
+// Leader: merge every online member's goal list. Mutual goals first: a monster on the lists of 2+ members, each with a
+// goal there finishing within mutual_max_h; ranked by combined weight ÷ (1 + the slowest of those goals' hours), so
+// goals shared by more members and quicker ones win. With nothing in common, members take turn_min-minute turns
+// (us, then the others in name order) with their top goal. Only monsters the group can fight are considered.
+function pick_shared(mine) {
+	const now = Date.now(), me = character.name;
+	const members = [{ name: me, goals: goals_list() }, ...partners().map((p) => ({ name: p.name, goals: [...(p.goals || [])] }))];
+	const by = new Map(); // monster -> { w: {member: weight}, eta: {member: hours}, src, why, too_slow }
+	for (const m of members) for (const g of m.goals) {
+		const e = by.get(g.monster) || { monster: g.monster, w: {}, eta: {}, src: null, why: [], too_slow: [] };
+		by.set(g.monster, e);
+		const eh = g.eta_h ?? 0; // guide rows and older members: no estimate → treat as feasible
+		if (eh > CFG.party.mutual_max_h) { e.too_slow.push(`${m.name}: ${g.reason} ~${Math.round(eh)}h`); continue; }
+		e.w[m.name] = Math.max(e.w[m.name] || 0, g.w);
+		e.eta[m.name] = Math.min(e.eta[m.name] ?? Infinity, eh);
+		if (!e.src && valid_boundary(g.boundary)) e.src = g;
+		e.why.push(`${m.name}: ${g.reason}${g.eta_h ? ` ~${g.eta_h}h` : ""}`);
+	}
+	const ok = (e) => G.monsters[e.monster] && (fight_profile(e.monster) || (e.src?.guide_safe && farmable_type(e.monster)));
+	const names = (e) => Object.keys(e.w);
+	const hours = (e) => Math.max(...names(e).map((n) => e.eta[n]));
+	const weight = (e) => names(e).reduce((t, n) => t + e.w[n], 0);
+	const to_dir = (e, label) => {
+		const area = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster);
+		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.w[me], mutual: names(e).length > 1 };
+	};
+	const cands = [...by.values()].filter((e) => names(e).length && ok(e));
+	// mutual only when the combined weight reaches a hunt's: two guide-farm rows (1+1) don't override members' hunts
+	// an hour of walking counts as travel.weight_h hours of goal time: a near shared goal beats an equal far one
+	const walk_h = (e) => { if (e.walk_h === undefined) { const a = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster); e.walk_h = a ? travel_s(a.map, a.boundary) / 3600 : 0; } return e.walk_h; };
+	const rank = (e) => weight(e) / (1 + hours(e) + walk_h(e) * CFG.travel.weight_h);
+	const mutual = cands.filter((e) => names(e).length >= 2 && weight(e) >= CFG.goal_w.hunt).sort((a, b) => rank(b) - rank(a));
+	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${hours(e).toFixed(1)}h (${e.why.join("; ")})`),
+		too_slow: [...by.values()].flatMap((e) => e.too_slow.map((w) => `${e.monster}: ${w}`)), at: now };
+	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
+	// nothing in common: turns, rotating through members that have a goal the group can fight
+	const top = (n) => cands.filter((e) => e.w[n]).sort((a, b) => b.w[n] - a.w[n])[0];
+	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine : top(n)));
+	if (!order.length) return mine;
+	// a turn's turn_min counts from arrival at its target (walking there isn't the turn), capped by turn_walk_max_min
+	const d0 = state.directive;
+	if (state.turn && !state.turn.arrived && d0 && d0.map === character.map && valid_boundary(d0.boundary) &&
+		in_rect(character.x, character.y, [d0.boundary[0] - 200, d0.boundary[1] - 200, d0.boundary[2] + 200, d0.boundary[3] + 200])) {
+		state.turn.arrived = now;
+		state.turn.end = Math.min(state.turn.end, now + CFG.party.turn_min * 60_000);
+	}
+	if (!state.turn || now > state.turn.end || !order.includes(state.turn.who)) {
+		const i = state.turn ? order.indexOf(state.turn.who) : -1;
+		state.turn = { who: order[(i + 1) % order.length], end: now + (CFG.party.turn_min + CFG.travel.turn_walk_max_min) * 60_000 };
+	}
+	if (state.turn.who === me) return mine;
+	const t = top(state.turn.who);
+	return to_dir(t, `${state.turn.who}: ${t.why.find((w) => w.startsWith(state.turn.who + ":"))?.slice(state.turn.who.length + 2) || t.monster}`);
+}
+// The live boss we'd join (highest xp), from the server's event list
+function live_boss() {
+	if (!CFG.boss?.enabled || character.ctype === "merchant") return null;
+	const S_ = (typeof parent !== "undefined" && parent.S) || {};
+	let best = null;
+	for (const name in S_) {
+		const e = S_[name], m = G.monsters[name];
+		if (!e || e.live !== true || !m || !e.map || !Number.isFinite(e.x) || !G.maps[e.map] || !map_ok(e.map) || CFG.boss.skip.includes(name)) continue;
+		if (!boss_safe(name)) continue;
+		if (!best || (m.xp || 0) > (G.monsters[best.name].xp || 0)) best = { name, map: e.map, x: e.x, y: e.y, hp: e.hp, max_hp: e.max_hp };
+	}
+	return best;
+}
+// Boundary on a 400px grid around the boss, so its wandering doesn't make a new "pack" every refresh
+function boss_directive() {
+	const b = live_boss();
+	if (!b) return null;
+	const gx = Math.round(b.x / 400) * 400, gy = Math.round(b.y / 400) * 400;
+	return { monster: b.name, map: b.map, boundary: [gx - 300, gy - 300, gx + 300, gy + 300], count: 1, boss: true, guide_safe: false,
+		reason: `event boss ${G.monsters[b.name].name || b.name} (${b.hp}/${b.max_hp})` };
+}
+// Decide the farm directive: hunt > own quests > guide quests > guide farm row (CFG.goal_w order).
+// A guide farm row pauses (quest_shelve_h) when its material stops rising for quest_stall_min, or after
+// guide_farm_max_min if it names no material. A party leader then merges both members' goals (pick_shared).
+// The directive lasts 4 guide intervals (60s) unless refreshed, so a stale one expires on its own.
+function refresh_directive() {
+	const now = Date.now();
+	let g = live_guide_farm();
+	if (g) {
+		const gk = `${g.monster}:${g.map}`, have = g.item ? held(g.item) : 0;
+		if (!state.gprog || state.gprog.key !== gk || have > state.gprog.have) state.gprog = { key: gk, have, t: now };
+		else {
+			const limit = (g.item ? CFG.quest_stall_min : CFG.guide_farm_max_min) * 60_000;
+			if (now - state.gprog.t > limit) {
+				state.guide_ignore[gk] = now + CFG.quest_shelve_h * 3600_000;
+				game_log(`guide: ${g.item ? "no " + g.item + " from" : "no end to"} ${g.monster} in ${Math.round(limit / 60_000)} min; pausing that row ${CFG.quest_shelve_h}h`, C.bad);
+				state.gprog = null;
+				g = null;
+			}
+		}
+	}
+	const gq = () => quest_directive(true), oq = () => quest_directive(false);
+	let mine = null;
+	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
+	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
+	// turns (pick_shared).
+	let d = mine;
+	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
+	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
+	const cur = state.directive, L = state.dir_lock;
+	// a finished goal ends the commitment: the held monster must still be on someone's goal list
+	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
+	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
+		(state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster))) {
+		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
+		d = cur;
+	} else state.dir_held = null;
+	if (d && (!cur || cur.monster !== d.monster || cur.map !== d.map)) {
+		const a = valid_boundary(d.boundary) ? d : resolve_area(d.monster, d.map, d.boundary);
+		state.dir_lock = { monster: d.monster, until: now + ((a ? travel_s(a.map, a.boundary) : 60) + CFG.travel.commit_min * 60) * 1000 };
+	}
+	if (d) {
+		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
+		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
+		if (changed) state.last_pick = 0;
+	} else if (state.directive) {
+		state.directive = null;
+		state.last_pick = 0;
+	}
+}
