@@ -1,4 +1,4 @@
-const VERSION = "24.90"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.91"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3474,9 +3474,26 @@ function upgrade_why() {
 	}
 	return out.length ? ` | ${out.join(" | ")}` : "";
 }
+// v24.91: is the project still worth finishing — would its target still beat what its member wears? (Sanala kept
+// building a wand to +3, a project from when she held a +5 staff, after she had been handed a +7 wand.)
+function upg_still_wanted(P) {
+	if (!P) return false;
+	const m = gear_takers().find((x) => x.name === P.for);
+	if (!m || !m.g?.w) return true; // its member isn't heard from: keep it for now
+	return !!gear_gain({ name: P.name, level: P.to }, m.ctype, m.g);
+}
+function upg_drop_if_stale() {
+	const P = state.upg;
+	if (!P || upg_still_wanted(P)) return false;
+	game_log(`upgrade project dropped: ${P.name} +${P.to} would no longer beat what ${P.for} wears`, C.dim);
+	log_ev("upgrade_drop", { item: P.name, to: P.to, for: P.for });
+	state.upg = null; state.upg_pick_at = 0;
+	return true;
+}
 // Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
 function upgrade_due() {
 	if (!CFG.upgrade_auto) return false;
+	upg_drop_if_stale(); // v24.91
 	set_piece_start(); // v24.69: a set piece in our bags that wins once upgraded
 	if (merchant_does_it()) {
 		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags
@@ -3497,6 +3514,7 @@ async function task_upgrade() {
 	let n = 0;
 	for (let i = 0; i < CFG.upgrade_steps_per_run; i++) {
 		if (state.errand) state.errand_at = Date.now();
+		if (upg_drop_if_stale()) break; // v24.91: something better is worn now
 		const P = state.upg;
 		if (!P) break;
 		const top = best_level_held(P.name);

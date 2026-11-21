@@ -2477,6 +2477,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_item = si_s; character.items = Array(42).fill(null); character.slots = {};
 		vm.runInContext("state.merchant = null; state.partners = {}", ctx);
 		// upgrade projects count what their steps cost, not total gold changes
+		vm.runInContext("globalThis.__usw = upg_still_wanted; upg_still_wanted = () => true", ctx); // (these test the spending, not the target)
 		vm.runInContext(`state.upg = { name: 'wbow', to: 3, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 3e6 }; state.gear_skip = {};
 			globalThis.__ru = run_upgrade; run_upgrade = async () => ({ success: true });`, ctx);
 		Object.assign(character, { gold: 9e6 });
@@ -2493,7 +2494,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items = Array(42).fill(null); character.items[0] = { name: "computer" };
 		await vm.runInContext("task_upgrade()", ctx);
 		assert(vm.runInContext("state.upg && state.upg.spent >= 4000", ctx), `each step's cost is added (${vm.runInContext("state.upg && state.upg.spent", ctx)})`);
-		vm.runInContext("run_upgrade = globalThis.__ru; state.upg = null; state.gear_skip = {}", ctx);
+		vm.runInContext("run_upgrade = globalThis.__ru; upg_still_wanted = __usw; state.upg = null; state.gear_skip = {}", ctx);
+		// v24.91: a project whose target no longer beats what its member wears is dropped
+		vm.runInContext("state.upg = { name: 'wbow', to: 3, for: character.name, slot: 'mainhand', gain: 5, cost: 1e5, spent: 0 }; my_gear_cache = null; upgrade_due()", ctx);
+		assert(vm.runInContext("!state.upg || state.upg.name !== 'wbow'", ctx), `a project for a piece its member can't use (or has something better than) is dropped (${vm.runInContext("JSON.stringify([character.name, character.ctype, gear_takers().map((m) => m.name + ':' + m.ctype + ':' + !!(m.g && m.g.w)), !!gear_gain({ name: 'wbow', level: 3 }, character.ctype, my_gear()), CFG.upgrade_auto])", ctx)})`);
 		character.items = Array(42).fill(null);
 		// compounds of NPC-sold items take the rebuyable odds only while the three copies are cheap
 		{
