@@ -1,4 +1,4 @@
-const VERSION = "24.63"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.64"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1944,14 +1944,11 @@ let boss_type = null; // the boss boss_tick is on (a long fight the party chose)
 function hopeless(t) {
 	// not what we came for (the spot's own type, a boss), nor an event monster everyone hits together (cooperative)
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || state.pack?.mtype === t.mtype || boss_type === t.mtype || G.monsters[t.mtype].cooperative) return false;
-	// v24.63: judged at the monster's level (its live stats), not the type's level-1 stats
-	const lv = t.level || 1, key = `${t.mtype}:${lv}`, c = hopeless_c[key], now = Date.now();
+	const c = hopeless_c[t.mtype], now = Date.now();
 	if (c && now - c.at < 30_000) return c.v;
-	const live = {};
-	if (lv > 1) for (const k of ["attack", "frequency", "armor", "resistance", "speed", "level"]) if (t[k] !== undefined) live[k] = t[k];
-	const f = fight_math({ ...G.monsters[t.mtype], ...live, ...(lv > 1 && t.max_hp ? { hp: t.max_hp } : {}) });
+	const f = fight_math(G.monsters[t.mtype]);
 	const v = !f || f.ttk > CFG.hopeless_ttk_s;
-	hopeless_c[key] = { at: now, v };
+	hopeless_c[t.mtype] = { at: now, v };
 	return v;
 }
 function fire(skill, target, extra) {
@@ -2020,7 +2017,7 @@ function grown_ok(e) {
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
 	const f = fight_math({ ...def, ...live, hp: e.max_hp || def.hp });
-	return !!f && f.ttk <= CFG.hopeless_ttk_s && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // v24.63: the 3-minute rule too
+	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
 }
 // How many of the camp's monsters are in view when every one of them is over the limit (0: none in view, or one is takeable)
 function camp_overgrown(pack) {
@@ -2064,6 +2061,9 @@ function choose_target(local_ok, keep_cur = false) {
 				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
 			continue;
 		}
+		// v24.64: the tank starts a fight on its camp's monster only. Another type nearby used to be taken on a
+		// projected kill time (max_ttk_s); what attacks a member is fought above, whatever it is.
+		if (want && e.mtype !== want) continue;
 		const tier = e.mtype === want ? 0 : 1;
 		if (tier === 1 && f.ttk * (e.hp / e.max_hp) > CFG.max_ttk_s) continue;
 		if (tier > best_tier) continue;

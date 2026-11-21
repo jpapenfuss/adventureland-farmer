@@ -3718,6 +3718,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.parent.entities.ok1 = mk("ok1", 250, 1);
 		R("live_cache.clear()");
 		assert(R("choose_target(true).id") === "ok1", "a monster that passes is there: that one first");
+		ctx.parent.entities.ok1.mtype = "goo"; R("live_cache.clear()");
+		assert(R("choose_target(true).id") !== "ok1", "v24.64: a monster of another type is never started on, even one that passes the check");
 		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
 		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
 		assert(R("camp_overgrown(state.pack)") === 1, "v24.61: every monster of the camp's type in view is past the limit → the camp counts as overgrown (left at once)");
