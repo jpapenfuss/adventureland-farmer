@@ -1,4 +1,4 @@
-const VERSION = "24.42"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.43"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -546,11 +546,20 @@ async function go(dest, ms = CFG.walk_timeout_ms) {
 	try { return await go_route(dest, ms); }
 	finally { if (errand_busy() && state.travel_off.length) await travel_restore("arrived").catch(() => {}); } // v24.27
 }
-async function go_route(dest, ms) {
+async function go_route(dest, ms, tele_tried = false) {
 	if (state.recovering) throw { reason: "fleeing" };
 	const T_ = CFG.travel.safe_routes && G.maps[character.map]?.doors ? dest_point(dest) : null;
 	if (T_ && T_.map !== character.map) {
-		const pl = route_plan(T_.map, T_.x, T_.y);
+		let pl = route_plan(T_.map, T_.x, T_.y);
+		// v24.43: no safe way from where we stand, but there is one from this map's spawn: the town teleport takes us
+		// there (desertland's level2s door: the walk to the transporter passes the ents; the spawn is beside it)
+		if (pl?.danger && !tele_tried && typeof use_skill === "function" && !hit_on_me()) {
+			const sp = dest_point(character.map), p2 = sp && route_plan(T_.map, T_.x, T_.y, sp);
+			if (p2 && !p2.danger) {
+				game_log(`walk to ${T_.map}: every way from here passes ${pl.danger} — teleporting to ${character.map}'s spawn first`, C.dim);
+				if (await town_teleport()) return go_route(dest, ms, true);
+			}
+		}
 		if (pl?.danger) {
 			if (Date.now() - (state.deadly_log_at || 0) > 60_000) { state.deadly_log_at = Date.now(); game_log(`walk to ${T_.map}: every way passes ${pl.danger} — not going`, C.warn); }
 			state.walk_refused = { to: T_.map, why: pl.danger, at: Date.now() };
@@ -870,13 +879,16 @@ function route_graph(map, x, y, safe = false) {
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
+	const in_danger_here = safe && deadly_areas(map).some((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < CFG.danger_px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
 			const sp = G.maps[m2]?.spawns?.[s2];
 			if (!sp) return;
-			// v24.19: safe mode — not along a stretch that passes deadly spawns (our own first stretch excepted: we're there)
-			if (safe && u !== "@" && seg_danger(p.map, p.x, p.y, how.x, how.y)) return;
+			// v24.19: safe mode — not along a stretch that passes deadly spawns. Our own first stretch is excepted only when
+			// we already stand inside such a spawn's reach (v24.43: it was always excepted — from desertland's transporter the
+			// "safe" way to level2s was the walk past the ents)
+			if (safe && !(u === "@" && in_danger_here) && seg_danger(p.map, p.x, p.y, how.x, how.y)) return;
 			const n = `${m2}#${s2}`;
 			pos[n] = pos[n] || { map: m2, x: sp[0], y: sp[1] };
 			out.push([n, cost, how]);
@@ -929,19 +941,73 @@ function deadly_areas(map) {
 	const v = character.speed || 55, now = Date.now(), c = dz_cache.get(map);
 	if (c && now - c.at < 60_000 && c.v === v) return c.list;
 	const list = [];
-	for (const [pk, a] of map_areas(map)) { const t = pk.type; if (valid_boundary(a.boundary) && aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary }); }
+	for (const [pk, a] of map_areas(map)) { const t = pk.type; if (valid_boundary(a.boundary) && no_go(t, v)) list.push({ t, b: a.boundary }); }
 	dz_cache.set(map, { at: now, v, list });
 	return list;
 }
-// "mt @ map" if the stretch (x1,y1)-(x2,y2) on a map passes within danger_px of such a spawn (sampled every 40px)
+// v24.43: the way a walk really goes on a map: the shortest path over its walkable ground (G.geometry: wall lines),
+// on a 16px grid — [[x, y], ...] or null (no geometry, or no way). One flood fill per start point (to 32px) is kept and
+// serves every target: the walls don't change. Measured on desertland: from its transporter to the level2s door the straight line stays 507px from the
+// ents' spawn, the walk passes at 288px — five deaths to ents in ten minutes on a way the straight line called safe.
+const walk_trees = new Map(); // "map:x,y" (start, to 32px) -> Map of "x,y" -> the cell before it: one flood fill serves every target
+function walk_tree(map, x1, y1) {
+	const g = G.geometry?.[map];
+	if (!g?.x_lines || !g.y_lines) return null;
+	const S = 16, sx = Math.round(x1 / 32) * 32, sy = Math.round(y1 / 32) * 32, key = `${map}:${sx},${sy}`;
+	if (walk_trees.has(key)) return walk_trees.get(key);
+	// a step along one axis from a to b at the other coordinate `at`: does it cross a wall line? (lines are sorted)
+	const cut = (lines, a, b, at) => {
+		const lo = Math.min(a, b), hi = Math.max(a, b);
+		let i = 0, j = lines.length;
+		while (i < j) { const m = (i + j) >> 1; if (lines[m][0] < lo) i = m + 1; else j = m; } // first line at or past lo
+		for (; i < lines.length && lines[i][0] <= hi; i++) if (at >= lines[i][1] && at <= lines[i][2]) return true;
+		return false;
+	};
+	const prev = new Map([[sx + "," + sy, null]]), queue = [[sx, sy]];
+	for (let i = 0; i < queue.length && queue.length < 60_000; i++) {
+		const [x, y] = queue[i];
+		for (const [dx, dy] of [[S, 0], [-S, 0], [0, S], [0, -S]]) {
+			const nx = x + dx, ny = y + dy, k = nx + "," + ny;
+			if (nx < g.min_x || nx > g.max_x || ny < g.min_y || ny > g.max_y || prev.has(k)) continue;
+			if (dx ? cut(g.x_lines, x, nx, y) : cut(g.y_lines, y, ny, x)) continue;
+			prev.set(k, [x, y]); queue.push([nx, ny]);
+		}
+	}
+	if (walk_trees.size >= 24) walk_trees.delete(walk_trees.keys().next().value);
+	walk_trees.set(key, prev);
+	return prev;
+}
+function walk_path(map, x1, y1, x2, y2) {
+	const prev = walk_tree(map, x1, y1);
+	if (!prev) return null;
+	// the reached cell nearest the target (cells sit on the start's 16px grid), within 96px of it (a transporter can
+	// stand 55px from the nearest walkable ground)
+	const S = 16, sx = Math.round(x1 / 32) * 32, sy = Math.round(y1 / 32) * 32;
+	const tx = sx + Math.round((x2 - sx) / S) * S, ty = sy + Math.round((y2 - sy) / S) * S;
+	let end = null;
+	for (let r = 0; r <= 6 && !end; r++) for (let dx = -r; dx <= r && !end; dx++) for (let dy = -r; dy <= r && !end; dy++)
+		if (Math.max(Math.abs(dx), Math.abs(dy)) === r && prev.has(`${tx + dx * S},${ty + dy * S}`)) end = [tx + dx * S, ty + dy * S];
+	if (!end) return null;
+	const out = [];
+	for (let c = end; c; c = prev.get(c[0] + "," + c[1])) out.push(c);
+	return out.reverse();
+}
+// "mt @ map" if the walk from (x1,y1) to (x2,y2) on a map passes within danger_px of such a spawn: along the real path
+// (walk_path), or the straight line sampled every 40px where the map has no geometry
 function seg_danger(map, x1, y1, x2, y2) {
 	const zs = deadly_areas(map);
 	if (!zs.length) return null;
-	const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 40));
-	for (const z of zs) for (let i = 0; i <= n; i++) {
-		const x = x1 + ((x2 - x1) * i) / n, y = y1 + ((y2 - y1) * i) / n;
-		if (Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < CFG.danger_px) return `${z.t} @ ${map}`;
+	// only where a detour could matter: a spawn within danger_px of the stretch's box grown by 500px (the walk bends
+	// round cliffs and water, but not across the map); elsewhere the straight line will do, and costs nothing
+	const lo_x = Math.min(x1, x2) - 500, hi_x = Math.max(x1, x2) + 500, lo_y = Math.min(y1, y2) - 500, hi_y = Math.max(y1, y2) + 500;
+	const close = zs.some((z) => Math.hypot(Math.max(0, z.b[0] - hi_x, lo_x - z.b[2]), Math.max(0, z.b[1] - hi_y, lo_y - z.b[3])) < CFG.danger_px);
+	let pts = close ? walk_path(map, x1, y1, x2, y2) : null;
+	if (!pts) {
+		const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 40));
+		pts = Array.from({ length: n + 1 }, (_, i) => [x1 + ((x2 - x1) * i) / n, y1 + ((y2 - y1) * i) / n]);
 	}
+	for (const z of zs) for (const [x, y] of pts)
+		if (Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < CFG.danger_px) return `${z.t} @ ${map}`;
 	return null;
 }
 // The way smart_move would walk, or if that passes deadly spawns, the shortest way around them: { d, legs, danger,
@@ -964,7 +1030,11 @@ function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x,
 // Aggressive monsters (aggro or rage >= 0.5: they come at anyone near) that we can't take on. In the first v24.9 run,
 // boars and dark hounds next to winterland's iceroamers and vampire rats on the way through level1 killed Torlis 4 times
 // and Sanala once in an hour: the picker only judged the monster it farmed.
-const chase_speed = (mt) => { const m = G.monsters[mt]; return m ? m.charge || m.speed || 0 : 0; };
+// v24.43: a monster that tangles (ent: "mtangle"; server: a tangled player moves at 24 at most) chases at its charge
+// speed against our 24 — an ent's 48 looked outrunnable against our 50, and it killed five of us in ten minutes
+const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const c = m.charge || m.speed || 0; return m.abilities?.mtangle && c > 24 ? Infinity : c; };
+// Comes at us (any aggro or rage, not only >= 0.5), we can't take it on, and we can't outrun it: its spawn is no place to walk
+const no_go = (t, v) => { const m = G.monsters[t]; return !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !state.safe[t] && chase_speed(t) >= v; };
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 const can_take = (e) => !!(state.safe[e.mtype] ? live_ok(e) : fight_profile(e.mtype));
 const rect_gap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
@@ -988,7 +1058,7 @@ function route_danger(to, tx, ty, from) {
 	const r = { maps: map_route((from || character).map, to) };
 	for (const m of r.maps) for (const [pk] of map_areas(m)) {
 		const t = pk.type;
-		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) return `${t} @ ${m}`;
+		if (no_go(t, v)) return `${t} @ ${m}`;
 	}
 	return null;
 }
@@ -4609,17 +4679,21 @@ async function ptown_wait() {
 }
 // The town teleport (to this map's spawn: server transport_player_to(player, player.in)) when it cuts the walk to
 // main's town by town_hop_px. 3s channel; a hit or a move cancels it, and it fails with more than 5 monsters on us.
+// Channel the town teleport (3s) to this map's spawn: true if we arrived
+async function town_teleport() {
+	if (walking()) { try { stop("smart"); } catch (e) {} }
+	state.town_at = Date.now();
+	await T(use_skill("use_town"), 8000).catch(() => {});
+	await until(() => !character.c?.town && Date.now() - state.town_at > 1500, 6000);
+	return at_town_spot();
+}
 async function town_hop() {
 	if (!CFG.town_hop || character.rip || typeof use_skill !== "function" || hit_on_me()) return 0;
 	const town = dest_point("main"), sp = dest_point(character.map);
 	if (!town || !sp) return 0;
 	const here = route_to(town.map, town.x, town.y), there = route_to(town.map, town.x, town.y, sp);
 	if (!here || !there || here.d - there.d < CFG.town_hop_px) return 0;
-	if (walking()) { try { stop("smart"); } catch (e) {} }
-	state.town_at = Date.now();
-	await T(use_skill("use_town"), 8000).catch(() => {});
-	await until(() => !character.c?.town && Date.now() - state.town_at > 1500, 6000);
-	const ok = at_town_spot();
+	const ok = await town_teleport();
 	game_log(ok ? `town: teleported (~${Math.round(here.d - there.d)}px less walking)` : "town: the teleport didn't happen; walking", C.dim);
 	return ok ? 1 : 0;
 }
