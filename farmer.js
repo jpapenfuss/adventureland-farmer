@@ -1,4 +1,4 @@
-const VERSION = "24.86"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.87"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -128,6 +128,9 @@ const CFG = {
 	compound_auto: true,
 	compound_max_level: 3,     // stop at +3 results (scroll cost rises and odds fall fast after that)
 	compound_min_chance: 0.75, // the server's preview must say >= 75% (failure destroys all three)...
+	// v24.87: ...or >= this when a fighter would wear the result. +2 → +3 is 40% at the server for every common
+	// accessory; three spare +2s (7 Belts of HP +2 lay in the bank) are worth more as a 40% shot at a worn +3.
+	compound_min_chance_wanted: 0.40,
 	compound_min_chance_rebuyable: 0.6, // ...or >= 60% when an NPC sells the item (failure only costs gold)
 	compound_per_run: 6,       // compounds per town run at most
 	gear_tank_mult: 2,
@@ -3213,7 +3216,8 @@ function compound_spare(it, k, needed) {
 	const def = it && G.items[it.name];
 	// v24.73: a copy a member would wear is no longer left out. Three skull amulets sat in the merchant's bags, each
 	// "wanted" for one empty amulet slot, so there was never a set of three; the +1 goes to whoever wanted the +0.
-	return !!def?.compound && !it.l && !it.b && !it.p && !needed.has(k) && (it.level || 0) < cmp_top(it.name) &&
+	// (v24.87: titled copies too — the server doesn't check titles; the result is the first copy, so a titled one goes first)
+	return !!def?.compound && !it.l && !it.b && !needed.has(k) && (it.level || 0) < cmp_top(it.name) &&
 		!CFG.keep.includes(it.name);
 }
 // Report: three or more equal copies in the bags that aren't being compounded, and why
@@ -3264,6 +3268,7 @@ function compound_groups(needed) {
 	};
 	character.items.forEach((it, k) => { if (compound_spare(it, k, needed)) add(it, "bags", k); });
 	for (const it of state.bank_gear || []) if (compound_spare(it, -1, needed)) add(it, "bank");
+	for (const g of Object.values(by)) g.bags.sort((a, b) => (character.items[b]?.p ? 1 : 0) - (character.items[a]?.p ? 1 : 0));
 	const list = Object.values(by).filter((g) => g.bags.length + g.bank >= 3 && !skipped(g.key))
 		.sort((a, b) => a.level - b.level || a.name.localeCompare(b.name)); // cheapest scrolls / best odds first
 	cmp_cache = { key, at: Date.now(), list };
@@ -3301,8 +3306,9 @@ async function task_compound() {
 		const g = compound_groups().find((x) => x.bags.length >= 3);
 		if (!g) break;
 		// rebuyable odds only when the three copies are cheap: a +L copy embodies 3^L base copies (v23.1)
-		const floor = shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
-			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance;
+		const wanted = gear_takers().filter((m) => m.ctype !== "merchant").some((m) => gear_gain({ name: g.name, level: g.level + 1 }, m.ctype, m.g));
+		const floor = Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
+			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance, wanted ? CFG.compound_min_chance_wanted : 1);
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
 		if (!gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
 		try {
@@ -5306,7 +5312,7 @@ const DATA_V = 2; // bump to clear everything learned, once per character (load_
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, upg_v: 3, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, upg_v: 3, cmp_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -5387,6 +5393,7 @@ function load_state() {
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
 	// v24.82: upgrade ceilings and pauses recorded under the 50%/80% rules go once (a wand "capped at +4" would stay there)
+	if (d.cmp_v !== 2) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
 	if (d.upg_v !== 3) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
@@ -6592,7 +6599,7 @@ function secondhand_reason(it, groups) {
 		const r = gear_gain(it, x.ctype, x.g);
 		if (r && price <= r.gain * CFG.secondhand_gold_per_pt) return `upgrade for ${x.name} (+${Math.round(r.gain)} pts)`;
 	}
-	const g = G.items[it.name].compound && !it.p && (it.level || 0) < CFG.compound_max_level &&
+	const g = G.items[it.name].compound && (it.level || 0) < CFG.compound_max_level &&
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
@@ -6610,12 +6617,12 @@ const cmp_odds = (name, to) => (CMP_ODDS[Math.min(2, Math.max(0, item_grade({ na
 function ponty_routes(list, groups) {
 	if (!CFG.ponty_routes || !CFG.compound_auto) return [];
 	const takers = gear_takers().slice(1).filter((x) => x.ctype !== "merchant"), sc = G.items.cscroll0?.g || 6400, out = [];
-	const names = [...new Set(list.filter((it) => G.items[it.name]?.compound && !it.p).map((it) => it.name))];
+	const names = [...new Set(list.filter((it) => G.items[it.name]?.compound).map((it) => it.name))];
 	for (const name of names) {
 		const have = (L) => { const g = groups[compound_key(name, L)]; return g ? g.bags + g.bank : 0; };
-		const shop = (L) => list.filter((it) => it.name === name && (it.level || 0) === L && !it.p).map((it) => ({ it, price: shop_price(it) })).sort((a, b) => a.price - b.price);
-		for (const to of [1, 2]) {
-			if (to > CFG.compound_max_level || cmp_odds(name, to) < CFG.compound_min_chance || to > cmp_top(name)) continue;
+		const shop = (L) => list.filter((it) => it.name === name && (it.level || 0) === L).map((it) => ({ it, price: shop_price(it) })).sort((a, b) => a.price - b.price);
+		for (const to of [1, 2, 3]) { // (v24.87: +3 too, at compound_min_chance_wanted — the result is one a fighter would wear)
+			if (to > CFG.compound_max_level || cmp_odds(name, to) < Math.min(CFG.compound_min_chance, CFG.compound_min_chance_wanted) || to > cmp_top(name)) continue;
 			let best = null;
 			for (const m of takers) { const r = gear_gain({ name, level: to }, m.ctype, m.g); if (r && (!best || r.gain > best.gain)) best = { gain: r.gain, who: m.name }; }
 			if (!best) continue;
@@ -6623,12 +6630,12 @@ function ponty_routes(list, groups) {
 			const need = 3 - have(to - 1);
 			if (need <= 0) continue; // we hold the set already: the compound task does it
 			const units = shop(to - 1).map((x) => ({ cost: x.price, buy: [x.it], chance: 1 }));
-			if (to === 2 && cmp_odds(name, 1) >= CFG.compound_min_chance) {
-				let own0 = have(0); const p0 = shop(0);
+			if (to >= 2 && cmp_odds(name, to - 1) >= CFG.compound_min_chance) { // (a +1 from three +0s; a +2 from three +1s)
+				let own0 = have(to - 2); const p0 = shop(to - 2);
 				while (own0 + p0.length >= 3) {
 					const from_own = Math.min(3, own0), buy = p0.splice(0, 3 - from_own);
 					own0 -= from_own;
-					units.push({ cost: buy.reduce((a, x) => a + x.price, 0) + sc, buy: buy.map((x) => x.it), chance: cmp_odds(name, 1) });
+					units.push({ cost: buy.reduce((a, x) => a + x.price, 0) + sc, buy: buy.map((x) => x.it), chance: cmp_odds(name, to - 1) });
 				}
 			}
 			units.sort((a, b) => a.cost - b.cost);

@@ -1035,6 +1035,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("cmp_cache = null", ctx);
 	await vm.runInContext("task_compound()", ctx);
 	assert(!cmp.includes("REAL") && vm.runInContext("skipped('cmp:ringx:1')", ctx), "low preview chance: group paused, no compound");
+	// v24.87: the same 45% is taken when a fighter would wear the result
+	vm.runInContext("state.gear_skip = {}; state.cmp_caps = {}; cmp_cache = null; my_gear_cache = null", ctx);
+	ctx.G.items.ringx.attack = 60; ctx.G.items.ringx.compound = { attack: 30 };
+	ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.45 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
+	await vm.runInContext("task_compound()", ctx);
+	assert(cmp.includes("REAL"), `a 45% compound whose result a fighter would wear goes ahead (${JSON.stringify(cmp)})`);
+	ctx.G.items.ringx.attack = 2; ctx.G.items.ringx.compound = { attack: 1 };
 	character.slots = {}; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);
 	// 49) upgrade project: pick the NPC piece that beats Torlis's worn helmet most per gold, upgrade a spare to target
@@ -2124,6 +2131,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const r1 = run({ "cmp:rngp:0": { bags: 1, bank: 0 } });
 		assert(JSON.stringify(r1) === '[["rngp",1,"Torlis","ab"]]', `Ponty route: buy the two copies that complete a set whose +1 Torlis would wear (${JSON.stringify(r1)})`);
 		assert(run({ "cmp:rngp:0": { bags: 3, bank: 0 } }).length === 0, "...nothing to buy when we hold the three already");
+		{ // v24.87: titled copies count, and a +3 (40%) is a route when a fighter would wear it
+			const r3 = JSON.parse(vm.runInContext(`JSON.stringify(ponty_routes([{ name: 'rngp', level: 2, p: 'shiny', rid: 'x' }, { name: 'rngp', level: 2, rid: 'y' }], { "cmp:rngp:2": { bags: 1, bank: 0 } }).map((r) => [r.to, r.buy.map((i) => i.rid).join(""), r.chance]))`, ctx));
+			assert(r3.some(([to, buy, ch]) => to === 3 && buy === "xy" && ch === 0.4), `Ponty route to +3 from two +2s there (one titled) and ours (${JSON.stringify(r3)})`);
+		}
 		assert(run({}).length === 0, "...and no route when Ponty's copies can't make a set");
 		ctx.calculate_item_value = () => 1e7;
 		assert(run({ "cmp:rngp:0": { bags: 1, bank: 0 } }).length === 0, "...nor when the copies cost more than the points are worth");
