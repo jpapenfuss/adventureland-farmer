@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.boss.enabled = true; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -3076,9 +3076,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("smart_depth = 1", ctx);
 		assert(vm.runInContext("break_walk_for(parent.entities.h127)", ctx) === false && !st.length, "walking: a hawk on us doesn't stop the walk (through the door, it's left behind)");
 		vm.runInContext("smart_depth = 0", ctx);
-		// the group doesn't stand and wait while it's on one of us
+		// v24.62: the tank waits for a straggler even while something it can't take on is on one of us
 		hb("Sanala", { ...san, level: 60, map: "main", x: 3000, y: 0 });
-		assert(vm.runInContext("group_hold({ mtype: 'goo', map: 'main', boundary: [5000, 5000, 5100, 5100] }, false)", ctx) === null, "no group wait while something we can't take on is on one of us");
+		assert(vm.runInContext("group_hold({ mtype: 'goo', map: 'main', boundary: [5000, 5000, 5100, 5100] }, false)", ctx) === "Sanala", "v24.62: the tank still waits for a straggler while something it can't take on is on one of us");
+		vm.runInContext("state.group_wait = null", ctx);
 		delete ctx.parent.entities.h127; ctx.stop = st0; ctx.distance = dist0; ctx.G.monsters = mons0;
 		vm.runInContext("state.partners = {}; state.group_wait = null", ctx);
 		// a roamer's kill doesn't cool the spot down
@@ -3753,6 +3754,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.ptown = { id: 'Torlis:1', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], pending: true }");
 		assert(R("ptown_join_tick()") === false && R("state.errand") === null && R("state.ptown.pending") === true, "a follower out in the field with a party trip pending starts no town run of its own: it follows the tank in");
 		R("state.ptown = null");
+		// v24.62: a member the tank hasn't heard from is missing: no fight is started, and holding fire isn't "no progress"
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 53, map: "main", x: 0, y: 0 });
+		R("state.partners = {}; CFG.party.tank_first = true; state.prog = null; state.bad_ids = {}");
+		hb("Sanala", { ...san, ctype: "mage", level: 53, map: "main", x: 40, y: 0 });
+		assert(R("party_missing().join()") === "Aspernari", `a member with no heartbeat yet is missing (${R("party_missing().join()")})`);
+		const m147 = { id: "m147", type: "monster", mtype: "croc", x: 5, y: 0, hp: 100, max_hp: 100, visible: true };
+		ctx.parent.entities = { m147 };
+		assert(R("tank_first(parent.entities.m147)") === true, "...so the tank doesn't start a fight");
+		R("watch_progress(parent.entities.m147); state.prog && (state.prog.t = 0); watch_progress(parent.entities.m147)");
+		assert(R("!state.bad_ids.m147"), "...and a monster it's holding fire on isn't marked as taking no damage");
+		// the wait in town: a member in town whose heartbeat doesn't show the trip yet is still waited for
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 10, y: 20 });
+		hb("Sanala", { ...san, ctype: "mage", level: 53, map: "main", x: 40, y: 0, pt: { done: true } });
+		R("state.ptown = { id: 'Torlis:2', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], joined: true }; globalThis.__w147 = 'waiting'; ptown_wait().then(() => { globalThis.__w147 = 'left'; })");
+		await new Promise((r) => setImmediate(r));
+		assert(R("__w147") === "waiting" && R("!!state.ptown"), "the tank's wait in town doesn't end while a member in town hasn't said its work is done");
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 10, y: 20, pt: { done: true } });
+		{ const mark = timers.length; for (let i = 0; i < 3 && R("__w147") === "waiting"; i++) { for (const t of timers.splice(mark)) t.fn(); await new Promise((r) => setImmediate(r)); } }
+		assert(R("__w147") === "left" && R("state.ptown") === null, `...and ends once every member has (${R("__w147")})`);
+		R("CFG.party.tank_first = false; state.prog = null; state.bad_ids = {}; state.errand = null; state.ptown_done_at = 0");
 		R("travel = __tv147; state.partners = {}; state.pack = null");
 		ctx.parent.entities = ents; ctx.move = mv0; ctx.distance = () => 0;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });
