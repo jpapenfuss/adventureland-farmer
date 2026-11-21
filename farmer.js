@@ -1,4 +1,4 @@
-const VERSION = "24.69"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.70"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -3246,6 +3246,36 @@ function pick_upgrade() {
 	}
 	return best && shop_for(best.name) ? best : null; // shop_for is the slow check: only for the winner
 }
+// Why there's no project (report): our own pieces that would win once upgraded, and the best shop pieces with what
+// stops each
+function upgrade_why() {
+	const out = [];
+	if (!is_merchant()) {
+		const own = [...character.items.filter((i) => i && !i.l && GEAR.has(G.items[i.name]?.type)).map((i) => [i, "bags"]), ...(state.bank_gear || []).map((i) => [i, "bank"])]
+			.map(([i, w]) => [i, w, set_piece_plan(i.name, i.level || 0)]).filter(([, , pl]) => pl).sort((a, b) => b[2].gain - a[2].gain)[0];
+		out.push(own ? `ours next: ${own[0].name}+${own[0].level || 0} (${own[1]}) → +${own[2].to} (+${own[2].gain} pts)` : "nothing we own would win once upgraded");
+	}
+	if (is_merchant() || !merchant_does_it()) {
+		const gold = Math.min(upgrade_gold(), gold_room()), budget = gold * CFG.upgrade_spend, takers = gear_takers().filter((m) => m.ctype !== "merchant"), rows = [];
+		for (const name in G.items) {
+			const def = G.items[name];
+			if (!def.upgrade || !GEAR.has(def.type) || def.cash) continue;
+			const to = Math.min(upgrade_target(name), upg_cap_level(name));
+			if (!to) continue;
+			let g = null;
+			for (const m of takers) { const r = gear_gain({ name, level: to }, m.ctype, m.g); if (r && (!g || r.gain > g.gain)) g = { gain: r.gain, who: m.name }; }
+			if (!g) continue;
+			const cost = upgrade_cost(name, to);
+			const stop = skipped("upg:" + name) ? "paused" : cost > budget ? `costs ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
+				: best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to) ? "a copy at that level exists already"
+				: !shop_for(name) ? "not sold by an NPC" : "eligible";
+			rows.push({ name, to, g, stop });
+		}
+		rows.sort((a, b) => b.g.gain - a.g.gain);
+		out.push(rows.length ? `shop: ${rows.slice(0, 4).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : "shop: no upgradable piece at its reachable level beats what anyone wears");
+	}
+	return out.length ? ` | ${out.join(" | ")}` : "";
+}
 // Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
 function upgrade_due() {
 	if (!CFG.upgrade_auto) return false;
@@ -3458,7 +3488,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && self_taker_ok() && gear_gain(item, character.ctype, my_gear())) ||
-		(GEAR.has(def.type) && def.set && !is_merchant() && !state.upg && (my_gear().sets || {})[def.set] && set_piece_plan(item.name, item.level || 0)) ||
+		(GEAR.has(def.type) && !is_merchant() && !state.upg && set_piece_plan(item.name, item.level || 0)) ||
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
@@ -3517,7 +3547,8 @@ function bag_plan() {
 		for (const it of (state.bank_gear || []).filter((i) => stand_worthy(i, -1, nd, cm)).slice(0, Math.max(0, Math.min(free, character.esize - 6))))
 			fetch.push({ name: it.name, level: it.level, key: `stand:${it.name}:${it.level}` });
 	}
-	for (const u of [...bank_upgrades(), ...set_piece_fetch(), ...compound_fetches(compound_groups())])
+	const bu_ = bank_upgrades(); // a piece that wins as it is comes first: nothing is fetched to be upgraded meanwhile
+	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
 	// v24.15: dead compound pieces in the bank come out to be sold (they'd sit there until a purge)
 	if (is_merchant() && CFG.merchant.sell_dead_compounds) {
@@ -5359,9 +5390,11 @@ function report_facts() {
 		const c = CFG.craft_power && craft_pick();
 		if (c) F("craft", "self", `craft: ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts${c.cost ? `, ${fmt_k(c.cost)} gold` : ""})${craft_inputs_in_bags(c.id) ? " — ready" : " — fetching inputs"}`);
 	}
+	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
+	F("worn_json", "self", `worn JSON: ${JSON.stringify(Object.fromEntries(Object.entries(character.slots || {}).filter(([k, v]) => v && !/^trade/.test(k)).map(([k, v]) => [k, v.name + (v.level ? "+" + v.level : "") + (v.stat_type ? ":" + v.stat_type : "") + (v.p ? ":" + v.p : "")])))}`);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
-		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : merchant_does_it() ? "left to the merchant" : "no project"}`, !P);
+		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "shop projects are the merchant's" : "no project") + upgrade_why()}`);
 	}
 	if (CFG.elixir_auto && !M_) {
 		const e = character.slots?.elixir;
@@ -6167,7 +6200,16 @@ function token_pick() {
 }
 // The lowest level (1..what scroll0/scroll1 reach, under a past ceiling) at which an upgradable piece beats what we wear
 // (from: the level of a copy we have — in the bags or the bank; 0 for one still to buy)
+const spp_cache = new Map(); // "name:from" -> { at, v } (30s: bag_plan asks for every bag slot)
 function set_piece_plan(name, from = 0) {
+	if (state.upg) return null;
+	const key = `${name}:${from}`, c = spp_cache.get(key);
+	if (c && Date.now() - c.at < 30_000) return c.v;
+	const v = set_piece_plan_raw(name, from);
+	spp_cache.set(key, { at: Date.now(), v });
+	return v;
+}
+function set_piece_plan_raw(name, from) {
 	if (!CFG.upgrade_auto || !CFG.gear_auto || is_merchant() || !G.items[name]?.upgrade || !GEAR.has(G.items[name].type) || state.upg || skipped("upg:" + name)) return null;
 	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name));
 	if (gear_gain({ name, level: from }, character.ctype, g)) return null; // wins as it is: the ordinary pick
@@ -6179,23 +6221,28 @@ function set_piece_plan(name, from = 0) {
 }
 // v24.69: a piece of a set we wear that lies in the bank below the level at which it would win (Sanala's fifth
 // Monster Hunter piece sat there at +0): fetched, then upgraded as our own project. One at a time.
+// v24.70: any piece (not only a set's): the one with the biggest gain
 function set_piece_fetch() {
 	if (state.upg || is_merchant()) return [];
-	const worn = my_gear().sets || {};
+	let best = null;
 	for (const it of state.bank_gear || []) {
-		const set = G.items[it.name]?.set;
-		if (!set || !worn[set] || character.items.some((i) => i && i.name === it.name)) continue;
-		if (set_piece_plan(it.name, it.level || 0)) return [{ name: it.name, level: it.level || 0, exact: true, key: `setp:${it.name}` }];
+		if (it.p || character.items.some((i) => i && i.name === it.name)) continue;
+		const pl = set_piece_plan(it.name, it.level || 0);
+		if (pl && (!best || pl.gain > best.pl.gain)) best = { it, pl };
 	}
-	return [];
+	return best ? [{ name: best.it.name, level: best.it.level || 0, exact: true, key: `setp:${best.it.name}` }] : [];
 }
 // A copy in our bags that would win once upgraded → our own project
 function set_piece_start() {
 	if (state.upg || is_merchant()) return;
+	let best = null;
 	for (const i of character.items) {
-		if (!i || i.l || !G.items[i.name]?.set || !(my_gear().sets || {})[G.items[i.name].set]) continue;
+		if (!i || i.l || !GEAR.has(G.items[i.name]?.type)) continue;
 		const pl = set_piece_plan(i.name, i.level || 0);
-		if (!pl) continue;
+		if (pl && (!best || pl.gain > best.pl.gain)) best = { i, pl };
+	}
+	if (best) {
+		const { i, pl } = best;
 		state.upg = { name: i.name, to: pl.to, for: character.name, slot: pl.slot, gain: pl.gain, cost: upgrade_cost(i.name, pl.to) - upgrade_cost(i.name, i.level || 0), own: true };
 		state.upg_pick_at = Date.now();
 		return void game_log(`upgrade project (ours): ${i.name} +${i.level || 0} → +${pl.to}, then worn (+${pl.gain} pts)`, C.info);

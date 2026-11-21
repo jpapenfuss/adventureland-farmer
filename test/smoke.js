@@ -3320,6 +3320,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("state.upg = null; state.upg_pick_at = Date.now(); state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.fetch_try = {}");
 			assert(R("JSON.stringify(set_piece_fetch().map((f) => f.name + '+' + f.level))") === '["mmg137+0"]', `a set piece in the bank that wins once upgraded is fetched (${R("JSON.stringify(set_piece_fetch())")})`);
 			assert(R("bag_plan().fetch.some((f) => f.key === 'setp:mmg137')"), "...it's on the bank visit's fetch list");
+			assert(/ours next: mmg137\+0 \(bank\) → \+\d/.test(R("upgrade_why()")), `v24.70: the report says which piece of ours is next (${R("upgrade_why()")})`);
+			assert(/"gloves":"gl137\+5"/.test(R("report_facts().find((f) => f.key === 'worn_json').text")), "v24.70: the report dumps what's worn as JSON");
 			character.items[1] = { name: "mmg137", level: 0 };
 			assert(R("set_piece_fetch().length") === 0, "...not fetched again once a copy is in the bags");
 			assert(R("upgrade_due()") === true && R("state.upg && state.upg.own && state.upg.name") === "mmg137" && R("state.upg.to") >= 1, `...and in the bags it becomes our own upgrade project (${R("JSON.stringify(state.upg)")})`);
