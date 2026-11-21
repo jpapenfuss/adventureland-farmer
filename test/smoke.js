@@ -3778,6 +3778,28 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.slots = {}; character.items = Array(42).fill(null);
 		R("state.travel_off = []; my_gear_cache = null; travel_restored_at = 0; trip.long = false");
 	}
+	// 140) v24.32: a target behind a wall is path-found to, not walked straight at (into the corner)
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const cm = ctx.can_move_to, ds = ctx.distance, mv = ctx.move, steps = [];
+		ctx.move = (x, y) => steps.push([x, y]);
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0, rip: false, range: 100 });
+		R("state.errand = null; state.recovering = false; state.travel_block_until = 0; smart_depth = 0; approach_path = null; globalThis.__tv = travel; travel = (d) => { globalThis.__tvd = d; }");
+		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		const t = { id: "g140", type: "monster", mtype: "goo", x: 0, y: 400, visible: true, dead: false };
+		ctx.parent.entities.g140 = t;
+		ctx.can_move_to = () => false;
+		R("last_move = 0; approach(parent.entities.g140)");
+		assert(steps.length === 0 && R("__tvd && __tvd.y === 400 && approach_path === 'g140'"), "wall in the way: path-find to the target, no straight step");
+		R("smart_depth = 1"); t.y = 250;
+		assert(R("break_walk_for(parent.entities.g140)") === false, "that walk isn't stopped while the wall is still between us");
+		ctx.can_move_to = () => true;
+		assert(R("break_walk_for(parent.entities.g140)") === true, "a clear line: stop the walk and fight");
+		t.y = 400; character.moving = false;
+		R("smart_depth = 0; last_move = 0; approach(parent.entities.g140)");
+		assert(steps.length === 1 && R("approach_path === null"), `clear line: a straight step, as before (${JSON.stringify(steps)})`);
+		R("travel = __tv; approach_path = null"); delete ctx.parent.entities.g140; ctx.can_move_to = cm; ctx.distance = ds; ctx.move = mv;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

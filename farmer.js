@@ -1,4 +1,4 @@
-const VERSION = "24.31"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.32"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1896,9 +1896,13 @@ function approach(t) {
 	const so = standoff(t);
 	if (distance(character, t) <= so.reach) return;
 	const p = point_at(t, so.want);
-	if (can_move_to(p.x, p.y)) move_to(p.x, p.y, 400); // re-steer at most every 400ms while closing in
-	else move_to(t.x, t.y, 400); // blocked line: walk straight at it; collision stops us short
+	if (can_move_to(p.x, p.y)) { approach_path = null; move_to(p.x, p.y, 400); } // re-steer at most every 400ms while closing in
+	else if (can_move_to(t.x, t.y)) { approach_path = null; move_to(t.x, t.y, 400); } // only the standoff point is blocked: straight at it
+	// v24.32: a wall between us (a ledge above the monster's pool): walking straight at it ran us into the corner, where we
+	// stood for good. Path-find to it; break_walk_for leaves that walk alone until we can reach it or see a clear line.
+	else { approach_path = t.id; travel({ map: character.map, x: t.x, y: t.y }); }
 }
+let approach_path = null; // id of the target we're path-finding around a wall to
 async function travel(dest) {
 	if (walking() || Date.now() < (state.travel_block_until || 0)) return;
 	try { await go(dest); } catch (e) {
@@ -2029,6 +2033,7 @@ function cburst() {
 function break_walk_for(t) {
 	if (!walking() || !t || distance(character, t) > 300) return false;
 	if (errand_busy()) return false; // a town walk interrupted would fail (and pause) that errand step
+	if (approach_path === t.id && distance(character, t) > standoff(t).reach && !can_move_to(t.x, t.y)) return false; // v24.32: the way round to it
 	const attacking_us = !!t.target && party_names().has(t.target);
 	if (!attacking_us && state.pack?.boss) return false; // on the way to a boss: only stop for attackers
 	if (t.target === character.name && !can_take(t)) return false; // v24.10: outrun it; v24.16: keep walking whatever its speed
