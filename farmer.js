@@ -1,4 +1,4 @@
-const VERSION = "24.29"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.30"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -383,7 +383,7 @@ const PACE_MS = 150;    // pause between consecutive bulk calls (selling, bankin
 // Runtime state. Fields marked (saved) persist across code reloads via save_state()/load_state().
 const state = {
 	pack: null,              // where we fight: { mtype, map, boundary, count, est, score, directive? }
-	travel_off: [],          // v24.27: worn pieces taken off for a long walk: [{ slot, name, level, p, stat_type, speed }]
+	travel_off: [],          // v24.27: worn pieces taken off for a long walk: [{ slot, name, level, p, stat_type, speed, fails? }]
 	safe: {},                // monster id -> { ttk, xp } for every type that passed the safety check at the last pick
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
 	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
@@ -538,7 +538,7 @@ function dest_point(dest) {
 // way around it leg by leg — through doors, and the transporter where it's on that way; no way around: don't go
 async function go(dest, ms = CFG.walk_timeout_ms) {
 	try { return await go_route(dest, ms); }
-	finally { if (errand_busy() && state.travel_off?.length) await travel_restore("arrived").catch(() => {}); } // v24.27
+	finally { if (errand_busy() && state.travel_off.length) await travel_restore("arrived").catch(() => {}); } // v24.27
 }
 async function go_route(dest, ms) {
 	if (state.recovering) throw { reason: "fleeing" };
@@ -594,7 +594,7 @@ function errand(name, fn) {
 	const token = {};
 	Object.assign(state, { errand: name, errand_at: Date.now(), errand_token: token });
 	// v24.27: pieces off for travel go back on before the errand touches the bags
-	Promise.resolve().then(() => state.travel_off?.length && travel_restore("errand").catch(() => {})).then(() => fn()).catch((e) => game_log(`${name}: ${why(e)}`))
+	Promise.resolve().then(() => state.travel_off.length && travel_restore("errand").catch(() => {})).then(() => fn()).catch((e) => game_log(`${name}: ${why(e)}`))
 		.finally(() => {
 			if (state.errand_token !== token) return;
 			state.errand = null;
@@ -2248,7 +2248,7 @@ function gear_weights_text(ctype) {
 		`${CFG.gear_tank.includes(ctype) ? `, defence x${CFG.gear_tank_mult}` : ""}: ${prim} | ${rest}`;
 }
 // What a member (us, or a partner from its heartbeat) wears: slot -> score; slots the guide owns right now count as
-// unbeatable (1e9); dh = mainhand is two-handed, off = offhand occupied
+// unbeatable (1e9); dh = mainhand is two-handed, off = offhand occupied; sets/sset = sets worn (worn_sets)
 let my_gear_cache = null; // { at, key, g }: bag_plan judges every bag item against it, so memo it for 1s
 // Does the guide have a live (not paused) gear step for this slot? Row ids are "kind:slot:item:level:stat".
 function guide_plans_slot(slot) {
@@ -2258,7 +2258,7 @@ function guide_plans_slot(slot) {
 // Worn pieces, plus those off for a long walk (v24.27: still ours — judged, reported and protected as worn)
 function gear_slots_v() {
 	const sl = { ...(character.slots || {}) };
-	for (const r of state.travel_off || []) if (!sl[r.slot]) sl[r.slot] = { name: r.name, level: r.level, p: r.p || undefined, stat_type: r.stat_type || undefined };
+	for (const r of state.travel_off) if (!sl[r.slot]) sl[r.slot] = { name: r.name, level: r.level, p: r.p || undefined, stat_type: r.stat_type || undefined };
 	return sl;
 }
 function my_gear() {
@@ -2528,14 +2528,13 @@ function travel_candidates() {
 // Bag slot of a piece we took off (exact copy), -1 if it's gone
 const travel_bag_slot = (r) => character.items.findIndex((i) => i && i.name === r.name && (i.level || 0) === (r.level || 0) &&
 	(i.p || null) === (r.p || null) && (i.stat_type || null) === (r.stat_type || null));
-const travel_slots_held = () => new Set((state.travel_off || []).map(travel_bag_slot).filter((k) => k >= 0));
-const travel_off_slots = () => new Set((state.travel_off || []).map((r) => r.slot));
+const travel_slots_held = () => new Set(state.travel_off.map(travel_bag_slot).filter((k) => k >= 0));
+const travel_off_slots = () => new Set(state.travel_off.map((r) => r.slot));
 const travel_stats = { off: 0, on: 0, last: null, at: 0 }; // report: pieces taken off / put back since load, the last action
 let travel_restored_at = 0;
 async function travel_strip() {
 	const T_ = CFG.travel_gear;
-	let cands = travel_candidates();
-	cands = cands.slice(0, Math.max(0, character.esize - T_.keep_free)); // each needs a free bag slot
+	const cands = travel_candidates().slice(0, Math.max(0, character.esize - T_.keep_free)); // each needs a free bag slot
 	let n = 0;
 	for (const c of cands) {
 		if (gear_busy || !can_spend(EMIT_COST.unequip, RESERVE.errand)) break;
@@ -2562,7 +2561,7 @@ function travel_restore(why_) {
 	return restore_p;
 }
 async function travel_restore_run(why_) {
-	if (!state.travel_off?.length || character.rip) return false;
+	if (!state.travel_off.length || character.rip) return false;
 	if (channeling() && why_ !== "errand" && why_ !== "arrived") return false; // equip would cancel the town channel
 	const list = [...state.travel_off].sort((a, b) => (b.slot === "mainhand") - (a.slot === "mainhand"));
 	let n = 0;
@@ -2594,7 +2593,7 @@ let travel_busy = false;
 async function travel_gear_tick() {
 	const T_ = CFG.travel_gear;
 	if (travel_busy || character.rip || typeof equip !== "function" || typeof unequip !== "function") return;
-	if (!T_.enabled || is_merchant()) { if (state.travel_off?.length && !channeling()) { travel_busy = true; try { await travel_restore("disabled"); } finally { travel_busy = false; } } return; }
+	if (!T_.enabled || is_merchant()) { if (state.travel_off.length && !channeling()) { travel_busy = true; try { await travel_restore("disabled"); } finally { travel_busy = false; } } return; }
 	if (channeling()) return; // equip/unequip cancel the town channel (server: player.c = {})
 	travel_busy = true;
 	try {
@@ -4433,6 +4432,12 @@ async function town_body(due) {
 // joined (we went: our heartbeat pt), done (our work's finished: waiting in town), why (why we went / stayed) }
 const ptown_on = () => !!CFG.party.town_together && !is_merchant() && in_party_cfg() && !split_now();
 const ptown_tell = (P) => tell_party({ k: "ptown", id: P.id, by: P.by });
+// We're on the trip: our heartbeat shows it (pt), and the others are told (they judge again without us)
+function ptown_joined(P, why_) {
+	P.pending = false; P.joined = true;
+	if (why_) P.why = why_;
+	ptown_tell(P);
+}
 // Why we'd go with them (null: we keep farming). The stay-behinds would fight as the code does: with the leader gone a
 // follower picks alone (follower_pick judges solo); otherwise the members near without the leavers.
 function ptown_reason(P) {
@@ -4465,12 +4470,11 @@ function ptown_recv(msg, from) {
 	if (!P.leavers.includes(from)) P.leavers.push(from);
 	if (msg.by && !P.leavers.includes(msg.by)) P.leavers.push(msg.by);
 	if (P.joined || P.pending) return;
-	if (state.errand === "town" && errand_busy()) { P.joined = true; P.why = "in town already"; ptown_tell(P); return; }
+	if (state.errand === "town" && errand_busy()) return void ptown_joined(P, "in town already");
 	const why_ = ptown_reason(P);
 	P.why = why_ || `staying: our spot is fine without ${P.leavers.join(", ")}`;
-	if (why_) P.pending = true;
 	log_ev("ptown", { by: P.by, join: why_ || null });
-	if (why_) game_log(`party trip: going to town with ${P.leavers.join(", ")} (${why_})`, C.dim);
+	if (why_) { P.pending = true; game_log(`party trip: going to town with ${P.leavers.join(", ")} (${why_})`, C.dim); }
 }
 // Pending: go as soon as nothing is on us (each tick, before our own town check). true = holds our own town check.
 function ptown_join_tick() {
@@ -4481,7 +4485,7 @@ function ptown_join_tick() {
 	if (P.joined && !P.done && !errand_busy() && late) { state.ptown = null; return false; }
 	if (!P.pending) return false;
 	if (late) { P.pending = false; P.why += " — couldn't get away in time"; return false; }
-	if (errand_busy()) { if (state.errand === "town") { P.pending = false; P.joined = true; ptown_tell(P); } return true; }
+	if (errand_busy()) { if (state.errand === "town") ptown_joined(P); return true; }
 	if (character.rip || state.recovering || hit_on_me()) return true; // finish this fight first
 	if (walking()) { try { stop("smart"); } catch (e) {} return true; } // the next tick starts the run
 	state.town_runs = (state.town_runs || []).filter((t) => now - t < 600_000);
@@ -4489,9 +4493,8 @@ function ptown_join_tick() {
 	const due = town_due(true), what = due_tasks(due);
 	state.town_trig = `party trip (${P.by})`;
 	if (!town_run(due)) return true;
-	P.pending = false; P.joined = true;
 	state.town_runs.push(now); state.last_town = now;
-	ptown_tell(P);
+	ptown_joined(P);
 	game_log(`Town: with ${P.leavers.join(", ")}${what.length ? ` — ${what.join("+")}` : " (nothing of our own due)"}`, C.dim);
 	return true;
 }
@@ -4505,7 +4508,7 @@ async function ptown_wait() {
 	const busy = () => partners().filter((p) => p.ctype !== "merchant" && p.pt && !p.pt.done).map((p) => p.name);
 	// nothing of ours took us to town (no work, no teleport): walk there, so we gather with them and leave together
 	const town = dest_point("main"), rt = town && route_to(town.map, town.x, town.y);
-	if (rt && rt.d > CFG.town_hop_px && busy().length) await go({ map: town.map, x: town.x, y: town.y }).catch(() => {});
+	if (rt && rt.d > CFG.town_hop_px && busy().length) await go(town).catch(() => {});
 	let who = [];
 	while (Date.now() - t0 < CFG.party.town_wait_s * 1000 && !character.rip && !state.recovering) {
 		who = busy();
@@ -4524,9 +4527,9 @@ async function ptown_wait() {
 // main's town by town_hop_px. 3s channel; a hit or a move cancels it, and it fails with more than 5 monsters on us.
 async function town_hop() {
 	if (!CFG.town_hop || character.rip || typeof use_skill !== "function" || hit_on_me()) return 0;
-	const town = dest_point("main"), sp = G.maps[character.map]?.spawns?.[0];
+	const town = dest_point("main"), sp = dest_point(character.map);
 	if (!town || !sp) return 0;
-	const here = route_to(town.map, town.x, town.y), there = route_to(town.map, town.x, town.y, { map: character.map, x: sp[0], y: sp[1] });
+	const here = route_to(town.map, town.x, town.y), there = route_to(town.map, town.x, town.y, sp);
 	if (!here || !there || here.d - there.d < CFG.town_hop_px) return 0;
 	if (walking()) { try { stop("smart"); } catch (e) {} }
 	state.town_at = Date.now();
@@ -4929,7 +4932,7 @@ function report_facts() {
 		const sets_txt = Object.entries(g.sets || {}).map(([k, n]) => `${k} ${n}pc`).join(", ");
 		// v24.27: travel gear — what's off now, the last swap, and what would come off on a long walk
 		{
-			const off = (state.travel_off || []).map((r) => `${r.name}+${r.level}`), tc = travel_candidates().map((c) => `${c.it.name} ${c.speed}`);
+			const off = state.travel_off.map((r) => `${r.name}+${r.level}`), tc = travel_candidates().map((c) => `${c.it.name} ${c.speed}`);
 			if (CFG.travel_gear.enabled && !is_merchant() && (off.length || travel_stats.at || tc.length))
 				F("tgear", "self", `travel gear: ${off.length ? `OFF for the walk: ${off.join(", ")}` : "all on"}${tc.length ? ` | comes off on long walks: ${tc.join(", ")} speed` : ""}` +
 					`${travel_stats.at ? ` | ${travel_stats.off} off / ${travel_stats.on} on since load, last ${ago(travel_stats.at)} ago: ${travel_stats.last}` : ""}`);
