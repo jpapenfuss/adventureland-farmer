@@ -1,4 +1,4 @@
-const VERSION = "24.59"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.60"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -217,7 +217,7 @@ const CFG = {
 	quest_npcs: ["mcollector"], // own (non-guide) quests only from these NPCs (Cole); guide quests from anyone
 	quest_craft_max: 1,        // craft each quest recipe at most this many times (remembered across reloads)
 	quest_craft_skip: [],      // recipe ids never to craft
-	quest_farm: true,          // farm the monsters that drop a quest's missing materials
+	quest_farm: false,         // v24.60: off — the party sits at its camp; quests don't move it (was: farm what drops a quest's materials)
 	quest_farm_max_h: 3,       // own quests: skip if finishing would take longer than 3h at our kill rate
 	quest_park_h: 12,          // v18.1: a quest (guide ones too) that would take > 12h to farm is parked: its materials
 	quest_unpark_h: 8,         //   stop being held (they're banked, never sold) until the estimate drops under 8h
@@ -227,7 +227,7 @@ const CFG = {
 	quest_shelve_h: 2,         // ...for 2h, then it's retried (nothing the guide asks for is dropped for good)
 	guide_quest_keep_h: 24,    // keep working a guide quest for 24h after the guide last listed it (its HUD shows
 	                           //   only a few rows at a time, so a quest can scroll out of view and back)
-	auto_monster_hunt: true,   // take and turn in Daisy's monster hunts, and farm the hunt target when safe
+	auto_monster_hunt: false,  // v24.60: off — a hunt pulled the party off its camp after one kill (was: take hunts and farm their target)
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
 	// --- merchant (same script; a merchant-class character named here works for the party instead of fighting) ---------
 	merchant: {
@@ -531,15 +531,6 @@ async function go_route(dest, ms, tele_tried = false) {
 		// v24.59: a follower doesn't judge the way (its own verdict made it detour, refuse, or teleport while the tank
 		// walked on): it takes the shortest way, the transporter where that uses one
 		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y);
-		// v24.43: no safe way from where we stand, but there is one from this map's spawn: the town teleport takes us
-		// there (desertland's level2s door: the walk to the transporter passes the ents; the spawn is beside it)
-		if (pl?.danger && !tele_tried && typeof use_skill === "function" && !hit_on_me()) {
-			const sp = dest_point(character.map), p2 = sp && route_plan(T_.map, T_.x, T_.y, sp);
-			if (p2 && !p2.danger) {
-				game_log(`walk to ${T_.map}: every way from here passes ${pl.danger} — teleporting to ${character.map}'s spawn first`, C.dim);
-				if (await town_teleport()) return go_route(dest, ms, true);
-			}
-		}
 		if (pl?.danger) {
 			if (Date.now() - (state.deadly_log_at || 0) > 60_000) { state.deadly_log_at = Date.now(); game_log(`walk to ${T_.map}: every way passes ${pl.danger} — not going`, C.warn); }
 			state.walk_refused = { to: T_.map, why: pl.danger, at: Date.now() };
@@ -772,7 +763,14 @@ function party_break_tick() {
 	const dead = partners_any().some((q) => q.rip);
 	if (!in_town()) {
 		if (dead) suicide(why_);
-		else if (!errand_busy()) { travel_as("party_break", dest_point("main")); set_message(`to town: ${why_}`); }
+		else {
+			// v24.60: the tank leads the walk to town and the others follow it, as on any walk — each walking alone was
+			// three separate walks. With no tank online there is nobody to follow: then each walks.
+			if (is_follower() && fresh(leader_hb()) && !leader_hb().rip) return false;
+			const a = hit_on_me();
+			if (a) fight(a, false); // (it used not to fight back on this walk)
+			else if (!errand_busy()) { travel_as("party_break", dest_point("main")); set_message(`to town: ${why_}`); }
+		}
 		return true;
 	}
 	if (errand_busy()) return false;
@@ -1680,7 +1678,7 @@ function watchdog() {
 		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
 		state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
 		state.last_pick = 0;
-		if (repeat) { halt("watchdog"); use_skill("use_town"); }
+		if (repeat) halt("watchdog"); // v24.60: no town teleport of the tank's own (it left the party behind)
 	}
 }
 setInterval(() => { try { watchdog(); } catch (e) { log_error("watchdog: " + e); } }, 30_000);
@@ -4114,6 +4112,7 @@ let event_join_at = 0, event_logged = null;
 // Leader and followers alike: join, then fight the event's monsters (they're cooperative, which normal targeting
 // skips). Leaving: off the event map once it's over. Returns true when it took the tick.
 function event_tick() {
+	if (in_party_cfg() && !is_merchant()) return false; // v24.60: party fighters don't go to events (the tank joined alone; the others couldn't follow)
 	const name = event_live(), now = Date.now();
 	if (!name) {
 		event_logged = null;
@@ -4702,7 +4701,7 @@ function ptown_join_tick() {
 	// stale: never got going, or our run ended without the wait (cleared there)
 	if (P.joined && !P.done && !errand_busy() && late) { state.ptown = null; return false; }
 	if (!P.pending) return false;
-	if (late) { P.pending = false; P.why += " — couldn't get away in time"; return false; }
+	// v24.60: no join window — a member that can't get away yet (a monster on it) goes as soon as it can; nobody is left out
 	if (errand_busy()) { if (state.errand === "town") ptown_joined(P); return true; }
 	if (character.rip || state.recovering || hit_on_me()) return true; // finish this fight first
 	if (walking()) { halt("ptown_join_tick"); return true; } // the next tick starts the run
@@ -4728,7 +4727,7 @@ async function ptown_wait() {
 	const town = dest_point("main"), rt = town && route_to(town.map, town.x, town.y);
 	if (rt && rt.d > CFG.town_hop_px && busy().length) await go(town).catch(() => {});
 	let who = [];
-	while (Date.now() - t0 < CFG.party.town_wait_s * 1000 && !character.rip && !state.recovering) {
+	while (!character.rip) { // v24.60: no time limit — the party leaves town together or not at all (a member offline or dead is party_break's case)
 		who = busy();
 		if (!who.length) break;
 		state.errand_at = Date.now(); // a long wait isn't a hung errand
@@ -5654,7 +5653,7 @@ function xp_mult_text() {
 // Leader, together: the members we should wait for, as text — or null to go on (nothing to wait for, or waited enough)
 function group_hold(pack, here) {
 	const G_ = CFG.party.group, now = Date.now();
-	if (!G_?.enabled || !in_party_cfg() || !pack || pack.boss || is_follower() || leader_name() !== character.name || errand_busy())
+	if (!G_?.enabled || !in_party_cfg() || !pack || is_follower() || leader_name() !== character.name || errand_busy())
 		return void (state.group_wait = null), null;
 	const key = pack_key(pack);
 	if (here && state.group_ok === key) return null; // assembled at this spot already: fights move people around
@@ -5672,12 +5671,7 @@ function group_hold(pack, here) {
 	});
 	if (!far.length) { if (here) state.group_ok = key; state.group_wait = null; return null; }
 	const W = state.group_wait || (state.group_wait = { since: now, go_until: 0 });
-	if (W.go_until > now) return null;
-	if (now - W.since > G_.wait_s * 1000) { // waited enough: carry on for a while
-		W.go_until = now + G_.go_s * 1000; W.since = W.go_until;
-		log_ev("group_timeout", { who: far.map((p) => p.name).join(",") });
-		return null;
-	}
+	// v24.60: no time limit. It used to carry on for go_s after waiting wait_s — the tank walking off without a member.
 	W.who = far.map((p) => p.name).join(", ");
 	return W.who;
 }
@@ -6627,7 +6621,10 @@ function tick() {
 			// without it ("1 with us") ruled out the party's spot and walked the rest to a weaker one each time
 			const member_in_town = in_party_cfg() && !!cp && partners().some((q) => q.errand === "town" || q.pt);
 			probe_check();
-			if (!state.pack || (!waiting && !member_in_town && Date.now() - state.last_pick > CFG.repick_ms)) pick_pack();
+			// v24.60: the party sits at its camp. No re-pick every repick_ms (estimates within a few % of each other moved
+			// it between camps: 18 changes in an hour). A camp is left only when it's gone: a death there, nothing to
+			// fight for the idle time, or no safe way to it — each of those clears state.pack or picks again itself.
+			if (!state.pack) pick_pack();
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);

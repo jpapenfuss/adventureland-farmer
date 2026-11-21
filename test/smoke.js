@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -1444,7 +1444,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	seed(11, 300); character.x = 2000; vm.runInContext("watchdog()", ctx); character.x = 100;
 	assert(vm.runInContext("!hist.ev.some((e) => e.kind === 'noprog') && wd.here_since === null", ctx), "v24.9: still walking to it: no noprog");
 	for (let i = 0; i < 3; i++) { seed(11, 300); vm.runInContext("wd.here_since = Date.now() - 12 * 60000; watchdog()", ctx); }
-	assert(vm.runInContext("hist.ev.filter((e) => e.kind === 'noprog').length", ctx) === 3 && town66.includes("use_town"), `no-progress acted 3x, the 3rd with a town teleport (${town66})`);
+	assert(vm.runInContext("hist.ev.filter((e) => e.kind === 'noprog').length", ctx) === 3 && !town66.includes("use_town"), `no-progress acted 3x — v24.60: never with a town teleport of the tank's own (${town66})`);
 	// during an errand or parked: nothing
 	vm.runInContext("hist.ev = []; wd.acts = []; state.errand = 'town'; state.errand_at = Date.now()", ctx); seed(30);
 	vm.runInContext("watchdog(); state.errand = null; state.parked = true", ctx); seed(30);
@@ -1622,17 +1622,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const joins = []; ctx.join = (n) => (joins.push(n), Promise.resolve());
 	ctx.parent.S = { goobrawl: { end: new Date(Date.now() + 5e5).toISOString() }, crabxx: { live: true, map: "main", x: -1000, y: 1700 } };
 	assert(vm.runInContext("event_live()", ctx) === "goobrawl", "goo brawl is live and safe (crab event unsafe: skipped)");
-	assert(vm.runInContext("event_tick()", ctx) && JSON.stringify(joins) === '["goobrawl"]', `joins goo brawl (${joins})`);
+	assert(vm.runInContext("event_tick()", ctx) === false && joins.length === 0, `v24.60: a party fighter doesn't go off to an event (${joins})`);
 	character.map = "goobrawl";
 	ctx.parent.entities.bg1 = { id: "bg1", type: "monster", mtype: "bgoo", visible: true, hp: 90000, max_hp: 100000, x: 40, y: 0, target: null };
 	const at73 = []; ctx.attack = (e) => (at73.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
 	vm.runInContext("inflight.attack = false; event_tick()", ctx);
-	assert(at73.includes("bg1"), `fights the Brawl Goo (cooperative, normally skipped) (${at73})`);
+	// (v24.60: party fighters don't go to events — the fight and the walk back are no longer tested)
 	delete ctx.parent.entities.bg1;
 	ctx.parent.S = {};
 	const tr73 = []; ctx.smart_move = (d) => (tr73.push(d), new Promise(() => {}));
 	vm.runInContext("event_tick()", ctx);
-	assert(tr73.length && tr73[0].map === "main", "event over → leaves Goo Island");
+
 	vm.runInContext("smart_depth = 0", ctx); ctx.smart_move = () => new Promise(() => {});
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", map: "main" });
 	ctx.parent.S = { goobrawl: { end: "x" } };
@@ -2969,8 +2969,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.group_ok = null; state.group_wait = null", ctx);
 		hb("Aspernari", { ...asp, level: 58, x: 3000, y: 0 }); hb("Sanala", { ...san, level: 60, x: 10, y: 0 });
 		vm.runInContext(`group_hold(${P}, false); state.group_wait.since = Date.now() - CFG.party.group.wait_s * 1000 - 1`, ctx);
-		assert(vm.runInContext(`group_hold(${P}, false) === null && state.group_wait.go_until > Date.now()`, ctx), "waited wait_s: go on");
-		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "...for go_s");
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) !== null, "v24.60: waited wait_s: still waiting — the tank never goes on without a member");
+
 		vm.runInContext(`state.partners = {}; state.group_wait = null; state.group_ok = null`, ctx);
 		assert(/group: \{ enabled: true, radius: 450/.test(src), "v24.11 default: group travel on");
 		Object.assign(character, { x: 0, y: 0 });
@@ -3424,7 +3424,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("CFG.party.town_together = true");
 		// too late: we couldn't get away within town_join_s
 		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
-		assert(R("ptown_join_tick()") === false && R("!state.ptown.pending && /in time/.test(state.ptown.why)"), "the join window closes");
+		assert(R("ptown_join_tick()") === true && R("state.ptown.joined === true"), "v24.60: no join window — a member that couldn't get away earlier still goes");
 		// done in town: wait while a member on the trip isn't done, then go back together
 		R("globalThis.__hbf = heartbeat; heartbeat = () => {}; state.ptown = { id: 'Torlis:1', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], joined: true, why: 'w' }");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 30, y: 0, pt: { id: "Torlis:1", done: false } });
@@ -3627,7 +3627,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		Object.assign(character, { map: "desertland", x: 400, y: -1400 });
 		R("state.partners.Aspernari.t = Date.now() - 60_000");
 		{ const tv = []; R("globalThis.__tv144 = travel; travel = (d) => { globalThis.__tvd144 = d; }; globalThis.__tvd144 = null");
-			assert(R("/Aspernari offline/.test(party_break())") && R("party_break_tick()") === true && emits.length === 0 && R("__tvd144 && __tvd144.map") === "main", "v24.56: a member offline: walk to town and wait — no suicide (only a death causes one)");
+			assert(R("/Aspernari offline/.test(party_break())") && R("party_break_tick()") === false && emits.length === 0 && R("__tvd144") === null, "v24.60: a member offline: no suicide, and a follower keeps following the tank (which leads the walk to town)");
 			R("travel = __tv144"); }
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 }); hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400 });
 		// about to die: suicide is free, dying to the monster isn't
