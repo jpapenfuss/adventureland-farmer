@@ -1,4 +1,4 @@
-const VERSION = "24.92"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.93"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -5324,6 +5324,15 @@ function recover() {
 }
 // park(): finish the current errand, go to town and stand there (still fighting back). resume(): carry on.
 function park() { state.parked = true; state.park_home = false; game_log("Parking after the current errand", C.info); }
+// v24.93: unpause() in the CODE console lifts paused tasks — all town ones by default, or those starting with `prefix`
+// ("town:loop", "upg:", "cmp:"...). The script's own variables (state...) aren't reachable from the console.
+function unpause(prefix = "town:") {
+	const gone = Object.keys(state.gear_skip).filter((k) => k.startsWith(prefix));
+	for (const k of gone) delete state.gear_skip[k];
+	save_state();
+	game_log(gone.length ? `unpaused: ${gone.join(", ")}` : `nothing paused under "${prefix}"`, C.info);
+	return gone;
+}
 function resume() { state.parked = false; state.last_pick = 0; state.last_target_at = Date.now(); game_log("Resuming", C.info); }
 // While parked: one trip to town, then stand and defend
 function park_tick() {
@@ -5428,6 +5437,7 @@ function load_state() {
 	if (d.qprog) state.qprog = { ...d.qprog, t: d.qprog.t + off };
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
 	// v24.82: upgrade ceilings and pauses recorded under the 50%/80% rules go once (a wand "capped at +4" would stay there)
+	delete state.gear_skip["town:loop"]; // v24.93: a loop brake from before a reload (usually a new build) doesn't carry over
 	if (d.cmp_v !== 2) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
 	if (d.upg_v !== 3) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);

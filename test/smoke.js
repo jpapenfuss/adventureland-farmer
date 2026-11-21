@@ -782,6 +782,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("!state.errand && skipped('town:loop')", ctx), "7th run in 10 min refused, town paused");
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("!state.errand", ctx), "still paused on the next check");
+	assert(vm.runInContext("JSON.stringify(unpause('town:loop'))", ctx) === '["town:loop"]' && vm.runInContext("!skipped('town:loop')", ctx), "v24.93: unpause('town:loop') lifts the brake from the console");
 	{ // v24.92: the merchant isn't braked while its runs get work done
 		const nm = character.name, ct = character.ctype;
 		Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
