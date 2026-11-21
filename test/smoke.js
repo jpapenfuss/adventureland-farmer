@@ -43,7 +43,8 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.party.all_or_nothing = false; CFG.party.tank_first = false; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -67,20 +68,6 @@ const area = vm.runInContext(`resolve_area("goo", "main", undefined, 3)`, ctx);
 assert(area && area.map === "main" && area.boundary.join() === "100,100,400,400", "resolve_area falls back to spawn boundary");
 assert(vm.runInContext(`resolve_area("nonexistent")`, ctx) === null, "resolve_area null for unknown monster");
 assert(!vm.runInContext(`valid_boundary([0,0,"x",5]) || valid_boundary(undefined) || valid_boundary([5,5,1,1])`, ctx), "valid_boundary rejects junk");
-
-// 3) low HP while smart_moving: stops the walk, channels town, holds until recovered
-vm.runInContext(`travel({map:"main",x:1,y:1})`, ctx); // starts a never-ending smart_move
-assert(vm.runInContext("walking()", ctx), "smart_move in flight");
-character.hp = 200; calls.length = 0;
-runTick();
-assert(calls.includes("stop:smart") && calls.includes("skill:use_town"), "flee cancels smart_move and fires use_town while traveling");
-assert(st().recovering, "recovering set");
-character.hp = 300; calls.length = 0;
-runTick(); runTick();
-assert(st().recovering && !calls.includes("skill:use_town"), "at 30% HP: still recovering, no re-channel, no travel");
-character.hp = 900;
-runTick();
-assert(!st().recovering, "resumes at recover_hp");
 
 // 4) errand lock: hung errand times out and a stale finally can't clear a newer lock
 vm.runInContext(`errand("a", () => new Promise(() => {}))`, ctx);
@@ -282,7 +269,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("quest_directive()", ctx) === null, "recipe too slow to finish is skipped");
 	vm.runInContext("CFG.quest_farm_max_h = 3", ctx);
 	// outlevelled: best pack gives 100x the bee pack's xp/s → no quest farming
-	vm.runInContext("(state.best_score = 1e6, state.best_solo = solo_now(), state.best_at = Date.now())", ctx);
+	vm.runInContext("(state.best_score = 1e6, state.best_at = Date.now())", ctx);
 	assert(vm.runInContext("quest_directive()", ctx) === null, "outlevelled material farm skipped (opportunity cost)");
 	vm.runInContext("state.best_score = 0", ctx);
 	// stall: count doesn't move for quest_stall_min → recipe shelved
@@ -320,7 +307,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("CFG.hunt_min_xp = globalThis.__hmx", ctx);
 	delete character.s.monsterhunt;
 	// outlevelled guide row skipped
-	vm.runInContext(`state.guide_farm.monster = "goo"; (state.best_score = 1e9, state.best_solo = solo_now(), state.best_at = Date.now()); state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
+	vm.runInContext(`state.guide_farm.monster = "goo"; (state.best_score = 1e9, state.best_at = Date.now()); state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
 	assert(vm.runInContext(`!state.directive && !goals_list().some((g) => /guide/.test(g.reason))`, ctx), "outlevelled guide farm row skipped (not shared either)");
 	vm.runInContext(`state.best_score = 0`, ctx);
 	if (hunt_save) character.s.monsterhunt = hunt_save;
@@ -335,7 +322,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.guide_quests = {}; state.crafted = {}", ctx);
 	vm.runInContext("guide_refresh()", ctx);
 	assert(vm.runInContext(`is_guide_quest("wcap")`, ctx), "guide row naming wcap marks it a guide quest");
-	vm.runInContext("(state.best_score = 1e6, state.best_solo = solo_now(), state.best_at = Date.now()); CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
+	vm.runInContext("(state.best_score = 1e6, state.best_at = Date.now()); CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
 	const g16 = vm.runInContext("quest_directive(true)", ctx);
 	assert(g16 && /guide quest wcap/.test(g16.reason), "guide quest farmed even when outlevelled and slow");
 	assert(vm.runInContext("quest_directive(false)", ctx) === null, "same recipe not offered as an own-choice quest");
@@ -612,7 +599,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0", ctx);
 	handlers.cm({ name: "Torlis", message: { k: "hb", level: 5, ctype: "paladin", map: "main", x: 50, y: 0, hp: 300, max_hp: 300, target: "m1",
 		pack: { mtype: "goo", map: "main", boundary: [-100, -100, 100, 100] }, errand: null, attack: 20, frequency: 1, damage_type: "physical" } });
-	assert(vm.runInContext("leader_name() === 'Torlis' && is_follower()", ctx), "lowest level leads; priest follows");
+	assert(vm.runInContext("leader_name() === 'Torlis' && is_follower()", ctx), "the tank leads; priest follows");
 	ctx.parent.entities = {
 		m1: { id: "m1", type: "monster", mtype: "goo", visible: true, hp: 80, max_hp: 100, x: 60, y: 0, target: "Torlis" },
 		Torlis: { id: "Torlis", name: "Torlis", type: "character", visible: true, hp: 290, max_hp: 300, x: 50, y: 0 },
@@ -631,21 +618,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("on_party_invite('Torlis'); on_party_invite('Stranger')", ctx);
 	assert(acc.join() === "Torlis", "accepts party invites from members only");
 
-	// 31) leader side: Torlis waits (defends only) while Aspernari is in town
+	// 31) leader side: a member in town isn't counted in the fight verdict
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 5, hp: 300, max_hp: 300, attack: 20, frequency: 1, range: 25, armor: 20, resistance: 10, damage_type: "physical" });
 	ctx.G.classes.paladin = { damage_type: "physical" };
-	vm.runInContext("state.partners = {}; state.duo_near = undefined; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
+	vm.runInContext("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
-	vm.runInContext("duo_check(); state.last_pick = 1", ctx);
-	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower() && state.duo_near === ''", ctx), "leader farms solo (no waiting) while the priest is in town");
+	assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower()", ctx), "the tank leads while the priest is in town");
 	// safety: a mob too strong for a level-5 paladin alone is fine with the level-56 priest beside it
 	ctx.G.monsters.tough31 = { xp: 500, hp: 1000, attack: 15, respawn: 10, range: 20, speed: 10, frequency: 1, resistance: 0, armor: 0 };
 	const solo = vm.runInContext("!!fight_profile('tough31')", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical" } });
 	const duo = vm.runInContext("!!fight_profile('tough31')", ctx);
-	assert(!solo && duo, `unsafe solo, safe with the priest near (solo ${solo}, duo ${duo})`);
-	vm.runInContext("duo_check()", ctx);
-	assert(vm.runInContext("state.duo_near === 'Aspernari' && state.last_pick === 0", ctx), "priest back → pack re-judged as a pair");
+	assert(!solo && duo, `unsafe with the priest in town, safe with it back (in town ${solo}, back ${duo})`);
 
 	// 32) leader works the follower's monster hunt (kills credit every party member)
 	ctx.G.monsters.tortoise = { xp: 300, hp: 600, attack: 8, respawn: 10, range: 20, speed: 8, frequency: 1 };
@@ -671,7 +655,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const d33b = vm.runInContext("town_due(partners()[0]?.errand === 'town')", ctx);
 	assert(!d33a.bank && d33b.bank && d33b.relaxed, `bank trip only when the partner is already in town (${d33a.bank}, ${d33b.bank})`);
 
-	// 34) a dead partner: the follower stays a follower (holds), the leader holds too
+	// 34) a dead leader: the follower stays a follower (holds)
 	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 56, map: "main", x: 0, y: 0 });
 	handlers.cm({ name: "Torlis", message: { k: "hb", level: 38, ctype: "paladin", map: "main", x: 50, y: 0, hp: 0, max_hp: 900, rip: true, errand: null } });
 	const walk34 = [];
@@ -679,9 +663,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("follower_tick()", ctx);
 	assert(vm.runInContext("is_follower()", ctx) && !walk34.length, "follower holds while the leader is dead");
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 38 });
-	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 0, max_hp: 2500, rip: true, errand: null } });
-	vm.runInContext("state.duo_near = 'Aspernari'; state.last_pick = 1; duo_check()", ctx);
-	assert(vm.runInContext("state.duo_near === '' && state.last_pick === 0", ctx), "priest dies → leader re-judges its pack solo (no waiting)");
 
 	// 35) regression: nothing due → no town run (v11.2 counted numeric fields as due tasks)
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.guide = null; state.needs = new Map()", ctx);
@@ -692,14 +673,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("town_check()", ctx);
 	assert(vm.runInContext("due_tasks(town_due()).length === 0 && !state.errand && state.last_town === 0", ctx), `no town run when nothing is due (${JSON.stringify(vm.runInContext("due_tasks(town_due())", ctx))})`);
 
-	// 36) left alone: Torlis waits for Aspernari (in town) and solos safe mobs nearby; skips unsafe ones and far ones
+	// 36) Aspernari in town: Torlis judges monsters without it
 	ctx.setTimeout = (fn, ms) => (ms < 60000 && setImmediate(fn), 0);
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 40, map: "main", x: 0, y: 0, hp: 900, max_hp: 900, attack: 60, frequency: 1, range: 30, armor: 60, resistance: 30, damage_type: "physical", speed: 40 });
 	ctx.G.monsters.weak36 = { xp: 200, hp: 300, attack: 10, respawn: 5, range: 20, speed: 10, frequency: 1 };
 	ctx.G.monsters.brute36 = { xp: 2000, hp: 9000, attack: 120, respawn: 5, range: 20, speed: 10, frequency: 1 };
 	ctx.get_targeted_monster = () => null; ctx.change_target = () => {}; ctx.is_in_range = () => false; ctx.can_move_to = () => true;
 	ctx.get_nearest_monster = () => null;
-	vm.runInContext("state.hold = null; state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }; state.errand = null; smart_depth = 0", ctx);
+	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [-100,-100,100,100] }; state.errand = null; smart_depth = 0", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "bank", x: 0, y: 0, hp: 2500, max_hp: 2500, errand: "town", attack: 180, frequency: 0.75, damage_type: "magical" } });
 	ctx.parent.entities = {
 		b: { id: "b", type: "monster", mtype: "brute36", visible: true, hp: 9000, max_hp: 9000, x: 60, y: 0 },
@@ -710,16 +691,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.attack = (tg) => (atk36.push(tg.id), Promise.resolve());
 	ctx.can_attack = () => true;
 	vm.runInContext("for (const k in inflight) inflight[k] = false", ctx);
-	assert(vm.runInContext("!fight_profile('brute36') && !!fight_profile('weak36')", ctx), "with the priest away, the leader judges mobs on solo stats");
-	vm.runInContext("hold_grind()", ctx);
-	assert(atk36.join() === "w", `solo grind picks the safe mob within the radius, not the brute or the far one (${atk36})`);
-	// dead leader: the follower grinds solo too
-	Object.assign(character, { name: "Aspernari", ctype: "priest", level: 57, attack: 180, frequency: 0.75, range: 180, damage_type: "magical", hp: 2500, max_hp: 2500 });
-	handlers.cm({ name: "Torlis", message: { k: "hb", level: 40, ctype: "paladin", map: "main", x: 0, y: 0, hp: 0, max_hp: 900, rip: true, errand: null } });
-	vm.runInContext("state.hold = null", ctx); atk36.length = 0;
-	for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
-	vm.runInContext("follower_tick()", ctx);
-	assert(atk36.includes("w") || atk36.includes("b"), `follower solos while the leader is dead (${atk36})`);
+	assert(vm.runInContext("!fight_profile('brute36') && !!fight_profile('weak36')", ctx), "with the priest in town, the leader judges mobs without it");
 
 	// 37) turns: Torlis has its own guide farm row; Aspernari wants spores (minimush). Leader alternates.
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 41, map: "main", x: 0, y: 0, hp: 900, max_hp: 900, attack: 60, frequency: 1, range: 30, armor: 60, resistance: 30, damage_type: "physical" });
@@ -847,10 +819,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const asp = { level: 57, ctype: "priest", hp: 2500, max_hp: 2500, attack: 180, frequency: 0.75, damage_type: "magical", gold: 13000000 };
 	const tor = { level: 41, ctype: "paladin", hp: 900, max_hp: 900, attack: 60, frequency: 1, damage_type: "physical", gold: 2300000 };
 	const san = { level: 1, ctype: "mage", hp: 150, max_hp: 150, attack: 15, frequency: 0.8, damage_type: "magical", gold: 0 };
-	vm.runInContext("state.partners = {}; state.turn = null; state.duo_near = undefined", ctx);
+	vm.runInContext("state.partners = {}; state.turn = null", ctx);
 	Object.assign(character, { name: "Aspernari", ...asp, map: "main", x: 0, y: 0, rip: false, gold: asp.gold });
 	hb("Torlis", tor); hb("Sanala", san);
-	assert(vm.runInContext("leader_name() === 'Sanala' && is_follower() && leader_hb().name === 'Sanala'", ctx), "lowest level (Sanala) leads; Aspernari follows her");
+	assert(vm.runInContext("leader_name() === 'Torlis' && is_follower() && leader_hb().name === 'Torlis'", ctx), "the tank (Torlis) leads whatever the levels; Aspernari follows it");
 	// invites: Aspernari+Torlis already partied → Aspernari (alphabetically first of them) invites Sanala; Torlis doesn't
 	const inv = [];
 	ctx.send_party_invite = (n) => (inv.push([character.name, n]), Promise.resolve());
@@ -907,7 +879,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	sends44.length = 0;
 	vm.runInContext("gold_balance()", ctx);
 	assert(!sends44.length, "a member who isn't the richest never sends");
-	// fight model: Sanala alone can't handle a mob that the trio can
+	// fight model: Sanala can't handle a mob without her partners that the trio can
 	Object.assign(character, { name: "Sanala", ...san, armor: 5, resistance: 5, range: 120, speed: 50 });
 	ctx.G.classes.mage = { damage_type: "magical" };
 	ctx.G.monsters.trio44 = { xp: 300, hp: 1500, attack: 6, respawn: 10, range: 20, speed: 10, frequency: 1 };
@@ -915,20 +887,20 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const solo44 = vm.runInContext("!!fight_profile('trio44')", ctx);
 	hb("Aspernari", asp); hb("Torlis", tor);
 	const trio44 = vm.runInContext("!!fight_profile('trio44')", ctx);
-	assert(!solo44 && trio44, `unsafe for Sanala alone, safe with both partners near (${solo44}, ${trio44})`);
-	vm.runInContext("state.duo_near = undefined; duo_check(); duo_check()", ctx);
-	assert(vm.runInContext("state.duo_near", ctx) === "Aspernari,Torlis", "leader tracks which members are near");
-	// goals: a monster on 2 of 3 lists is mutual; with no overlap, turns rotate Sanala → Aspernari → Torlis
+	assert(!solo44 && trio44, `unsafe for Sanala without partners, safe with both (${solo44}, ${trio44})`);
+	// goals (the leader, Torlis): a monster on 2 of 3 lists is mutual; with no overlap, turns rotate Torlis → Aspernari → Sanala
+	Object.assign(character, { name: "Torlis", ...tor, armor: 60, resistance: 30, range: 30, speed: 40 });
+	vm.runInContext("state.partners = {}", ctx);
 	ctx.G.monsters.m1 = { xp: 50, hp: 100, attack: 2, respawn: 5, range: 20, speed: 10, frequency: 1 };
 	ctx.G.monsters.m2 = { ...ctx.G.monsters.m1 }; ctx.G.monsters.m3 = { ...ctx.G.monsters.m1 };
 	ctx.G.maps.main.monsters.push({ type: "m1", count: 5, boundary: [0, 0, 50, 50] }, { type: "m2", count: 5, boundary: [60, 60, 90, 90] }, { type: "m3", count: 5, boundary: [100, 100, 150, 150] });
 	vm.runInContext(`state.turn = null; state.goals_cache = null; state.guide_ignore = {}; state.gprog = null; G.craft = {}; character.s = {};
 		state.guide_farm = { monster: "m1", map: "main", boundary: [0,0,50,50], count: 5, reason: "guide xp", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
 	hb("Aspernari", { ...asp, goals: [{ monster: "m2", w: 3, reason: "hunt", eta_h: 1 }] });
-	hb("Torlis", { ...tor, goals: [{ monster: "m2", w: 4, reason: "guide row" }] });
+	hb("Sanala", { ...san, goals: [{ monster: "m2", w: 4, reason: "guide row" }] });
 	vm.runInContext("refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive.monster === 'm2' && state.directive.mutual", ctx), "m2 (Aspernari + Torlis) is mutual and wins");
-	hb("Torlis", { ...tor, goals: [{ monster: "m3", w: 4, reason: "guide row" }] });
+	assert(vm.runInContext("state.directive.monster === 'm2' && state.directive.mutual", ctx), "m2 (Aspernari + Sanala) is mutual and wins");
+	hb("Sanala", { ...san, goals: [{ monster: "m3", w: 4, reason: "guide row" }] });
 	vm.runInContext("state.turn = null; state.goals_cache = null", ctx);
 	const seq = [];
 	for (let i = 0; i < 4; i++) {
@@ -936,14 +908,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		seq.push(vm.runInContext("state.turn.who + ':' + state.directive.monster", ctx));
 		vm.runInContext("state.turn.end = Date.now() - 1", ctx);
 	}
-	assert(seq.join() === "Sanala:m1,Aspernari:m2,Torlis:m3,Sanala:m1", `turns rotate through all three (${seq})`);
+	assert(seq.join() === "Torlis:m1,Aspernari:m2,Sanala:m3,Torlis:m1", `turns rotate through all three (${seq})`);
 	// 45) melee follower walks to the leader's target (it used to wait for targets to come to it)
 	const V = vm.runInContext("VERSION", ctx);
 	ctx.G.classes.paladin = ctx.G.classes.paladin || { damage_type: "physical" };
-	Object.assign(character, { name: "Torlis", ...tor, range: 25, map: "main", x: 0, y: 0, rip: false, moving: false });
+	Object.assign(character, { name: "Aspernari", ...asp, range: 25, map: "main", x: 0, y: 0, rip: false, moving: false }); // a short-range follower
 	vm.runInContext("state.partners = {}; state.errand = null", ctx);
-	hb("Sanala", { ...san, x: 40, y: 0, target: "m45" }); hb("Aspernari", { ...asp, x: 40, y: 10 });
-	ctx.parent.entities.m45 = { id: "m45", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x: 200, y: 0, target: "Sanala" };
+	hb("Torlis", { ...tor, x: 40, y: 0, target: "m45" }); hb("Sanala", { ...san, x: 40, y: 10 });
+	ctx.parent.entities.m45 = { id: "m45", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x: 200, y: 0, target: "Torlis" };
 	const dist_save = ctx.distance, move_save = ctx.move, moved = [];
 	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 	ctx.move = (x, y) => moved.push([Math.round(x), Math.round(y)]);
@@ -1142,7 +1114,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	delete ctx.parent.entities.b1;
 	handlers.cm({ name: "Torlis", message: { k: "tgt", id: "zz" } });
 	assert(vm.runInContext("state.partners.Torlis.target", ctx) === "zz", "a tgt message updates that member's target at once");
-	vm.runInContext("CFG.party.tank_first = false", ctx);
 
 	// 53) class skills: burst at full MP on a big target; priest absorbs for a hurt non-tank; paladin mana shield
 	ctx.G.skills.burst = { ratio: 0.555 }; ctx.G.skills.absorb = { range: 240, mp: 200 }; ctx.G.skills.mshield = { mp: 0 };
@@ -1197,9 +1168,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null); character.slots = {};
 	// 55) follower with nothing to hit takes its own monster of the leader's pack near the leader
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", x: 0, y: 0, map: "main", rip: false, hp: 2500, max_hp: 2500, attack: 180, range: 200 });
-	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; state.fsafe_at = 0; CFG.party.tank_first = true", ctx);
-	hb("Sanala", { ...san, level: 1, x: 40, y: 0, target: null, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-	hb("Torlis", { ...tor, x: 40, y: 0 });
+	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; state.fsafe_at = 0", ctx);
+	hb("Sanala", { ...san, level: 1, x: 40, y: 0, target: null });
+	hb("Torlis", { ...tor, x: 40, y: 0, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
 	ctx.parent.entities.g55 = { id: "g55", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 120, y: 0, target: null };
 	const atk55 = []; ctx.attack = (e) => (atk55.push(e.id), Promise.resolve());
 	ctx.can_attack = () => true; ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -1213,7 +1184,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.entities.g55.x = 900; atk55.length = 0;
 	vm.runInContext("inflight.attack = false; change_target(null); follower_tick()", ctx);
 	assert(!atk55.includes("g55"), "...but not one beyond wait_radius of the leader");
-	vm.runInContext("CFG.party.tank_first = false", ctx);
 	delete ctx.parent.entities.g55; ctx.distance = dist_save;
 	// 56) transfers between our characters don't count as income/spending
 	ctx.send_cm = () => Promise.resolve();
@@ -1345,9 +1315,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("CFG.model_distrust = 2", ctx);
 	const g62 = vm.runInContext("calib_factor('newmob')", ctx);
 	assert(Math.abs(g62 - 0.5) < 1e-9, `no fights against it: assumed to deal twice the prediction (${g62})`);
-	vm.runInContext("state.calib['bad62'] = { ratio: 3, n: 3, pred: 100, act: 300 }", ctx);
+	vm.runInContext("state.calib['bad62@p'] = { ratio: 3, n: 3, pred: 100, act: 300 }", ctx);
 	assert(Math.abs(vm.runInContext("calib_factor('newmob')", ctx) - 1 / 3) < 1e-9 && Math.abs(vm.runInContext("calib_factor('bad62')", ctx) - 1 / 3) < 1e-9, "...or as bad as the worst monster measured; and three fights are enough to count");
-	vm.runInContext("delete state.calib['bad62']; CFG.model_distrust = 1", ctx);
+	vm.runInContext("delete state.calib['bad62@p']; CFG.model_distrust = 1", ctx);
 	vm.runInContext("incident('croc', 0.8)", ctx);
 	assert(Math.abs(vm.runInContext("danger_of('croc')", ctx) - 1.2) < 1e-9, "a flee multiplies the safety by 0.8");
 	vm.runInContext("incident('croc', 0.6)", ctx);
@@ -1365,7 +1335,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("calib_tick()", ctx);
 	delete ctx.parent.entities.k62; ctx.get_targeted_monster = () => null;
 	vm.runInContext("calib_tick()", ctx);
-	assert(vm.runInContext("state.calib.croc && state.calib.croc.n === 1 && Math.round(state.calib.croc.act) === 77", ctx), "a fight's hits are recorded when the target dies");
+	assert(vm.runInContext("state.calib['croc@p'] && state.calib['croc@p'].n === 1 && Math.round(state.calib['croc@p'].act) === 77", ctx), "a fight's hits are recorded when the target dies");
 	assert(/calibration x/.test(vm.runInContext("why_not('croc'); calib_text('croc')", ctx)), "why_not/report show the calibration");
 	vm.runInContext("state.calib = {}; state.calib_all = { ratio: 1, n: 0 }; state.danger = {}; state.danger_at = {}", ctx);
 	// 63) stand: buys a stand, opens it, lists the most valuable spare at 3x, cuts stale prices to the floor, notices sales
@@ -1403,12 +1373,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("stand_close()", ctx);
 	assert(closes.length === 1 && !character.stand, "stand closed before a trip");
 	character.items = Array(42).fill(null); character.slots = {}; vm.runInContext("state.stand = {}", ctx);
-	// 64) melee stays engaged: no drift back to the leader while on a target near it; walks break off for a fight
+	// 64) a short-range follower stays engaged: no drift back to the leader while on a target near it; walks break off for a fight
 	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", range: 25, x: 160, y: 0, map: "main", rip: false, moving: false, hp: 3000, max_hp: 3000, s: {} });
+	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", range: 25, x: 160, y: 0, map: "main", rip: false, moving: false, hp: 3000, max_hp: 3000, s: {} });
 	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; smart_depth = 0; last_move = 0", ctx);
-	hb("Sanala", { ...san, level: 1, x: 0, y: 0, target: "m64" }); hb("Aspernari", { ...asp, x: 0, y: 30 });
-	ctx.parent.entities.m64 = { id: "m64", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x: 175, y: 0, target: "Sanala" };
+	hb("Torlis", { ...tor, x: 0, y: 0, target: "m64" }); hb("Sanala", { ...san, x: 0, y: 30 });
+	ctx.parent.entities.m64 = { id: "m64", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, x: 175, y: 0, target: "Torlis" };
 	const mv64 = []; ctx.move = (x, y) => mv64.push([Math.round(x), Math.round(y)]);
 	const at64 = []; ctx.attack = (e) => (at64.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
 	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
@@ -1428,46 +1398,35 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(!stops64.length, "never during an errand (town)");
 	vm.runInContext("smart_depth = 0; state.pack = null", ctx);
 	delete ctx.parent.entities.m64; ctx.distance = dist_save; ctx.stop = (a) => calls.push("stop:" + a);
-	// 65) assist the tank: the tank picks and announces; the mage follower and a non-tank leader hit its target
+	// 65) assist the tank: the tank (the leader) announces its target; the followers hit it
 	ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 	ctx.G.monsters.goo.aggro = 0;
 	const cms65 = []; ctx.send_cm = (to, m) => (cms65.push([to.join(), m.k, m.id]), Promise.resolve());
-	// Torlis (tank) following Sanala: picks the goo near her, broadcasts it
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", range: 25, x: 0, y: 0, map: "main", rip: false, moving: false, hp: 3000, max_hp: 3000, attack: 300, s: {} });
-	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; announced = null; state.fsafe_at = 0; CFG.party.tank_first = true", ctx);
-	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: "far65", v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
+	vm.runInContext("state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; announced = null; state.fsafe_at = 0", ctx);
+	hb("Sanala", { ...san, level: 1, x: 20, y: 0, v: V });
 	hb("Aspernari", { ...asp, x: 20, y: 30, v: V });
 	ctx.parent.entities.g65 = { id: "g65", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 120, y: 0, target: null };
 	ctx.parent.entities.far65 = { id: "far65", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 280, y: 0, target: null };
 	const at65 = []; ctx.attack = (e) => (at65.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
-	vm.runInContext("inflight.attack = false; follower_tick()", ctx);
-	// v24.24: the leader's untouched pick first (it holds fire for us) — one monster pulled, by the tank
-	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "far65" && /Sanala/.test(to) && /Aspernari/.test(to)), `the tank takes the leader's untouched pick and announces it (${JSON.stringify(cms65)})`);
-	cms65.length = 0;
-	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: null, v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-	vm.runInContext("inflight.attack = false; announced = null; follower_tick()", ctx);
-	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "g65" && /Sanala/.test(to) && /Aspernari/.test(to)), `no pick from the leader: the tank picks its own and announces it to everyone (${JSON.stringify(cms65)})`);
-	// Aspernari (follower, not the tank) assists Torlis instead of hitting the leader's target
+	vm.runInContext("announce_target(parent.entities.g65)", ctx);
+	assert(cms65.some(([to, k, id]) => k === "tgt" && id === "g65" && /Sanala/.test(to) && /Aspernari/.test(to)), `the tank announces its pick to everyone (${JSON.stringify(cms65)})`);
+	// Aspernari (a follower) hits the target the tank announced
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", range: 200, x: 20, y: 30, hp: 2500, max_hp: 2500 });
 	vm.runInContext("state.partners = {}", ctx);
-	hb("Sanala", { ...san, level: 1, x: 20, y: 0, target: "far65", v: V, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-	hb("Torlis", { ...tor, x: 100, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000 });
+	hb("Sanala", { ...san, level: 1, x: 20, y: 0, v: V });
+	hb("Torlis", { ...tor, x: 100, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
 	handlers.cm({ name: "Torlis", message: { k: "tgt", id: "g65" } });
 	ctx.parent.entities.g65.target = "Torlis"; at65.length = 0;
 	vm.runInContext("inflight.attack = false; CFG.party.heal_at = 0; follower_tick(); CFG.party.heal_at = 0.75", ctx);
-	assert(at65.includes("g65") && !at65.includes("far65"), `a follower hits the tank's target, not the leader's (${at65})`);
-	// tank away (errand): back to the leader's target
-	hb("Torlis", { ...tor, x: 100, y: 0, v: V, armor: 400, resistance: 300, max_hp: 6000, hp: 6000, errand: "town" });
-	ctx.parent.entities.far65.target = "Sanala"; at65.length = 0;
-	vm.runInContext("inflight.attack = false; CFG.party.heal_at = 0; follower_tick(); CFG.party.heal_at = 0.75", ctx);
-	assert(at65.includes("far65"), `with the tank away, the leader's target is used (${at65})`);
-	// non-tank party (no paladin near): caller_target is null
+	assert(at65.includes("g65") && !at65.includes("far65"), `a follower hits the tank's target, nothing untouched (${at65})`);
+	// no tank online: caller_target is null
 	vm.runInContext("delete state.partners.Torlis", ctx);
-	assert(vm.runInContext("caller_target() === null && !i_am_tank()", ctx), "without a tank nothing changes");
+	assert(vm.runInContext("caller_target() === null && !i_am_tank()", ctx), "without a tank there is no target to assist");
 	for (const id of ["g65", "far65"]) delete ctx.parent.entities[id];
 	ctx.distance = dist_save; ctx.send_cm = () => Promise.resolve();
 	// 66) watchdog: frozen leader, no-progress leader (3rd time → town), lost follower; never during errands/parked
-	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 1, x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
 	vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; state.recovering = false; smart_depth = 0; hist.ev = []; wd.acts = []; wd.lost_since = null", ctx);
 	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}", ctx);
 	// v23.0: progress = our own hits/kills (party xp arrives from partners' kills anywhere)
@@ -1493,7 +1452,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("hist.ev.length", ctx) === 0, "no intervention during an errand or while parked");
 	// lost follower: other map than the leader for > lost_min
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", map: "halloween", x: 0, y: 0 });
-	hb("Sanala", { ...san, level: 1, map: "main", x: 0, y: 0 });
+	hb("Torlis", { ...tor, map: "main", x: 0, y: 0 });
 	town66.length = 0;
 	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; watchdog()", ctx);
 	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) === "regroup", "lost follower regroups via town");
@@ -1834,12 +1793,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.errand = null; state.gear_skip = {}; state.fetched = {}", ctx);
 	character.items = Array(42).fill(null);
 	// 80) v17 report: party sections say each fact once; not-at-pack is visible; merrit counts parcels from history
-	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, gold: 3.8e6, map: "winterland", x: 4, y: -602, rip: false, s: { monsterhunt: { id: "croc", c: 90 } } });
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 51, gold: 3.8e6, map: "winterland", x: 4, y: -602, rip: false, s: { monsterhunt: { id: "croc", c: 90 } } });
 	character.items = Array(42).fill(null); character.slots = {};
 	vm.runInContext("state.partners = {}; state.merchant = null; state.pack = { mtype: 'croc', map: 'main', boundary: [0,0,400,400], directive: 'mutual: hunt' }; state.directive = { monster: 'croc', reason: 'mutual: hunt' }; state.safe = { croc: { ttk: 1, xp: 1 } }; state.shared = { mutual: ['croc ~0.2h (x)'], too_slow: ['goo: slow'] }", ctx);
 	ctx.G.items.tracker = ctx.G.items.tracker || { type: "tracker" };
 	character.items[0] = { name: "monstertoken", q: 1 };
-	hb("Torlis", { ...tor, level: 60, map: "winterland", x: 20, y: -600 }); // Sanala (51) leads
+	hb("Sanala", { ...san, level: 60, map: "winterland", x: 20, y: -600 }); // Torlis (the tank) leads
 	const sec80 = vm.runInContext("report_lines(false, true)", ctx).join("\n");
 	assert(/^fighting: → croc @ main \(now at winterland\)$/m.test(sec80), `not at the pack: shown as heading there (${sec80.split("\n")[0]})`);
 	assert(!/mutual/.test(sec80) && !/directive/.test(sec80) && !/too slow/.test(sec80) && !/^tokens:/m.test(sec80), `leader section: no directive/goals repeats, no separate tokens line:\n${sec80}`);
@@ -1965,8 +1924,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("gather = null", ctx); ctx.send_cm = cm_s;
 	}
 	character.slots = {}; vm.runInContext("state.bank_gear = []", ctx);
-	// 88) probing: picks a monster just over the limit that beats the best xp/s; guarded start; raised flee; endings
-	Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 1000, attack: 100, frequency: 1,
+	// 88) probing: picks a monster just over the limit that beats the best xp/s; guarded start; endings
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 1000, attack: 100, frequency: 1,
 		armor: 0, resistance: 0, range: 200, map: "main", x: 0, y: 0, rip: false, s: {} });
 	character.items = Array(42).fill(null); character.items[0] = { name: "hpot1", q: 200 }; character.items[1] = { name: "mpot1", q: 200 };
 	vm.runInContext("state.partners = {}; state.merchant = null; state.probe = null; state.probe_at = 0; state.gear_skip = {}; state.calib = {}; state.calib_all = { ratio: 1, n: 0 }; state.danger = {}; state.directive = null; state.recovering = false; state.errand = null; state.cooldown = {}; live_cache.clear()", ctx);
@@ -1978,35 +1937,28 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.maps.main.monsters.push({ type: "edge", count: 6, boundary: [600, 600, 800, 800] }, { type: "wall", count: 6, boundary: [900, 900, 1000, 1000] }, { type: "meh", count: 6, boundary: [1100, 1100, 1200, 1200] });
 	const ro = (m) => vm.runInContext(`risk_over('${m}')`, ctx);
 	assert(ro("edge") > 1 && ro("edge") <= 2 && ro("wall") > 2, `risk ratios: edge x${ro("edge").toFixed(2)}, wall x${ro("wall").toFixed(2)}`);
-	vm.runInContext("(state.best_score = 50, state.best_solo = solo_now(), state.best_at = Date.now())", ctx);
-	assert(vm.runInContext("probe_ready()", ctx), "solo, healthy, stocked → a probe may start");
+	vm.runInContext("(state.best_score = 50, state.best_at = Date.now())", ctx);
+	assert(vm.runInContext("probe_ready()", ctx), "the leader, healthy, stocked → a probe may start");
 	assert(vm.runInContext("probe_pick().mt", ctx) === "edge", "picks the over-limit monster that beats the best xp/s (not the wall, not the poor one)");
-	hb("Torlis", { ...tor, x: 900, y: 900, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
+	hb("Sanala", { ...san, x: 900, y: 900, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
 	assert(!vm.runInContext("probe_ready()", ctx), "a member far away blocks the probe");
-	hb("Torlis", { ...tor, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 20, mp: 200 } });
+	hb("Sanala", { ...san, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 20, mp: 200 } });
 	assert(!vm.runInContext("probe_ready()", ctx), "a member low on potions blocks the probe");
-	hb("Torlis", { ...tor, level: 60, attack: 1, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } }); // Sanala (51) leads; negligible damage keeps edge over the limit
+	hb("Sanala", { ...san, level: 60, attack: 1, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } }); // negligible damage keeps edge over the limit
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("state.probe && state.probe.mtype === 'edge' && state.pack.probe", ctx), "pick_pack starts the probe");
-	assert(vm.runInContext("flee_at()", ctx) === 0.55, "flee threshold raised during the probe");
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("state.pack.mtype === 'edge' && !state.probe_at_reset", ctx), "the probe holds the pack through repicks");
 	// a member under 40% → failure, 6h cooldown + incident
-	hb("Torlis", { ...tor, level: 60, x: 20, y: 0, hp: 1000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
+	hb("Sanala", { ...san, level: 60, x: 20, y: 0, hp: 1000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
 	vm.runInContext("probe_check()", ctx);
 	assert(vm.runInContext("!state.probe && skipped('probe:edge') && state.danger.edge < 1 && state.gear_skip['probe:edge'] - Date.now() > 5 * 3600000", ctx), "member under 40% HP → failure, 6h cooldown, incident");
 	// time's up → success, 2h cooldown
-	hb("Torlis", { ...tor, level: 60, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
+	hb("Sanala", { ...san, level: 60, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } });
 	vm.runInContext("state.gear_skip = {}; state.danger = {}; state.probe = { mtype: 'edge', start: Date.now() - 700000, until: Date.now() - 1, ratio: 1.4, prof: { probe: true } }", ctx);
 	vm.runInContext("probe_check()", ctx);
 	const pe = vm.runInContext("hist.ev.filter((e) => e.type === 'probe').pop()", ctx);
 	assert(pe && pe.result === "ok" && vm.runInContext("state.gear_skip['probe:edge'] - Date.now() < 2.1 * 3600000", ctx), "time up → success, 2h cooldown, logged");
-	// a follower raises its flee threshold from the leader's probe flag
-	Object.assign(character, { name: "Torlis", ...tor, level: 60 });
-	vm.runInContext("state.partners = {}", ctx);
-	hb("Sanala", { ...san, level: 51, pack: { mtype: "edge", map: "main", boundary: [600, 600, 800, 800], probe: true } });
-	vm.runInContext("state.pack = { mtype: 'edge', map: 'main', boundary: [600,600,800,800], probe: true }", ctx);
-	assert(vm.runInContext("is_follower() && flee_at() === 0.55", ctx), "followers flee at 55% while the leader probes");
 	vm.runInContext("state.pack = null; state.probe = null; state.partners = {}; state.gear_skip = {}; G.maps.main.monsters = G.maps.main.monsters.filter((p) => !['edge','wall','meh'].includes(p.type))", ctx);
 	character.items = Array(42).fill(null);
 	// 89) v18.0: the merchant never spends tokens (hands them to the fighter with the fewest); a town task that is due but
@@ -2104,7 +2056,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__h95 = !hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 }); CFG.hunt_min_xp = 0.7; globalThis.__h95", ctx),
 		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept (xp floor off: this is about expiry)");
 	// v18.7: a hunt monster far below the best xp/s we know isn't chased
-	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_score = 800, state.best_solo = solo_now(), state.best_at = Date.now())", ctx);
+	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_score = 800, state.best_at = Date.now())", ctx);
 	assert(!vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v23.5: hunt_min_xp 70% by default — a bee hunt at 300 vs best 800 isn't chased");
 	vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__ok0 = hunt_feasible({ id: 'bee', c: 10 }); CFG.hunt_min_xp = 0.6", ctx);
 	assert(vm.runInContext("globalThis.__ok0", ctx), "hunt_min_xp 0: chased");
@@ -2138,10 +2090,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "main", x: 0, y: 0, rip: false, hp: 2500, max_hp: 2500 });
 	ctx.parent.entities = {};
 	vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; smart_depth = 0; globalThis.__tv = travel; globalThis.__trav = []; travel = (p) => globalThis.__trav.push(p)", ctx);
-	hb("Sanala", { ...san, level: 51, x: 3000, y: 0, errand: "town", pack: { mtype: "snake", map: "main", boundary: [-100, -100, 100, 100] } });
+	hb("Torlis", { ...tor, x: 3000, y: 0, errand: "town", pack: { mtype: "snake", map: "main", boundary: [-100, -100, 100, 100] } });
 	vm.runInContext("follower_tick()", ctx);
 	assert(vm.runInContext("is_follower() && globalThis.__trav.length === 0", ctx), "leader in town: follower stays at the pack");
-	hb("Sanala", { ...san, level: 51, x: 3000, y: 0, errand: null, pack: { mtype: "snake", map: "main", boundary: [-100, -100, 100, 100] } });
+	hb("Torlis", { ...tor, x: 3000, y: 0, errand: null, pack: { mtype: "snake", map: "main", boundary: [-100, -100, 100, 100] } });
 	vm.runInContext("follower_tick()", ctx);
 	assert(vm.runInContext("globalThis.__trav.length === 1", ctx), "leader not on an errand and far: follower follows it");
 	vm.runInContext("travel = globalThis.__tv; state.partners = {}", ctx);
@@ -2166,18 +2118,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.set = set_s; ctx.get = get_s;
 	}
 	// 99) v19.3: the leader keeps a target it's walking to; a boss still overrides
+	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 51 }); // the leader
 	vm.runInContext("state.partners = {}", ctx);
-	hb("Torlis", { ...tor, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
+	hb("Sanala", { ...san, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
 	vm.runInContext(`CFG.travel.commit_min = 10; state.goals_cache = null; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
 		state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.safe.arcticbee = { ttk: 1, xp: 1 };
 		globalThis.__ps = pick_shared; globalThis.__hd = hunt_directive; globalThis.__bd = boss_directive;
 		pick_shared = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], reason: "mutual" });
 		hunt_directive = () => null; boss_directive = () => null; refresh_directive()`, ctx);
 	assert(vm.runInContext("state.directive.monster === 'arcticbee' && state.dir_held && state.dir_held.monster === 'bee'", ctx), "committed: arcticbee kept, bee noted as waiting");
-	hb("Torlis", { ...tor, level: 60, goals: [] }); // the goal finished: no member lists arcticbee any more
+	hb("Sanala", { ...san, level: 60, goals: [] }); // the goal finished: no member lists arcticbee any more
 	vm.runInContext("state.goals_cache = null; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'bee'", ctx), "a finished goal ends the commitment at once");
-	hb("Torlis", { ...tor, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
+	hb("Sanala", { ...san, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
 	vm.runInContext(`state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] }; state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.goals_cache = null; refresh_directive()`, ctx);
 	vm.runInContext("state.dir_lock.until = Date.now() - 1; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'bee'", ctx), "commitment over: switches to bee");
@@ -2247,21 +2200,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.slots = {}; character.items = Array(42).fill(null);
 		vm.runInContext("state.partners = {}; my_gear_cache = null", ctx);
 	}
-	// 102) v20.0: spread on easy monsters; unexplained deaths; spending categories; probe reasons; gear leftovers
+	// 102) v20.0: unexplained deaths; spending categories; probe reasons; gear leftovers
 	{
-		// spread: an easy pack → the follower takes its own goo, not the leader's
 		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", x: 0, y: 0, map: "main", rip: false, hp: 2500, max_hp: 2500, attack: 180, range: 200, s: {} });
-		vm.runInContext("CFG.party.spread = true; state.partners = {}; state.merchant = null; state.errand = null; state.spread_c = null; smart_depth = 0", ctx);
-		hb("Sanala", { ...san, level: 1, x: 40, y: 0, target: "gl", pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-		ctx.parent.entities = {
-			gl: { id: "gl", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 60, y: 0, target: null },
-			gm: { id: "gm", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 90, y: 20, target: null },
-		};
-		const at102 = []; const atk_s = ctx.attack; ctx.attack = (e) => (at102.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
-		vm.runInContext("CFG.party.tank_first = true; inflight.attack = false; follower_tick()", ctx);
-		assert(at102.length === 0, `v24.51: no spread — a follower never starts on an untouched monster, easy or not (${at102})`);
-		ctx.attack = atk_s; ctx.parent.entities = {};
-		vm.runInContext("CFG.party.spread = false; state.partners = {}", ctx);
+		vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; smart_depth = 0", ctx);
+		ctx.parent.entities = {};
 		// a death with no damage seen doesn't blame the pack
 		vm.runInContext("pmring.hits = []; state.danger = {}; state.cooldown = {}; state.dead_handled = false; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		const d102 = vm.runInContext("hist.ev.filter((e) => e.type === 'death').pop()", ctx);
@@ -2275,10 +2218,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("spend_cat_of(CFG.hp_pot) === 'potions'", ctx), "potions categorised");
 		vm.runInContext("hist.buckets = globalThis.__hb3", ctx);
 		// probe status says why it isn't running
-		Object.assign(character, { name: "Sanala", ...san, level: 51, hp: 1000, max_hp: 1000 });
+		Object.assign(character, { name: "Torlis", ...tor, level: 51, hp: 1000, max_hp: 1000 });
 		vm.runInContext("state.partners = {}; state.probe = null; state.probe_at = 0; state.errand = null", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 2000, y: 0, hp: 3000, max_hp: 3000 });
-		assert(/waiting for Torlis/.test(vm.runInContext("probe_why()", ctx)), `probe_why names who's missing (${vm.runInContext("probe_why()", ctx)})`);
+		hb("Sanala", { ...san, level: 60, x: 2000, y: 0, hp: 3000, max_hp: 3000 });
+		assert(/waiting for Sanala/.test(vm.runInContext("probe_why()", ctx)), `probe_why names who's missing (${vm.runInContext("probe_why()", ctx)})`);
 		vm.runInContext("state.partners = {}", ctx);
 		// gear: a guide-held input is worn only when 15%+ better
 		ctx.G.items.cA = { type: "chest", armor: 100 }; ctx.G.items.cB = { type: "chest", armor: 110 }; ctx.G.items.cC = { type: "chest", armor: 130 };
@@ -2303,77 +2246,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.bank_gear[0].name === 'fresh'", ctx), "off a bank floor, a lingering character.bank doesn't overwrite the snapshot");
 		character.bank = undefined; vm.runInContext("state.bank_gear = []; state.bank_seen = {}; state.bank_at = 0; state.bank_by = null", ctx);
 	}
-	// 103) v21.0 split mode: the leader splits on easy content, regroups for a due probe (with a timeout); a follower
-	// farms its own spot (occupied spots score lower) and follows when it finds nothing
-	{
-		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.merchant = null; state.probe = null; state.directive = null; state.split_on = false; state.regroup_since = 0", ctx);
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 1000, max_hp: 1000 });
-		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
-		vm.runInContext("state.probe_at = Date.now(); split_decide()", ctx);
-		assert(vm.runInContext("state.split_on && split_now()", ctx), "leader: nothing special going on → split");
-		// v23.1: a due probe first checks (for the whole party) whether there's anything to probe
-		vm.runInContext("globalThis.__pp = probe_pick; probe_pick = () => null; state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()", ctx);
-		assert(vm.runInContext("state.split_on && !state.regroup_since && Date.now() - state.probe_at < 5000 && state.probe_none && state.probe_none.dry", ctx),
-			"probe due but nothing to probe → no regroup, next check in every_min");
-		vm.runInContext("probe_pick = () => ({ mt: 'edge', area: {}, est: 1, r: 1.4 }); state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()", ctx);
-		assert(vm.runInContext("!state.split_on && state.regroup_since > 0", ctx), "probe due with a candidate → regroup");
-		vm.runInContext("state.regroup_since = Date.now() - CFG.party.split.regroup_max_min * 60000 - 1; split_decide()", ctx);
-		assert(vm.runInContext("state.split_on && Date.now() - state.probe_at < 5000", ctx), "nobody came back in time → probe skipped this round, split again");
-		vm.runInContext("probe_pick = globalThis.__pp", ctx);
-		vm.runInContext("state.directive = { monster: 'franky', boss: true }; split_decide()", ctx);
-		assert(vm.runInContext("!state.split_on", ctx), "a boss → together");
-		vm.runInContext("state.directive = null; state.split_on = false", ctx);
-		// follower side
-		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60 });
-		vm.runInContext("state.partners = {}; state.split_fallback = 0", ctx);
-		hb("Sanala", { ...san, level: 51, split: true, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-		assert(vm.runInContext("split_now() && !is_follower()", ctx), "the leader's split flag frees the follower");
-		vm.runInContext("state.split_fallback = Date.now() + 60000", ctx);
-		assert(vm.runInContext("is_follower()", ctx), "a follower in fallback (nothing to farm alone) follows again");
-		hb("Sanala", { ...san, level: 51, split: false });
-		vm.runInContext("state.split_fallback = 0", ctx);
-		assert(vm.runInContext("is_follower()", ctx), "regroup: the follower follows");
-		// v21.1: while split, a pack's measurement counts our own kills, not the shared xp we receive
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51 });
-		vm.runInContext("state.partners = {}; state.split_on = true; state.measured = {}; state.measured_solo = {}", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
-		vm.runInContext(`state.session = { key: "main:0,0,10,10", mtype: "goo", est: 0, xp: 9000, kx: 300, split: true, start: Date.now() - 100000 }; end_session()`, ctx);
-		assert(Math.round(vm.runInContext("state.measured_solo['main:0,0,10,10']", ctx)) === 3 && vm.runInContext("state.measured['main:0,0,10,10'] === undefined", ctx),
-			`split: own kills (300 xp / 100s = 3) in the solo table (v23.1), not received xp 90 (${vm.runInContext("state.measured_solo['main:0,0,10,10']", ctx)})`);
-		vm.runInContext(`state.session = { key: "main:0,0,10,11", mtype: "goo", est: 0, xp: 9000, kx: 300, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
-		assert(vm.runInContext("state.measured['main:0,0,10,11'] === undefined", ctx), "a measurement that spans a mode change is dropped");
-		vm.runInContext("state.partners = {}; CFG.party.split.enabled = false; state.split_on = false; state.measured = {}", ctx);
-	}
 	// 104) v21.2: a fighter's own upgrade project is dropped once the merchant runs projects (its copies are freed)
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest" });
 	vm.runInContext("state.upg = { name: 'wshield', to: 7, for: 'Aspernari', slot: 'offhand', gain: 38, cost: 12000 }; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0 }", ctx);
 	assert(vm.runInContext("upgrade_due() === false && state.upg === null", ctx), "merchant online: the fighter's project is dropped");
 	vm.runInContext("state.merchant = null", ctx);
-	// v21.3: split → a guide farm row doesn't set the spot
+	// only the leader probes
 	{
-		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60, s: {} });
-		vm.runInContext(`CFG.party.split.enabled = true; state.partners = {}; state.directive = null; state.dir_lock = null; state.goals_cache = null;
-			globalThis.__lgf = live_guide_farm; globalThis.__hd2 = hunt_directive; globalThis.__qd = quest_directive; globalThis.__bd2 = boss_directive;
-			live_guide_farm = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], count: 5, reason: "guide bees", guide_safe: true });
-			hunt_directive = () => null; quest_directive = () => null; boss_directive = () => null;`, ctx);
-		hb("Sanala", { ...san, level: 51, split: true });
-		vm.runInContext("refresh_directive()", ctx);
-		assert(vm.runInContext("state.directive === null", ctx), `split: the guide farm row doesn't set the spot (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
-		// v22.1: a quest/hunt monster a partner with an earlier name already farms is left to it while split
-		vm.runInContext("hunt_directive = () => ({ monster: 'minimush', map: 'halloween', boundary: [0,0,50,50], reason: 'wgloves spores' })", ctx);
-		hb("Sanala", { ...san, level: 51, split: true });
-		hb("Aspernari", { ...asp, x: 0, y: 0, pack: { mtype: "minimush", map: "halloween", boundary: [0, 0, 50, 50] } });
-		vm.runInContext("refresh_directive()", ctx);
-		assert(vm.runInContext("state.directive === null && state.dir_dup && state.dir_dup.by === 'Aspernari'", ctx), `Torlis leaves minimush to Aspernari (${vm.runInContext("JSON.stringify(state.dir_dup)", ctx)})`);
-		hb("Aspernari", { ...asp, x: 0, y: 0, pack: { mtype: "bat", map: "cave", boundary: [0, 0, 50, 50] } });
-		vm.runInContext("refresh_directive()", ctx);
-		assert(vm.runInContext("state.directive && state.directive.monster === 'minimush'", ctx), "nobody else on it: Torlis takes it");
-		vm.runInContext("hunt_directive = () => null; state.directive = null; state.dir_lock = null", ctx);
-		assert(vm.runInContext("probe_ready() === false && probe_why() === 'only the leader probes'", ctx), "split frees Torlis from following but not into probing (Sanala leads)");
-		hb("Sanala", { ...san, level: 51, split: false });
-		vm.runInContext("state.gprog = null; refresh_directive()", ctx);
-		vm.runInContext(`live_guide_farm = globalThis.__lgf; hunt_directive = globalThis.__hd2; quest_directive = globalThis.__qd; boss_directive = globalThis.__bd2;
-			CFG.party.split.enabled = false; state.partners = {}; state.directive = null`, ctx);
+		vm.runInContext("state.partners = {}; state.directive = null; state.dir_lock = null; state.goals_cache = null", ctx);
+		hb("Torlis", { ...tor, level: 60 });
+		assert(vm.runInContext("is_follower() && probe_ready() === false && probe_why() === 'only the leader probes'", ctx), "a follower never probes (Torlis leads)");
+		vm.runInContext("state.partners = {}", ctx);
 	}
 	// 105) v22.0: guide off (the default) → no guide reads, rows, farm rows, guide quests or held inputs
 	{
@@ -2401,30 +2284,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items = Array(42).fill(null);
 		vm.runInContext("state.needs = new Map(); state.bank_seen = {}", ctx);
 
-		// (2) farming alone (split) → fights judged solo: no partner damage, tank or priest heals
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, attack: 100, frequency: 1, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0 });
 		ctx.G.classes.mage = { ...(ctx.G.classes.mage || {}), damage_type: "magical" };
 		ctx.G.monsters.solo_t = { xp: 100, hp: 1000, attack: 30, frequency: 1, range: 20, speed: 10, respawn: 5, armor: 0, resistance: 0 };
-		vm.runInContext("state.partners = {}; state.split_on = false; live_cache.clear(); state.spread_c = null", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 20, y: 0, attack: 900, frequency: 1, damage_type: "physical", armor: 500, resistance: 300, max_hp: 6000, hp: 6000, v: vm.runInContext("VERSION", ctx) });
-		const party_ttk = vm.runInContext("fight_math(G.monsters.solo_t).ttk", ctx);
-		vm.runInContext("CFG.party.split.enabled = true; state.split_on = true", ctx);
-		const sf = vm.runInContext("fight_math(G.monsters.solo_t)", ctx);
-		assert(sf.solo === true && sf.ttk > party_ttk * 3, `split: Torlis near doesn't count (solo ttk ${sf.ttk.toFixed(1)}s vs ${party_ttk.toFixed(1)}s with him)`);
-		vm.runInContext("state.split_on = false; CFG.party.split.enabled = false", ctx);
-		// spread: a monster the party kills in < 3s but we'd need 10s alone isn't ours to take
-		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, attack: 100, frequency: 1, x: 0, y: 0 });
-		hb("Sanala", { ...san, level: 51, x: 30, y: 0, attack: 900, frequency: 1, damage_type: "magical" });
-		vm.runInContext("state.spread_c = null", ctx);
-		assert(!vm.runInContext("spread_ok('solo_t')", ctx), "spread: judged alone (10s solo), not with the party's damage");
-		vm.runInContext("state.partners = {}; state.spread_c = null; live_cache.clear()", ctx);
+		vm.runInContext("state.partners = {}; live_cache.clear()", ctx);
 
-		// (3) one measurement unit: together = party kills (kill_credit), split = own kills
-		vm.runInContext("state.partners = {}; state.split_on = false; state.measured = {}", ctx);
-		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, split: false, start: Date.now() - 100000 };
+		// (3) the measurement unit: party kills (kill_credit)
+		vm.runInContext("state.partners = {}; state.measured = {}", ctx);
+		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, start: Date.now() - 100000 };
 			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
 		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
-		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
+		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:1,1,9,8'] === undefined", ctx), "together with no kill_credit in the session: not measured");
 		vm.runInContext("state.measured = {}", ctx);
 		// the socket hook: kill_credit listener registered once, the previous script's replaced; emit re-wrapped after a reload
@@ -2469,15 +2338,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 107) v23.1 medium fixes
 	{
 		const V = vm.runInContext("VERSION", ctx);
-		// per-mode measurement tables: split reads the solo table, together the party table
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, attack: 100, frequency: 1, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
-		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.measured = { 'main:100,100,400,400': 11 }; state.measured_solo = { 'main:100,100,400,400': 77 }", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 2000, y: 0 });
-		vm.runInContext("state.split_on = true; state.safe.goo = { ttk: 1, xp: 10 }", ctx);
-		assert(vm.runInContext("score_area('goo', G.maps.main.monsters[0], { map: 'main', boundary: [100,100,400,400], count: 5 }).score", ctx) === 77, "split: the solo table");
-		vm.runInContext("state.split_on = false", ctx);
-		assert(vm.runInContext("score_area('goo', G.maps.main.monsters[0], { map: 'main', boundary: [100,100,400,400], count: 5 }).score", ctx) === 11, "together: the party table");
-		vm.runInContext("state.measured = {}; state.measured_solo = {}; CFG.party.split.enabled = false", ctx);
+		vm.runInContext("state.partners = {}; state.measured = {}", ctx);
 		// the probe timer is saved
 		{
 			const st = {}; const set_s = ctx.set, get_s = ctx.get;
@@ -2487,11 +2349,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(vm.runInContext(`state.probe_at === ${t0}`, ctx), "probe_at survives a reload");
 			ctx.set = set_s; ctx.get = get_s;
 		}
-		// bosses: judged with the whole party (members away count), engaged only once safe with those here
+		// bosses: judged with the whole party (members away count), engaged only once everyone is here
 		ctx.G.monsters.bossx = { xp: 50000, hp: 100000, attack: 500, frequency: 1, range: 50, speed: 10, respawn: 600, armor: 0, resistance: 0 };
 		vm.runInContext("state.partners = {}", ctx);
 		hb("Torlis", { ...tor, level: 60, x: 3000, y: 0, max_hp: 20000, hp: 20000, armor: 900, resistance: 900, v: V });
-		assert(vm.runInContext("boss_safe('bossx') && !boss_safe('bossx', false)", ctx), "boss: safe with the party (tank away counts), not with whoever is here");
+		assert(vm.runInContext("boss_safe('bossx')", ctx), "boss: safe with the party (the tank, away, counts)");
 		const atk107 = []; const atk_s = ctx.attack; ctx.attack = (e) => (atk107.push(e.id), Promise.resolve());
 		ctx.parent.entities = { b1: { id: "b1", type: "monster", mtype: "bossx", visible: true, hp: 100000, max_hp: 100000, x: 10, y: 0, target: null } };
 		vm.runInContext("inflight.attack = false; boss_tick({ mtype: 'bossx', map: 'main', boundary: [0,0,10,10], boss: true })", ctx);
@@ -2515,7 +2377,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items = Array(42).fill(null);
 		// loot sharing: items per second that reach us = drops ÷ fighters in the party
 		ctx.G.monsters.minimush = { xp: 20, hp: 50, attack: 1, frequency: 1, range: 20, speed: 10, respawn: 5, armor: 0, resistance: 0 };
-		vm.runInContext("G.maps.main.monsters.push({ type: 'minimush', count: 6, boundary: [500, 500, 700, 700] }); state.measured = {}; state.measured_solo = {}", ctx);
+		vm.runInContext("G.maps.main.monsters.push({ type: 'minimush', count: 6, boundary: [500, 500, 700, 700] }); state.measured = {}", ctx);
 		const solo_ips = vm.runInContext("best_source('spores').ips", ctx);
 		hb("Aspernari", { ...asp, x: 3000, y: 0, attack: 0 }); hb("Torlis", { ...tor, level: 60, x: 3000, y: 0, attack: 0 }); // (no damage of theirs: v24.35 counts the party's)
 		const party_ips = vm.runInContext("best_source('spores').ips", ctx);
@@ -2587,13 +2449,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(cm108.filter(([, m]) => m.k === "rrep").length === 2, "a report request and a history request from the same member are both answered");
 		for (const id of ids) vm.runInContext(`report_finish("${id}")`, ctx);
 		ctx.send_cm = scm;
-		// leadership handover: the new leader carries on the split decision and probe clock
-		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.was_leader = false; state.split_on = false; state.probe_at = 0; state.directive = null; state.probe = null", ctx);
-		const pa = Date.now() - 600000;
-		hb("Torlis", { ...tor, level: 60, split: true, probe_at: pa });
-		vm.runInContext("split_decide()", ctx);
-		assert(vm.runInContext(`state.split_on && state.probe_at === ${pa}`, ctx), "a new leader keeps the old one's split and probe clock");
-		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false; state.was_leader = false; state.partners = {}", ctx);
 		// history: a bucket half inside the window counts half
 		{
 			const hb_s = vm.runInContext("hist.buckets", ctx);
@@ -2607,18 +2462,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// upgrade projects skip a piece another member already has at the target level
 		hb("Torlis", { ...tor, level: 60, bag_lv: { wbow: 7 } });
 		assert(vm.runInContext("party_holds_level('wbow', 7) && !party_holds_level('wbow', 8)", ctx), "Torlis carries wbow+7: a +7 project is skipped, +8 isn't");
-		// occupied spots: only partners with an earlier name count
-		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.split_on = false", ctx);
-		Object.assign(character, { name: "Torlis", ...tor, level: 60 });
-		hb("Sanala", { ...san, level: 51, split: true });
-		hb("Aspernari", { ...asp, pack: { mtype: "goo", map: "main", boundary: [100, 100, 400, 400] } });
-		assert(vm.runInContext("occupied('main:100,100,400,400')", ctx), "Torlis: Aspernari (earlier name) farms it → occupied");
 		Object.assign(character, { name: "Aspernari", ...asp });
 		vm.runInContext("state.partners = {}", ctx);
-		hb("Sanala", { ...san, level: 51, split: true });
-		hb("Torlis", { ...tor, level: 60, pack: { mtype: "goo", map: "main", boundary: [100, 100, 400, 400] } });
-		assert(!vm.runInContext("occupied('main:100,100,400,400')", ctx), "Aspernari: Torlis (later name) there doesn't push her off");
-		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}", ctx);
 		character.items = Array(42).fill(null);
 	}
 	// 109) v23.3: the report's checks line flags what looks wrong
@@ -2663,15 +2508,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.safety_mult = 1; state.safety_at = 0; hist.ev = []", ctx);
 		assert(vm.runInContext("CFG.quest_farm_min_xp === 0.7 && CFG.hunt_min_xp === 0.7", ctx), "side goals: 70% of the best xp/s");
 	}
-	// 112) v23.6: party-wide safety when together; a hunt alone doesn't start a trip; side goals vs this pick's best
+	// 112) v23.6: party-wide safety; a hunt alone doesn't start a trip; side goals vs this pick's best
 	{
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false, esize: 30 });
-		vm.runInContext("CFG.party.split.enabled = true; state.partners = {}; state.split_on = false; state.safety_mult = 1.5", ctx);
+		vm.runInContext("state.partners = {}; state.safety_mult = 1.5", ctx);
 		hb("Torlis", { ...tor, level: 60, safety_mult: 1 }); // Torlis died: his limit is back to 35%
-		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.35) < 1e-9, "together: the party's lowest limit (35%)");
-		vm.runInContext("state.split_on = true", ctx);
-		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.525) < 1e-9, "split: our own (35% x 1.5)");
-		vm.runInContext("state.split_on = false; CFG.party.split.enabled = false; state.safety_mult = 1; state.partners = {}", ctx);
+		assert(Math.abs(vm.runInContext("safety_now()", ctx) - 0.35) < 1e-9, "the party's lowest limit (35%)");
+		vm.runInContext("state.safety_mult = 1; state.partners = {}", ctx);
 		// a hunt alone waits for another trip
 		vm.runInContext(`globalThis.__td3 = town_due; globalThis.__tr3 = town_run; globalThis.__runs3 = 0; smart_depth = 0; state.errand = null;
 			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {}; state.regroup_due = false; state.ptown = null;
@@ -2681,83 +2524,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
 		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
 		// side goals compare with this pick's best, not the best rate ever measured
-		vm.runInContext("(state.best_score = 400, state.best_solo = solo_now(), state.best_at = Date.now()); state.measured = { 'main:0,0,1,1': 2000 }", ctx);
+		vm.runInContext("(state.best_score = 400, state.best_at = Date.now()); state.measured = { 'main:0,0,1,1': 2000 }", ctx);
 		assert(vm.runInContext("best_known_xps()", ctx) === 400, "a picker: its current best (400), not an old 2000 measurement");
 		vm.runInContext("state.best_score = 0; state.best_ref = null", ctx);
-		assert(vm.runInContext("best_known_xps() === best_score_for(solo_now()) && best_known_xps() !== 400", ctx), "no fresh pick of our own (a follower): the best spot for how we fight now");
-		vm.runInContext("(state.best_score = 400, state.best_solo = !solo_now(), state.best_at = Date.now()); state.best_ref = null", ctx);
-		assert(vm.runInContext("best_known_xps() !== 400", ctx), "v24.3: a pick made in the other mode (a follower's last split pick) doesn't count");
-		vm.runInContext("(state.best_score = 400, state.best_solo = solo_now(), state.best_at = Date.now() - 700000); state.best_ref = null", ctx);
+		assert(vm.runInContext("best_known_xps() === best_score() && best_known_xps() !== 400", ctx), "no fresh pick of our own (a follower): the best spot, computed");
+		vm.runInContext("(state.best_score = 400, state.best_at = Date.now() - 700000); state.best_ref = null", ctx);
 		assert(vm.runInContext("best_known_xps() !== 400", ctx), "...nor one over 10 min old");
 		vm.runInContext("state.measured = {}; state.best_score = 0", ctx);
-	}
-	// 113) v24.0: split vs together is measured; the leader books its xp intake to the mode it's in and picks the better one
-	{
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
-		vm.runInContext(`CFG.party.split.enabled = true; state.partners = {}; state.was_leader = true; state.split_on = false; state.mode_ab = null;
-			state.probe = null; state.directive = null; state.regroup_since = 0; state.recovering = false; state.probe_at = Date.now(); hist.ev = []`, ctx);
-		hb("Torlis", { ...tor, level: 60, x: 900, y: 900 });
-		vm.runInContext("split_decide(); state.mode_ab.flip_at = 0; mode_ab_tick(10)", ctx);
-		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split' && state.mode_ab.split.s === 0", ctx), "Aspernari offline: nothing booked");
-		vm.runInContext(`Object.assign(state.mode_ab, { since: 0 }); Object.assign(state.mode_ab.split, { s: 1e5, xp: 1e5 }); split_decide()`, ctx);
-		assert(vm.runInContext("state.mode_ab.mode === 'split'", ctx), "...and no switch either (would try together otherwise)");
-		vm.runInContext("state.mode_ab = null", ctx);
-		hb("Aspernari", { ...asp, level: 58, x: -900, y: 900 });
-		vm.runInContext("split_decide()", ctx);
-		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split'", ctx), "no data yet: split (the default), choice made now");
-		vm.runInContext("state.mode_ab.flip_at = Date.now()", ctx);
-		vm.runInContext("mode_ab_tick(10)", ctx);
-		assert(vm.runInContext("state.mode_ab.split.s === 0", ctx), "the first settle_min after a split/regroup isn't booked");
-		vm.runInContext("state.mode_ab.flip_at = 0; for (let i = 0; i < 60; i++) mode_ab_tick(10)", ctx);
-		assert(vm.runInContext("state.mode_ab.split.s === 60 && state.mode_ab.split.xp === 600 && state.mode_ab.together.s === 0", ctx), "a second of split farming is booked to split");
-		const old = "Date.now() - CFG.party.split.ab.hold_min * 60000 - 1", need = "CFG.party.split.ab.sample_min * 60";
-		vm.runInContext(`state.mode_ab.since = ${old}; split_decide()`, ctx);
-		assert(vm.runInContext("state.split_on", ctx), "the current mode is measured first (60s < sample_min)");
-		vm.runInContext(`Object.assign(state.mode_ab.split, { s: ${need}, xp: ${need} * 10 }); split_decide()`, ctx);
-		assert(vm.runInContext("!state.split_on && state.mode_ab.mode === 'together' && hist.ev.some((e) => e.type === 'mode_ab' && e.why === 'too little data on it')", ctx),
-			"split measured; together has no data → try together");
-		vm.runInContext("state.mode_ab.flip_at = 0; mode_ab_tick(5)", ctx);
-		assert(vm.runInContext("state.mode_ab.together.s === 1 && state.mode_ab.together.xp === 5", ctx), "together farming is booked to together");
-		vm.runInContext(`Object.assign(state.mode_ab.together, { s: ${need}, xp: ${need} * 5 }); split_decide()`, ctx);
-		assert(vm.runInContext("!state.split_on", ctx), "a new choice holds hold_min even when it's worse");
-		vm.runInContext(`state.mode_ab.since = ${old}; split_decide()`, ctx);
-		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split' && hist.ev.some((e) => e.type === 'mode_ab' && e.why === 'it earns more' && e.split === 36000 && e.together === 18000)", ctx),
-			"together measured at half the xp → back to split");
-		vm.runInContext(`state.mode_ab.since = ${old}; Object.assign(state.mode_ab.together, { s: ${need}, xp: ${need} * 10.5 }); split_decide()`, ctx);
-		assert(vm.runInContext("state.mode_ab.mode === 'split'", ctx), "5% better isn't enough (margin 1.1)");
-		vm.runInContext(`Object.assign(state.mode_ab.together, { s: ${need}, xp: ${need} * 12 }); split_decide()`, ctx);
-		assert(vm.runInContext("state.mode_ab.mode === 'together' && !state.split_on", ctx), "20% better is");
-		vm.runInContext(`state.mode_ab.since = ${old}; Object.assign(state.mode_ab.split, { s: ${need} * 0.4, xp: ${need} * 0.4 * 20 }); split_decide()`, ctx);
-		assert(vm.runInContext("state.mode_ab.mode === 'split' && state.split_on", ctx), "the faded loser (under half of sample_min) is re-tried, whatever its old rate");
-		assert(/mode changes: .*→ split \(it earns more; split 36k\/h, together 18k\/h\)/.test(vm.runInContext("history_lines(1).join('\\n')", ctx)), "history lists mode changes");
-		// forced periods: not booked, and they don't change the choice or its clock
-		vm.runInContext(`state.mode_ab.since = ${old}; state.mode_ab.split = { s: ${need}, xp: ${need} * 20 }; state.mode_ab.flip_at = 0;
-			globalThis.__pp4 = probe_pick; probe_pick = () => ({ mt: 'edge', area: {}, est: 1, r: 1.4 });
-			state.probe_at = Date.now() - CFG.probe.every_min * 60000 - 1; split_decide()`, ctx);
-		assert(vm.runInContext("!state.split_on && state.regroup_since > 0 && state.mode_ab.mode === 'split'", ctx), "a probe regroup: together for now, the choice stays split");
-		vm.runInContext("globalThis.__s4 = state.mode_ab.split.s; mode_ab_tick(50); split_decide()", ctx);
-		assert(vm.runInContext("state.mode_ab.split.s === globalThis.__s4 && state.mode_ab.together.s === " + vm.runInContext(need, ctx) + " && !state.split_on", ctx), "regrouping isn't booked to either mode");
-		vm.runInContext("state.regroup_since = 0; state.probe = { mtype: 'edge' }; split_decide(); mode_ab_tick(50)", ctx);
-		assert(vm.runInContext("!state.split_on && state.mode_ab.together.s === " + vm.runInContext(need, ctx), ctx), "a running probe isn't booked either");
-		vm.runInContext("state.probe = null; state.probe_at = Date.now(); split_decide()", ctx);
-		assert(vm.runInContext("state.split_on && state.mode_ab.mode === 'split'", ctx), "probe over → split again (no lock-in together)");
-		vm.runInContext("probe_pick = globalThis.__pp4", ctx);
-		// fading: 8h halves both samples
-		vm.runInContext("state.mode_ab.at = Date.now() - CFG.party.split.ab.half_life_h * 3600000; state.mode_ab.flip_at = Date.now(); globalThis.__s4 = state.mode_ab.split.s; mode_ab_tick(0)", ctx);
-		assert(vm.runInContext("Math.abs(state.mode_ab.split.s - globalThis.__s4 / 2) < 1", ctx), "a half-life halves the sample");
-		// report text, save/load, handover
-		assert(/party xp split 72k\/h \(20m of data\) vs together 43k\/h \(20m of data\)/.test(vm.runInContext("mode_why()", ctx)), `mode text (${vm.runInContext("mode_why()", ctx)})`);
-		const store113 = {}, sg113 = [ctx.set, ctx.get];
-		ctx.set = (k, v) => ((store113[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in store113 ? JSON.parse(store113[k]) : null);
-		vm.runInContext("globalThis.__ab4 = JSON.stringify(state.mode_ab); save_state(); state.mode_ab = null; load_state()", ctx);
-		[ctx.set, ctx.get] = sg113;
-		assert(vm.runInContext("JSON.stringify(state.mode_ab) === globalThis.__ab4", ctx), "saved and loaded");
-		const ab = JSON.parse(vm.runInContext("globalThis.__ab4", ctx));
-		vm.runInContext("state.mode_ab = null; state.was_leader = false; state.partners = {}", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 900, y: 900, split: true, probe_at: Date.now(), ab: { ...ab, at: Date.now() } });
-		vm.runInContext("split_decide()", ctx);
-		assert(vm.runInContext(`state.mode_ab && state.mode_ab.split.s === ${ab.split.s} && state.split_on`, ctx), "a new leader adopts the old leader's measurements");
-		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false; state.mode_ab = null; state.partners = {}; state.was_leader = false; hist.ev = []", ctx);
 	}
 	// 114) v24.2: builds are compared by version and, when both know it, commit
 	{
@@ -2767,16 +2540,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
 		assert(sent114.some((m) => m.k === "hb" && "b" in m), "the heartbeat carries the build commit");
 	}
-	// 115) v24.3 review fixes: quest goals carry the xp floor; hunts aren't double-counted together; safety by the fight's
-	// team; followers don't occupy; members copy the leader's measurements; a dropped probe isn't "held"; measurements age
+	// 115) v24.3 review fixes: quest goals carry the xp floor; hunts aren't double-counted; a dropped probe isn't "held";
+	// measurements age
 	{
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
-		vm.runInContext(`CFG.party.split.enabled = true; state.partners = {}; state.split_on = false; state.probe = null; state.recovering = false; hist.ev = [];
+		vm.runInContext(`state.partners = {}; state.probe = null; state.recovering = false; hist.ev = [];
 			globalThis.__s115 = { mt_xps, quest_recipes, recipe_open, drop_sources, kills_per_s, hmx: CFG.hunt_min_xp, qc: CFG.quest_crafts };
 			CFG.quest_crafts = true; quest_recipes = () => ["qx115"]; recipe_open = () => true; drop_sources = () => [["goo", 0.5]]; kills_per_s = () => 1;
 			G.craft.qx115 = { items: [[5, "spores115", 0]] };`, ctx);
 		// #1: the leader's shared pick uses members' goal lists, so the floor applies there too
-		vm.runInContext("(state.best_score = 1000, state.best_solo = solo_now(), state.best_at = Date.now()); mt_xps = () => 100; state.goals_cache = null", ctx);
+		vm.runInContext("(state.best_score = 1000, state.best_at = Date.now()); mt_xps = () => 100; state.goals_cache = null", ctx);
 		assert(vm.runInContext("!goals_list().some((g) => /qx115/.test(g.reason))", ctx), "a quest monster at 10% of the best xp/s isn't on the goal list");
 		vm.runInContext("mt_xps = () => 800; state.goals_cache = null", ctx);
 		assert(vm.runInContext("goals_list().some((g) => /qx115/.test(g.reason))", ctx), "at 80% it is");
@@ -2785,55 +2558,39 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// #7: together, the hunt rate is already the party's
 		vm.runInContext("CFG.hunt_min_xp = 0; kills_per_s = () => 0.05", ctx);
 		hb("Torlis", { ...tor, level: 60, x: 30, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: -30, y: 0 });
-		assert(vm.runInContext("!split_now() && partners_near().length === 2 && !hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
-			"together: 100 kills at the party's 0.05/s (2000s) don't fit in 30 min — not x2.2 for the members near");
-		// #5: safety by who the fight is judged with
-		vm.runInContext("state.split_on = true; state.safety_mult = 1.5", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 30, y: 0, safety_mult: 1 });
-		assert(vm.runInContext("Math.abs(safety_now({ solo: true }) - 0.525) < 1e-9 && Math.abs(safety_now({ solo: false, team: 'all' }) - 0.35) < 1e-9", ctx),
-			"split: a solo fight uses our 1.5x; a fight judged for the regrouped party uses the party's lowest");
-		vm.runInContext("state.safety_mult = 1", ctx);
-		// #8: a member following us isn't on a spot of its own
-		hb("Aspernari", { ...asp, level: 58, x: -30, y: 0, follows: true, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-		assert(vm.runInContext("split_now() && !occupied('main:0,0,400,400')", ctx), "a follower sending our spot doesn't make it occupied");
-		hb("Aspernari", { ...asp, level: 58, x: -30, y: 0, follows: false, pack: { mtype: "goo", map: "main", boundary: [0, 0, 400, 400] } });
-		assert(vm.runInContext("occupied('main:0,0,400,400')", ctx), "one farming it is");
+		assert(vm.runInContext("partners_near().length === 2 && !hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
+			"100 kills at the party's 0.05/s (2000s) don't fit in 30 min — not x2.2 for the members near");
 		// #10: a measurement's weight halves every meas_half_h
-		vm.runInContext("state.split_on = false; state.measured['main:9,9,9,9'] = 100; state.meas_at['p:main:9,9,9,9'] = Date.now() - CFG.meas_half_h * 3600000", ctx);
-		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300, false)", ctx) - 200) < 0.5, "12h old: half measured (100), half estimate (300)");
+		vm.runInContext("state.measured['main:9,9,9,9'] = 100; state.meas_at['p:main:9,9,9,9'] = Date.now() - CFG.meas_half_h * 3600000", ctx);
+		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300)", ctx) - 200) < 0.5, "12h old: half measured (100), half estimate (300)");
 		vm.runInContext("state.meas_at['p:main:9,9,9,9'] = Date.now()", ctx);
-		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300, false)", ctx) - 100) < 0.5, "fresh: the measurement");
+		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300)", ctx) - 100) < 0.5, "fresh: the measurement");
 		vm.runInContext("delete state.measured['main:9,9,9,9']; state.meas_at = {}", ctx);
-		// #3: a member copies the leader's measurements and probe clock; a probe it started stops being its own
-		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60 });
-		vm.runInContext("state.partners = {}; state.mode_ab = null; state.probe_at = 0; state.probe = { mtype: 'edge', start: Date.now() - 120000, until: Date.now() + 1e6, ratio: 1.3 }", ctx);
-		const ab115 = { split: { xp: 5, s: 10 }, together: { xp: 1, s: 1 }, at: Date.now(), mode: "split", since: Date.now() };
-		hb("Sanala", { ...san, level: 51, split: true, probe_at: 12345, ab: ab115 });
-		assert(vm.runInContext("leader_name() === 'Sanala' && state.mode_ab && state.mode_ab.split.s === 10 && state.probe_at === 12345", ctx), "a member keeps the leader's measurements and probe clock");
+		// #3: a probe started by a member that isn't the leader (any more) stops being its own
+		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58 });
+		vm.runInContext("state.partners = {}; state.probe_at = 0; state.probe = { mtype: 'edge', start: Date.now() - 120000, until: Date.now() + 1e6, ratio: 1.3 }", ctx);
+		hb("Torlis", { ...tor, level: 60 });
 		vm.runInContext("lead_lost()", ctx);
-		assert(vm.runInContext("!state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'dropped')", ctx), "no longer leading: the probe is dropped, not later closed as held");
-		// #2: the leader's own flee ends a probe as failed
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000 });
-		vm.runInContext("state.partners = {}; state.probe = { mtype: 'edge', start: Date.now() - 120000, until: Date.now() + 1e6, ratio: 1.3 }; state.recovering = true; probe_check()", ctx);
-		assert(vm.runInContext("!state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'fail' && e.why === 'flee')", ctx), "our flee: probe failed");
-		assert(/state\.recovering \|\| character\.hp < character\.max_hp \* flee_at\(\)\)\) \{[^}]*?state\.dead_handled = false;\s*recover\(\);\s*probe_check\(\);/.test(src)
-			&& /else if \(character\.rip\) \{\s*probe_check\(\);/.test(src), "...and the recovery and death branches run probe_check");
+		assert(vm.runInContext("leader_name() === 'Torlis' && !state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'dropped')", ctx), "not leading: the probe is dropped, not later closed as held");
+		// #2: the leader's death ends a probe as failed
+		assert(/else if \(character\.rip\) \{\s*probe_check\(\);/.test(src), "the death branch runs probe_check");
 		vm.runInContext(`state.recovering = false; const S = globalThis.__s115; mt_xps = S.mt_xps; quest_recipes = S.quest_recipes; recipe_open = S.recipe_open;
 			drop_sources = S.drop_sources; kills_per_s = S.kills_per_s; CFG.hunt_min_xp = S.hmx; CFG.quest_crafts = S.qc; delete G.craft.qx115;
-			CFG.party.split.enabled = false; state.split_on = false; state.partners = {}; state.goals_cache = null; state.mode_ab = null; hist.ev = []`, ctx);
+			state.partners = {}; state.goals_cache = null; hist.ev = []`, ctx);
 	}
-	// 116) v24.4 combat review fixes: the flee channel survives; death mid-flee blames the pack; smash/curse/energize
+	// 116) v24.4 combat review fixes: the (merchant's) flee channel survives; smash/curse/energize
 	// spend sensibly; targets stay near the pack; interrupted walks don't block travel; time away resets the watchdog
 	{
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 300, max_hp: 1000, mp: 1000, max_mp: 1000, map: "main", x: 0, y: 0, rip: false, c: {} });
+		// fleeing to town is the merchant's alone (fighters never flee)
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, hp: 300, max_hp: 1000, mp: 1000, max_mp: 1000, map: "main", x: 0, y: 0, rip: false, c: {} });
 		const rec = [], sk = []; const us = ctx.use_skill, gnm = ctx.get_nearest_monster;
 		ctx.use_skill = (n, t, x) => (sk.push([n, t, x]), Promise.resolve());
 		vm.runInContext(`state.partners = {}; state.pack = null; globalThis.__f116 = { fight, choose_target }; globalThis.__fought = [];
 			fight = (t, steer) => globalThis.__fought.push([t.id, steer]); choose_target = () => globalThis.__thr || null;
-			Object.assign(state, { recovering: true, fled: false, fled_home: false, town_at: 0, flee_pack: null }); pmring.hits.length = 0;
+			Object.assign(state, { recovering: true, fled: false, fled_home: false, town_at: 0 }); pmring.hits.length = 0;
 			for (const k in inflight) inflight[k] = false;`, ctx);
-		const T116 = { id: "x116", mtype: "goo", target: "Sanala" };
-		ctx.get_nearest_monster = (a) => (a && a.target === "Sanala" && ctx.__thr ? ctx.__thr : null);
+		const T116 = { id: "x116", mtype: "goo", target: "DoWhatNow" };
+		ctx.get_nearest_monster = (a) => (a && a.target === "DoWhatNow" && ctx.__thr ? ctx.__thr : null);
 		ctx.__thr = T116;
 		vm.runInContext("recover()", ctx);
 		assert(vm.runInContext("globalThis.__fought.length === 1 && globalThis.__fought[0][1] === true", ctx) && !sk.some(([n]) => n === "use_town"),
@@ -2858,10 +2615,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.__thr = null; vm.runInContext("pmring.hits.length = 0; for (const k in inflight) inflight[k] = false; sustain()", ctx);
 		assert(sk.some(([n]) => n === "regen_hp"), "calm at 70%: regen");
 		character.items[0] = null;
-		// death mid-flee: the pack fled from is still blamed and cooled down
-		vm.runInContext(`state.pack = null; state.flee_pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.cooldown = {}; state.dead_handled = false;
-			pmring.hits.push({ t: Date.now(), mtype: 'goo', dmg: 500 }); on_death()`, ctx);
-		assert(vm.runInContext("state.cooldown['main:100,100,400,400'] > Date.now() && !state.flee_pack", ctx), "died while fleeing: the pack is cooled down");
+		vm.runInContext("state.recovering = false; state.fled_home = false", ctx);
 		vm.runInContext("pmring.hits.length = 0; state.dead_handled = false; state.danger = {}; state.cooldown = {}; state.safety_mult = 1; fight = globalThis.__f116.fight; choose_target = globalThis.__f116.choose_target", ctx);
 		// paladin smash: only from MP above the floor, only with a mace
 		Object.assign(character, { name: "Torlis", ctype: "paladin", hp: 1000, max_hp: 1000, mp: 900, max_mp: 1000, attack: 100, slots: { mainhand: { name: "mace116" } } });
@@ -2976,8 +2730,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.upg_caps = {}; state.partners = {}; my_gear_cache = null", ctx);
 		delete ctx.G.items.helm117; delete ctx.G.items.gem117;
 	}
-	// 118) v24.6 party review fixes: deaths, flees and probe results are shared; calibration by how the fight is judged;
-	// a measurement covers only time at the spot; realism clamped; a re-trial isn't held by the margin
+	// 118) v24.6 party review fixes: deaths and probe results are shared; no calibration under tank cover;
+	// a measurement covers only time at the spot; realism clamped
 	{
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
 		vm.runInContext("state.partners = {}; state.danger = {}; state.cooldown = {}; state.probe_ok = {}; state.calib = {}; hist.ev = []", ctx);
@@ -2987,7 +2741,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			"a partner's death at a pack: we take its incident and the pack's cooldown");
 		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "probe_ok", mtype: "goo", mult: 1.5 } });
 		assert(vm.runInContext("state.probe_ok.goo && state.probe_ok.goo.mult === 1.5", ctx), "a probe that held is shared");
-		assert(vm.runInContext("Math.abs(danger_of('goo', { solo: false, mates: 1 }) / danger_of('goo', { solo: true, mates: 0 }) - 1.5) < 1e-9", ctx), "...and widens the party verdict, not the solo one");
+		assert(vm.runInContext("Math.abs(probe_ok_mult('goo') - 1.5) < 1e-9 && Math.abs(danger_of('goo') / (calib_factor('goo') * state.danger.goo) - 1.5) < 1e-9", ctx), "...and widens the verdict for that monster");
 		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "probe_fail", mtype: "goo" } });
 		assert(vm.runInContext("!state.probe_ok.goo", ctx), "a failed probe clears it");
 		handlers.cm({ name: "Stranger", message: { k: "verdict", kind: "incident", mtype: "goo", mult: 0.1 } });
@@ -3003,30 +2757,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("Math.abs(state.probe_ok.goo.mult - 1.47) < 1e-9", ctx) && sent118.some(([, m]) => m.kind === "probe_ok" && m.mtype === "goo"), "probe held: verdict widened x1.4 x 1.05 and sent");
 		ctx.send_cm = scm;
 		// calibration: a fight under tank cover isn't ours to record; the tank's shared ratio is used for it
-		vm.runInContext("state.calib = {}; cal.cur.goo = 50; globalThis.__fm = fight_math; fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, solo: false, mates: 1, tank: 'Torlis', hp_pool: 900 }); calib_record('goo')", ctx);
+		vm.runInContext("state.calib = {}; cal.cur.goo = 50; globalThis.__fm = fight_math; fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, mates: 1, tank: 'Torlis', hp_pool: 900 }); calib_record('goo')", ctx);
 		assert(vm.runInContext("Object.keys(state.calib).length === 0", ctx), "under tank cover: nothing recorded");
 		hb("Torlis", { ...tor, level: 60, x: 30, y: 0, calp: { goo: 0.5 } });
-		assert(vm.runInContext("Math.abs(calib_factor('goo', { solo: false, mates: 1, tank: 'Torlis' }) - 1.5) < 1e-9", ctx), "the tank's calibration (hits half as hard) gives the covered verdict x1.5");
-		vm.runInContext("fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, solo: true, mates: 0, tank: null, hp_pool: 1000 }); cal.cur.goo = 25; calib_record('goo')", ctx);
-		assert(vm.runInContext("state.calib.goo && state.calib.goo.n === 1 && !state.calib['goo@p']", ctx), "a solo fight goes to the solo table");
-		vm.runInContext("fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, solo: false, mates: 1, tank: null, hp_pool: 1000 }); cal.cur.goo = 25; calib_record('goo')", ctx);
-		assert(vm.runInContext("state.calib['goo@p'] && state.calib['goo@p'].n === 1", ctx), "a party fight with no tank cover goes to the party table");
+		assert(vm.runInContext("Math.abs(calib_factor('goo', { mates: 1, tank: 'Torlis' }) - 1.5) < 1e-9", ctx), "the tank's calibration (hits half as hard) gives the covered verdict x1.5");
+		vm.runInContext("fight_math = () => ({ their_dps: 10, self_dps: 0, ttk: 5, mates: 1, tank: null, hp_pool: 1000 }); cal.cur.goo = 25; calib_record('goo')", ctx);
+		assert(vm.runInContext("state.calib['goo@p'] && state.calib['goo@p'].n === 1 && Object.keys(state.calib).length === 1", ctx), "a fight with no tank cover is recorded (one entry per monster)");
 		vm.runInContext("fight_math = globalThis.__fm; state.calib = {}; state.danger = {}; state.cooldown = {}; state.probe_ok = {}; cal.cur = {}", ctx);
 		// a measurement covers only the time at the spot
-		vm.runInContext(`state.measured = {}; state.realism = 1; state.split_on = false;
-			state.session = { key: 'main:5,5,6,6', mtype: 'goo', est: 10, xp: 0, kx: 0, kc: 1000, kc_n: 5, split: split_now(), start: Date.now() - 300000, end: Date.now() - 200000 }; end_session()`, ctx);
+		vm.runInContext(`state.measured = {}; state.realism = 1;
+			state.session = { key: 'main:5,5,6,6', mtype: 'goo', est: 10, xp: 0, kx: 0, kc: 1000, kc_n: 5, start: Date.now() - 300000, end: Date.now() - 200000 }; end_session()`, ctx);
 		assert(Math.abs(vm.runInContext("state.measured['main:5,5,6,6']", ctx) - 10) < 0.01, `1000 xp over the 100s spent there = 10 xp/s, not over 300s (${vm.runInContext("state.measured['main:5,5,6,6']", ctx)})`);
-		vm.runInContext(`state.session = { key: 'main:7,7,8,8', mtype: 'goo', est: 0.01, xp: 0, kx: 0, kc: 100000, kc_n: 1, split: split_now(), start: Date.now() - 100000 }; end_session()`, ctx);
+		vm.runInContext(`state.session = { key: 'main:7,7,8,8', mtype: 'goo', est: 0.01, xp: 0, kx: 0, kc: 100000, kc_n: 1, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.realism <= 3 && Math.abs(state.realism - (0.7 + 5 * 0.3)) < 1e-9", ctx), `a wild sample moves realism by at most 5x its weight (${vm.runInContext("state.realism", ctx)})`);
 		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1; state.session = null", ctx);
-		// a re-trial is judged on rates alone once it has its data
-		hb("Aspernari", { ...asp, level: 58, x: -30, y: 0 });
-		vm.runInContext(`CFG.party.split.enabled = true; state.was_leader = true; state.mode_ab = { split: { xp: 2400 * 10, s: 2400 }, together: { xp: 2400 * 10.5, s: 2400 },
-			at: Date.now(), mode: 'together', since: Date.now() - 3600000, flip_at: 0, trial: true }`, ctx);
-		assert(vm.runInContext("mode_pick() === 'together' && !state.mode_ab.trial", ctx), "re-trial 5% better: it stays, on its rate");
-		vm.runInContext("Object.assign(state.mode_ab, { mode: 'together', trial: true, since: 0, together: { xp: 2400 * 9.5, s: 2400 } })", ctx);
-		assert(vm.runInContext("mode_pick() === 'split'", ctx), "re-trial 5% worse: back to split (no 10% margin protecting the re-trial)");
-		vm.runInContext("CFG.party.split.enabled = false; state.mode_ab = null; state.partners = {}; state.was_leader = false; state.pack = null; hist.ev = []", ctx);
+		vm.runInContext("state.partners = {}; state.pack = null; hist.ev = []", ctx);
 	}
 	// 119) v24.7 economy + regression fixes: deliveries to the biggest gain; no merchant quests; purge after keep rules;
 	// weapon class modifiers and paladin int in gear scores; transient project errors keep the project; caps at the
@@ -3088,8 +2833,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.stand.trade1 && state.stand.trade1.q === 3 && hist.ev.some((e) => e.type === 'sold' && e.q === 2 && e.price === 200)", ctx), "2 of 5 sold: logged for 200, listing now x3");
 		character.stand = false; character.slots = {}; vm.runInContext("state.stand = {}; hist.ev = []", ctx);
 		// regression: re-measuring a stale spot averages with its aged value
-		vm.runInContext(`state.split_on = false; state.measured = { 'main:3,3,4,4': 20 }; state.meas_at = { 'p:main:3,3,4,4': Date.now() - 72 * 3600000 };
-			state.session = { key: 'main:3,3,4,4', mtype: 'goo', est: 100, xp: 0, kx: 0, kc: 10000, kc_n: 5, split: false, start: Date.now() - 100000 }; end_session()`, ctx);
+		vm.runInContext(`state.measured = { 'main:3,3,4,4': 20 }; state.meas_at = { 'p:main:3,3,4,4': Date.now() - 72 * 3600000 };
+			state.session = { key: 'main:3,3,4,4', mtype: 'goo', est: 100, xp: 0, kx: 0, kc: 10000, kc_n: 5, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:3,3,4,4'] > 95", ctx), `a 3-day-old 20 re-measured at 100 is ~100, not 60 (${vm.runInContext("state.measured['main:3,3,4,4']", ctx)})`);
 		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1", ctx);
 		// regression: no HP potions → regen even with something on us
@@ -3099,17 +2844,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("for (const k in inflight) inflight[k] = false; sustain()", ctx);
 		assert(sk119.includes("regen_hp"), `no potions, 50% HP, attacked: regen (${sk119})`);
 		ctx.use_skill = us; ctx.get_nearest_monster = gnm;
-		// regression: a parked leader books nothing to the split/together measurement
-		hb("Torlis", { ...tor, level: 60 }); hb("Aspernari", { ...asp, level: 58 });
-		vm.runInContext(`CFG.party.split.enabled = true; state.parked = true; state.mode_ab = { split: { xp: 0, s: 0 }, together: { xp: 0, s: 0 }, at: Date.now(), mode: 'together', since: Date.now(), flip_at: 0 };
-			state.split_on = false; mode_ab_tick(10)`, ctx);
-		assert(vm.runInContext("state.mode_ab.together.s === 0", ctx), "parked: not booked");
-		vm.runInContext("state.parked = false; CFG.party.split.enabled = false; state.mode_ab = null; state.partners = {}", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500 });
 		for (const k of ["ring119", "helm119", "staff119", "wand119", "intorb119", "strorb119", "amulet119"]) delete ctx.G.items[k];
 	}
 	// 120) v24.8 combat review fixes: self-defence first; no walks while fleeing; a walk timeout says so; an unreachable
-	// waypoint is skipped; an ignored attacker while fleeing is walked away from; followers hold the pack while the leader flees
+	// waypoint is skipped; an ignored attacker while fleeing (the merchant) is walked away from
 	{
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, mp: 500, max_mp: 500, map: "main", x: 0, y: 0, rip: false, c: {} });
 		const dist0 = ctx.distance; ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -3120,7 +2859,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("hit_on_me()?.id", ctx) === "b120", "hit_on_me: the nearest monster attacking us (not a partner's)");
 		vm.runInContext("state.bad_ids.b120 = Date.now() + 60000", ctx);
 		assert(vm.runInContext("hit_on_me()?.id", ctx) === "a120", "...skipping one we ignore as immune");
-		assert(/hit_on_me\(\) \|\| \(!i_am_tank\(\) && !spread_on && caller_target\(\)\)/.test(src), "the leader defends itself before taking the tank's call");
+		assert(/hit_on_me\(\) \|\| \(!i_am_tank\(\) && caller_target\(\)\)/.test(src), "the leader defends itself before taking the tank's call");
 		for (const k of ["a120", "b120", "c120"]) delete ctx.parent.entities[k];
 		vm.runInContext("state.bad_ids = {}", ctx);
 		// no walks while fleeing
@@ -3140,20 +2879,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.wp === 2 && state.last_target_at === 5", ctx), "unreachable waypoint: next one, and the idle clock isn't reset");
 		ctx.smart_move = sm0; ctx.stop = st0;
 		vm.runInContext("state.waypoints = []; state.wp = 0; state.travel_block_until = 0; state.last_target_at = Date.now()", ctx);
-		// fleeing with only an ignored attacker on us: step away from it
+		// fleeing (the merchant) with only an ignored attacker on us: step away from it
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42 });
 		const mv = []; const mv0 = ctx.move; ctx.move = (x, y) => (mv.push([x, y]), Promise.resolve());
-		ctx.parent.entities.i120 = { id: "i120", type: "monster", mtype: "goo", visible: true, x: 50, y: 0, target: "Sanala" };
-		const gnm0 = ctx.get_nearest_monster; ctx.get_nearest_monster = (a) => (a && a.target === "Sanala" ? ctx.parent.entities.i120 : null);
+		ctx.parent.entities.i120 = { id: "i120", type: "monster", mtype: "goo", visible: true, x: 50, y: 0, target: "DoWhatNow" };
+		const gnm0 = ctx.get_nearest_monster; ctx.get_nearest_monster = (a) => (a && a.target === "DoWhatNow" ? ctx.parent.entities.i120 : null);
 		vm.runInContext("state.bad_ids = { i120: Date.now() + 60000 }; Object.assign(state, { recovering: true, fled_home: false, town_at: 0 }); last_move = 0; character.hp = 200; recover()", ctx);
 		assert(mv.length === 1 && mv[0][0] < 0, `stepped away from it (${JSON.stringify(mv)})`);
 		ctx.move = mv0; ctx.get_nearest_monster = gnm0; delete ctx.parent.entities.i120; ctx.distance = dist0;
 		vm.runInContext("state.bad_ids = {}; state.recovering = false; character.hp = 1000", ctx);
-		// followers hold the pack while the leader flees
-		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 60, hp: 900, max_hp: 900 });
-		vm.runInContext("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }", ctx);
-		hb("Sanala", { ...san, level: 51, recovering: true, pack: null });
-		vm.runInContext("try { follower_tick(); } catch (e) {}", ctx);
-		assert(vm.runInContext("state.pack && state.pack.mtype === 'goo'", ctx), "leader fleeing (no pack sent): the follower keeps the pack");
 		vm.runInContext("state.partners = {}; state.pack = null", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000 });
 	}
@@ -3207,25 +2941,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; state.safe = {}; state.pick_skips = {}", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 1000, max_hp: 1000 });
 	}
-	// 123) v24.11: together by default; the leader travels as a group (waits for stragglers, pulls once all are there)
+	// 123) v24.11: the leader travels as a group (waits for stragglers, pulls once all are there)
 	{
-		const split0 = vm.runInContext("CFG.party.split.enabled", ctx);
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 1000, max_hp: 1000 });
-		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}; state.group_wait = null; state.group_ok = null; state.errand = null", ctx);
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 1000, max_hp: 1000 });
+		vm.runInContext("state.partners = {}; state.group_wait = null; state.group_ok = null; state.errand = null", ctx);
 		const P = "{ mtype: 'goo', map: 'main', boundary: [1000, 1000, 1400, 1400] }";
-		hb("Torlis", { ...tor, level: 60, x: 900, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: 50, y: 0 });
-		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === "Torlis", "heading out with Torlis 900px behind: wait for him");
-		hb("Torlis", { ...tor, level: 60, x: 400, y: 0 });
-		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === "Torlis", "...until he's well in (400px: not yet, once waiting)");
-		hb("Torlis", { ...tor, level: 60, x: 200, y: 0 });
+		hb("Sanala", { ...san, level: 60, x: 900, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: 50, y: 0 });
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === "Sanala", "heading out with Sanala 900px behind: wait for her");
+		hb("Sanala", { ...san, level: 60, x: 400, y: 0 });
+		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === "Sanala", "...until she's well in (400px: not yet, once waiting)");
+		hb("Sanala", { ...san, level: 60, x: 200, y: 0 });
 		assert(vm.runInContext(`group_hold(${P}, false) === null && state.group_wait === null`, ctx), "200px: go");
-		hb("Torlis", { ...tor, level: 60, x: 900, y: 0, errand: "town" });
+		hb("Sanala", { ...san, level: 60, x: 900, y: 0, errand: "town" });
 		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "a member on its own errand isn't waited for");
-		hb("Torlis", { ...tor, level: 60, x: 1200, y: 1200, pack: { mtype: "goo", map: "main", boundary: [1000, 1000, 1400, 1400] } });
+		hb("Sanala", { ...san, level: 60, x: 1200, y: 1200, pack: { mtype: "goo", map: "main", boundary: [1000, 1000, 1400, 1400] } });
 		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "one already at our spot (waiting for us) isn't a straggler");
 		// at the spot: hold the pull until everyone's there; once assembled, no more holds at this spot
 		Object.assign(character, { x: 1200, y: 1200 });
-		hb("Torlis", { ...tor, level: 60, x: 1200, y: 1250 }); hb("Aspernari", { ...asp, level: 58, x: 200, y: 200 });
+		hb("Sanala", { ...san, level: 60, x: 1200, y: 1250 }); hb("Aspernari", { ...asp, level: 58, x: 200, y: 200 });
 		assert(vm.runInContext(`group_hold(${P}, true)`, ctx) === "Aspernari", "arrived; Aspernari still on the way: no pull yet");
 		hb("Aspernari", { ...asp, level: 58, x: 1210, y: 1190 });
 		assert(vm.runInContext(`group_hold(${P}, true) === null && state.group_ok === 'main:1000,1000,1400,1400'`, ctx), "all there: assembled");
@@ -3234,14 +2967,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a stuck straggler: wait_s, then go on for go_s
 		Object.assign(character, { x: 0, y: 0 });
 		vm.runInContext("state.group_ok = null; state.group_wait = null", ctx);
-		hb("Aspernari", { ...asp, level: 58, x: 3000, y: 0 }); hb("Torlis", { ...tor, level: 60, x: 10, y: 0 });
+		hb("Aspernari", { ...asp, level: 58, x: 3000, y: 0 }); hb("Sanala", { ...san, level: 60, x: 10, y: 0 });
 		vm.runInContext(`group_hold(${P}, false); state.group_wait.since = Date.now() - CFG.party.group.wait_s * 1000 - 1`, ctx);
 		assert(vm.runInContext(`group_hold(${P}, false) === null && state.group_wait.go_until > Date.now()`, ctx), "waited wait_s: go on");
 		assert(vm.runInContext(`group_hold(${P}, false)`, ctx) === null, "...for go_s");
-		vm.runInContext("CFG.party.split.enabled = true", ctx);
-		assert(vm.runInContext(`group_hold(${P}, false) === null`, ctx), "split: no group travel");
-		vm.runInContext(`CFG.party.split.enabled = ${split0}; state.partners = {}; state.group_wait = null; state.group_ok = null`, ctx);
-		assert(/split: \{ enabled: false,/.test(src) && /group: \{ enabled: true, radius: 450/.test(src), "v24.11 defaults: together, group travel on");
+		vm.runInContext(`state.partners = {}; state.group_wait = null; state.group_ok = null`, ctx);
+		assert(/group: \{ enabled: true, radius: 450/.test(src), "v24.11 default: group travel on");
 		Object.assign(character, { x: 0, y: 0 });
 	}
 	// 124) v24.13: the xp multiplier and its breakdown (report, heartbeat, party header)
@@ -3259,7 +2990,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	}
 	// 125) v24.14: keep away from a monster we can't take on that may attack, before it picks one of us
 	{
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, map: "main", x: 0, y: 0, speed: 55, rip: false, hp: 4000, max_hp: 4000 });
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "main", x: 0, y: 0, speed: 55, rip: false, hp: 4000, max_hp: 4000 }); // the leader
 		const mons0 = ctx.G.monsters, dist0 = ctx.distance, mv0 = ctx.move;
 		ctx.G.monsters = { ...mons0, ent125: { xp: 9200000, hp: 8000000, attack: 3600, speed: 12, charge: 48, aggro: 0.2, range: 64, frequency: 1.2 }, calm125: { xp: 1, hp: 8000000, attack: 3600, speed: 12, aggro: 0 } };
 		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -3272,7 +3003,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("looming()?.id", ctx) === "e125", "an ent walking our way (can't take it, aggro 0.2) looms; a never-aggressive giant doesn't");
 		vm.runInContext("last_move = 0; smart_depth = 0; keep_away(looming())", ctx);
 		assert(mv.length === 1 && mv[0][0] < 0, `stepped away from it (${JSON.stringify(mv)})`);
-		ctx.parent.entities.e125.target = "Torlis";
+		ctx.parent.entities.e125.target = "Sanala";
 		assert(vm.runInContext("looming()", ctx) === null, "already on one of us: that's fight()'s escape, not this");
 		delete ctx.parent.entities.e125.target;
 		vm.runInContext("state.pack.mtype = 'ent125'", ctx);
@@ -3313,7 +3044,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 127) v24.16: routes as smart_move walks them; never stop a walk for what we can't take on; roamer deaths don't cool
 	// the spot; no keep-away mid-walk; no group wait under attack
 	{
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 52, map: "town", x: 0, y: 0, speed: 55, rip: false, hp: 4000, max_hp: 4000 });
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "town", x: 0, y: 0, speed: 55, rip: false, hp: 4000, max_hp: 4000 });
 		const maps0 = ctx.G.maps, mons0 = ctx.G.monsters, dist0 = ctx.distance;
 		ctx.G.monsters = { ...mons0, rat127: { xp: 10, hp: 9200, attack: 320, speed: 12, charge: 86, aggro: 1 }, hawk127: { xp: 30000, hp: 32000, attack: 480, speed: 24, charge: 52, aggro: 1 } };
 		// by map hops the long way (town → hall → dest, 2) wins; by distance the cave way (town → rats → tube → dest, 3)
@@ -3331,23 +3062,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			`the rats are on smart_move's way; the plan goes around through the hall (${JSON.stringify(pl127 && { a: pl127.around, l: pl127.legs.map((l) => l.to) })})`);
 		assert(vm.runInContext("route_danger('dest')", ctx) === null && vm.runInContext("travel_s('dest', [0, 0, 10, 10])", ctx) > 5000 / 55, "a way around exists: not a danger, and the walk estimate is that way's");
 		// a member elsewhere: its own way counts too
-		vm.runInContext("CFG.party.split.enabled = false", ctx);
-		hb("Torlis", { ...tor, level: 60, map: "far", x: 0, y: 0 });
-		assert(vm.runInContext("route_danger('camp')", ctx) === null && /Torlis's way/.test(vm.runInContext("party_route_danger('camp') || ''", ctx)),
-			`camp: safe for us (its own door), but Torlis's only way there is through the rats (${vm.runInContext("party_route_danger('camp')", ctx)})`);
+		hb("Sanala", { ...san, level: 60, map: "far", x: 0, y: 0 });
+		assert(vm.runInContext("route_danger('camp')", ctx) === null && /Sanala's way/.test(vm.runInContext("party_route_danger('camp') || ''", ctx)),
+			`camp: safe for us (its own door), but Sanala's only way there is through the rats (${vm.runInContext("party_route_danger('camp')", ctx)})`);
 		vm.runInContext("state.partners = {}", ctx);
 		ctx.G.maps = maps0; ctx.G.monsters = { ...mons0, hawk127: ctx.G.monsters.hawk127 };
 		vm.runInContext("for (const k in hops_cache) delete hops_cache[k]; rt_cache.clear(); dz_cache.clear(); for (const k in deadly_c) delete deadly_c[k]", ctx);
 		// a hawk (faster than us, can't take it) on us mid-walk: the walk goes on; standing, we fight back
 		Object.assign(character, { map: "main", x: 0, y: 0, speed: 50 });
 		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-		ctx.parent.entities.h127 = { id: "h127", type: "monster", mtype: "hawk127", visible: true, x: 20, y: 0, target: "Sanala", hp: 32000, max_hp: 32000 };
+		ctx.parent.entities.h127 = { id: "h127", type: "monster", mtype: "hawk127", visible: true, x: 20, y: 0, target: "Torlis", hp: 32000, max_hp: 32000 };
 		const st = []; const st0 = ctx.stop; ctx.stop = (a) => st.push(a);
 		vm.runInContext("smart_depth = 1", ctx);
 		assert(vm.runInContext("break_walk_for(parent.entities.h127)", ctx) === false && !st.length, "walking: a hawk on us doesn't stop the walk (through the door, it's left behind)");
 		vm.runInContext("smart_depth = 0", ctx);
 		// the group doesn't stand and wait while it's on one of us
-		hb("Torlis", { ...tor, level: 60, map: "main", x: 3000, y: 0 });
+		hb("Sanala", { ...san, level: 60, map: "main", x: 3000, y: 0 });
 		assert(vm.runInContext("group_hold({ mtype: 'goo', map: 'main', boundary: [5000, 5000, 5100, 5100] }, false)", ctx) === null, "no group wait while something we can't take on is on one of us");
 		delete ctx.parent.entities.h127; ctx.stop = st0; ctx.distance = dist0; ctx.G.monsters = mons0;
 		vm.runInContext("state.partners = {}; state.group_wait = null", ctx);
@@ -3386,29 +3116,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps = maps0; ctx.G.monsters = mons0; ctx.G.npcs = npcs0; ctx.smart_move = sm0; delete ctx.transport;
 		vm.runInContext("rt_cache.clear(); dz_cache.clear()", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0 });
-	}
-	// 129) v24.18: travelling together, the slowest member leads the walk and the rest (the leader too) follow it
-	{
-		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 58, rip: false });
-		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}; state.recovering = false; state.errand = null; state.pack = { mtype: 'goo', map: 'main', boundary: [3000, 3000, 3200, 3200] }", ctx);
-		hb("Torlis", { ...tor, level: 60, x: 50, y: 0, speed: 55 }); hb("Aspernari", { ...asp, level: 58, x: -50, y: 0, speed: 41 });
-		assert(vm.runInContext("leader_name() === 'Sanala' && convoy_head()", ctx) === "Aspernari", "on the way: the priest (speed 41) leads the convoy");
-		hb("Aspernari", { ...asp, level: 58, x: -50, y: 0, speed: 41, errand: "town" });
-		assert(vm.runInContext("convoy_head()", ctx) === "Torlis", "...not while it's on an errand: then the next slowest");
-		hb("Aspernari", { ...asp, level: 58, x: 3100, y: 3100, speed: 41 });
-		assert(vm.runInContext("convoy_head()", ctx) === null, "the slowest is at the spot: convoy over");
-		vm.runInContext("CFG.party.group.convoy = false", ctx); hb("Aspernari", { ...asp, level: 58, x: -50, y: 0, speed: 41 });
-		assert(vm.runInContext("convoy_head()", ctx) === null, "convoy off: none");
-		vm.runInContext("CFG.party.group.convoy = true; CFG.party.split.enabled = true; state.split_on = true", ctx);
-		assert(vm.runInContext("convoy_head()", ctx) === null, "split: none");
-		vm.runInContext("CFG.party.split.enabled = false; state.split_on = false", ctx);
-		// a follower that is the head walks to the spot; one that isn't follows the head, not the leader
-		assert(/if \(CH === character\.name\) \{\s*const wait = convoy_muster\(\);/.test(src) && /if \(CH && CH !== L\.name && state\.partners\[CH\]\) pos = partner_pos\(state\.partners\[CH\]\)/.test(src)
-			&& /convoy: following \$\{CH\}/.test(src), "followers: the head walks to the spot, the others follow it; the leader follows it too");
-		const sent129 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent129.push(m); return Promise.resolve(); };
-		vm.runInContext("heartbeat()", ctx); ctx.send_cm = scm;
-		assert(sent129.some((m) => m.k === "hb" && m.speed === 58), "the heartbeat carries our speed");
-		vm.runInContext("state.partners = {}; state.pack = null", ctx);
 	}
 	// 130) v24.19: danger is judged by the stretches a route walks, not whole maps — the priest left the bank through a map
 	// with hawks in a far corner
@@ -3453,27 +3160,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		[ctx.set, ctx.get] = sg; ctx.parent.document = pd0;
 		assert(vm.runInContext("map_ok('jail') === false", ctx) && /if \(!\(p\.score > 0\)\) return;/.test(src), "jail is never a pick, nor a spot with no way there");
 	}
-	// 132) v24.22: the convoy's head gathers everyone before it walks; members without a speed still count; one in the bank at a time
+	// 132) v24.22: one in the bank at a time
 	{
 		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "main", x: 0, y: 0, speed: 41, rip: false });
-		vm.runInContext("CFG.party.split.enabled = false; state.partners = {}; state.errand = null; state.recovering = false; state.convoy_wait = null", ctx);
-		hb("Sanala", { ...san, level: 51, x: 900, y: 0, speed: 58 }); hb("Torlis", { ...tor, level: 60, x: 60, y: 0 }); // Torlis: no speed (older version)
-		assert(vm.runInContext("convoy_members().find((m) => m.name === 'Torlis').speed", ctx) === 55, "a member with no speed in its heartbeat counts at 55 (not dropped)");
-		assert(vm.runInContext("convoy_muster()", ctx) === "Sanala", "the head waits for Sanala (900px away) before walking");
-		hb("Sanala", { ...san, level: 51, x: 400, y: 0, speed: 58 });
-		assert(vm.runInContext("convoy_muster()", ctx) === "Sanala", "...until she's well in (400px: not yet, once waiting)");
-		hb("Sanala", { ...san, level: 51, x: 200, y: 0, speed: 58 });
-		assert(vm.runInContext("convoy_muster() === null && state.convoy_wait === null", ctx), "everyone close: go");
-		hb("Sanala", { ...san, level: 51, x: 3000, y: 0, speed: 58 });
-		vm.runInContext("convoy_muster(); state.convoy_wait.since = Date.now() - CFG.party.group.wait_s * 1000 - 1", ctx);
-		assert(vm.runInContext("convoy_muster() === null && state.convoy_wait.go_until > Date.now()", ctx), "a stuck one: wait_s, then on");
+		vm.runInContext("state.partners = {}; state.errand = null; state.recovering = false", ctx);
+		hb("Sanala", { ...san, level: 51, x: 200, y: 0 });
 		// the bank: wait while another of ours is inside
 		hb("Torlis", { ...tor, level: 60, map: "bank", x: 0, y: 0 });
 		character.items = Array(42).fill(null); character.items[3] = { name: "gslime", q: 2 };
 		vm.runInContext("globalThis.__bk = task_bank(['gslime']).then(() => 'went', (e) => e.reason)", ctx);
 		assert(await vm.runInContext("globalThis.__bk", ctx) === "bank_busy", "Torlis is in the bank: we wait (no hammering at the door)");
 		character.items = Array(42).fill(null);
-		vm.runInContext("state.partners = {}; state.convoy_wait = null", ctx);
+		vm.runInContext("state.partners = {}", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
 	// 133) v24.23: escaping or kiting picks open ground, not just "straight away" — out of a corner, past a dead end
@@ -3515,30 +3213,40 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		delete ctx.parent.entities.e134; ctx.distance = dist0; ctx.send_cm = scm;
 		vm.runInContext("state.partners = {}; tank_hold.id = null", ctx);
 	}
-	// 135) v24.25: together, the tank leads (warrior, then paladin); it judges aggressive monsters on the squishiest member
+	// 135) v24.25: the tank leads (warrior, then paladin, then by name); with none online nobody leads; it judges aggressive monsters on the squishiest member
 	{
-		vm.runInContext("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null", ctx);
 		const L = (arr) => vm.runInContext(`pick_leader(${JSON.stringify(arr)})`, ctx);
 		const sana = { name: "Sanala", level: 51, ctype: "mage" }, tor = { name: "Torlis", level: 52, ctype: "paladin" }, asp = { name: "Aspernari", level: 58, ctype: "priest" };
 		assert(L([sana, tor, asp]) === "Torlis", "the paladin leads, not the lowest level");
 		assert(L([sana, tor, asp, { name: "Wally", level: 40, ctype: "warrior" }]) === "Wally", "a warrior before a paladin");
-		assert(L([sana, asp]) === "Sanala", "no tank online: the lowest level, as before");
-		vm.runInContext("CFG.party.split.enabled = true", ctx);
-		assert(L([sana, tor, asp]) === "Sanala", "splitting: the lowest level");
-		vm.runInContext("CFG.party.split.enabled = false; CFG.party.leader = 'Aspernari'", ctx);
-		assert(L([sana, tor, asp]) === "Aspernari", "CFG.party.leader overrides");
-		vm.runInContext("CFG.party.leader = null", ctx);
-		// the tank leading: no slowest-first convoy (it walks in front and waits for stragglers itself)
+		assert(L([sana, tor, asp, { name: "Abe", level: 90, ctype: "paladin" }]) === "Abe", "two paladins: by name (not by level)");
+		assert(L([sana, asp]) === null, "no tank online: nobody leads");
+		// no tank online: the others follow nobody, and stand
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false });
+		vm.runInContext("state.partners = {}; state.errand = null; state.recovering = false", ctx);
+		assert(vm.runInContext("leader_name() === null && is_follower() && leader_hb() === undefined", ctx), "a mage with no tank ever heard: no leader, and it doesn't lead itself");
+		hb("Aspernari", { ...asp, level: 58, ctype: "priest", x: -30, y: 0 });
+		{
+			const mv135 = []; const sm135 = ctx.smart_move, mo135 = ctx.move;
+			ctx.smart_move = (d) => (mv135.push(d), Promise.resolve()); ctx.move = (x, y) => (mv135.push([x, y]), Promise.resolve());
+			vm.runInContext("follower_tick()", ctx);
+			assert(!mv135.length && vm.runInContext("is_follower() && leader_name() === null", ctx), "two members without the tank: nobody leads, the follower stands");
+			ctx.smart_move = sm135; ctx.move = mo135;
+		}
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, x: 30, y: 0 });
+		vm.runInContext("state.partners.Torlis.t -= 60_000", ctx); // the tank went offline
+		assert(vm.runInContext("leader_name() === 'Torlis' && is_follower() && !partners_any().some((p) => p.name === 'Torlis')", ctx), "the tank offline: still named as the leader (from its last heartbeat), nobody takes over");
+		assert(vm.runInContext("CFG.party.leader === undefined && CFG.party.tank_leads === undefined && CFG.party.split === undefined && CFG.party.all_or_nothing === undefined", ctx), "no other leadership settings");
 		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "main", x: 0, y: 0, speed: 50, hp: 6000, max_hp: 6000, rip: false, attack: 300, frequency: 1, armor: 400, resistance: 200 });
 		vm.runInContext("state.partners = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [3000, 3000, 3200, 3200] }; state.errand = null; state.recovering = false", ctx);
 		hb("Sanala", { ...san, level: 51, ctype: "mage", x: 30, y: 0, speed: 58, max_hp: 4000, hp: 4000, armor: 50, resistance: 50 });
 		hb("Aspernari", { ...asp, level: 58, ctype: "priest", x: -30, y: 0, speed: 41, max_hp: 5000, hp: 5000, armor: 80, resistance: 80 });
-		assert(vm.runInContext("leader_name() === 'Torlis' && convoy_head() === null", ctx), "Torlis leads; no convoy behind the slowest");
+		assert(vm.runInContext("leader_name() === 'Torlis' && !is_follower()", ctx), "Torlis leads");
 		// an aggressive monster: judged on Sanala (4000 hp, the squishiest near), not on the tank's 6000 and armour
 		const f = vm.runInContext("fight_math({ hp: 1000, attack: 200, frequency: 1, aggro: 1, damage_type: 'physical', xp: 10 })", ctx);
 		const g = vm.runInContext("fight_math({ hp: 1000, attack: 200, frequency: 1, aggro: 0, damage_type: 'physical', xp: 10 })", ctx);
 		assert(f.hp_pool === 4000 && g.hp_pool === 6000, `aggressive: Sanala's 4000 HP is the pool (passive: ours) (${f.hp_pool}, ${g.hp_pool})`);
-		vm.runInContext("CFG.party.tank_leads = false; state.partners = {}; state.pack = null", ctx);
+		vm.runInContext("state.partners = {}; state.pack = null", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55, hp: 1000, max_hp: 1000 });
 	}
 	// 136) v24.26: gear evaluation from the class stat weights (G.classes lstats), offhand modifiers, set bonuses
@@ -3661,14 +3369,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("globalThis.__mh137") === "staff137", `the errand starts with the staff back on (${R("globalThis.__mh137")})`);
 		R("state.errand = null; smart_depth = 0; trip.long = false");
 		// a follower: its leader's long walk counts, while it walks with it
-		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; state.partners = {}");
+		R("state.partners = {}");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 300, y: 0, lw: 1 });
 		assert(R("is_follower() && travel_long()") === true, "follower: the leader's long walk is ours");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 3000, y: 0, lw: 1 });
 		assert(R("travel_long()") === false, "...not when we're nowhere near it");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 300, y: 0, lw: 0 });
 		assert(R("travel_long()") === false, "...nor once it has arrived");
-		R("CFG.party.tank_leads = false; state.partners = {}");
+		R("state.partners = {}");
 		// a .b piece never comes off (the server deletes it on unequip)
 		character.slots.mainhand.b = true;
 		assert(R("travel_candidates().length") === 0, "a .b piece stays on");
@@ -3683,7 +3391,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const scm = ctx.send_cm, ents = ctx.parent.entities, cms = [];
 		ctx.send_cm = (to, m) => (cms.push([to.join(), m.k, m.id, m.by]), Promise.resolve());
 		ctx.parent.entities = {};
-		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; CFG.party.town_together = true; state.partners = {}; state.ptown = null; state.ptown_last = null; state.errand = null; state.recovering = false");
+		R("CFG.party.town_together = true; state.partners = {}; state.ptown = null; state.ptown_last = null; state.errand = null; state.recovering = false");
 		R("globalThis.__td = town_due; town_due = () => ({ plan: { free: 30 }, min_free: 10, pot_min: 100, relaxed: true }); globalThis.__trun = town_run; globalThis.__runs = []; town_run = (due) => (__runs.push(due), true)");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, rip: false, hp: 4000, max_hp: 4000, attack: 300, frequency: 1, armor: 50, resistance: 50, speed: 55 });
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: 30, y: 0, hp: 6000, max_hp: 6000, armor: 600, resistance: 300, attack: 300, frequency: 1 });
@@ -3752,7 +3460,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await hp_;
 		assert(hopped === 1 && sk.join() === "use_town", `1450px out on main: teleport to the spawn (${hopped}, ${sk.join()})`);
 		ctx.use_skill = us;
-		R("town_due = __td; town_run = __trun; heartbeat = __hbf; state.ptown = null; state.ptown_last = null; CFG.party.tank_leads = false; state.partners = {}; state.pack = null");
+		R("town_due = __td; town_run = __trun; heartbeat = __hbf; state.ptown = null; state.ptown_last = null; state.partners = {}; state.pack = null");
 		ctx.send_cm = scm; ctx.parent.entities = ents;
 		delete ctx.G.monsters.hard138; delete ctx.G.monsters.easy138;
 	}
@@ -3768,7 +3476,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.equip = (k, slot) => { character.slots[slot] = character.items[k]; character.items[k] = null; character.attack = 400; return Promise.resolve(); };
 		const hbs = []; ctx.send_cm = (to, m) => (hbs.push(m), Promise.resolve());
 		ctx.parent.entities = {};
-		R("CFG.party.tank_leads = false; state.partners = {}; state.pack = null; state.errand = null; state.recovering = false; state.travel_off = []; state.group_wait = null; my_gear_cache = null; gear_busy = false; travel_busy = false; travel_restored_at = 0; trip.long = true; trip.end = 0; smart_depth = 1");
+		R("state.partners = {}; state.pack = null; state.errand = null; state.recovering = false; state.travel_off = []; state.group_wait = null; my_gear_cache = null; gear_busy = false; travel_busy = false; travel_restored_at = 0; trip.long = true; trip.end = 0; smart_depth = 1");
 		calls.length = 0;
 		await R("travel_gear_tick()");
 		assert(R("state.travel_off.length") === 1 && calls.includes("stop:move"), `the staff came off mid-step: the step is stopped so the walk re-plans from our real position (${calls.join()})`);
@@ -3810,20 +3518,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(steps.length === 1 && R("approach_path === null"), `clear line: a straight step, as before (${JSON.stringify(steps)})`);
 		R("travel = __tv; approach_path = null"); delete ctx.parent.entities.g140; ctx.can_move_to = cm; ctx.distance = ds; ctx.move = mv;
 	}
-	// 141) v24.35: together, a monster type is judged for the party wherever its members are (the leader through a door first)
+	// 141) v24.35: a monster type is judged for the party wherever its members are (the leader through a door first)
 	{
 		const R = (c) => vm.runInContext(c, ctx);
-		R("CFG.party.tank_leads = true; CFG.party.split.enabled = false; CFG.party.leader = null; state.partners = {}; state.errand = null; state.recovering = false");
+		R("state.partners = {}; state.errand = null; state.recovering = false");
 		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "level2", x: 0, y: 0, rip: false, hp: 6000, max_hp: 6000, attack: 300, frequency: 1, armor: 400, resistance: 200 });
 		ctx.G.monsters.hard141 = { hp: 60000, attack: 500, frequency: 1, aggro: 0, damage_type: "physical", xp: 5000, speed: 20, range: 50, respawn: 10 };
+		const none = R("fight_math(G.monsters.hard141)"), none_safe = R("!!fight_profile('hard141')"); // nobody online yet
 		hb("Sanala", { ...san, ctype: "mage", level: 51, map: "level2s", x: 0, y: 0, hp: 4000, max_hp: 4000, attack: 900, frequency: 1.5, damage_type: "magical" });
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "level2s", x: 0, y: 0, hp: 5000, max_hp: 5000, attack: 500, frequency: 1, damage_type: "magical" });
-		const near = R("fight_math(G.monsters.hard141, true, false)"), party = R("fight_math(G.monsters.hard141, true, 'party')");
-		assert(near.mates === 0 && party.mates === 2 && party.priest === true && party.ttk < near.ttk / 3, `the others are a map away: nobody near, but the party is still three (${near.mates}/${party.mates})`);
-		assert(R("!!fight_profile('hard141')") && !R("safe_enough(fight_math(G.monsters.hard141, true, false), 'hard141')"), "the spot stays safe for the party while the leader is through the door first");
+		const party = R("fight_math(G.monsters.hard141)");
+		assert(R("partners_near().length") === 0 && none.mates === 0 && party.mates === 2 && party.priest === true && party.ttk < none.ttk / 3, `the others are a map away: nobody near, but the party is still three (${none.mates}/${party.mates})`);
+		assert(R("!!fight_profile('hard141')") && !none_safe, "the spot stays safe for the party while the leader is through the door first");
 		hb("Sanala", { ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 4000, max_hp: 4000, attack: 900, frequency: 1.5, damage_type: "magical", errand: "town" });
-		assert(R("fight_math(G.monsters.hard141, true, 'party').mates") === 1, "a member on an errand isn't counted");
-		R("CFG.party.tank_leads = false; state.partners = {}"); delete ctx.G.monsters.hard141;
+		assert(R("fight_math(G.monsters.hard141).mates") === 1, "a member on an errand isn't counted");
+		R("state.partners = {}"); delete ctx.G.monsters.hard141;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0 });
 	}
 	// 142) v24.41: the transporter leg tries points around the NPC until the pathfinder finds a way; in reach: no walk
@@ -3867,7 +3576,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const ents = ctx.parent.entities, atk = ctx.attack, hits = [];
 		ctx.attack = (e) => (hits.push(e.id), Promise.resolve());
 		ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-		R("CFG.party.tank_first = true; CFG.party.tank_leads = true; CFG.party.split.enabled = false; state.partners = {}; state.errand = null; state.recovering = false; inflight.attack = false; for (const k in hopeless_c) delete hopeless_c[k]; state.pack = { mtype: 'goo', map: 'main', boundary: [-300, -300, 300, 300] }");
+		R("CFG.party.tank_first = true; state.partners = {}; state.errand = null; state.recovering = false; inflight.attack = false; for (const k in hopeless_c) delete hopeless_c[k]; state.pack = { mtype: 'goo', map: 'main', boundary: [-300, -300, 300, 300] }");
 		const goo = { id: "g144", type: "monster", mtype: "goo", visible: true, dead: false, hp: 100, max_hp: 100, x: 50, y: 0, target: null };
 		ctx.parent.entities = { g144: goo };
 		// the tank, party not gathered: no first hit
@@ -3896,7 +3605,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const emits = [], em = ctx.parent.socket.emit; ctx.parent.socket.emit = (ev) => { emits.push(ev); };
 		const scm = ctx.send_cm; ctx.send_cm = () => Promise.resolve();
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "desertland", x: 400, y: -1400, rip: false, hp: 3000, max_hp: 3650 });
-		R("CFG.party.all_or_nothing = true; seen.since = Date.now() - 60_000; suicide_at = 0; state.partners = {}; state.errand = null; smart_depth = 0; hist.ev = []");
+		R("seen.since = Date.now() - 60_000; suicide_at = 0; state.partners = {}; state.errand = null; smart_depth = 0; hist.ev = []");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400 });
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 });
 		assert(R("party_break()") === null && R("party_break_tick()") === false && emits.length === 0, "all three online and alive: nothing to do");
@@ -3932,7 +3641,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.parent.entities = { g144: { id: "g144", type: "monster", mtype: "goo", visible: true, dead: false, hp: 100, max_hp: 100, x: 410, y: -1400, target: null } };
 		assert(R("tank_first(parent.entities.g144)") === true, "tank dead: still nobody else starts a fight");
 		ctx.parent.socket.emit = em; ctx.send_cm = scm; ctx.parent.entities = {};
-		R("CFG.party.all_or_nothing = false; state.partners = {}; state.pack = null; state.dead_handled = false; suicide_at = 0; hist.ev = []");
+		R("state.partners = {}; state.pack = null; state.dead_handled = false; suicide_at = 0; hist.ev = []");
 		Object.assign(character, { map: "main", x: 0, y: 0, rip: false });
 		// one-time clear-out: an old save loses what was learned, keeps the rest; the next save is marked
 		const gs = ctx.get, ss = ctx.set; let saved = null;
@@ -3946,7 +3655,31 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.measured = {}; load_state()");
 		assert(R("state.measured['main:1,2,3,4']") === 999, "a save with the marker loads in full");
 		ctx.get = gs; ctx.set = ss; ctx.send_cm = scm; ctx.attack = atk; ctx.parent.entities = ents; ctx.distance = () => 0;
-		R("state.measured = {}; state.partners = {}; state.pack = null; CFG.party.tank_first = false; CFG.party.tank_leads = false");
+		R("state.measured = {}; state.partners = {}; state.pack = null");
+	}
+	// 145) refactor stage 2: nobody fights solo — a fighter never flees (only the merchant does, through tick());
+	// calibration saved under the "@p" keys still applies
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const sk145 = []; const us145 = ctx.use_skill, st145 = ctx.setTimeout, gnm145 = ctx.get_nearest_monster;
+		ctx.use_skill = (s) => (sk145.push(s), Promise.resolve()); ctx.setTimeout = () => 0; ctx.get_nearest_monster = () => null;
+		R("state.partners = {}; state.merchant = null; state.pack = null; state.errand = 'x145'; state.errand_at = Date.now(); smart_depth = 0; state.recovering = false; state.parked = false; state.town_at = 0; state.fled_home = false; pmring.hits.length = 0; for (const k in inflight) inflight[k] = false");
+		Object.assign(character, { name: "me", ctype: "ranger", level: 10, map: "main", x: 0, y: 0, rip: false, hp: 100, max_hp: 1000, mp: 500, max_mp: 500, c: {} });
+		R("tick()");
+		assert(!st().recovering && !sk145.includes("use_town"), `a fighter at 10% HP doesn't flee (${sk145})`);
+		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", x: 2000, y: 0 }); // away from the town spot
+		R("for (const k in inflight) inflight[k] = false; tick()");
+		assert(st().recovering && sk145.includes("use_town"), `the merchant at 10% HP flees to town (${sk145})`);
+		character.hp = 1000; R("tick()");
+		assert(!st().recovering, "...and carries on once recovered");
+		R("state.errand = null; state.pack = null");
+		ctx.use_skill = us145; ctx.setTimeout = st145; ctx.get_nearest_monster = gnm145; character.x = 0;
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, hp: 3650, max_hp: 3650 });
+		const gs = ctx.get;
+		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), at: Date.now(), calib: { "goo@p": { ratio: 2, n: 5, act: 20, pred: 10 }, goo: { ratio: 0.2, n: 50, act: 2, pred: 10 } } });
+		R("state.calib = {}; load_state()");
+		assert(Math.abs(R("calib_factor('goo')") - 0.5) < 1e-9 && R("calib_key('goo')") === "goo@p", `saved party calibration ("goo@p") still applies; the old solo entry isn't read (${R("calib_factor('goo')")})`);
+		ctx.get = gs; R("state.calib = {}; state.partners = {}");
 	}
 	all_done = true;
 	console.log("ALL PASS");

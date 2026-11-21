@@ -25,7 +25,7 @@ In the code as of v24.50:
   us → the suicide command (`harakiri`: no XP loss; respawn in main town after 12 s) in the field, wait in town.
   **Corrected in v24.52: low HP is not a trigger — only a member being dead or offline is.**
   No fleeing for party fighters. Without a live tank nobody starts a fight. A suicide blames no camp.
-- [ ] Stage 2: delete the solo and split code (split mode, A/B, `duo_check`, `hold_grind`, spread, convoy, solo
+- [x] Stage 2 (v24.53): deleted the solo and split code (split mode, A/B, `duo_check`, `hold_grind`, spread, convoy, solo
   judging in the fight model, leadership other than the tank).
 - [ ] Stage 3: followers execute orders; only the tank runs `town_check`, picks targets and camps.
 - [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.

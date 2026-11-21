@@ -1,4 +1,4 @@
-const VERSION = "24.52"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.53"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -29,15 +29,15 @@ const CFG = {
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
-	flee_hp: 0.25,             // below 25% HP: teleport to town (use_town) and recover
+	flee_hp: 0.25,             // the merchant, below 25% HP: teleport to town (use_town) and recover (fighters never flee)
 	flee_quiet_ms: 1200,       // ...channelling only once nothing has hit us for 1.2s (a hit cancels the 3s channel)
 	smash_mp_floor: 0.6,       // paladin: smash only with MP above 60% of max (+ its 380 cost): regen funds it, never potions
 	// Probing: the safety model only picks monsters it already calls safe, so it never learns about harder ones. Every
 	// every_min the leader may try the best-xp spot whose risk is just over the limit (up to max_over x) and that beats
-	// the best normal xp/s by min_gain, for `minutes`, with every member fleeing at flee_hp instead of 25%. A member
-	// fleeing or dropping below abort_hp ends it as a failure (fail_cooldown_h before that monster is tried again);
+	// the best normal xp/s by min_gain, for `minutes`. A member dying or dropping below abort_hp ends it as a failure
+	// (fail_cooldown_h before that monster is tried again);
 	// lasting the time is a success (win_cooldown_h). Calibration learns from the fights either way.
-	probe: { enabled: true, every_min: 45, minutes: 10, max_over: 2.0, min_gain: 1.25, flee_hp: 0.55, abort_hp: 0.4, fail_cooldown_h: 6, win_cooldown_h: 2 },
+	probe: { enabled: true, every_min: 45, minutes: 10, max_over: 2.0, min_gain: 1.25, abort_hp: 0.4, fail_cooldown_h: 6, win_cooldown_h: 2 },
 	recover_hp: 0.85,          // ...and stay out until HP is back to 85%
 	recover_mp: 0.4,           //    and MP to 40% (enough for heals/skills on the way back)
 	loot_range: 400,           // px; the server pays a chest's gold multiplier only within 400px of the opener
@@ -280,8 +280,7 @@ const CFG = {
 	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10, commit_min: 10, stay_min: 20, door_px: 150, safe_routes: true }, // v18.1: walk-time estimates for goal choice;
 	// stay_min (v24.9): the stay a spot pick is judged over — its xp/s x stay / (stay + walk)
 	party: {
-		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9); [] = solo
-		leader: null,          // null = the lowest-level member online leads (picks packs, others assist); or a name
+		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9)
 		follow: 90,            // px; followers stay within this of the leader (close enough to heal, not in its way)
 		follow_far: 500,       // px; farther than this (or another map) → path-find to the leader instead of stepping
 		heal_at: 0.75,         // priests heal any member below 75% HP
@@ -289,42 +288,19 @@ const CFG = {
 		// The tank decides (v24.50): with a tank (CFG.gear_tank) in the party, only it starts a fight, and only once
 		// every online fighter is within engage_px of it. Nobody else touches a monster that has no target.
 		tank_first: true,
-		tank_leads: true,      // v24.25: together, the tank (warrior, then paladin) leads — walks in front, pulls first
 		// v24.51: one party or nothing. Every member of `members` must be online and alive. If one is offline or dead,
 		// the others use the suicide command (free: no XP loss) and wait at the respawn in town, so the party is
-		// together again. Low HP changes nothing: a party fighter neither flees nor suicides. town_px: how close to
+		// together again. Low HP changes nothing: a fighter neither flees nor suicides. town_px: how close to
 		// main's spawn counts as "in town" (the respawn points are within 700px of it).
-		all_or_nothing: true, town_px: 1000,
+		town_px: 1000,
 		engage_px: 400,        // v24.50: px; the tank starts a fight only with every online fighter this close to it
 		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
 		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
-		// trickled in one by one, the leader (lowest level, often the mage) first. Members on their own errand,
+		// trickled in one by one, the leader first. Members on their own errand,
 		// recovering, or already waiting at our spot don't count. A straggler is waited for wait_s at most, then the
 		// party goes on for go_s before waiting again.
-		group: { enabled: true, radius: 450, wait_s: 45, go_s: 60, convoy: true },
-		// convoy (v24.18): while the party travels to a spot, its slowest member (the priest, slowed by its weapons) walks
-		// there and the rest — the leader too — follow it, so the group moves at its pace and arrives together
-		wait_radius: 300,      // px; a follower whose leader is dead solo-grinds safe monsters within this radius
-		// v20.0: kill xp is split equally among an account's fighters in the party (server: share by owner), so
-		// focusing one weak monster wastes damage. On a monster we'd kill solo within spread_ttk seconds, followers take
-		// their own (near the leader, not one a member is hitting) instead of the leader's target.
-		spread: false, spread_ttk: 3, // v24.50: off — only the tank starts fights
-		// v21.0: the server gives every online party member an equal share of every kill wherever it is (no distance
-		// rule; hunts count party kills too), so on easy content the fighters farm separate spots. Each picks only what
-		// it can kill alone; one that finds nothing follows the leader. The leader calls everyone back for probes,
-		// bosses and events (regroup_max_min at most, then the probe is skipped this round).
-		// v24.11: off — together by default. Measured split ~ together (990k vs 948k/h) while walking was 72-93% of the
-		// time; together the fight model counts the tank's armour, the priest's heals and everyone's damage, so the party
-		// can farm content no fighter can alone, and nobody dies alone. Set true to split (and measure) again.
-		split: { enabled: false, regroup_max_min: 10, occupied_mult: 0.6, fallback_min: 5,
-			// v24.0: split vs together is measured, not assumed. Every member receives a share of every party kill wherever
-			// it is, so the leader's own xp intake measures the whole party in either mode. Each second of normal farming
-			// is booked to the mode it was spent in (bosses, events, probes, regroups, death and recovery are left out);
-			// samples fade with half_life_h so the comparison follows levels and gear. A mode with under sample_min
-			// minutes of data is tried once the current mode has that much; otherwise the party switches only to a mode
-			// earning margin x more, and holds any choice for hold_min. The first settle_min after each split/regroup
-			// (walking) isn't booked. The losing mode's sample fades; under half of sample_min it is re-tried.
-			ab: { enabled: true, sample_min: 40, hold_min: 30, margin: 1.1, half_life_h: 8, settle_min: 3 } },
+		group: { enabled: true, radius: 450, wait_s: 45, go_s: 60 },
+		wait_radius: 300,      // px; a follower stays on a target within this radius of the leader
 		beat_ms: 2000,         // ms between status messages (free in one browser; a small call cost via the server)
 		sync_factor: 2,        // partner in town → go too at bag_min_free×2 free slots / pot_min×2 potions (share the trip)
 		// Party town trips (v24.28; v24.46: one rule). Together, a fighter going to town tells the others and they all go:
@@ -394,8 +370,7 @@ const state = {
 	best_score: 0,           // best free-choice pack's xp/s (reference for quest opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
-	measured_solo: {},       // pack key -> measured xp/s farming it alone (split) (saved)
-	meas_at: {},             // "p:"/"s:" + pack key -> when that measurement was last updated (v24.3, saved)
+	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
 	danger_at: {},           // monster id -> last death/flee (fading pauses for an hour after one) (saved)
@@ -439,7 +414,6 @@ const state = {
 	probe_at: 0,             // last time a probe was considered (every_min)
 	probe_ok: {},            // mtype -> { mult, at }: a probe held; the party verdict for it is widened by mult for 24h (v24.6, saved)
 	pick_skips: {},          // pack key -> why the last pick skipped it as dangerous (v24.10; why_not)
-	mode_ab: null,           // leader: split vs together xp measurements and the measured choice (v24.0, saved)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	fund_need: 0,            // merchant: gold its current project step needs from the fighters
 	guide_quests: {},        // recipe id -> { first, last } seen in the guide (saved)
@@ -667,14 +641,12 @@ function farmable_entity(e) {
 
 // Server complete_attack(): hit = attack · damage_multiplier(defense − pierce); 1hp targets take 1;
 // evasion (physical) / avoidance miss; reflection bounces magic; dreturn hits melee; lifesteal/self_healing heal.
-// solo (v23.0): judge the fight with no partner damage, no tank cover and no priest heals. Default: whenever we farm
-// alone (split mode) — partners passing by, or still near as a split starts, aren't there for the fight.
-// solo = "all" (v23.1): every online member counts wherever it is — planning something that regroups the party
-// (a boss, a probe); false: the members near now
-function fight_math(m, use_tank = true, solo = solo_now()) {
-	// "party" (v24.35): the members travelling with us wherever they are right now (not on an errand, not fleeing)
-	const with_us = () => partners().filter((p) => !p.errand && !p.recovering);
-	const mates = solo === true ? [] : solo === "all" ? partners() : solo === "party" ? with_us() : partners_near();
+// team: who the fight is judged with. "party" (v24.35, the default): the members travelling with us wherever they are
+// right now (not on an errand) — nobody fights alone. "all" (v23.1): every online member wherever it is — planning
+// something the whole party gathers for (a boss). Outside a party (the merchant): whoever is near.
+const fight_mates = (team = "party") => (team === "all" ? partners() : in_party_cfg() ? partners().filter((p) => !p.errand && !p.recovering) : partners_near());
+function fight_math(m, use_tank = true, team = "party") {
+	const mates = fight_mates(team);
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const our_magic = (character.damage_type || G.classes[character.ctype].damage_type) === "magical";
@@ -684,10 +656,10 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 	if (m["1hp"]) hit = 1; // "1hp" monsters take exactly 1 damage per hit whatever the attack
 	const land = (1 - (our_magic ? 0 : pct(m.evasion))) * (1 - pct(m.avoidance));
 	const theirs_magic = m.damage_type === "magical";
-	const tank = solo !== true && use_tank && !(m.aggro > 0.3) && tank_cover(solo === "all" ? partners() : solo === "party" ? with_us() : partners_near(300));
+	const tank = use_tank && !(m.aggro > 0.3) && tank_cover(mates);
 	// v24.25: we're the tank (leading, picking for everyone) and it's aggressive: it goes for whoever is near, so judge it
 	// on the squishiest member counted, not on our armour
-	const squish = !tank && solo !== true && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
+	const squish = !tank && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
 		? mates.filter((p) => p.max_hp > 0).sort((a, b) => a.max_hp - b.max_hp)[0] : null;
 	const D = tank || (squish && squish.max_hp < character.max_hp ? squish : null) || character; // who the monster will be hitting
 	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
@@ -707,18 +679,16 @@ function fight_math(m, use_tank = true, solo = solo_now()) {
 	const chase = m.charge || m.speed || 0; // targeted monsters move at charge speed
 	const kiteable = RANGED && character.range > (m.range || 0) + CFG.kite_margin && character.speed > chase;
 	return { ttk, xp: m.xp, their_dps, self_dps, kiteable: kiteable && !tank, hp_pool: tank ? tank.max_hp : D !== character ? D.max_hp : character.max_hp,
-		solo: solo === true, team: solo === true ? "solo" : solo === "all" ? "all" : "near", tank: tank ? tank.name : null, mates: mates.length, priest: mates.some((p) => p.ctype === "priest") };
+		team, tank: tank ? tank.name : null, mates: mates.length, priest: mates.some((p) => p.ctype === "priest") };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
 // Safety multiplier for a monster: calibration (how its fights went vs the model) × incidents (deaths/flees, fading)
 // Calibrated after 20 fights: 1 / ratio, clamped 0.4-1.5 (a monster that hits half as hard as predicted earns ×1.5).
 // Fewer fights: the all-monster ratio, more cautiously (0.6-1.2).
-// v24.6: kept apart by how the fight is judged (calib_key): alone (kiting counts) or with the party. A kiting mage's
-// solo fights (predicted with the kite slack, ~0 damage taken) earned x1.5, which loosened the tank-covered party
-// verdict too. A verdict under tank cover uses the tank's own party calibration (its heartbeat `calp`): it's the one
-// taking the hits — our own fights under cover say nothing and aren't recorded.
-const calib_key = (mt, solo) => (solo ? mt : mt + "@p");
-const fought_alone = (f) => (f ? f.solo || !f.mates : solo_now() || !partners_near().length); // nobody else counted: a solo fight
+// One entry per monster, keyed mtype + "@p" (v24.6 kept party fights apart from solo ones under that suffix; saved
+// calibration still applies). A verdict under tank cover uses the tank's own calibration (its heartbeat `calp`): it's
+// the one taking the hits — our own fights under cover say nothing and aren't recorded.
+const calib_key = (mt) => mt + "@p";
 // v24.47: measured damage decides, from the third fight on; the fight model alone is never trusted. The model has
 // under-predicted every monster this party fought (actual / predicted: gscorpion 1.3, cgoo 1.8, croc 2.7 — and it
 // counts one monster hitting one member, when a spot has several). Before, a monster got no correction until 20
@@ -728,32 +698,29 @@ const fought_alone = (f) => (f ? f.solo || !f.mates : solo_now() || !partners_ne
 //  - fewer: as bad as the worst monster we have measured, and never better than model_distrust (2x the prediction)
 const CALIB_MIN_N = 3;
 function calib_factor(mtype, f) {
-	const solo = fought_alone(f), own = (r) => Math.min(1.5, Math.max(0.1, 1 / Math.max(r, 0.1)));
+	const own = (r) => Math.min(1.5, Math.max(0.1, 1 / Math.max(r, 0.1)));
 	const tr = f && f.tank ? state.partners[f.tank]?.calp?.[mtype] : 0;
 	if (tr > 0) return own(tr);
-	const c = state.calib[calib_key(mtype, solo)];
+	const c = state.calib[calib_key(mtype)];
 	if (c && c.n >= CALIB_MIN_N) return own(c.ratio);
 	let worst = CFG.model_distrust;
-	for (const k in state.calib) if (k.endsWith("@p") !== solo && state.calib[k].n >= CALIB_MIN_N) worst = Math.max(worst, state.calib[k].ratio);
+	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= CALIB_MIN_N) worst = Math.max(worst, state.calib[k].ratio);
 	return 1 / Math.min(worst, 4);
 }
 // v24.6: a probe that held (probe_ok, 24h, shared) widens the party verdict for that monster by the risk it held at
-const probe_ok_mult = (mtype, f) => { const o = state.probe_ok[mtype]; return o && (f ? !f.solo : !solo_now()) && Date.now() - o.at < 24 * 3600_000 ? o.mult : 1; };
-const danger_of = (mtype, f) => calib_factor(mtype, f) * (state.danger[mtype] || 1) * probe_ok_mult(mtype, f);
-// A priest among the members the verdict counted heals us through it (none when judged alone)
+const probe_ok_mult = (mtype) => { const o = state.probe_ok[mtype]; return o && Date.now() - o.at < 24 * 3600_000 ? o.mult : 1; };
+const danger_of = (mtype, f) => calib_factor(mtype, f) * (state.danger[mtype] || 1) * probe_ok_mult(mtype);
+// A priest among the members the verdict counted heals us through it
 const heal_mult = (f) => (f.priest ? CFG.party.heal_bonus : 1); // a priest among the members counted (fight_math)
-// The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max. Together, the
-// leader picks for everyone, so the party's lowest multiplier counts (v23.6: a follower's death reset only its own, and
-// the leader kept choosing the spot that killed it); split, each its own.
-// v24.3: f (a fight_math result) says who the fight is judged with: alone → our own; with the party ("all" or the members
-// near) → the party's lowest, whatever mode we're in now. A boss or probe judged for the regrouped party used the split
-// fighter's own multiplier, then failed at the party's once regrouped, and the party flipped every 15s.
-const safety_now = (f) => {
+// The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max. The leader
+// picks for everyone, so the party's lowest multiplier counts (v23.6: a follower's death reset only its own, and the
+// leader kept choosing the spot that killed it).
+const safety_now = () => {
 	let m = state.safety_mult || 1;
-	if (in_party_cfg() && (f ? !f.solo : !split_now())) for (const p of partners_any()) if (p.safety_mult > 0) m = Math.min(m, p.safety_mult);
+	if (in_party_cfg()) for (const p of partners_any()) if (p.safety_mult > 0) m = Math.min(m, p.safety_mult);
 	return Math.min(CFG.safety * m, CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
 };
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mtype, f) * heal_mult(f);
+const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover(pool = partners_near(300)) {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
@@ -768,7 +735,7 @@ const tank_hold = { id: null, at: 0 }; // the monster we last told the tank abou
 //    on its map and within CFG.party.engage_px.
 // A monster that already targets one of us may be hit by anyone. fire() enforces both for every attack and skill.
 const is_tank_class = (ct) => CFG.gear_tank.includes(ct);
-const together_now = () => CFG.party.tank_first && in_party_cfg() && !split_now();
+const together_now = () => CFG.party.tank_first && in_party_cfg();
 // ---- One party or nothing (v24.51) ----
 const in_town = () => character.map === "main" && Math.hypot(character.x, character.y) < CFG.party.town_px;
 let suicide_at = 0;
@@ -794,7 +761,7 @@ function party_break() {
 // In town: stand and wait (a town errand in progress carries on). The first 30s after loading are a grace period:
 // the others' heartbeats haven't arrived yet.
 function party_break_tick() {
-	if (!CFG.party.all_or_nothing || is_merchant() || !in_party_cfg() || Date.now() - seen.since < 30_000) return false;
+	if (is_merchant() || !in_party_cfg() || Date.now() - seen.since < 30_000) return false;
 	const why_ = party_break();
 	if (!why_) return false;
 	if (!in_town()) { suicide(why_); return true; }
@@ -830,8 +797,6 @@ function hold_for_tank(t) {
 	}
 	return true;
 }
-// The leader's target if nobody has it yet (the tank should take it first) — else null
-const leader_untouched = (lt) => (lt && !lt.target && farmable_entity(lt) ? lt : null);
 // ---- Assist the tank (v15.4): with a tank near, it picks the targets and everyone else hits its target ----
 const i_am_tank = () => CFG.party.tank_first && in_party_cfg() && CFG.gear_tank.includes(character.ctype) && partners_near(400).length > 0;
 // The tank's current target, as a live entity (its "tgt" broadcasts update state.partners[tank].target at once)
@@ -849,23 +814,23 @@ function announce_target(t) {
 }
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
-	// v24.35: together, a monster type is judged for the party, not for whoever is within 400px this second. The leader
-	// stepped through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another
-	// spot and walked back — at every door. (A monster in front of us is still judged with who is near: entity_profile.)
-	const f = fight_math(G.monsters[mtype], true, solo_now() ? true : in_party_cfg() ? "party" : false);
+	// v24.35: a monster type is judged for the party, not for whoever is within 400px this second. The leader stepped
+	// through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another spot and
+	// walked back — at every door.
+	const f = fight_math(G.monsters[mtype]);
 	return safe_enough(f, mtype) ? { ttk: f.ttk, xp: f.xp } : null;
 }
 // Live-stat check per entity: monsters level up when left alive, and an elite can be several times stronger than its
 // G.monsters entry. Verdicts are cached per entity id and recomputed when its level/HP/attack changes.
 const live_cache = new Map(); // entity id -> { key, ok, ttk, xp }; trimmed to 500 entries (oldest first)
-function entity_profile(e, solo = solo_now()) {
-	const key = `${solo ? "solo" : "party"}:${e.level || 1}:${e.max_hp}:${e.attack}`;
+function entity_profile(e) {
+	const key = `${fight_mates().map((p) => p.name).join()}:${e.level || 1}:${e.max_hp}:${e.attack}`; // re-judged when who counts changes
 	const c = live_cache.get(e.id);
 	if (c && c.key === key) return c.ok ? c : null;
 	const def = G.monsters[e.mtype];
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = def && fight_math({ ...def, ...live, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) }, true, solo);
+	const f = def && fight_math({ ...def, ...live, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
 	const ok = safe_enough(f, e.mtype);
 	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
 	live_cache.set(e.id, out);
@@ -876,7 +841,7 @@ function live_ok(e) {
 	const f = state.safe[e.mtype];
 	if (!f) return null;
 	if (f.trusted && !((e.level || 1) > 1)) return f; // guide-judged safe and not levelled up: trust it
-	if (f.probe) return f; // probing this monster on purpose (the flee threshold is raised instead)
+	if (f.probe) return f; // probing this monster on purpose
 	const lf = entity_profile(e);
 	return lf ? { ttk: lf.ttk, xp: lf.xp } : null;
 }
@@ -1178,7 +1143,7 @@ function keep_away(e) {
 // v24.16: together, a spot is only as safe as the way there for every member (one in another map walks its own route)
 function party_route_danger(to) {
 	const own = route_danger(to);
-	if (own || split_now() || !in_party_cfg()) return own;
+	if (own || !in_party_cfg()) return own;
 	for (const p of partners()) {
 		if (p.map === character.map || p.errand) continue;
 		const q = partner_pos(p), rd = route_danger(to, undefined, undefined, { map: q.map, x: q.x, y: q.y });
@@ -1246,21 +1211,16 @@ function score_area(t, pack, area) {
 // v24.3: a measurement's weight halves every CFG.meas_half_h hours since it was taken, the rest going to the estimate.
 // Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
 // spot out of every pick for good, since it was never visited again to re-measure it.
-function meas_aged(key, est, split = split_now()) {
-	const v = meas(split)[key];
+function meas_aged(key, est) {
+	const v = meas()[key];
 	if (v === undefined) return est;
-	const at = state.meas_at[(split ? "s:" : "p:") + key];
+	const at = state.meas_at["p:" + key];
 	if (!at || !(CFG.meas_half_h > 0)) return v;
 	const w = Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000));
 	return v * w + est * (1 - w);
 }
-// Split: a partner with an earlier name farms this spot (v23.2)
-// v24.3: a member that's following us (nothing it can farm alone) isn't on a spot of its own: it sends ours, and the
-// leader scored its own spot x occupied_mult and dropped its own hunt as "theirs"
-const occupied = (key) => split_now() && partners().some((m) => m.name < character.name && !m.follows && m.pack && valid_boundary(m.pack.boundary) && pack_key(m.pack) === key);
-// Measured xp/s per spot, one table per mode (v23.1): a spot farmed by the whole party kills ~n times as fast as by one
-// fighter alone, so the two can't share a table. Split = farming alone; together = the party's rate.
-const meas = (split = split_now()) => (split ? state.measured_solo : state.measured);
+// Measured xp/s per spot with the party there: base xp of the party's kills at it (kill_credit)
+const meas = () => state.measured;
 
 // =====================================================================
 // Where to fight
@@ -1281,13 +1241,12 @@ function set_pack(p, label) {
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
 // ---- Probing (CFG.probe) ----
 // How far over the safety limit a monster is: fight_risk ÷ the same budget safe_enough uses (1 = exactly at it)
-function risk_over(mt, team = solo_now()) {
-	const m = G.monsters[mt], f = m && fight_math(m, true, team);
+function risk_over(mt) {
+	const m = G.monsters[mt], f = m && fight_math(m);
 	if (!f) return Infinity;
-	const limit = (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mt, f) * heal_mult(f);
+	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mt, f) * heal_mult(f);
 	return fight_risk(f) / Math.max(1, limit);
 }
-const flee_at = () => (CFG.probe?.enabled && (state.pack?.probe || (is_follower() && leader_hb()?.pack?.probe)) ? CFG.probe.flee_hp : CFG.flee_hp);
 // May the leader start a probe now? Everyone near, healthy and stocked; nothing else special going on
 function probe_ready() {
 	const P = CFG.probe, now = Date.now();
@@ -1319,40 +1278,38 @@ function probe_why() {
 	if (lp) return `${lp.name} potions under ${CFG.pot_min * 2}`;
 	return "ready (next pick)";
 }
-// Best-xp spot of a monster just past the limit that would beat the best normal spot by min_gain. team: who the fight
-// is judged with (default: as now); ref: the best normal xp/s to beat (default: this pick's)
-function probe_pick(team = solo_now(), ref = state.best_score) {
-	const P = CFG.probe, now = Date.now();
+// Best-xp spot of a monster just past the limit that would beat the best normal spot (this pick's) by min_gain
+function probe_pick() {
+	const P = CFG.probe, now = Date.now(), ref = state.best_score;
 	let best = null;
 	for (const mt in G.monsters) {
 		if (!farmable_type(mt) || skipped("probe:" + mt)) continue; // safe ones fail r > 1 below
-		const r = risk_over(mt, team);
+		const r = risk_over(mt);
 		if (!(r > 1 && r <= P.max_over)) continue;
-		const m = G.monsters[mt], f = fight_math(m, true, team);
+		const m = G.monsters[mt], f = fight_math(m);
 		each_area((pack, area) => {
 			if (pack.type !== mt || (!pack.grow && (expected_respawn(mt, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 			if ((state.cooldown[pack_key(area)] || 0) > now) return;
 			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
 			const raw = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
-			const est = meas_aged(pack_key(area), raw * state.realism, team === true); // v24.7: aged
+			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
 			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
 	return best;
 }
-// Best normal spot's xp/s for a team, without being there (v23.1: the probe check before a regroup compares against
-// the party's best, not the split fighter's solo best)
-function best_score_for(team) {
-	const prof = {}, tab = team === true ? state.measured_solo : state.measured;
+// Best normal spot's xp/s, without being there (for a member that doesn't pick)
+function best_score() {
+	const prof = {};
 	let best = 0;
 	each_area((pack, area) => {
 		const t = pack.type;
-		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t], true, team); prof[t] = f && safe_enough(f, t) ? f : null; }
+		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
 		const f = prof[t];
 		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-		best = Math.max(best, meas_aged(pack_key(area), est * state.realism, team === true));
+		best = Math.max(best, meas_aged(pack_key(area), est * state.realism));
 	});
 	return best;
 }
@@ -1366,7 +1323,7 @@ function probe_check() {
 	const dead = !!character.rip || partners_any().some((p) => p.rip);
 	const result = fled || low || dead ? "fail" : now >= P.until ? "ok" : null;
 	if (!result) return;
-	const c = state.calib[P.mtype];
+	const c = state.calib[calib_key(P.mtype)];
 	log_ev("probe", { mtype: P.mtype, mins: Math.round((now - P.start) / 60_000), result, why: dead ? "death" : fled ? "flee" : low ? "low hp" : "time",
 		ratio: c ? +c.ratio.toFixed(2) : null, n: c?.n || 0, over: +P.ratio.toFixed(2) });
 	skip("probe:" + P.mtype, (result === "ok" ? CFG.probe.win_cooldown_h : CFG.probe.fail_cooldown_h) * 3600_000, result);
@@ -1383,9 +1340,9 @@ function probe_check() {
 // scales its limit — the fight model's risk against the HP pool x safety x calibration x incidents (flees, deaths: they
 // fade) x the priest's bonus, judged as fight_profile judges it
 function over_text(mt) {
-	const m = G.monsters[mt], f = m && fight_math(m, true, solo_now() ? true : in_party_cfg() ? "party" : false);
+	const m = G.monsters[mt], f = m && fight_math(m);
 	if (!f) return "over the safety limit (no damage on it)";
-	const lim = (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mt, f) * heal_mult(f);
+	const lim = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mt, f) * heal_mult(f);
 	const inc = state.danger[mt] || 1, cal = calib_factor(mt, f);
 	return `over the safety limit x${(fight_risk(f) / lim).toFixed(2)} (calibration x${cal.toFixed(2)}${inc !== 1 ? `, incidents x${inc.toFixed(2)}` : ""}, ${f.mates} with us${f.priest ? "" : ", no priest"})`;
 }
@@ -1420,15 +1377,11 @@ function pick_pack() {
 		p.score *= walk_factor(area); // v24.9: counting the walk there
 		if (!(p.score > 0)) return; // v24.20: unreachable (no way there) or worthless: never the pick (it took "jrat @ jail")
 		note(key, t, area.map, null, { rate: p.rate, score: p.score });
-		// split: a spot a partner is already farming scores lower, so we spread over different spots. Only partners with an
-		// earlier name count (v23.2), as for hunt/quest targets: the first keeps a spot, the rest move — counting everyone
-		// made two fighters on one spot both look elsewhere
-		if (occupied(key)) p.score *= CFG.party.split.occupied_mult;
 		if (!best || p.score > best.score) best = p;
 	});
 	state.last_pick = now;
 	state.best_score = best ? best.rate : 0;
-	state.best_solo = solo_now(); state.best_at = now;
+	state.best_at = now;
 	if (probe_ready()) {
 		state.probe_at = now;
 		const pb = probe_pick();
@@ -1440,7 +1393,7 @@ function pick_pack() {
 			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
 			state.probe_none = null;
 			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.raw, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
-				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s (flee at ${CFG.probe.flee_hp * 100}%)`);
+				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s`);
 		}
 	}
 
@@ -1463,7 +1416,7 @@ function pick_pack() {
 	const cur = state.pack;
 	if (cur && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now) && best && pack_key(best) !== pack_key(cur)) {
 		const cur_v = (cur.est > 0 ? meas_aged(pack_key(cur), cur.est * state.realism) : meas()[pack_key(cur)] ?? cur.score) * walk_factor(cur); // v24.6: aged; v24.9: walk left
-		if (best.score < cur_v * (occupied(pack_key(cur)) ? CFG.party.split.occupied_mult : 1) * CFG.switch_margin) best = cur;
+		if (best.score < cur_v * CFG.switch_margin) best = cur;
 	}
 	// v24.36: leaving a spot because it stopped passing the safety check (not for a better one): it rests 5 min. A verdict
 	// near the limit flipped with every small change in the party's stats, and the leader walked between two spots
@@ -1471,8 +1424,6 @@ function pick_pack() {
 	if (cur && !cur.boss && !cur.probe && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
 		state.cooldown[pack_key(cur)] = Math.max(state.cooldown[pack_key(cur)] || 0, now + 300_000);
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
-	// split, nothing we can farm alone: follow the leader for a while (is_follower turns true until split_fallback)
-	if (!best && split_now() && leader_name() !== character.name) state.split_fallback = now + CFG.party.split.fallback_min * 60_000;
 }
 // Patrol route: a 3x3 grid snaking through the area at 15%, 50% and 85% of its width/height, so the server shows us
 // every part of the pack (it only sends entities near us) without hugging the edges
@@ -1502,19 +1453,16 @@ function end_session() {
 	if (!s) return;
 	const secs = ((s.end || Date.now()) - s.start) / 1000;
 	if (secs < CFG.measure_min_s) return;
-	if (s.split !== split_now()) return; // the mode changed mid-measurement: neither number is clean
-	// v23.0: one unit in both modes, the one score_area estimates in: base xp of the kills made at this spot. The xp we
-	// receive is a share of every party kill anywhere (server), so it can't be used. Split: our own kills (partners'
-	// kills elsewhere aren't this spot's). Together: every party kill (kill_credit, sent to each member; the party is
-	// here). No kill_credit seen at all (an older client?) → together-mode spots aren't measured; estimates stand.
+	// v23.0: the unit score_area estimates in: base xp of the kills made at this spot. The xp we receive is a share of
+	// every party kill anywhere (server), so it can't be used: every party kill counts (kill_credit, sent to each
+	// member; the party is here). No kill_credit seen at all (an older client?) → spots aren't measured; estimates stand.
 	let rate;
-	if (s.split) rate = s.kx / secs;
-	else if (s.kc_n > 0) rate = s.kc / secs;
+	if (s.kc_n > 0) rate = s.kc / secs;
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
-	const tab = meas(s.split), prev = tab[s.key];
+	const tab = meas(), prev = tab[s.key];
 	// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
-	tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate, s.split) * 0.5 + rate * 0.5;
-	state.meas_at[(s.split ? "s:" : "p:") + s.key] = Date.now();
+	tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate) * 0.5 + rate * 0.5;
+	state.meas_at["p:" + s.key] = Date.now();
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3
 	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, rate / s.est)) * 0.3));
@@ -1565,7 +1513,7 @@ if (typeof character.on === "function") {
 		seen.target_hit++;
 		if (!d?.kill) return;
 		seen.kill++; bucket().kills++;
-		// own kills, valued at the monster's base xp (what score_area estimates): the split-mode pack measurement
+		// own kills, valued at the monster's base xp (end_session: kills but no kill_credit events → an error is logged)
 		const mt = parent.entities?.[d.target]?.mtype || state.session?.mtype;
 		if (state.session && mt && G.monsters[mt]) state.session.kx = (state.session.kx || 0) + (G.monsters[mt].xp || 0);
 	});
@@ -1591,7 +1539,7 @@ function postmortem() {
 		danger: killer ? +danger_of(killer).toFixed(2) : null, last: pmring.ring.slice(-6) };
 }
 function calib_text(mt) {
-	const c = state.calib[calib_key(mt, fought_alone())]; // v24.6: the table for how we fight now (alone / with the party)
+	const c = state.calib[calib_key(mt)];
 	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < CALIB_MIN_N ? `, needs ${CALIB_MIN_N}: judged as an unknown monster` : ""})`
 		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet: judged as the worst we've measured, at least x${CFG.model_distrust} the prediction)`;
 }
@@ -1606,7 +1554,7 @@ function calib_record(mt) {
 	// under tank cover we take little damage by design: such fights say nothing about fighting it without the tank
 	if (!(pred > 1) || f.tank) return;
 	const r = Math.min(act / pred, 5); // one freak fight can't swing it more than 5x
-	const ck = calib_key(mt, fought_alone(f));
+	const ck = calib_key(mt);
 	const c = (state.calib[ck] = state.calib[ck] || { ratio: 1, n: 0, act: 0, pred: 0 });
 	const a = c.n < 10 ? 1 / (c.n + 1) : 0.1; // plain average for the first 10, then EMA
 	c.ratio += (r - c.ratio) * a; c.act += (act - c.act) * a; c.pred += (pred - c.pred) * a; c.n++;
@@ -1675,7 +1623,7 @@ function watchdog() {
 	// is (server), so a stuck fighter kept "gaining xp" and frozen/noprog never fired for party members.
 	// frozen: no hit landed; noprog: no kill (together: any party kill — kill_credit — since the party shares targets)
 	const no_hits = (p) => !!p && seen.target_hit - p.hits <= 0;
-	const no_kills = (p) => !!p && (split_now() || !seen.kc ? seen.kill - p.kills : seen.kc - p.kc) <= 0;
+	const no_kills = (p) => !!p && (!seen.kc ? seen.kill - p.kills : seen.kc - p.kc) <= 0;
 	const still = (p) => !!p && wd.pos.filter((q) => q.t >= p.t).every((q) => q.map === character.map && Math.hypot(q.x - character.x, q.y - character.y) < 20);
 	const reset = (p) => { wd.pos = wd.pos.filter((q) => q.t > now - 1000); return p; };
 	if (is_follower()) {
@@ -1688,7 +1636,7 @@ function watchdog() {
 			wd_act("lost", `${Math.round(W.lost_min)} min away from ${L.name}; town, then back to it`);
 			halt("watchdog");
 			state.travel_block_until = 0;
-			errand("regroup", async () => { await T(use_skill("use_town"), 8000).catch(() => {}); await sleep_ms(4000); await go(partner_pos(leader_hb())).catch(() => {}); });
+			errand("regroup", async () => { await T(use_skill("use_town"), 8000).catch(() => {}); await sleep_ms(4000); const L2 = leader_hb(); if (L2) await go(partner_pos(L2)).catch(() => {}); });
 			return;
 		}
 		const f = since(W.frozen_min);
@@ -1809,8 +1757,6 @@ function history_lines(hours = 6) {
 	const spots = ev.filter((e) => e.type === "pack" || e.type === "boss");
 	if (spots.length) L.push(`spots (${spots.length} changes): ${spots.slice(-12).map((e) => `${ago(e.t)} ago → ${e.to || e.name} (${e.why || "?"})`).join(" | ")}`);
 	if (probes.length) L.push(`probes: ${probes.slice(-6).map((e) => `${e.mtype} ${e.result === "ok" ? "✓" : "✗ " + e.why} (x${e.over} over; calibration ${e.ratio ?? "?"} over ${e.n} fights)`).join(" | ")}`);
-	const modes = ev.filter((e) => e.type === "mode_ab");
-	if (modes.length) L.push(`mode changes: ${modes.slice(-6).map((e) => `${ago(e.t)} ago → ${e.mode} (${e.why}; split ${fmt_k(e.split)}/h, together ${fmt_k(e.together)}/h)`).join(" | ")}`);
 	const stuck = ev.filter((e) => e.type === "stuck");
 	if (stuck.length) L.push(`watchdog: ${stuck.length} — ${stuck.slice(-5).map((e) => `${e.kind} ${ago(e.t)} ago (${e.note})`).join(" | ")}`);
 	const errs = ev.filter((e) => e.type === "error");
@@ -1921,7 +1867,6 @@ let gold_prev = null;
 setInterval(() => {
 	const d = xp_delta(), p = state.pack;
 	stats.xp += d;
-	mode_ab_tick(d);
 	const b = bucket(), cls = time_class();
 	b.time[cls] = (b.time[cls] || 0) + 1;
 	b.xp += d;
@@ -1946,11 +1891,11 @@ setInterval(() => {
 	if (!p || character.rip) return;
 	// v24.49: together, a spot's xp/s is only measured while the whole party is at it. Time spent there with a member in
 	// town, dead, a map behind or wandering was booked as the spot's rate, and those rates then steered the next pick.
-	const all_here = split_now() || !in_party_cfg() || partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
+	const all_here = !in_party_cfg() || partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700);
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, kc: 0, kc_n: 0, split: split_now(), start: Date.now() };
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, kc: 0, kc_n: 0, start: Date.now() };
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event
 	// goo's full xp: one put realism at 42), until the 180s close
@@ -1981,7 +1926,7 @@ function hopeless(t) {
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || state.pack?.mtype === t.mtype || boss_type === t.mtype || G.monsters[t.mtype].cooperative) return false;
 	const c = hopeless_c[t.mtype], now = Date.now();
 	if (c && now - c.at < 30_000) return c.v;
-	const f = fight_math(G.monsters[t.mtype], true, solo_now() ? true : in_party_cfg() ? "party" : false);
+	const f = fight_math(G.monsters[t.mtype]);
 	const v = !f || f.ttk > CFG.hopeless_ttk_s;
 	hopeless_c[t.mtype] = { at: now, v };
 	return v;
@@ -3892,16 +3837,15 @@ function mt_xps(mt) {
 // The best xp/s we know of: this pick's best, or the best measured pack
 // v23.6: this pick's best (safe and not cooling down now); only a member that doesn't pick (a follower) falls back to the
 // best rate measured — the max over every measured spot included ones now unsafe or on cooldown and raised the bar
-// v24.3: our own pick's best counts only if it was made in the mode we're in now, in the last 10 min. A follower never
-// picks, so it kept the solo best of its last split-mode pick and judged party-rate side goals against it (a hunt at
-// 28% of the party's best passed). Otherwise: the best spot for how we fight now, computed (cached 60s).
+// v24.3: our own pick's best counts only if it was made in the last 10 min (a follower never picks). Otherwise: the
+// best spot, computed (cached 60s).
 const best_known_xps = () => {
-	const now = Date.now(), solo = solo_now();
-	if (state.best_score > 0 && state.best_solo === solo && now - (state.best_at || 0) < 600_000) return state.best_score;
+	const now = Date.now();
+	if (state.best_score > 0 && now - (state.best_at || 0) < 600_000) return state.best_score;
 	const c = state.best_ref;
-	if (c && c.solo === solo && now - c.at < 60_000) return c.v;
-	const v = best_score_for(solo) || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
-	state.best_ref = { solo, at: now, v };
+	if (c && now - c.at < 60_000) return c.v;
+	const v = best_score() || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
+	state.best_ref = { at: now, v };
 	return v;
 };
 function hunt_feasible(h) {
@@ -3910,12 +3854,9 @@ function hunt_feasible(h) {
 	const best = best_known_xps();
 	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
 	if (!(h.ms > 0)) return true; // no expiry known
-	// party kills count wherever they happen (server: monster_hunt_logic for every member): while split, the members
-	// farming that monster anywhere; together, the members near
-	// v24.3: together, kills_per_s is already the party's rate (party table, or an estimate with the members near); adding
+	// v24.3: kills_per_s is already the party's rate (party table, or an estimate with the members counted); adding
 	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
-	const helpers = split_now() ? partners().filter((p) => p.pack?.mtype === h.id).length : 0;
-	const kps = kills_per_s(h.id) * (1 + 0.6 * helpers);
+	const kps = kills_per_s(h.id);
 	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
 }
 function hunt_directive() {
@@ -4044,15 +3985,14 @@ async function run_hunt() {
 	return r;
 }
 // ---- World bosses (CFG.boss) ----
-// team "all" (v23.1, the default): every online member counts wherever it is — a boss target regroups the party
-// (split_decide), so judging it only with whoever happens to be near (nobody, while split) skipped bosses the party
-// could take. boss_tick only engages once it's safe with the members actually there (team false).
+// team "all" (v23.1, the default): every online member counts wherever it is — a boss target gathers the party.
+// boss_tick only engages once everyone is there and it's safe with them (team "party").
 function boss_safe(name, team = "all") {
 	const m = G.monsters[name];
 	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true, team); // their side of the fight only
 	if (!f) return false;
-	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * safety_now(f) * heal_mult(f)) return false;
-	const squish = Math.min(character.max_hp, ...(team === "all" ? partners() : partners_near()).map((p) => p.max_hp || Infinity));
+	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * safety_now() * heal_mult(f)) return false;
+	const squish = Math.min(character.max_hp, ...fight_mates(team).map((p) => p.max_hp || Infinity));
 	return f.their_dps / (m.frequency || 1) <= squish * CFG.boss.one_hit;
 }
 // The live boss we'd join (highest xp), from the server's event list
@@ -4084,7 +4024,7 @@ function boss_tick(pack) {
 	// there taking hits until flee HP
 	const hit = !e || !e.target ? choose_target(false) : null;
 	if (hit && hit.mtype !== pack.mtype && hit.target === character.name) { state.last_target_at = Date.now(); fight(hit, true); return true; }
-	if (e && !e.target && !boss_safe(pack.mtype, false)) { // judged with the whole party: wait for it before engaging
+	if (e && !e.target && (party_missing().length || !boss_safe(pack.mtype, "party"))) { // judged with the whole party: wait for it before engaging
 		state.last_target_at = Date.now();
 		set_message(`BOSS ${pack.mtype}: waiting for the party (${partners_near().length}/${partners().length} here)`);
 		return true;
@@ -4197,22 +4137,11 @@ function refresh_directive() {
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
 	let mine = null;
-	// v21.3: farming alone while split, guide quest materials and guide farm rows (weights 2 and 1, below a hunt's 4)
-	// don't pick the spot — the same rule that keeps them from being "mutual" when together
-	const chain = split_now() ? [boss_directive, hunt_directive, oq] : [boss_directive, hunt_directive, oq, gq, () => g];
-	for (const f of chain) if (!mine) mine = f();
-	// v22.1: while split, one fighter per hunt/quest monster is enough — every party kill counts for every member's hunt
-	// and chest items go to a random member wherever they are (server). The partner with the earlier name keeps it;
-	// the rest pick the best-xp spot (a boss still gathers everyone).
-	const dup = (p) => p.name < character.name && !p.follows && p.pack?.mtype === mine.monster;
-	if (mine && !mine.boss && split_now() && partners().some(dup)) {
-		state.dir_dup = { monster: mine.monster, by: partners().find(dup).name, at: now };
-		mine = null;
-	} else state.dir_dup = null;
+	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
-	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss && !split_now()) d = pick_shared(mine) || mine; // a boss beats every goal; split: own goals
+	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
@@ -4688,7 +4617,7 @@ async function town_body(due) {
 // ---- Party town trips (v24.28, CFG.party.town_together) ----
 // state.ptown: { id, by (who started it), at, leavers (members known to be going), pending (we'll go once free),
 // joined (we went: our heartbeat pt), done (our work's finished: waiting in town), why (why we went / stayed) }
-const ptown_on = () => !!CFG.party.town_together && !is_merchant() && in_party_cfg() && !split_now();
+const ptown_on = () => !!CFG.party.town_together && !is_merchant() && in_party_cfg();
 const ptown_tell = (P) => tell_party({ k: "ptown", id: P.id, by: P.by });
 // We're on the trip: our heartbeat shows it (pt), and the others are told (they judge again without us)
 function ptown_joined(P, why_) {
@@ -4799,8 +4728,8 @@ function town_check() {
 	if (ptown_join_tick()) return; // v24.28: a member's trip we're going on
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
 	if (skipped("town:loop") && character.esize > 3) return;
-	const in_town = partners().filter((p) => p.errand === "town").map((p) => p.name);
-	const due = town_due(in_town.length > 0); // a member in town → share the trip
+	const townies = partners().filter((p) => p.errand === "town").map((p) => p.name);
+	const due = town_due(townies.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
 	if (!what.length) return void (state.town_block = null);
 	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
@@ -4848,15 +4777,15 @@ function town_check() {
 	state.town_runs.push(Date.now());
 	state.last_town = Date.now();
 	state.town_trig = town_urgent(due) || (due.relaxed ? "joined a member's trip" : "deferrable");
-	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + in_town.join(", ") : ""})`, C.dim);
+	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + townies.join(", ") : ""})`, C.dim);
 	if (town_run(due)) ptown_start(what);
 }
 
 // =====================================================================
 // Recovery, death, parking
 // =====================================================================
-// Low-HP recovery: cancel any walk (it would block the channel), teleport to town (3s channel), fight back only if
-// hit, and stay out until recover_hp/recover_mp. use_town has no cooldown and fails while > 5 monsters target us, so
+// Low-HP recovery — the merchant only: fighters never flee. Cancel any walk (it would block the channel), teleport to
+// town (3s channel), fight back only if hit, and stay out until recover_hp/recover_mp. use_town has no cooldown and fails while > 5 monsters target us, so
 // retries are spaced 1.5s apart; it's re-channelled only if something followed us below flee_hp.
 // v24.4: the 3s town channel is cancelled by every hit we take, every attack, heal or skill we cast and every potion
 // (drinking is an "equip" packet; server: player.c = {}). The old flee channelled and fought back in the same tick, and
@@ -4876,14 +4805,13 @@ function recover() {
 		incident(fk, 0.8);
 		share_verdict({ kind: "incident", mtype: fk, mult: 0.8 }); // v24.6: the leader picks for the party from its own tables
 		if (!state.pack?.probe) safety_tune("flee"); // a probe's flee is the probe's verdict, not the everyday limit's
-		// flee_pack: on_death reads the pack to cool it down and blame it; dying mid-flee used to find it already cleared
-		Object.assign(state, { recovering: true, fled: false, session: null, flee_pack: state.pack, pack: null });
+		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
 		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
 	}
 	const threat = get_nearest_monster({ target: character.name });
 	const done = character.hp >= character.max_hp * CFG.recover_hp && character.mp >= character.max_mp * CFG.recover_mp;
 	if (done && !threat) {
-		Object.assign(state, { recovering: false, fled_home: false, flee_pack: null, last_target_at: Date.now() });
+		Object.assign(state, { recovering: false, fled_home: false, last_target_at: Date.now() });
 		return void game_log("Recovered; resuming", C.ok);
 	}
 	if (channeling()) return void set_message("Teleporting to town…"); // nothing that would cancel it
@@ -4927,7 +4855,7 @@ const DATA_V = 2; // bump to clear everything learned, once per character (load_
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, meas_v: 3, measured: state.measured, measured_solo: state.measured_solo, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -4935,31 +4863,29 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, mode_ab: state.mode_ab || null,
+		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
 	if (!d || d.v !== 1) return;
 	// v24.50: one-time clear-out of everything learned so far (owner's instruction). Spot xp/s, the model's realism,
-	// damage calibration, flee/death penalties, spot rests, probe verdicts, the safety self-tuning and the split/together
-	// sample were all gathered while the party wandered, fought with members missing or without their gear, and walked
+	// damage calibration, flee/death penalties, spot rests, probe verdicts, the safety self-tuning
+	// were all gathered while the party wandered, fought with members missing or without their gear, and walked
 	// into fights one by one — none of it describes this party farming a camp together. Each character drops it once,
 	// the first time it loads this version; quests, bank, gear and town state are kept.
 	if (d.data_v !== DATA_V) {
-		for (const k of ["measured", "measured_solo", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at", "mode_ab"]) delete d[k];
+		for (const k of ["measured", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
 	}
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
 	// v23.0: measurements are now in one unit (base xp of kills at the spot); older ones mixed received xp (a share of
 	// every party kill) with own kills, so they're dropped once and re-measured
-	// v23.1: party and solo rates are kept apart; v23.0's single table mixed them, so it's dropped too
 	if (d.meas_v === 3) {
 		Object.assign(state.measured, d.measured || {});
-		Object.assign(state.measured_solo, d.measured_solo || {});
 		// measurements saved before v24.3 have no time: they start ageing now
 		const t0 = Date.now();
-		for (const [pre, tab] of [["p:", state.measured], ["s:", state.measured_solo]]) for (const k in tab) state.meas_at[pre + k] = d.meas_at?.[pre + k] || t0;
+		for (const k in state.measured) state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0;
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
 	Object.assign(state.danger, d.danger || {});
@@ -4982,8 +4908,7 @@ function load_state() {
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
-	if (d.mode_ab?.split && d.mode_ab?.together) state.mode_ab = d.mode_ab; // v24.0
-	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due (and a regroup) at once
+	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
@@ -5029,7 +4954,7 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, measured_solo: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
@@ -5128,7 +5053,7 @@ apply_ui();
 function health_checks() {
 	const W = [], now = Date.now(), hr = hist.ev.filter((e) => now - e.t < 3600_000), M_ = is_merchant();
 	const up_min = (now - seen.since) / 60_000;
-	if (!M_ && in_party_cfg() && !split_now() && seen.kill >= 20 && !seen.kc) W.push(`no kill_credit events after ${seen.kill} kills (together-mode spot rates not measured)`);
+	if (!M_ && in_party_cfg() && seen.kill >= 20 && !seen.kc) W.push(`no kill_credit events after ${seen.kill} kills (together-mode spot rates not measured)`);
 	if (!M_ && up_min > 20 && seen.target_hit === 0 && !state.parked) W.push(`no hits landed in ${Math.round(up_min)} min`);
 	const deaths = hr.filter((e) => e.type === "death").length, flees = hr.filter((e) => e.type === "flee").length;
 	if (deaths) W.push(`${deaths} death${deaths > 1 ? "s" : ""} in the last hour`);
@@ -5169,8 +5094,8 @@ function report_facts() {
 	}
 	if (!M_ && in_party_cfg()) {
 		const near = partners_near().map((x) => x.name);
-		F("near", "self", `near: ${near.join(", ") || "nobody (solo safety)"}${leader_name() === character.name ? " | LEADER" : ""}`);
-		F("party", "party", `party: leader ${leader_name()} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"}`);
+		F("near", "self", `near: ${near.join(", ") || "nobody"}${leader_name() === character.name ? " | LEADER" : ""}`);
+		F("party", "party", `party: leader ${leader_name() || "none (no tank online)"} | in game party: ${Object.keys(get_party() || {}).join(", ") || "no"}`);
 		for (const n of others()) {
 			const P = state.partners[n];
 			F("partner:" + n, "party", fresh(P) ? `  ${n} (${P.ctype} ${P.level}${P.rip ? ", DEAD" : ""}, ${build_txt(P.v, P.b)}${other_build(P.v, P.b) ? " ≠ ours: update it" : ""}) on ${P.map}${P.errand ? ", in " + P.errand : ""}`
@@ -5268,7 +5193,7 @@ function report_facts() {
 		const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
 		const why_ = P ? null : probe_why(), none = state.probe_none && Date.now() - state.probe_none.at < 2 * 3600_000 ? state.probe_none : null;
 		F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : why_}` +
-			(none && !P ? ` | last check ${ago(none.at)} ago${none.dry ? " (before regrouping)" : ""}: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
+			(none && !P ? ` | last check ${ago(none.at)} ago: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
 			(last ? ` | last probe: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""));
 	}
 	if (p && !p.boss && !M_) F("safety", "self", `safety limit ${Math.round(safety_now() * 100)}% of HP per kill${(state.safety_mult || 1) > 1 ? ` (raised from ${Math.round(CFG.safety * 100)}%; next step ${mins((state.safety_at || Date.now()) + CFG.safety_tune.step_h * 3600_000)})` : ""} | at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
@@ -5279,14 +5204,13 @@ function report_facts() {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
 		F("gold", "party", `gold: us ${character.gold.toLocaleString()} / ${golds.map((x) => `${x.name} ${x.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((now - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > now ? `, next allowed in ${mins(next)}` : ""}`);
 	}
-	if (state.dir_dup && split_now() && !M_) F("dir_dup", "self", `${state.dir_dup.monster} left to ${state.dir_dup.by} (party kills count for every hunt; loot is shared) — farming the best spot instead`);
 	if (state.dir_held && state.dir_lock && !M_) F("dir_held", "self", `committed to ${state.directive?.monster} for ${mins(state.dir_lock.until)} more; then: ${state.dir_held.monster} (${state.dir_held.reason})`);
 	if (!is_follower() && partners().length && !M_) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
 		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
-	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name()}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
+	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name() || "nobody"}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
 	const h = character.s.monsterhunt;
 	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
 	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
@@ -5556,18 +5480,9 @@ function party_header_lines() {
 	out.push(`roster: ${fighters.map((f) => `${f.name} ${f.ctype} ${f.level} @${f.map}${f.errand ? " (" + f.errand + ")" : ""}${f.rip ? " DEAD" : ""}`).join(" | ")}`);
 	const lead = pick_leader(fighters);
 	const lp = fighters.find((f) => f.name === lead)?.pack;
-	out.push(`leader: ${lead}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
+	out.push(`leader: ${lead || "none (no tank online)"}${lp ? ` @ ${lp.mtype} (${lp.map})${lp.directive ? " — " + lp.directive : ""}` : " — no pack"}`);
 	const gw = lead === character.name ? state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null : state.partners[lead]?.grp_wait;
-	if (!CFG.party.split?.enabled) out.push(`party: together (CFG.party.split off)${gw ? ` — waiting for ${gw}` : ""}`);
-	if (CFG.party.split?.enabled) {
-		const sp = lead === character.name ? !!state.split_on : !!state.partners[lead]?.split;
-		const pa = lead === character.name ? state.probe_at : state.partners[lead]?.probe_at, due = (pa || 0) + (CFG.probe?.every_min || 0) * 60_000;
-		out.push(sp ? `party: farming separately${CFG.probe?.enabled && pa ? ` (regroup for a probe in ${mins(due)})` : ""} — ${fighters.map((f) => `${f.name} @ ${f.pack ? f.pack.mtype : "?"}`).join(", ")}`
-			: `party: together${lead === character.name && state.regroup_since ? ` (regrouping for a probe, ${ago(state.regroup_since)})` : ""}`);
-		const ab = lead === character.name ? state.mode_ab : state.partners[lead]?.ab;
-		if (CFG.party.split.ab?.enabled && ab?.split) out.push(`mode: ${ab.mode === "split" ? "separate" : "together"} by measurement since ${ago(ab.since)} — ${mode_why(ab)}`
-			+ (fighters.length < (CFG.party.members || []).length ? " (measuring paused: not every fighter online)" : ""));
-	}
+	if (gw) out.push(`party: waiting for ${gw}`);
 	const M = is_merchant() ? { name: character.name, gold: character.gold, map: character.map, esize: character.esize, serving: state.serving } : merchant_hb();
 	out.push(`gold: ${[...fighters, ...(M ? [M] : [])].map((f) => `${f.name} ${fmt_k(f.gold || 0)}`).join(" / ")}`);
 	const hunts = {};
@@ -5600,7 +5515,7 @@ function why_not(mtype) {
 	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
-	const limit = (f.hp_pool || character.max_hp) * safety_now(f) * danger_of(mtype, f) * heal_mult(f);
+	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
 	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
 		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
 	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
@@ -5613,7 +5528,7 @@ function why_not(mtype) {
 }
 
 // =====================================================================
-// Party: the lowest-level member leads (packs, directives); the others follow it, assist its target, priests heal.
+// Party: the tank leads (packs, directives); the others follow it, assist its target, priests heal.
 // Members talk with send_cm every beat_ms (free when they run in one browser: localStorage; else a small call cost).
 // =====================================================================
 // Is this character configured into a party of 2+? / the other configured members
@@ -5637,83 +5552,27 @@ function partners_near(maxd = 400) {
 		return Math.hypot(pos.x - character.x, pos.y - character.y) <= maxd;
 	});
 }
-// Leader: CFG.party.leader if set (and online), else the lowest level online (dead members count: a dead leader is
-// still the leader, so followers hold position instead of wandering off). Ties: alphabetical, so all agree.
+// Leader: the party's tank (CFG.gear_tank: a warrior before a paladin, then by name), dead or alive — a dead leader is
+// still the leader. Everyone picks the same one from the heartbeats. With no tank online nobody leads: the name is
+// then the tank's from its last heartbeat if we ever had one, else null. A character outside a party leads itself.
 function leader_name() {
 	if (!in_party_cfg()) return character.name;
-	return pick_leader([{ name: character.name, level: character.level, ctype: character.ctype }, ...partners_any()]);
+	return pick_leader([{ name: character.name, ctype: character.ctype }, ...partners_any()]) ||
+		pick_leader(others().map((n) => state.partners[n]).filter(Boolean));
 }
-// v24.25: together, the tank leads — a warrior, else a paladin (the higher level, then name) — so it walks in front and
-// pulls first; with no tank online (or splitting), the lowest level leads as before. CFG.party.leader overrides both.
 const TANK_ORDER = ["warrior", "paladin"];
 function pick_leader(all) {
-	if (CFG.party.leader && all.some((m) => m.name === CFG.party.leader)) return CFG.party.leader;
-	if (CFG.party.tank_leads && !CFG.party.split?.enabled) {
-		const tk = all.filter((m) => TANK_ORDER.includes(m.ctype))
-			.sort((a, b) => TANK_ORDER.indexOf(a.ctype) - TANK_ORDER.indexOf(b.ctype) || (b.level || 0) - (a.level || 0) || (a.name < b.name ? -1 : 1));
-		if (tk.length) return tk[0].name;
-	}
-	return [...all].sort((a, b) => a.level - b.level || (a.name < b.name ? -1 : 1))[0].name;
+	const tk = all.filter((m) => CFG.gear_tank.includes(m.ctype))
+		.sort((a, b) => TANK_ORDER.indexOf(a.ctype) - TANK_ORDER.indexOf(b.ctype) || (a.name < b.name ? -1 : 1));
+	return tk.length ? tk[0].name : null;
 }
 const leader_name_any = leader_name;
 const leader_hb = () => state.partners[leader_name()];
-// Split mode (CFG.party.split): the leader decides (state.split_on, sent in its heartbeat); others read its beat.
-// While split, every fight is judged as if alone (fight_math solo): whoever happens to be near won't stay.
-const solo_now = () => split_now();
-const split_now = () => !!CFG.party.split?.enabled && in_party_cfg() && partners_any().length > 0 &&
-	(leader_name() === character.name ? !!state.split_on : !!leader_hb()?.split);
-// A follower stops following while split, unless it found nothing it can farm alone (then it follows for fallback_min)
-const is_follower = () => in_party_cfg() && partners_any().length > 0 && leader_name() !== character.name &&
-	!(split_now() && Date.now() >= (state.split_fallback || 0));
-// Leader: split unless a probe is running or due, a boss or an event is on. A due probe waits regroup_max_min for
-// everyone to arrive, then is skipped for this round.
-function split_decide() {
-	const S_ = CFG.party.split, P = CFG.probe, now = Date.now();
-	if (!S_?.enabled || !in_party_cfg() || leader_name() !== character.name) return void lead_lost();
-	// v23.2: just became the leader (levels crossed, the old one went offline): carry on its split decision and probe
-	// clock from its heartbeat instead of starting over (a regroup and a probe check on every handover)
-	if (!state.was_leader) {
-		state.was_leader = true;
-		const prev = partners_any().filter((p) => p.split !== undefined);
-		state.probe_at = Math.max(state.probe_at || 0, ...prev.map((p) => p.probe_at || 0));
-		if (prev.some((p) => p.split)) state.split_on = true;
-		const ab = prev.map((p) => p.ab).filter((a) => a?.split && a?.together).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
-		if (ab && (ab.at || 0) > (state.mode_ab?.at || 0)) state.mode_ab = JSON.parse(JSON.stringify(ab));
-	}
-	const forced = !!state.probe || !!state.directive?.boss || !!event_live();
-	const pref = mode_pick(); // v24.0: the mode that has earned more (or needs data)
-	let on = !forced && pref === "split", why_ = forced ? "a probe, boss or event" : on ? "" : mode_why();
-	if (on && P?.enabled && now - (state.probe_at || 0) >= P.every_min * 60_000) {
-		// v23.1: only call everyone back if a probe would find something — judged for the whole party (as it would be
-		// once regrouped) against the party's best normal spot. Most checks find nothing; each regroup cost a walk.
-		let regroup = true;
-		if (!state.regroup_since) {
-			const ref = best_score_for("all"), pb = probe_pick("all", ref);
-			if (!pb) {
-				state.probe_at = now;
-				state.probe_none = { at: now, best: Math.round(ref), dry: true };
-				log_ev("probe_dry", { best: Math.round(ref) });
-				regroup = false;
-			}
-		}
-		if (regroup) {
-			state.regroup_since = state.regroup_since || now;
-			if (now - state.regroup_since < S_.regroup_max_min * 60_000) { on = false; why_ = "for a probe"; }
-			else { state.probe_at = now; state.regroup_since = 0; log_ev("regroup_timeout", {}); game_log(`party: not everyone made it back for the probe in ${S_.regroup_max_min} min; skipping it this round`, C.dim); }
-		}
-	} else if (on || pref !== "split") state.regroup_since = 0;
-	if (on !== !!state.split_on) {
-		state.split_on = on;
-		if (state.mode_ab) state.mode_ab.flip_at = now;
-		log_ev(on ? "split" : "regroup", { why: on ? mode_why() : why_ });
-		game_log(on ? `party: farming separately${mode_why() ? ` (${mode_why()})` : ""}` : `party: together (${why_})`, C.info);
-		state.last_pick = 0;
-	}
-}
-// Not leading (now): the split flag is the leader's to send, and a probe we started is ours no more — it would later
-// be closed as "held" (v24.3). Also called from the follower branch, which never reaches split_decide.
+// In a party, everyone but the leader follows — with no tank online too (nobody leads, nobody picks a spot)
+const is_follower = () => in_party_cfg() && leader_name() !== character.name;
+// Not leading (now): a probe we started is ours no more — it would later be closed as "held" (v24.3). Called from the
+// follower branch.
 function lead_lost() {
-	state.split_on = false; state.was_leader = false;
 	if (state.probe && in_party_cfg() && leader_name() !== character.name) {
 		const P = state.probe;
 		log_ev("probe", { mtype: P.mtype, mins: Math.round((Date.now() - P.start) / 60_000), result: "dropped", why: "leader changed", ratio: null, n: 0, over: +(P.ratio || 0).toFixed(2) });
@@ -5738,51 +5597,11 @@ function xp_mult_text() {
 	const other = Math.round(m * 100 - 100 - gear - party);
 	return `xp multiplier x${m.toFixed(2)} = 100% + gear ${Math.round(gear)}% + party ${party}%${other ? ` + other ${other}%` : ""}`;
 }
-// ---- Convoy (CFG.party.group.convoy, v24.18) ----
-// Together, travelling: the slowest online member (not on an errand, recovering or dead) leads the walk to the leader's
-// spot and everyone follows it. The leader setting off at its own pace and holding when someone fell 450px behind made
-// a stop-start string, the fast members arriving first. Ends once that member is at the spot. Everyone computes the same
-// head from the heartbeats' speeds (ties: name order).
-// The members a convoy moves (us included): not on an errand, recovering or dead. v24.22: one with no speed in its
-// heartbeat (an older version) counts at a normal 55 instead of dropping out
-function convoy_members() {
-	return [{ name: character.name, speed: character.speed || 55, map: character.map, x: character.x, y: character.y, ok: !state.recovering && !errand_busy() && !character.rip },
-		...partners().map((p) => { const q = partner_pos(p); return { name: p.name, speed: p.speed > 0 ? p.speed : 55, map: q.map, x: q.x, y: q.y, ok: !p.errand && !p.recovering && !p.rip }; })]
-		.filter((m) => m.ok);
-}
-// v24.22: the head gathers the convoy before it walks and waits for one that falls behind (radius, then 0.6x radius to go
-// on; wait_s at most, then go_s on regardless): it used to set off at once and the others chased it from wherever they
-// were — after a respawn or a town trip they still arrived one by one. Returns who it waits for, or null.
-function convoy_muster() {
-	const G_ = CFG.party.group, now = Date.now();
-	const r = state.convoy_wait ? G_.radius * 0.6 : G_.radius;
-	const far = convoy_members().filter((m) => m.name !== character.name && (m.map !== character.map || Math.hypot(m.x - character.x, m.y - character.y) > r));
-	if (!far.length) return void (state.convoy_wait = null), null;
-	const W = state.convoy_wait || (state.convoy_wait = { since: now, go_until: 0 });
-	if (W.go_until > now) return null;
-	if (now - W.since > G_.wait_s * 1000) { W.go_until = now + G_.go_s * 1000; W.since = W.go_until; log_ev("convoy_timeout", { who: far.map((m) => m.name).join(",") }); return null; }
-	return (W.who = far.map((m) => m.name).join(", "));
-}
-function convoy_head() {
-	if (!CFG.party.group?.enabled || !CFG.party.group.convoy || !in_party_cfg() || split_now()) return null;
-	// v24.25: a tank leading walks in front itself (and waits for stragglers: group_hold); the convoy is for parties without one
-	const ln = leader_name(), lc = ln === character.name ? character.ctype : state.partners[ln]?.ctype;
-	if (TANK_ORDER.includes(lc)) return null;
-	const me_lead = leader_name() === character.name, L = me_lead ? null : leader_hb();
-	const pk = me_lead ? state.pack : L?.pack;
-	if (!pk || !valid_boundary(pk.boundary) || pk.boss || (!me_lead && (L.errand || L.recovering || L.rip))) return null;
-	const members = convoy_members();
-	if (members.length < 2) return null;
-	members.sort((a, b) => a.speed - b.speed || (a.name < b.name ? -1 : 1));
-	const H = members[0], b = pk.boundary;
-	if (H.map === pk.map && in_rect(H.x, H.y, [b[0] - 400, b[1] - 400, b[2] + 400, b[3] + 400])) return null; // it's there: convoy over
-	return H.name;
-}
 // ---- Group travel (CFG.party.group, v24.11) ----
 // Leader, together: the members we should wait for, as text — or null to go on (nothing to wait for, or waited enough)
 function group_hold(pack, here) {
 	const G_ = CFG.party.group, now = Date.now();
-	if (!G_?.enabled || !in_party_cfg() || split_now() || !pack || pack.boss || is_follower() || leader_name() !== character.name || errand_busy())
+	if (!G_?.enabled || !in_party_cfg() || !pack || pack.boss || is_follower() || leader_name() !== character.name || errand_busy())
 		return void (state.group_wait = null), null;
 	const key = pack_key(pack);
 	if (here && state.group_ok === key) return null; // assembled at this spot already: fights move people around
@@ -5832,61 +5651,12 @@ function apply_verdict(v, from) {
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
 	} else if (v.kind === "probe_fail") delete state.probe_ok[v.mtype];
 }
-// ---- Split vs together, measured (CFG.party.split.ab, v24.0) ----
-// state.mode_ab: { split: {xp, s}, together: {xp, s}, at (last fade), mode (the measured choice), since (when mode was
-// chosen), flip_at (last actual split/regroup) }. mode is kept apart from split_on: probes, bosses and events override
-// split_on for a while without changing the choice or its hold clock.
-const ab_rate = (b) => (b && b.s > 0 ? b.xp / b.s : 0); // xp per second
-// Every configured fighter online: with one missing, each kill is shared fewer ways and fewer fighters kill, so a rate
-// measured then isn't comparable with one measured at full strength — neither booked nor acted on
-const ab_full = () => partners_any().length >= (CFG.party.members || []).length - 1;
-const ab_state = () => state.mode_ab || (state.mode_ab = { split: { xp: 0, s: 0 }, together: { xp: 0, s: 0 }, at: Date.now(), mode: "split", since: Date.now(), flip_at: 0 });
-// Leader, every second: book this second's xp to the mode we're in, unless something else decides the mode right now
-function mode_ab_tick(d) {
-	const A = CFG.party.split?.ab, now = Date.now();
-	if (!A?.enabled || !CFG.party.split.enabled || !in_party_cfg() || leader_name() !== character.name || !partners().length) return;
-	const M = ab_state();
-	if (now - (M.at || now) >= 60_000) { // fade both samples once a minute (and over any offline gap)
-		const k = Math.pow(0.5, (now - M.at) / (A.half_life_h * 3600_000));
-		for (const m of ["split", "together"]) { M[m].xp *= k; M[m].s *= k; }
-		M.at = now;
-	}
-	if (!ab_full() || state.parked || state.probe || state.directive?.boss || state.regroup_since || character.rip || state.recovering || event_live()) return;
-	const cur = state.split_on ? "split" : "together";
-	if (cur !== M.mode || now - (M.flip_at || 0) < A.settle_min * 60_000) return;
-	M[cur].xp += Math.max(0, d); M[cur].s += 1;
-}
-// The mode to be in (leader, each split_decide): finish measuring the current one, then try the other if its data is
-// thin; else switch only to one earning margin x more. A choice holds hold_min.
-function mode_pick() {
-	const A = CFG.party.split?.ab, now = Date.now();
-	if (!A?.enabled) return "split";
-	const M = ab_state(), cur = M.mode, other = cur === "split" ? "together" : "split", need = A.sample_min * 60;
-	if (!ab_full() || now - (M.since || 0) < A.hold_min * 60_000 || M[cur].s < need) return cur;
-	// v24.6: a mode on re-trial (M.trial) has no margin to hold it once measured: the better rate wins. With the margin it
-	// stayed whenever the gap was under 10%, and the mode in force came from trial timing, not from the data
-	const bar = M.trial ? 1 : A.margin;
-	const why = M[other].s < need / 2 ? "too little data on it" : ab_rate(M[other]) > ab_rate(M[cur]) * bar ? "it earns more" : "";
-	M.trial = false;
-	if (!why) return cur;
-	M.mode = other; M.since = now; M.trial = why === "too little data on it";
-	log_ev("mode_ab", { mode: other, why, split: Math.round(ab_rate(M.split) * 3600), together: Math.round(ab_rate(M.together) * 3600) });
-	game_log(`party: trying ${other === "split" ? "separate spots" : "farming together"} — ${why} (${mode_why()})`, C.info);
-	return other;
-}
-// The measurements, as text (report/log); M defaults to ours
-function mode_why(M = state.mode_ab) {
-	const A = CFG.party.split?.ab;
-	if (!A?.enabled || !M?.split || !M?.together) return "";
-	const f = (m) => `${m} ${fmt_k(Math.round(ab_rate(M[m]) * 3600))}/h${M[m].s < A.sample_min * 60 ? ` (${Math.round(M[m].s / 60)}m of data)` : ""}`;
-	return `party xp ${f("split")} vs ${f("together")}`;
-}
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : null, xpm: xp_mult(), speed: character.speed, follows: is_follower(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, split: !!state.split_on && leader_name() === character.name, probe_at: state.probe_at || 0, ab: leader_name() === character.name ? state.mode_ab || null : null, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : null, xpm: xp_mult(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
 		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
@@ -5940,15 +5710,7 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 	const first = !fresh(state.partners[m.name]);
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
 	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one party-wide clock
-	// v24.3: every member keeps a copy of the leader's split/together measurements and probe clock, so a new leader
-	// (levels crossed, or the old one went offline) carries on with them; the old leader's heartbeats stop carrying
-	// them the moment it stops leading, so reading them at handover found nothing
-	if (m.name === leader_name() && m.name !== character.name) {
-		const ab = m.message.ab;
-		if (ab?.split && ab?.together) state.mode_ab = JSON.parse(JSON.stringify(ab));
-		if (m.message.probe_at > (state.probe_at || 0)) state.probe_at = m.message.probe_at;
-	}
-	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name()} leads`, C.info);
+	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name() || "nobody"} leads`, C.info);
 	if (first && other_build(m.message.v, m.message.b)) game_log(`party: ${m.name} runs ${build_txt(m.message.v, m.message.b)}, we run ${build_txt(VERSION, BUILD)} - load the same version on every character`, C.warn);
 });
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) heartbeat(); }, CFG.party.beat_ms);
@@ -6649,8 +6411,13 @@ function party_heal() {
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
 function follower_tick() {
 	const L = leader_hb();
-	if (L.rip) return void hold_grind(); // leader dead: grind what we can solo here until it walks back
-	state.hold = null;
+	if (!L || L.rip) { // no leader (no tank online), or it's dead: stand, heal, fight only what's on us
+		state.last_target_at = Date.now();
+		if (party_heal()) return;
+		const a = hit_on_me();
+		if (a) fight(a, false);
+		return;
+	}
 	// v24.8: a fleeing leader sends no pack: keep ours and hold it (as on its errands) instead of walking to its town spot
 	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, probe: !!L.pack.probe }
 		: L.recovering && state.pack ? state.pack : null;
@@ -6662,37 +6429,12 @@ function follower_tick() {
 	if (lm) { keep_away(lm); const a = hit_on_me(); if (a && a !== lm) fight(a, false); return; }
 	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
 	// and back (every leader trip used to move the whole party)
-	// v24.10: also, while split (a member with nothing of its own to farm follows for a while), straight to the leader's
-	// spot while the leader is still walking there — chasing its position across maps crossed paths with it
-	const L_off = !!state.pack && split_now() && !(L.map === state.pack.map && Number.isFinite(L.x) &&
-		in_rect(L.x, L.y, [state.pack.boundary[0] - 300, state.pack.boundary[1] - 300, state.pack.boundary[2] + 300, state.pack.boundary[3] + 300]));
-	const away = (!!L.errand || !!L.recovering || L_off) && !!state.pack;
-	let pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
-	// v24.18: convoy — the slowest of us walks to the spot; the others follow it (not the leader)
-	const CH = !away && state.pack ? convoy_head() : null;
-	if (CH === character.name) {
-		const wait = convoy_muster();
-		if (wait) { // gather first: hold here (they're following us), fight what's on us
-			if (walking() && !errand_busy()) { halt("follower_tick"); }
-			const a = hit_on_me() || choose_target(false);
-			if (a) fight(a, true);
-			return void set_message(`convoy: waiting for ${wait}`);
-		}
-		pos = { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 };
-	} else {
-		state.convoy_wait = null;
-		if (CH && CH !== L.name && state.partners[CH]) pos = partner_pos(state.partners[CH]);
-	}
+	const away = (!!L.errand || !!L.recovering) && !!state.pack;
+	const pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
-	// the tank picks (attackers first, then the pack's monster near the leader); others assist the tank, then the leader
-	const easy = CFG.party.spread && !away && state.pack && !state.pack.probe && spread_ok(state.pack.mtype);
-	// v24.8: what's hitting us first, always; spread: then a free monster, before one already on a partner (it was
-	// choose_target first, which piled everyone onto the priest's monster)
-	let t = easy ? hit_on_me() || spread_pick(pos, L) || choose_target(false) || leader_t
-		// v24.24: the tank takes the leader's pick (announced as it holds fire) before one of its own — they used to pick two
-		: i_am_tank() ? choose_target(false) || leader_untouched(leader_t) || follower_pick(pos) || leader_t
-		: hit_on_me() || caller_target() || leader_t || choose_target(false) || follower_pick(pos);
+	// v24.8: what's hitting us first, always; then assist the tank (the leader)
+	const t = hit_on_me() || caller_target() || leader_t || choose_target(false) || follower_pick(pos);
 	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
@@ -6720,31 +6462,6 @@ function follower_tick() {
 		if (can_move_to(want.x, want.y)) move_to_as("follower_tick", want.x, want.y, 300); else travel_as("follower_tick", pos);
 	}
 }
-// Easy enough to split up on: we'd kill it ALONE within spread_ttk, safely (v23.0: judged solo — no partner damage,
-// tank or heals; it used to be the party-assisted verdict)
-function spread_ok(mt) {
-	if (state.spread_c && state.spread_c.mt === mt && Date.now() - state.spread_c.at < 30_000) return state.spread_c.ok;
-	const pf = fight_profile(mt); // the party verdict: what following (live_ok) uses
-	if (pf) state.safe[mt] = pf; else delete state.safe[mt]; // followers don't run pick_pack: live_ok reads this
-	const sf = farmable_type(mt) && fight_math(G.monsters[mt], false, true);
-	const ok = !!sf && safe_enough(sf, mt) && sf.ttk <= CFG.party.spread_ttk;
-	state.spread_c = { mt, at: Date.now(), ok };
-	return ok;
-}
-// Our own monster of the pack's type near the leader that no member is already hitting (spread mode)
-function spread_pick(pos, L) {
-	const mt = state.pack?.mtype, taken = new Set([L?.target, ...partners().map((p) => p.target)].filter(Boolean));
-	if (!mt || pos.map !== character.map) return null;
-	let best = null, bd = Infinity;
-	for (const id in parent.entities) {
-		const e = parent.entities[id];
-		if (e.mtype !== mt || taken.has(e.id) || !farmable_entity(e) || !valid(e) || (e.target && e.target !== character.name)) continue;
-		if (Math.hypot(e.x - pos.x, e.y - pos.y) > CFG.party.wait_radius || !live_ok(e) || !entity_profile(e, true)) continue; // this one, alone
-		const d = distance(character, e);
-		if (d < bd && can_move_to(e)) (best = e), (bd = d);
-	}
-	return best;
-}
 // Follower with nothing to hit (the leader one-shots its targets, e.g. goos): take our own monster of the leader's
 // pack type within wait_radius of the leader. Followers don't run pick_pack, so its safety is checked here (30s cache).
 function follower_pick(pos) {
@@ -6760,56 +6477,6 @@ function follower_pick(pos) {
 	const e = choose_target(true);
 	return e && e.mtype === mt && Math.hypot(e.x - pos.x, e.y - pos.y) <= CFG.party.wait_radius ? e : null;
 }
-// Follower whose leader is dead: grind whatever it can SOLO near where it is (wait_radius), drift back when idle.
-// Solo safety: partners_near() leaves out dead members, so fight_math leaves out its damage and heals.
-function hold_grind() {
-	if (!state.hold || state.hold.map !== character.map) {
-		state.hold = { map: character.map, x: character.x, y: character.y };
-		live_cache.clear();
-	}
-	const h = state.hold, R = CFG.party.wait_radius;
-	state.last_target_at = Date.now();
-	if (party_heal()) return true;
-	let t = choose_target(false); // anything hitting us first
-	if (!t) {
-		const party = party_names();
-		let best_v = 0;
-		for (const id in parent.entities) {
-			const e = parent.entities[id];
-			if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target))) continue;
-			if (Math.hypot(e.x - h.x, e.y - h.y) > R) continue;
-			const f = entity_profile(e); // solo verdict
-			if (!f) continue;
-			const v = (e.xp || f.xp || 1) / (f.ttk * (e.hp / e.max_hp) + distance(character, e) / Math.max(character.speed, 1) + 0.2);
-			if (v > best_v && can_move_to(e)) (t = e), (best_v = v);
-		}
-	}
-	if (t && !watch_progress(t)) {
-		fight(t, Math.hypot(t.x - h.x, t.y - h.y) <= R); // approach only inside the radius
-		return true;
-	}
-	// nothing to do: drift back toward the waiting spot so the partner finds us
-	if (!walking() && Math.hypot(character.x - h.x, character.y - h.y) > R / 2 && can_move_to(h.x, h.y)) move_to_as("hold_grind", h.x, h.y, 800);
-	return false;
-}
-// Leader: never waits. The follower always knows where the leader is (heartbeat) and walks to it. What changes when
-// the partner leaves (town, dead, far) or comes back is the fight model: its damage and heals stop/start counting,
-// so the pack is re-judged at once — if it's too much solo, the leader moves to one it can handle, and back when
-// the partner returns. Waiting in place gains nothing: the follower always knows where the leader is.
-function duo_check() {
-	if (!in_party_cfg() || is_follower() || split_now()) return; // split: fights are judged solo, passers-by change nothing
-	const near = partners_near().map((p) => p.name).sort().join(",");
-	if (near === state.duo_near) return;
-	const was = state.duo_near;
-	state.duo_near = near;
-	live_cache.clear();
-	state.last_pick = 0;
-	if (was === undefined) return;
-	const gone = (was ? was.split(",") : []).filter((n) => !near.split(",").includes(n));
-	const back = (near ? near.split(",") : []).filter((n) => !(was ? was.split(",") : []).includes(n));
-	const why_gone = (n) => { const p = state.partners[n]; return p?.rip ? "died" : p?.errand ? "in " + p.errand : "away"; };
-	game_log(`party near: ${near || "nobody"}${back.length ? ` (+${back.join(", ")})` : ""}${gone.length ? ` (−${gone.map((n) => n + " " + why_gone(n)).join(", ")})` : ""}: re-checking the pack`, C.info);
-}
 
 // =====================================================================
 // Main loop
@@ -6822,7 +6489,7 @@ function on_death() {
 	state.dead_handled = true;
 	// v24.51: our own suicide (regrouping) is not the camp's doing: logged, nothing blamed, nothing rested
 	if (Date.now() - suicide_at < 20_000) {
-		Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, flee_pack: null, fled_home: false });
+		Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, fled_home: false });
 		return;
 	}
 	const pmd = postmortem();
@@ -6832,7 +6499,7 @@ function on_death() {
 	pmd.unexplained = !Object.keys(pmd.dmg10 || {}).length;
 	log_ev("death", pmd);
 	bucket().deaths++;
-	const p = state.pack || state.flee_pack; // v24.4: a death mid-flee still blames (and cools down) the pack fled from
+	const p = state.pack;
 	const killer = pmd.killer && G.monsters[pmd.killer] ? pmd.killer : p?.mtype;
 	if (!pmd.unexplained) safety_tune("death");
 	if (pmd.unexplained) game_log(`Died with no damage seen (script watching for ${pmd.watched_s}s) — not blaming ${p?.mtype || "the pack"}`, C.warn);
@@ -6846,7 +6513,7 @@ function on_death() {
 		share_verdict({ kind: "incident", mtype: killer || p.mtype, mult: 0.6, key: roamer ? null : pack_key(p), cd: roamer ? 0 : state.cooldown[pack_key(p)], death: true });
 		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}`);
 	}
-	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, flee_pack: null, fled_home: false });
+	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, fled_home: false });
 }
 // Main loop: one decision per tick (see the header for the order). Reschedules itself: 200ms normally, sooner when the
 // next attack is due (never under 50ms), 500ms when over the call budget, 1s while dead, 5s with nowhere to fight.
@@ -6856,7 +6523,7 @@ function tick() {
 		meter_socket();
 		if (spent() > BUDGET.soft) wait = 500;
 		else if (character.rip) {
-			probe_check(); // v24.3: a probe ends as failed when the leader dies or flees, not "held" after recovering
+			probe_check(); // v24.3: a probe ends as failed when the leader dies, not "held" after respawning
 			on_death();
 			if (Date.now() >= next_respawn && can_spend(1, RESERVE.potion)) {
 				next_respawn = Date.now() + 5000; // retry every 5s; a "cant_respawn" reply says exactly how long to wait
@@ -6867,11 +6534,10 @@ function tick() {
 			state.dead_handled = false;
 			state.recovering = false;
 			wait = 500;
-		} else if (!(CFG.party.all_or_nothing && in_party_cfg() && !is_merchant()) && (state.recovering || character.hp < character.max_hp * flee_at())) {
-			// fleeing to town alone: only the merchant, and fighters outside a party
+		} else if (is_merchant() && (state.recovering || character.hp < character.max_hp * CFG.flee_hp)) {
+			// fleeing to town: only the merchant (fighters never flee)
 			state.dead_handled = false;
 			recover();
-			probe_check();
 			loot_chests();
 			set_message(`Recovering ${((character.hp / character.max_hp) * 100).toFixed(0)}%`);
 			wait = 250; // recovery reacts faster (re-channel, heals)
@@ -6895,41 +6561,24 @@ function tick() {
 				follower_tick();
 				loot_chests();
 				const L = leader_hb();
-				set_message(`${errand_busy() ? state.errand + " | " : ""}${L.rip ? "waiting for " + L.name + " (dead)" : "with " + L.name + (L.pack ? " @ " + L.pack.mtype : "")} | ${character.esize} free`);
+				set_message(`${errand_busy() ? state.errand + " | " : ""}${!L ? "no tank online" : L.rip ? "waiting for " + L.name + " (dead)" : "with " + L.name + (L.pack ? " @ " + L.pack.mtype : "")} | ${character.esize} free`);
 				setTimeout(tick, 150);
 				return;
 			}
-			split_decide();
-			// v24.8: together, with the party waiting at our pack while we're on an errand or walking back: no re-judging it
-			// as if alone (duo_check, the periodic re-pick, town_body's reset) — that switched to a solo pack and moved them
-			const cp = state.pack, waiting = in_party_cfg() && !split_now() && !!cp && partners().length > 0 && !partners_near().length &&
+			// v24.8: with the party waiting at our pack while we're on an errand or walking back: no re-pick (the periodic
+			// one, town_body's reset) — that switched to another pack and moved them
+			const cp = state.pack, waiting = in_party_cfg() && !!cp && partners().length > 0 && !partners_near().length &&
 				partners().every((q) => q.pack && valid_boundary(q.pack.boundary) && pack_key(q.pack) === pack_key(cp));
 			// v24.45: nor while a member is in town (a town run, a party trip): it's back in a minute, and a pick made
 			// without it ("1 with us") ruled out the party's spot and walked the rest to a weaker one each time
-			const in_town = in_party_cfg() && !split_now() && !!cp && partners().some((q) => q.errand === "town" || q.pt);
-			if (!waiting && !in_town) duo_check();
+			const member_in_town = in_party_cfg() && !!cp && partners().some((q) => q.errand === "town" || q.pt);
 			probe_check();
-			if (!state.pack || (!waiting && !in_town && Date.now() - state.last_pick > CFG.repick_ms)) pick_pack();
+			if (!state.pack || (!waiting && !member_in_town && Date.now() - state.last_pick > CFG.repick_ms)) pick_pack();
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);
 			if (pack && state.group_ok && state.group_ok !== pack_key(pack)) state.group_ok = null;
 			// v24.14: something we can't take on is close and may attack: step away first (still fight what's on us)
-			// v24.18: travelling, the slowest member leads; we follow it like any follower
-			const CH = convoy_head(), CP = CH && CH !== character.name ? state.partners[CH] : null;
-			if (CP) {
-				const q = partner_pos(CP), a = hit_on_me() || choose_target(false);
-				if (a) fight(a, true);
-				else if (!walking() && !errand_busy()) {
-					const d = q.map === character.map ? Math.hypot(q.x - character.x, q.y - character.y) : Infinity;
-					if (d > CFG.party.follow_far) travel_as("tick", q);
-					else if (d > CFG.party.follow) move_to_as("tick", q.x + (character.x - q.x) * (CFG.party.follow * 0.6 / d), q.y + (character.y - q.y) * (CFG.party.follow * 0.6 / d), 300);
-				}
-				set_message(`convoy: following ${CH} to ${pack ? pack.mtype : "?"}`);
-				loot_chests();
-				setTimeout(tick, 200);
-				return;
-			}
 			const lm = !walking() && in_area ? looming() : null; // v24.16: at the spot only — mid-walk it stopped the walk, stepped
 			// away, and the walk went right back past it (stuck between camps); on the way, fight()'s escape outruns what attacks
 			if (lm) {
@@ -6951,8 +6600,7 @@ function tick() {
 				setTimeout(tick, 250);
 				return;
 			}
-			const spread_on = CFG.party.spread && !!pack && !pack.probe && spread_ok(pack.mtype); // v24.8: easy content: our own targets
-			const t = hit_on_me() || (!i_am_tank() && !spread_on && caller_target()) || choose_target(in_area || !pack, true);
+			const t = hit_on_me() || (!i_am_tank() && caller_target()) || choose_target(in_area || !pack, true);
 			announce_target(t);
 			if (t && !watch_progress(t)) {
 				state.last_target_at = Date.now();
@@ -6994,7 +6642,8 @@ tick();
 //
 // Each tick, first match wins:
 //   1. Dead → respawn as soon as the server allows (rip_time).
-//   2. HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at recover_hp/recover_mp.
+//   2. The merchant, HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at
+//      recover_hp/recover_mp. Fighters never flee; a member dead or offline → the others suicide and wait in town.
 //   3. park() was called → finish the current errand, stand in town until resume().
 //   4. Town run, when something is due: Daisy (hunt, tokens) → quest crafts (Cole etc.) → Progression Guide steps →
 //      compound → upgrade project → exchange → elixir → sell → potions → bank (→ compound what the bank visit
@@ -7008,18 +6657,18 @@ tick();
 //   5. Merchant → supply runs, secondhands, donations, stand (see Merchant).
 //   6. Party follower → stay with the leader; hit the tank's target, else the leader's, else its own pick of the
 //      leader's pack type within wait_radius of the leader, staying engaged until the kill; heal (priests),
-//      energize the lowest-mana member (mages). Leader dead → solo-grind safe mobs nearby.
-//   7. Leader / solo → a live boss we can survive, else fight at the chosen pack.
+//      energize the lowest-mana member (mages).
+//   7. Leader (the tank) → a live boss we can survive, else fight at the chosen pack.
 //   (Before 5-7: a live server event in CFG.events — Goo Brawl, Giga Crab — that we can survive: join and fight it.)
 //
-// Where to fight (solo or party leader):
+// Where to fight (the party leader):
 //   live boss > own monster hunt > own-quest materials > guide-quest materials > guide farm row (skipped when
 //   outlevelled) > best xp/s pack (CFG.goal_w). In a party the leader merges every member's weighted goals: a monster
 //   on 2+ lists whose goals finish within mutual_max_h wins (more members, quicker first); otherwise members take
 //   turn_min-minute turns.
 //
 // Probing (CFG.probe): every every_min the leader may try, for `minutes`, the best-xp spot just past the safety limit,
-//   with everyone fleeing at probe.flee_hp; calibration learns from it, so the safe frontier can move.
+//   aborted when a member drops below probe.abort_hp; calibration learns from it, so the safe frontier can move.
 // Safety: fight_math follows the server's damage formula on live monster stats; nearby members' damage and a nearby
 //   priest's heals count only while they're near. Tank first: with a paladin/warrior near, it picks the targets and
 //   announces them; the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's
@@ -7049,7 +6698,7 @@ tick();
 //   Tracktrix) are kept by every character and re-acquired when missing: from the bank, else for tokens (reserved
 //   ahead of gear); one fighter buys the merchant's copy and hands it over.
 //
-// Party (CFG.party): the lowest-level member leads; members talk via send_cm every beat_ms (heartbeats), invite each
+// Party (CFG.party): the tank leads; members talk via send_cm every beat_ms (heartbeats), invite each
 //   other without splitting a party, and balance gold (the richest sends 15% to the poorest below 10% of its gold,
 //   at most every 3h). The watchdog (every 30s) catches frozen, no-progress and lost-follower stalls.
 //
