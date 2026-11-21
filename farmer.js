@@ -1,4 +1,4 @@
-const VERSION = "24.56"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.57"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -6456,10 +6456,12 @@ function follower_tick() {
 	const at_spot = !!state.pack && character.map === state.pack.map && in_boundary(state.pack.boundary, 250);
 	const lm = !walking() && at_spot ? looming() : null;
 	if (lm) { keep_away(lm); const a = hit_on_me(); if (a && a !== lm) fight(a, false); return; }
-	// v18.8: the leader on an errand (town, bank...) → stay and fight at its pack instead of walking to town with it
-	// and back (every leader trip used to move the whole party)
-	const away = (!!L.errand || !!L.recovering) && !!state.pack;
-	const pos = away ? { map: state.pack.map, x: (state.pack.boundary[0] + state.pack.boundary[2]) / 2, y: (state.pack.boundary[1] + state.pack.boundary[3]) / 2 } : partner_pos(L);
+	// v24.57: a follower never walks to the camp on its own. While the leader is on an errand (a town trip: the party
+	// is in town together) it waits where it is in town — or walks to town if it somehow isn't there; otherwise it
+	// goes to the leader. The old rule (v18.8: "leader on an errand → go and fight at its camp") sent Aspernari off to
+	// croc alone the moment her own town run ended, 2s before the tank's status showed its errand over.
+	const away = !!L.errand;
+	const pos = away ? (in_town() ? { map: character.map, x: character.x, y: character.y } : dest_point("main")) : partner_pos(L);
 	const lt = !away && L.target && parent.entities[L.target];
 	const leader_t = lt && valid(lt) && lt.type === "monster" ? lt : null;
 	// v24.8: what's hitting us first, always; then assist the tank (the leader)

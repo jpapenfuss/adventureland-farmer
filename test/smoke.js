@@ -3720,6 +3720,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.partners = {}; state.pack = null; delete state.safe.poi146; CFG.party.tank_first = false; live_cache.clear()");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });
 	}
+	// 147) v24.57: with the leader on an errand a follower waits in town (or walks to town) — never to the camp alone
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const ents = ctx.parent.entities, mv0 = ctx.move, steps = [];
+		ctx.parent.entities = {}; ctx.move = (x, y) => steps.push([x, y]); ctx.distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+		R("globalThis.__tv147 = travel; globalThis.__d147 = null; travel = (d) => { globalThis.__d147 = d; }; state.partners = {}; state.errand = null; smart_depth = 0; last_move = 0; state.follow_block = null");
+		const pk = { mtype: "croc", map: "main", boundary: [696, 1498, 906, 1922] };
+		Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", level: 58, map: "main", x: 10, y: 20, rip: false, hp: 5270, max_hp: 5270, moving: false });
+		hb("Torlis", { ...tor, ctype: "paladin", level: 53, map: "main", x: -200, y: -130, errand: "town", pack: pk });
+		hb("Sanala", { ...san, ctype: "mage", level: 53, map: "main", x: 40, y: -100, errand: "town" });
+		R("follower_tick()");
+		assert(R("__d147") === null && steps.length === 0, `leader still on its town run, we're in town: wait here — no walk to the camp (${JSON.stringify(R("__d147"))})`);
+		Object.assign(character, { map: "main", x: 700, y: 1600 });
+		R("follower_tick()");
+		assert(R("__d147 && __d147.map === 'main' && Math.hypot(__d147.x, __d147.y) < 50"), `...and if we're out in the field: to town, not to the camp (${JSON.stringify(R("__d147"))})`);
+		R("travel = __tv147; state.partners = {}; state.pack = null");
+		ctx.parent.entities = ents; ctx.move = mv0; ctx.distance = () => 0;
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0 });
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
