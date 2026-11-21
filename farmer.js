@@ -1,4 +1,4 @@
-const VERSION = "24.78"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.79"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1411,6 +1411,7 @@ function pick_pack() {
 	state.pick_skips = {};
 	// v24.38: every spot considered and what became of it (report: "spot choice"). out: why it's out, null = a candidate
 	const table = (state.pick_table = []);
+	state.pick_table_at = Date.now(); // (the report's "spot choice … ago": last_pick is zeroed to force a pick)
 	const note = (key, t, map, out, extra) => table.push({ key, mtype: t, map, out, m: meas()[key] || 0, ...extra });
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
@@ -5413,7 +5414,12 @@ function report_facts() {
 		if (ev) F("event", "self", `event: ${ev} — ${event_here(ev) ? "at it" : "joining"}`);
 	}
 	if (CFG.gear_auto) {
-		const g = my_gear(), total = Object.values(g.w).filter((v) => v < 1e9).reduce((a, b) => a + b, 0);
+		// v24.79: the pieces' own points plus each set's whole bonus. It used to add up the per-slot values, and each of
+		// those carries only what the LAST piece of its set adds: Sanala's fifth Monster Hunter piece showed 486 → 442
+		// (five pieces x the 5th-piece bonus instead of four x the 4th), though every stat went up.
+		const g = my_gear(), sl_ = gear_slots_v();
+		const total = GEAR_SLOTS.map((s) => (sl_[s] ? gear_score(sl_[s], character.ctype) : 0)).filter((v) => v < 1e9).reduce((a, b) => a + b, 0) +
+			Object.entries(g.sets || {}).reduce((a, [set, n]) => a + stat_points(set_bonus(set, n), character.ctype), 0);
 		const owns = Object.keys(g.own || {});
 		const takers = gear_takers().slice(1);
 		const held_for = character.items.map((it) => { const m = it && takers.find((x) => gear_gain(it, x.ctype, x.g)); return m && `${it.name}→${m.name}`; }).filter(Boolean);
@@ -5553,7 +5559,7 @@ function report_facts() {
 	if (!M_ && !is_follower() && state.pick_table?.length) {
 		const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
 		const cur = p ? pack_key(p) : null;
-		F("picks", "self", `spot choice (${ago(state.last_pick)} ago): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+		F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 			(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 	}
 	// v24.37: why the monsters in view are or aren't targets (the spot's type): attackable, or skipped and why
