@@ -3295,6 +3295,30 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			`gear_why explains the points (${R("gear_why({ name: 'wcap136', level: 0 }, 'mage', { sets: { wan136: 1 }, sset: { chest: 'wan136' } }, 'helmet')")})`);
 		const gc = R("gear_check_lines()").join("\n");
 		assert(/weights mage \(G\.classes lstats/.test(gc) && /worn: armor 5×0\.3=1\.5 \(\+set wan136 10\)/.test(gc), "gear_check shows the weights and where each worn piece's points come from");
+		// v24.67: the missing piece of a set that only wins once upgraded is bought with tokens and becomes our own project
+		{
+			const I = ctx.G.items, keep = { tokens: ctx.G.tokens, items: character.items, ctype: character.ctype, gold: character.gold, upg: R("state.upg") };
+			const up = { stat: 1, resistance: 4, armor: 4 }, gr = [0, 7, 10, 12];
+			for (const [n, t] of [["mmh137", "helmet"], ["mma137", "chest"], ["mmp137", "pants"], ["mms137", "shoes"], ["mmg137", "gloves"]]) I[n] = { type: t, set: "mm137", armor: 22, resistance: 11, upgrade: up, grades: gr, g: 68000 };
+			I.gl137 = { type: "gloves", armor: 16, resistance: 8, upgrade: { stat: 1, resistance: 2.5, armor: 2.5 }, grades: gr, g: 34000 };
+			I.scroll0 = I.scroll0 || { g: 1000 }; I.scroll1 = I.scroll1 || { g: 40000 }; I.monstertoken = I.monstertoken || { type: "token", s: true };
+			ctx.G.sets.mm137 = { items: ["mmh137", "mma137", "mmg137", "mmp137", "mms137"], 1: {}, 2: { int: 2 }, 3: { int: 3 }, 4: { rpiercing: 40 }, 5: { crit: 2 } };
+			ctx.G.tokens = { monstertoken: { mmg137: 8 } };
+			character.ctype = "mage"; character.gold = 5_000_000;
+			character.slots = { helmet: { name: "mmh137", level: 3 }, chest: { name: "mma137", level: 3 }, pants: { name: "mmp137", level: 1 }, shoes: { name: "mms137", level: 0 }, gloves: { name: "gl137", level: 5 } };
+			character.items = Array(42).fill(null); character.items[0] = { name: "monstertoken", q: 9 };
+			R("state.upg = null; state.bank_gear = []; state.upg_caps = {}");
+			assert(R("gear_gain({ name: 'mmg137', level: 0 }, 'mage', my_gear())") === null, "setup: the set's fifth piece at +0 doesn't beat the worn +5 gloves");
+			const tp = R("JSON.stringify(token_pick())");
+			assert(/"name":"mmg137"/.test(tp) && R("token_pick().to") >= 1, `...but it's bought with tokens to be upgraded to the level where it wins (${tp})`);
+			R("state.upg = { name: 'mmg137', to: token_pick().to, for: character.name, own: true }; state.upg_pick_at = Date.now()");
+			character.items[1] = { name: "mmg137", level: 0 };
+			assert(R("upgrade_due()") === true && R("state.upg.own") === true, "our own project on it is upgrade work for the next town trip, merchant or not");
+			assert(R("token_pick()") === null, "...and no second copy is bought meanwhile");
+			for (const n of ["mmh137", "mma137", "mmp137", "mms137", "mmg137", "gl137"]) delete I[n];
+			delete ctx.G.sets.mm137; ctx.G.tokens = keep.tokens; character.items = keep.items; character.ctype = keep.ctype; character.gold = keep.gold;
+			R("state.upg = null; state.upg_pick_at = 0");
+		}
 		delete ctx.G.sets; character.slots = {}; ctx.G.classes.mage = mc; ctx.G.classes.paladin = pc; ctx.G.classes.priest = prc;
 		R("my_gear_cache = null");
 	}

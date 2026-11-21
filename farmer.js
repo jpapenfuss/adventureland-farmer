@@ -1,4 +1,4 @@
-const VERSION = "24.66"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.67"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -227,6 +227,9 @@ const CFG = {
 	quest_shelve_h: 2,         // ...for 2h, then it's retried (nothing the guide asks for is dropped for good)
 	guide_quest_keep_h: 24,    // keep working a guide quest for 24h after the guide last listed it (its HUD shows
 	                           //   only a few rows at a time, so a quest can scroll out of view and back)
+	// v24.67: hunts are still taken and turned in at Daisy on town trips made for something else — never chased. One
+	// whose monster is the camp's completes by itself; monster tokens (the Monster Hunter set pieces) only come this way.
+	hunt_passive: true,
 	auto_monster_hunt: false,  // v24.60: off — a hunt pulled the party off its camp after one kill (was: take hunts and farm their target)
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
 	// --- merchant (same script; a merchant-class character named here works for the party instead of fighting) ---------
@@ -3248,8 +3251,9 @@ function upgrade_due() {
 	if (!CFG.upgrade_auto) return false;
 	if (merchant_does_it()) {
 		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags
-		if (state.upg && !is_merchant()) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
-		return false;
+		// (v24.67: except our own project on a token piece — the copy is ours, and the merchant can't buy one)
+		if (state.upg && !is_merchant() && !state.upg.own) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
+		if (!state.upg?.own) return false;
 	}
 	const now = Date.now();
 	if (!state.upg && now - (state.upg_pick_at || 0) > 600_000) {
@@ -4075,7 +4079,7 @@ function pick_shared(mine) {
 // Visit Daisy when we have no hunt or a finished one (h.c = kills left)
 const hunt_due = () => {
 	const h = character.s.monsterhunt;
-	return CFG.auto_monster_hunt && character.ctype !== "merchant" && (!h || h.c === 0) && !skipped("hunt:auto");
+	return (CFG.auto_monster_hunt || CFG.hunt_passive) && character.ctype !== "merchant" && (!h || h.c === 0) && !skipped("hunt:auto");
 };
 // Daisy: one call turns in a finished hunt ({completed}) or starts a new one ({started}); after a turn-in we call again
 // right away so the next hunt starts on the same visit (at most 2 calls)
@@ -6135,8 +6139,24 @@ function token_pick() {
 			const r = gear_gain({ name, level: 0 }, m.ctype, m.g);
 			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
 		}
+		// v24.67: for ourselves, a piece that only beats what we wear once upgraded (the fifth piece of a set at +0
+		// against a worn +5): bought when the lowest level at which it wins is one our scrolls reach; we upgrade it
+		// ourselves (own project) and wear it then. Sanala sat at 4 of 5 Monster Hunter Mage pieces.
+		const mine = set_piece_plan(name);
+		if (mine && (!best || mine.gain / price > best.v)) best = { name, price, for: character.name, gain: mine.gain, v: mine.gain / price, to: mine.to, slot: mine.slot };
 	}
 	return best;
+}
+// The lowest level (1..what scroll0/scroll1 reach, under a past ceiling) at which an upgradable piece beats what we wear
+function set_piece_plan(name) {
+	if (!CFG.upgrade_auto || !G.items[name]?.upgrade || state.upg || skipped("upg:" + name)) return null;
+	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name));
+	if (gear_gain({ name, level: 0 }, character.ctype, g)) return null; // wins as it is: the ordinary pick
+	for (let to = 1; to <= max; to++) {
+		const r = gear_gain({ name, level: to }, character.ctype, g);
+		if (r) return upgrade_cost(name, to) - (G.items[name].g || 0) <= upgrade_gold() ? { to, slot: r.slot, gain: Math.round(r.gain) } : null;
+	}
+	return null;
 }
 async function task_tokens() {
 	let n = 0;
@@ -6149,7 +6169,9 @@ async function task_tokens() {
 			await T(exchange_buy("monstertoken", b.name));
 			n++;
 			if (b.hold && b.for !== character.name) state.hold_for[b.name] = { to: b.for, at: Date.now() };
-			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
+			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
+			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
+			if (b.to) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }
