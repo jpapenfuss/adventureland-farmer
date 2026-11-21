@@ -1,4 +1,4 @@
-const VERSION = "24.16"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.17"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -257,7 +257,7 @@ const CFG = {
 	// --- party (the same script runs on every member) -----------------------------------------------------------------
 	// commit_min (v19.3): once the leader heads for a target it keeps it for the walk there + this many minutes of
 	// fighting (a boss, an unsafe target or a finished goal still switch at once)
-	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10, commit_min: 10, stay_min: 20, door_px: 150 }, // v18.1: walk-time estimates for goal choice;
+	travel: { cross_map_s: 60, weight_h: 4, turn_walk_max_min: 10, commit_min: 10, stay_min: 20, door_px: 150, safe_routes: true }, // v18.1: walk-time estimates for goal choice;
 	// stay_min (v24.9): the stay a spot pick is judged over — its xp/s x stay / (stay + walk)
 	party: {
 		members: ["Aspernari", "Torlis", "Sanala"], // character names (any number; the game allows up to 9); [] = solo
@@ -487,7 +487,47 @@ async function wait_budget(cost, reserve) { while (!can_spend(cost, reserve)) aw
 // Every walk has a deadline: the game's pathfinder retries a locked door ("The door is locked!" → "Lost the path"
 // → "Path found!") forever, which would hang an errand (e.g. in front of the locked bank_b door).
 let smart_depth = 0; // number of go() walks in flight; > 0 means "walking" (nothing else may steer)
+// Where smart_move would take a destination (its own table for named places), or null if we can't tell
+function dest_point(dest) {
+	if (dest && typeof dest === "object" && Number.isFinite(dest.x)) return { map: dest.map || character.map, x: dest.x, y: dest.y };
+	let name = typeof dest === "string" ? dest : dest?.to || dest?.map;
+	if (!name || G.monsters[name]) return null;
+	if (name === "town") name = "main";
+	if (G.maps[name]?.spawns?.[0]) return { map: name, x: G.maps[name].spawns[0][0], y: G.maps[name].spawns[0][1] };
+	if (name === "upgrade" || name === "compound") return { map: "main", x: -204, y: -129 };
+	if (name === "exchange") return { map: "main", x: -26, y: -432 };
+	if (name === "potions") return character.map === "halloween" ? { map: "halloween", x: 149, y: -182 }
+		: ["winterland", "winter_inn", "winter_cave"].includes(character.map) ? { map: "winter_inn", x: -84, y: -173 } : { map: "main", x: 56, y: -122 };
+	if (name === "scrolls") return { map: "main", x: -465, y: -71 };
+	const n = typeof find_npc === "function" ? find_npc(name) : null;
+	return n && n.map ? { map: n.map, x: n.x, y: n.y } : null;
+}
+// v24.17: every walk (pack travel, town and bank trips, merchant deliveries, followers) goes the safe way: if smart_move's
+// way crosses a map with an aggressive monster we can't take on or outrun (vampire rats in level1), walk the shortest
+// way around it leg by leg — through doors, and the transporter where it's on that way; no way around: don't go
 async function go(dest, ms = CFG.walk_timeout_ms) {
+	if (state.recovering) throw { reason: "fleeing" };
+	const T_ = CFG.travel.safe_routes && G.maps[character.map]?.doors ? dest_point(dest) : null;
+	if (T_ && T_.map !== character.map) {
+		const pl = route_plan(T_.map, T_.x, T_.y);
+		if (pl?.danger) {
+			if (Date.now() - (state.deadly_log_at || 0) > 60_000) { state.deadly_log_at = Date.now(); game_log(`walk to ${T_.map}: every way passes ${pl.danger} — not going`, C.warn); }
+			throw { reason: "deadly_route", why: pl.danger };
+		}
+		if (pl?.legs?.length) {
+			game_log(`walk to ${T_.map}: around ${pl.around} (${pl.legs.map((l) => (l.kind === "tp" ? "transporter → " : "") + l.to).join(", ")})`, C.dim);
+			for (const L of pl.legs) {
+				if (character.map !== L.map) break; // moved some other way meanwhile: the last walk below finishes it
+				if (L.kind === "tp") {
+					await go_raw({ map: L.map, x: L.x, y: L.y }, ms);
+					if (typeof transport === "function") await T(transport(L.to, L.s), 25_000);
+				} else await go_raw({ map: L.to, x: L.tx, y: L.ty }, ms);
+			}
+		}
+	}
+	return go_raw(dest, ms);
+}
+async function go_raw(dest, ms = CFG.walk_timeout_ms) {
 	// v24.8: no walks while fleeing — an errand's next step started one each time recover() stopped the last, and moving
 	// cancelled the town channel until the errand ran out of steps
 	if (state.recovering) throw { reason: "fleeing" };
@@ -744,20 +784,28 @@ function map_route(from, to) {
 // where its NPC stands — Dijkstra over map spawns, cached per start (map, 200px cell) for 60s. The hop count (v24.9-v24.15)
 // predicted other paths than smart_move took: it walked through level1's vampire rats, which killed all three.
 const rt_cache = new Map();
-function route_graph(map, x, y) {
-	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}`, now = Date.now(), c = rt_cache.get(key);
+function route_graph(map, x, y, avoid = null) {
+	const av = avoid && avoid.size ? [...avoid].sort().join(",") : "";
+	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${av}`, now = Date.now(), c = rt_cache.get(key);
 	if (c && now - c.at < 60_000) return c;
-	const dist = { "@": 0 }, prev = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
+	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
-		const add = (m2, s2, cost) => { const sp = G.maps[m2]?.spawns?.[s2]; if (!sp) return; const n = `${m2}#${s2}`; pos[n] = pos[n] || { map: m2, x: sp[0], y: sp[1] }; out.push([n, cost]); };
+		const add = (m2, s2, cost, how) => {
+			const sp = G.maps[m2]?.spawns?.[s2];
+			if (!sp || (avoid && avoid.has(m2))) return;
+			const n = `${m2}#${s2}`;
+			pos[n] = pos[n] || { map: m2, x: sp[0], y: sp[1] };
+			out.push([n, cost, how]);
+		};
 		for (const dr of M?.doors || []) {
 			if (!dr || typeof dr[4] !== "string" || !map_ok(dr[4]) || /^bank/.test(dr[4]) || dr[7] === "key" || dr[8] === "complicated") continue;
-			add(dr[4], dr[5] || 0, Math.hypot(dr[0] - p.x, dr[1] - p.y) + DP);
+			add(dr[4], dr[5] || 0, Math.hypot(dr[0] - p.x, dr[1] - p.y) + DP, { kind: "door", map: p.map, x: dr[0], y: dr[1], to: dr[4], s: dr[5] || 0 });
 		}
 		for (const npc of M?.npcs || []) if (npc?.id === "transporter" && npc.position)
-			for (const pl in tp) if (pl !== p.map && map_ok(pl)) add(pl, tp[pl], Math.hypot(npc.position[0] - p.x, npc.position[1] - p.y) + DP);
+			for (const pl in tp) if (pl !== p.map && map_ok(pl))
+				add(pl, tp[pl], Math.hypot(npc.position[0] - p.x, npc.position[1] - p.y) + DP, { kind: "tp", map: p.map, x: npc.position[0], y: npc.position[1], to: pl, s: tp[pl] });
 		return out;
 	};
 	while (open.length) {
@@ -766,24 +814,49 @@ function route_graph(map, x, y) {
 		const u = open.splice(bi, 1)[0];
 		if (done.has(u)) continue;
 		done.add(u);
-		for (const [v, w] of edges(u)) if (dist[v] === undefined || dist[u] + w < dist[v]) { dist[v] = dist[u] + w; prev[v] = u; open.push(v); }
+		for (const [v, w, how] of edges(u)) if (dist[v] === undefined || dist[u] + w < dist[v]) { dist[v] = dist[u] + w; prev[v] = u; via[v] = how; open.push(v); }
 	}
-	const r = { at: now, dist, prev, pos };
+	const r = { at: now, dist, prev, via, pos };
 	rt_cache.set(key, r);
 	if (rt_cache.size > 40) rt_cache.delete(rt_cache.keys().next().value);
 	return r;
 }
 // { d: px, maps: the maps entered (the destination last), doors } or null (unreachable); from defaults to us
-function route_to(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
-	if (to_map === from.map) return { d: Math.hypot(tx - from.x, ty - from.y), maps: [], doors: 0 };
-	const g = route_graph(from.map, from.x, from.y);
+function route_to(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }, avoid = null) {
+	if (to_map === from.map) return { d: Math.hypot(tx - from.x, ty - from.y), maps: [], doors: 0, legs: [] };
+	const g = route_graph(from.map, from.x, from.y, avoid);
 	let best = null;
 	for (const n in g.dist) { const p = g.pos[n]; if (p.map !== to_map) continue; const d = g.dist[n] + Math.hypot(tx - p.x, ty - p.y); if (!best || d < best.d) best = { d, n }; }
 	if (!best) return null;
-	const maps = [];
+	const maps = [], legs = [];
 	let doors = 0;
-	for (let n = best.n; n && n !== "@"; n = g.prev[n]) { if (maps[0] !== g.pos[n].map) maps.unshift(g.pos[n].map); doors++; }
-	return { d: best.d, maps, doors };
+	for (let n = best.n; n && n !== "@"; n = g.prev[n]) { if (maps[0] !== g.pos[n].map) maps.unshift(g.pos[n].map); legs.unshift({ ...g.via[n], tx: g.pos[n].x, ty: g.pos[n].y }); doors++; }
+	return { d: best.d, maps, doors, legs };
+}
+// v24.17: maps holding an aggressive monster we can't take on and can't outrun (cached 60s)
+let deadly_maps_c = null;
+function deadly_maps() {
+	const v = character.speed || 55, now = Date.now();
+	if (deadly_maps_c && now - deadly_maps_c.at < 60_000 && deadly_maps_c.v === v) return deadly_maps_c.set;
+	const set = new Map(); // map -> monster
+	for (const name in G.maps) for (const pk of G.maps[name].monsters || []) {
+		const t = pk.type;
+		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v && !set.has(name)) set.set(name, t);
+	}
+	deadly_maps_c = { at: now, v, set };
+	return set;
+}
+// The way smart_move would walk, or if that crosses deadly ground, the shortest way around it: { d, legs, danger,
+// around } — danger set only when there's no safe way at all
+function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
+	const r = route_to(to_map, tx, ty, from);
+	if (!r) return null;
+	const DM = deadly_maps(), hit = r.maps.find((m) => DM.has(m));
+	if (!hit) return { d: r.d, legs: null, danger: null, around: null };
+	const avoid = new Set([...DM.keys()].filter((m) => m !== from.map && m !== to_map));
+	const s = DM.has(to_map) ? null : route_to(to_map, tx, ty, from, avoid);
+	const why = `${DM.get(hit)} @ ${hit}`;
+	return s ? { d: s.d, legs: s.legs, danger: null, around: why } : { d: r.d, legs: null, danger: why, around: null };
 }
 // ---- Dangerous neighbours (v24.10) ----
 // Aggressive monsters (aggro or rage >= 0.5: they come at anyone near) that we can't take on. In the first v24.9 run,
@@ -808,8 +881,9 @@ function area_danger(area, mt) {
 function route_danger(to, tx, ty, from) {
 	const v = character.speed || 55;
 	const sp = G.maps[to]?.spawns?.[0] || [0, 0];
-	const r = G.maps[(from || character).map]?.doors ? route_to(to, tx ?? sp[0], ty ?? sp[1], from) : { maps: map_route((from || character).map, to) };
-	if (!r) return null; // unreachable: the walk estimate already rules it out
+	// v24.17: with door data, the danger is only real if there's no way around it (go() walks the way around)
+	if (G.maps[(from || character).map]?.doors) { const pl = route_plan(to, tx ?? sp[0], ty ?? sp[1], from || undefined); return pl ? pl.danger : null; }
+	const r = { maps: map_route((from || character).map, to) };
 	for (const m of r.maps) for (const [pk] of map_areas(m)) {
 		const t = pk.type;
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) return `${t} @ ${m}`;
@@ -884,7 +958,7 @@ function travel_s(map, boundary) {
 	if (!map || !valid_boundary(boundary)) return 0;
 	const cx = (boundary[0] + boundary[2]) / 2, cy = (boundary[1] + boundary[3]) / 2, v = Math.max(character.speed || 55, 10);
 	if (map === character.map) return (Math.hypot(cx - character.x, cy - character.y) / v) * 1.3;
-	if (G.maps[character.map]?.doors) { const r = route_to(map, cx, cy); return r ? (r.d / v) * 1.3 : Infinity; } // v24.16
+	if (G.maps[character.map]?.doors) { const r = route_plan(map, cx, cy); return r ? (r.d / v) * 1.3 : Infinity; } // v24.16; v24.17: the way actually walked
 	const sp = G.maps[map]?.spawns?.[0] || [0, 0];
 	return CFG.travel.cross_map_s * map_hops(character.map, map) + (Math.hypot(cx - sp[0], cy - sp[1]) / v) * 1.3;
 }
