@@ -1,4 +1,4 @@
-const VERSION = "24.50"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.51"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -290,6 +290,11 @@ const CFG = {
 		// every online fighter is within engage_px of it. Nobody else touches a monster that has no target.
 		tank_first: true,
 		tank_leads: true,      // v24.25: together, the tank (warrior, then paladin) leads — walks in front, pulls first
+		// v24.51: one party or nothing. Every member of `members` must be online and alive. If one is offline or dead,
+		// or we're under flee_hp with a monster on us, we use the suicide command (free: no XP loss, unlike dying to a
+		// monster) and wait at the respawn in town; nobody fights, flees or walks back alone. town_px: how close to
+		// main's spawn counts as "in town" (the respawn points are within 700px of it).
+		all_or_nothing: true, town_px: 1000,
 		engage_px: 400,        // v24.50: px; the tank starts a fight only with every online fighter this close to it
 		// v24.11: travel as a group. The leader doesn't set off (and stops mid-walk) while a member is over radius px
 		// behind, and at the spot doesn't pull until everyone is there (it still fights what attacks it) — members
@@ -764,6 +769,42 @@ const tank_hold = { id: null, at: 0 }; // the monster we last told the tank abou
 // A monster that already targets one of us may be hit by anyone. fire() enforces both for every attack and skill.
 const is_tank_class = (ct) => CFG.gear_tank.includes(ct);
 const together_now = () => CFG.party.tank_first && in_party_cfg() && !split_now();
+// ---- One party or nothing (v24.51) ----
+const in_town = () => character.map === "main" && Math.hypot(character.x, character.y) < CFG.party.town_px;
+let suicide_at = 0;
+// The suicide command: dead at once, no XP loss (server: "harakiri" skips defeated_by_a_monster's 1% of the level),
+// respawn in main town after 12s. At most once per 15s.
+function suicide(why_) {
+	if (character.rip || Date.now() - suicide_at < 15_000 || !parent.socket) return;
+	suicide_at = Date.now();
+	halt("suicide");
+	game_log(`Suicide to regroup in town: ${why_}`, C.warn);
+	log_ev("suicide", { why: why_, at: `${state.pack?.mtype || "?"}@${character.map}` });
+	parent.socket.emit("harakiri");
+}
+// Why the party isn't whole: a member offline or dead, or we're about to die — else null
+function party_break() {
+	if (character.hp < character.max_hp * CFG.flee_hp && hit_on_me()) return "low HP with a monster on us";
+	const off = others().filter((n) => !fresh(state.partners[n]));
+	if (off.length) return `${off.join(", ")} offline`;
+	const dead = partners_any().filter((q) => q.rip).map((q) => q.name);
+	return dead.length ? `${dead.join(", ")} dead` : null;
+}
+// Run each tick while alive (fighters): true = the party is broken and this tick is spent on it. In the field: suicide.
+// In town: stand and wait (a town errand in progress carries on). The first 30s after loading are a grace period:
+// the others' heartbeats haven't arrived yet.
+function party_break_tick() {
+	if (!CFG.party.all_or_nothing || is_merchant() || !in_party_cfg() || Date.now() - seen.since < 30_000) return false;
+	const why_ = party_break();
+	if (!why_) return false;
+	if (!in_town()) { suicide(why_); return true; }
+	if (errand_busy()) return false;
+	if (walking()) halt("party_break");
+	const a = hit_on_me(); // town is safe, but never just stand and be hit
+	if (a) fight(a, false);
+	set_message(`in town: waiting — ${why_}`);
+	return true;
+}
 // The party's tank (the first in the order warrior, paladin; alive and online), or null — never ourselves
 function party_tank() {
 	if (!together_now() || is_tank_class(character.ctype)) return null;
@@ -776,8 +817,9 @@ function party_missing() {
 }
 function tank_first(t) {
 	if (!t || t.type !== "monster" || t.target) return false;
-	if (party_tank()) return true; // not the tank: never the first hit
-	return together_now() && is_tank_class(character.ctype) && party_missing().length > 0; // the tank: not before everyone's here
+	if (!together_now()) return false;
+	if (!is_tank_class(character.ctype)) return true; // not the tank: never the first hit (v24.51: tank alive or not)
+	return party_missing().length > 0; // the tank: not before everyone's here
 }
 function hold_for_tank(t) {
 	const tank = party_tank();
@@ -1760,6 +1802,9 @@ function history_lines(hours = 6) {
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
 	const probes = ev.filter((e) => e.type === "probe");
+	// v24.51: regroups — the times we used the suicide command, and why
+	const sui = ev.filter((e) => e.type === "suicide");
+	if (sui.length) L.push(`regroups by suicide: ${sui.length} — ${sui.slice(-5).map((e) => `${ago(e.t)} ago at ${e.at} (${e.why})`).join(" | ")}`);
 	// v24.33: where the leader sent us, and why (the last 12 changes of spot, oldest first)
 	const spots = ev.filter((e) => e.type === "pack" || e.type === "boss");
 	if (spots.length) L.push(`spots (${spots.length} changes): ${spots.slice(-12).map((e) => `${ago(e.t)} ago → ${e.to || e.name} (${e.why || "?"})`).join(" | ")}`);
@@ -4752,13 +4797,6 @@ async function town_hop() {
 let town_block_logged = 0; // last "town needed but waiting" log (at most every 5 min)
 function town_check() {
 	if (ptown_join_tick()) return; // v24.28: a member's trip we're going on
-	// v24.50: after a death nobody walks back alone: a party trip — everyone to town, wait for each other, out together
-	if (state.regroup_due && ptown_on() && others().length && !errand_busy() && !character.rip) {
-		state.regroup_due = false;
-		state.town_trig = "regroup after a death"; state.last_town = Date.now();
-		if (town_run(town_due(true))) { ptown_start(["regroup after a death"]); game_log("Town: regrouping the party after a death", C.dim); }
-		return;
-	}
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
 	if (skipped("town:loop") && character.esize > 3) return;
 	const in_town = partners().filter((p) => p.errand === "town").map((p) => p.name);
@@ -6782,7 +6820,11 @@ let next_respawn = 0;
 function on_death() {
 	if (state.dead_handled) return;
 	state.dead_handled = true;
-	state.regroup_due = true; // v24.50: back on our feet, the whole party meets in town and leaves together
+	// v24.51: our own suicide (regrouping) is not the camp's doing: logged, nothing blamed, nothing rested
+	if (Date.now() - suicide_at < 20_000) {
+		Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, flee_pack: null, fled_home: false });
+		return;
+	}
 	const pmd = postmortem();
 	// v20.0: a death with no damage seen in the last 10s (dead when the script started, or killed while it wasn't
 	// watching) is logged as unexplained and doesn't blame the pack: it used to cut the pack's safety ×0.6 on no evidence
@@ -6821,7 +6863,12 @@ function tick() {
 				Promise.resolve(respawn()).catch((e) => { if (e?.ms > 0) next_respawn = Date.now() + e.ms + 200; });
 			}
 			wait = 1000;
-		} else if (state.recovering || character.hp < character.max_hp * flee_at()) {
+		} else if (party_break_tick()) { // v24.51: the party isn't whole — suicide to town, or wait there
+			state.dead_handled = false;
+			state.recovering = false;
+			wait = 500;
+		} else if (!(CFG.party.all_or_nothing && in_party_cfg() && !is_merchant()) && (state.recovering || character.hp < character.max_hp * flee_at())) {
+			// fleeing to town alone: only the merchant, and fighters outside a party
 			state.dead_handled = false;
 			recover();
 			probe_check();

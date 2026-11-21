@@ -43,7 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
-vm.runInContext("CFG.model_distrust = 1; CFG.party.tank_first = false; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
+vm.runInContext("CFG.model_distrust = 1; CFG.party.all_or_nothing = false; CFG.party.tank_first = false; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; CFG.party.spread = false; CFG.party.split.enabled = false; CFG.party.tank_leads = false; globalThis.__run_row_real = run_row", ctx); // v24.25: tank-leads tested on its own (135) // spread (102) and commitment (99) tested on their own // target commitment is tested on its own (99); other tests switch freely
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
 // A run that ends without reaching "ALL PASS" (an awaited promise that never settles, e.g. a mocked walk) must fail,
@@ -2258,8 +2258,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			gm: { id: "gm", type: "monster", mtype: "goo", visible: true, hp: 100, max_hp: 100, xp: 10, x: 90, y: 20, target: null },
 		};
 		const at102 = []; const atk_s = ctx.attack; ctx.attack = (e) => (at102.push(e.id), Promise.resolve()); ctx.can_attack = () => true;
-		vm.runInContext("inflight.attack = false; follower_tick()", ctx);
-		assert(at102.includes("gm") && !at102.includes("gl"), `easy pack: the follower takes its own goo, not the leader's (${at102})`);
+		vm.runInContext("CFG.party.tank_first = true; inflight.attack = false; follower_tick()", ctx);
+		assert(at102.length === 0, `v24.51: no spread — a follower never starts on an untouched monster, easy or not (${at102})`);
 		ctx.attack = atk_s; ctx.parent.entities = {};
 		vm.runInContext("CFG.party.spread = false; state.partners = {}", ctx);
 		// a death with no damage seen doesn't blame the pack
@@ -2816,7 +2816,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000 });
 		vm.runInContext("state.partners = {}; state.probe = { mtype: 'edge', start: Date.now() - 120000, until: Date.now() + 1e6, ratio: 1.3 }; state.recovering = true; probe_check()", ctx);
 		assert(vm.runInContext("!state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'fail' && e.why === 'flee')", ctx), "our flee: probe failed");
-		assert(/state\.recovering \|\| character\.hp < character\.max_hp \* flee_at\(\)\) \{\s*state\.dead_handled = false;\s*recover\(\);\s*probe_check\(\);/.test(src)
+		assert(/state\.recovering \|\| character\.hp < character\.max_hp \* flee_at\(\)\)\) \{[^}]*?state\.dead_handled = false;\s*recover\(\);\s*probe_check\(\);/.test(src)
 			&& /else if \(character\.rip\) \{\s*probe_check\(\);/.test(src), "...and the recovery and death branches run probe_check");
 		vm.runInContext(`state.recovering = false; const S = globalThis.__s115; mt_xps = S.mt_xps; quest_recipes = S.quest_recipes; recipe_open = S.recipe_open;
 			drop_sources = S.drop_sources; kills_per_s = S.kills_per_s; CFG.hunt_min_xp = S.hmx; CFG.quest_crafts = S.qc; delete G.craft.qx115;
@@ -3892,12 +3892,48 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		goo.target = "Torlis"; ctx.get_party = () => ({ Torlis: {}, Sanala: {}, Aspernari: {} });
 		assert(R("fire('attack', parent.entities.g144)") === true, "once the monster targets the tank, the follower attacks");
 		ctx.get_party = () => ({});
-		// a death: back on our feet, a party trip to town
-		const runs = [], cms = [], scm = ctx.send_cm; ctx.send_cm = (to, m) => (cms.push(m.k), Promise.resolve());
-		R("globalThis.__tr144 = town_run; globalThis.__td144 = town_due; town_run = (d) => (globalThis.__r144 = (globalThis.__r144 || 0) + 1, true); town_due = () => ({ plan: { free: 30 } }); state.ptown = null; state.regroup_due = true; globalThis.__r144 = 0");
-		R("town_check()");
-		assert(R("__r144") === 1 && R("state.regroup_due === false && state.ptown.joined === true") && cms.includes("ptown"), "after a death: a town run, announced to the party (they all come)");
-		R("town_run = __tr144; town_due = __td144; state.ptown = null");
+		// v24.51: one party or nothing — a member dead or offline, or us about to die: suicide in the field, wait in town
+		const emits = [], em = ctx.parent.socket.emit; ctx.parent.socket.emit = (ev) => { emits.push(ev); };
+		const scm = ctx.send_cm; ctx.send_cm = () => Promise.resolve();
+		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "desertland", x: 400, y: -1400, rip: false, hp: 3000, max_hp: 3650 });
+		R("CFG.party.all_or_nothing = true; seen.since = Date.now() - 60_000; suicide_at = 0; state.partners = {}; state.errand = null; smart_depth = 0; hist.ev = []");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400 });
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 });
+		assert(R("party_break()") === null && R("party_break_tick()") === false && emits.length === 0, "all three online and alive: nothing to do");
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400, rip: true });
+		assert(R("party_break_tick()") === true && emits.join() === "harakiri" && R("hist.ev.some((e) => e.type === 'suicide' && /Aspernari dead/.test(e.why))"), `a member died in the field: we use the suicide command to join it (${emits.join()})`);
+		assert(R("party_break_tick()") === true && emits.length === 1, "...once (not again within 15s)");
+		// our own suicide blames nobody: no incident, no camp rest
+		character.rip = true;
+		R("state.dead_handled = false; state.danger = {}; state.cooldown = {}; state.pack = { mtype: 'gscorpion', map: 'desertland', boundary: [220, -1569, 561, -1275] }; pmring.hits = [{ t: Date.now(), mtype: 'gscorpion', dmg: 900 }]; on_death()");
+		assert(R("!state.danger.gscorpion && !Object.keys(state.cooldown).length && !hist.ev.some((e) => e.type === 'death')"), "our suicide isn't booked as a death by the camp: no penalty, no rest");
+		// respawned in town with the others still dead: wait there, no second suicide
+		Object.assign(character, { rip: false, map: "main", x: 0, y: 0, hp: 3650 }); emits.length = 0;
+		R("state.dead_handled = false; suicide_at = 0");
+		assert(R("party_break_tick()") === true && emits.length === 0, "in town with a member still dead: wait, don't suicide again");
+		// everyone back: carry on
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "main", x: 10, y: 0 }); hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "main", x: -10, y: 0 });
+		assert(R("party_break_tick()") === false, "all three alive again: the party carries on");
+		// a member offline: all three or nothing
+		Object.assign(character, { map: "desertland", x: 400, y: -1400 });
+		R("state.partners.Aspernari.t = Date.now() - 60_000");
+		assert(R("/Aspernari offline/.test(party_break())") && R("party_break_tick()") === true && emits.join() === "harakiri", "a member offline: back to town by suicide, and wait");
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 }); hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400 });
+		// about to die: suicide is free, dying to the monster isn't
+		emits.length = 0; R("suicide_at = 0"); character.hp = 500;
+		ctx.parent.entities = { m144: { id: "m144", type: "monster", mtype: "goo", visible: true, dead: false, target: "Sanala", x: 400, y: -1400 } };
+		assert(R("party_break_tick()") === true && emits.join() === "harakiri", "under flee_hp with a monster on us: suicide, not a flee");
+		ctx.parent.entities = {}; character.hp = 3650; emits.length = 0; R("suicide_at = 0; seen.since = Date.now()");
+		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400, rip: true });
+		assert(R("party_break_tick()") === false && emits.length === 0, "the first 30s after loading: no suicide (heartbeats still arriving)");
+		// without a live tank nobody starts a fight
+		R("seen.since = Date.now() - 60_000; state.partners = {}");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400, rip: true });
+		ctx.parent.entities = { g144: { id: "g144", type: "monster", mtype: "goo", visible: true, dead: false, hp: 100, max_hp: 100, x: 410, y: -1400, target: null } };
+		assert(R("tank_first(parent.entities.g144)") === true, "tank dead: still nobody else starts a fight");
+		ctx.parent.socket.emit = em; ctx.send_cm = scm; ctx.parent.entities = {};
+		R("CFG.party.all_or_nothing = false; state.partners = {}; state.pack = null; state.dead_handled = false; suicide_at = 0; hist.ev = []");
+		Object.assign(character, { map: "main", x: 0, y: 0, rip: false });
 		// one-time clear-out: an old save loses what was learned, keeps the rest; the next save is marked
 		const gs = ctx.get, ss = ctx.set; let saved = null;
 		ctx.get = () => ({ v: 1, meas_v: 3, at: Date.now(), measured: { "main:1,2,3,4": 999 }, calib: { goo: { ratio: 3, n: 50 } }, danger: { goo: 0.5 }, cooldown: { k: Date.now() + 1e6 }, safety_mult: 0.5, probe_ok: { goo: { mult: 2, at: Date.now() } }, last_town: 12345 });

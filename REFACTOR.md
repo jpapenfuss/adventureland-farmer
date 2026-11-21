@@ -20,6 +20,15 @@ In the code as of v24.50:
 - Everything learned before v24.50 was cleared once (`DATA_V`).
 - Off by default: travel gear, spread targets. Removed: the "can the rest keep farming" town judgement.
 
+**Plan approved 2026-11-21** (four stages; the full text is in the session's plan file):
+- [x] Stage 1 (v24.51): one party or nothing. A member offline or dead, or us under `flee_hp` with a monster on
+  us → the suicide command (`harakiri`: no XP loss; respawn in main town after 12 s) in the field, wait in town.
+  No fleeing for party fighters. Without a live tank nobody starts a fight. A suicide blames no camp.
+- [ ] Stage 2: delete the solo and split code (split mode, A/B, `duo_check`, `hold_grind`, spread, convoy, solo
+  judging in the fight model, leadership other than the tank).
+- [ ] Stage 3: followers execute orders; only the tank runs `town_check`, picks targets and camps.
+- [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.
+
 Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the
 watchdog, convoy and group-hold code paths each steer on their own (step 4b).
 
