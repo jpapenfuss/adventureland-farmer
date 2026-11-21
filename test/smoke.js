@@ -3629,6 +3629,39 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.partners.Aspernari.t = Date.now() - 60_000");
 		{ const tv = []; R("globalThis.__tv144 = travel; travel = (d) => { globalThis.__tvd144 = d; }; globalThis.__tvd144 = null");
 			assert(R("/Aspernari offline/.test(party_break())") && R("party_break_tick()") === false && emits.length === 0 && R("__tvd144") === null, "v24.60: a member offline: no suicide, and a follower keeps following the tank (which leads the walk to town)");
+			// v24.62: the tank's walk to town with a member offline — it waits for a member behind, then leads
+			Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "desertland", x: 400, y: -1400 });
+			const ents144 = ctx.parent.entities; ctx.parent.entities = {};
+			R("state.partners = {}; __tvd144 = null");
+			hb("Sanala", { ...san, ctype: "mage", level: 51, map: "desertland", x: 2000, y: -1400 });
+			assert(R("party_break_tick()") === true && R("__tvd144") === null, "a member offline, another far behind: the tank doesn't set off for town without it");
+			hb("Sanala", { ...san, ctype: "mage", level: 51, map: "desertland", x: 430, y: -1400 });
+			assert(R("party_break_tick()") === true && R("__tvd144 && __tvd144.map") === "main", "...and leads the walk to town once it's beside it");
+			// no tank online: the follower first by name leads, the other goes to it
+			Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "desertland", x: 400, y: -1400 });
+			R("state.partners = {}; __tvd144 = null");
+			hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 2000, y: -1400 });
+			assert(R("party_break_tick()") === true && R("__tvd144 && __tvd144.map === 'desertland' && __tvd144.x === 2000"), `the tank offline: the second follower goes to the first, not to town alone (${JSON.stringify(R("__tvd144"))})`);
+			// the tank's walk to town on a party trip (ptown_lead): stops while a member is behind, walks when they're with it
+			Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 52, map: "desertland", x: 400, y: -1400 });
+			R("state.partners = {}; globalThis.__go144 = go; globalThis.__gn144 = 0; go = () => { __gn144++; return Promise.resolve(); }; state.errand = 'town'; state.errand_at = Date.now()");
+			hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 });
+			hb("Sanala", { ...san, ctype: "mage", level: 51, map: "desertland", x: 2000, y: -1400 });
+			const step144 = async () => { const m = timers.length; await new Promise((r) => setImmediate(r)); for (const t of timers.splice(m)) t.fn(); await new Promise((r) => setImmediate(r)); };
+			const mark144 = timers.length;
+			R("globalThis.__pl144 = 'walking'; ptown_lead().then(() => { __pl144 = 'arrived'; }, () => { __pl144 = 'failed'; })");
+			await new Promise((r) => setImmediate(r));
+			assert(R("__gn144") === 0 && R("state.lead_walk") === true, "party trip: the tank doesn't walk toward town while a member is behind");
+			hb("Sanala", { ...san, ctype: "mage", level: 51, map: "desertland", x: 430, y: -1400 });
+			for (const t of timers.splice(mark144)) t.fn();
+			await new Promise((r) => setImmediate(r));
+			assert(R("__gn144") === 1, `...and walks once everyone is with it (${R("__gn144")})`);
+			Object.assign(character, { map: "main", x: 0, y: 0 });
+			for (let i = 0; i < 3 && R("__pl144") === "walking"; i++) { for (const t of timers.splice(mark144)) t.fn(); await new Promise((r) => setImmediate(r)); }
+			assert(R("__pl144") === "arrived" && R("state.lead_walk") === false, `...until it's in town (${R("__pl144")})`);
+			R("go = __go144; state.errand = null; state.partners = {}");
+			ctx.parent.entities = ents144;
+			Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "desertland", x: 400, y: -1400 });
 			R("travel = __tv144"); }
 		hb("Aspernari", { ...asp, ctype: "priest", level: 58, map: "desertland", x: 380, y: -1400 }); hb("Torlis", { ...tor, ctype: "paladin", level: 52, map: "desertland", x: 420, y: -1400 });
 		// about to die: suicide is free, dying to the monster isn't
