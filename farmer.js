@@ -1,4 +1,4 @@
-const VERSION = "24.83"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.84"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -28,6 +28,15 @@ const CFG = {
 	keep_px: 220,              // v24.14: step away from a monster we can't take on that may attack, once it's this close
 	keep_close_px: 120,        // v24.25: ...and coming our way, or already this close (was 300, whatever its direction)
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
+	// v24.84 (owner: explore camps for the best return; re-evaluate them as gear and levels improve): the tank reviews
+	// its camp every camp_review_min, or after camp_review_early_min once the party has grown stronger (an average level
+	// up, or gear points +camp_review_gear) — measured camps by their measurement, untried ones by the estimate, moving
+	// only past switch_margin. So an untried camp gets a 30-min trial and the party returns if it measures worse; at
+	// most two moves an hour. Never while a monster is on a member.
+	camp_review_min: 30, camp_review_early_min: 10, camp_review_gear: 0.05,
+	// A measurement also loses weight as the party grows: half per meas_level_half average levels gained since it was
+	// taken, and half per meas_gear_half (as a fraction) more gear points — a camp measured weaker is judged again
+	meas_level_half: 2, meas_gear_half: 0.15,
 	meas_half_h: 12,           // a measured spot rate's weight halves every 12h (the rest goes to the estimate); 0 = never ages
 	force_type: null,          // monster id to farm exclusively (testing/debugging); null = choose automatically
 	flee_hp: 0.25,             // the merchant, below 25% HP: teleport to town (use_town) and recover (fighters never flee)
@@ -1280,9 +1289,43 @@ function meas_aged(key, est) {
 	const v = meas()[key];
 	if (v === undefined) return est;
 	const at = state.meas_at["p:" + key];
-	if (!at || !(CFG.meas_half_h > 0)) return v;
-	const w = Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000));
+	let w = at && CFG.meas_half_h > 0 ? Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000)) : 1;
+	// v24.84: and as the party has grown stronger since it was measured
+	const p0 = state.meas_at["w:" + key];
+	if (p0 && p0.lv > 0) {
+		const pw = party_power();
+		if (pw && CFG.meas_level_half > 0) w *= Math.pow(0.5, Math.max(0, pw.lv - p0.lv) / CFG.meas_level_half);
+		if (pw && p0.gs > 0 && CFG.meas_gear_half > 0) w *= Math.pow(0.5, Math.max(0, pw.gs / p0.gs - 1) / CFG.meas_gear_half);
+	}
 	return v * w + est * (1 - w);
+}
+// v24.84: the fighters' average level and gear points (us and the partners online; 10s cache)
+let pw_cache = null;
+function party_power() {
+	if (pw_cache && Date.now() - pw_cache.at < 10_000) return pw_cache.v;
+	let lv = 0, gs = 0, n = 0;
+	const add = (level, w) => { n++; lv += level || 0; for (const x of Object.values(w || {})) if (x > 0 && x < 1e9) gs += x; };
+	if (!is_merchant()) add(character.level, my_gear().w);
+	for (const p of partners()) if (p.ctype !== "merchant" && p.gear?.w) add(p.level, p.gear.w);
+	const v = n ? { lv: +(lv / n).toFixed(2), gs: Math.round(gs / n), n } : null;
+	pw_cache = { at: Date.now(), v };
+	return v;
+}
+// v24.84: the tank's camp review — on time, or early once the party is stronger than at the last pick
+function camp_review() {
+	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
+	if (!cur || cur.boss || cur.probe || errand_busy() || walking() || party_hit()) return false;
+	const pw = party_power(), p0 = state.review_pw;
+	const stronger = !!(pw && p0 && (pw.lv - p0.lv >= 1 || (p0.gs > 0 && pw.gs / p0.gs - 1 >= CFG.camp_review_gear)));
+	if (!(since >= CFG.camp_review_min * 60_000 || (stronger && since >= CFG.camp_review_early_min * 60_000))) return false;
+	const before = pack_key(cur);
+	pick_pack();
+	const moved = !!state.pack && pack_key(state.pack) !== before;
+	const other = (state.pick_table || []).filter((c) => !c.out && c.key !== before).sort((a, b) => (b.score || 0) - (a.score || 0))[0];
+	state.review_last = { at: now, why: stronger ? "the party is stronger" : `${CFG.camp_review_min} min at the camp`, moved,
+		text: moved ? `moved to ${state.pack.mtype}@${state.pack.map}` : `kept ${cur.mtype}@${cur.map}${other ? ` (next best ${other.mtype}@${other.map} ${Math.round(other.score)}${other.m ? " measured" : " est"})` : ""}` };
+	log_ev("review", { moved, to: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: state.review_last.why });
+	return moved;
 }
 // Measured xp/s per spot with the party there: base xp of the party's kills at it (kill_credit)
 const meas = () => state.measured;
@@ -1297,6 +1340,7 @@ function set_pack(p, label) {
 		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || "best xp/s" });
 		state.waypoints = p ? make_waypoints(p.boundary) : [];
 		state.wp = 0;
+		state.camp_at = Date.now(); // v24.84: the review clock
 		end_session();
 		state.last_target_at = Date.now();
 	}
@@ -1449,6 +1493,7 @@ function pick_pack() {
 		if (!best || p.score > best.score) best = p;
 	});
 	state.last_pick = now;
+	state.review_at = now; state.review_pw = party_power(); // v24.84
 	state.best_score = best ? best.rate : 0;
 	state.best_at = now;
 	if (probe_ready()) {
@@ -1532,6 +1577,7 @@ function end_session() {
 	// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
 	tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate) * 0.5 + rate * 0.5;
 	state.meas_at["p:" + s.key] = Date.now();
+	{ const pw = party_power(); if (pw) state.meas_at["w:" + s.key] = { lv: pw.lv, gs: pw.gs }; } // v24.84
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3
 	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, rate / s.est)) * 0.3));
@@ -5263,7 +5309,7 @@ function load_state() {
 		Object.assign(state.measured, d.measured || {});
 		// measurements saved before v24.3 have no time: they start ageing now
 		const t0 = Date.now();
-		for (const k in state.measured) state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0;
+		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
 	Object.assign(state.danger, d.danger || {});
@@ -5643,6 +5689,11 @@ function report_facts() {
 	if (!M_ && !is_follower() && state.pick_table?.length) {
 		const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
 		const cur = p ? pack_key(p) : null;
+		if (state.review_at && !is_follower()) {
+			const pw = party_power(), RL = state.review_last;
+			F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
+				(RL ? ` | last ${ago(RL.at)} ago (${RL.why}): ${RL.text}` : ""));
+		}
 		F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 			(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 	}
@@ -7147,6 +7198,7 @@ function tick() {
 			// v24.62: and it's chosen by the whole party: not before every member has been heard from (the tank used to
 			// pick on the first tick after loading, judging every monster for itself alone, and the party sat there)
 			if (!state.pack && !(in_party_cfg() && party_break())) pick_pack();
+			else if (state.pack && !(in_party_cfg() && party_break())) camp_review(); // v24.84
 			if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); setTimeout(tick, 200); return; }
 			const pack = state.pack;
 			const in_area = !!pack && character.map === pack.map && in_boundary(pack.boundary, 250);

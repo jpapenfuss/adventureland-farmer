@@ -36,6 +36,11 @@ In the code as of v24.50:
   without a member: no group-hold timeout, no join window or wait limit on town trips, no teleports. On a town trip
   the tank walks to town with the party behind it; a follower follows it in and starts its town work on arrival. A
   camp where every monster has levelled past the limit is rested at once.
+- [x] v24.84 (owner: explore camps for the best return, re-evaluate as gear and levels improve): the camp is
+  reviewed every 30 min, or after 10 min once the party is stronger (an average level, or +5% gear points) —
+  measured camps by measurement, untried ones by estimate, past switch_margin; a measurement loses weight as the
+  party grows. This replaces v24.60's "no re-pick" (the 2-minute re-pick it removed had moved the party 18 times an
+  hour).
 - [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.
 
 Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the

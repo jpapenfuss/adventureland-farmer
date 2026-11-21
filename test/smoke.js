@@ -3457,6 +3457,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			for (const n of ["wnd137", "stf138", "lan137"]) delete I[n];
 			ctx.G.classes.priest = keep.cls; Object.assign(character, { ctype: keep.ctype, attack: keep.attack, frequency: keep.frequency, int: keep.int }); character.slots = keep.slots;
 		}
+		// v24.84: the camp review — on time, early once the party is stronger; never while a monster is on a member
+		{
+			const pk = { mtype: "croc", map: "main", boundary: [0, 0, 100, 100] }, ents0 = ctx.parent.entities;
+			ctx.parent.entities = {};
+			R("globalThis.__pp84 = pick_pack; globalThis.__ppn = 0; pick_pack = () => { __ppn++; state.review_at = Date.now(); state.review_pw = party_power(); }; pw_cache = null; state.errand = null; smart_depth = 0");
+			R(`state.pack = ${JSON.stringify(pk)}; state.review_at = Date.now() - 5 * 60_000; state.review_pw = party_power()`);
+			R("camp_review()");
+			assert(R("__ppn") === 0, "5 min at the camp, the party no stronger: no review");
+			R("state.review_at = Date.now() - 31 * 60_000; camp_review()");
+			assert(R("__ppn") === 1 && /30 min at the camp/.test(R("state.review_last.why")), "30 min at the camp: reviewed");
+			R("state.review_at = Date.now() - 11 * 60_000; state.review_pw = { lv: party_power().lv - 1, gs: party_power().gs }; camp_review()");
+			assert(R("__ppn") === 2 && /stronger/.test(R("state.review_last.why")), "a level gained and 10 min there: reviewed early");
+			R("state.review_at = Date.now() - 31 * 60_000");
+			ctx.parent.entities = { m84: { id: "m84", type: "monster", mtype: "croc", visible: true, dead: false, target: character.name, x: 0, y: 0 } };
+			R("camp_review()");
+			assert(R("__ppn") === 2, "...never while a monster is on a member");
+			ctx.parent.entities = {};
+			// a measurement loses weight as the party grows
+			R(`state.measured['k84'] = 500; state.meas_at['p:k84'] = Date.now(); state.meas_at['w:k84'] = { lv: party_power().lv, gs: party_power().gs }`);
+			const same = R("meas_aged('k84', 100)");
+			R("state.meas_at['w:k84'] = { lv: party_power().lv - 2, gs: party_power().gs }");
+			const up2 = R("meas_aged('k84', 100)");
+			assert(Math.round(same) === 500 && Math.round(up2) === 300, `a camp measured two levels ago counts half (${same} → ${up2})`);
+			R("delete state.measured.k84; delete state.meas_at['p:k84']; delete state.meas_at['w:k84']; pick_pack = __pp84; state.pack = null; state.review_last = null");
+			ctx.parent.entities = ents0;
+		}
 		// v24.68: the report's JSON dumps
 		assert(R("JSON.stringify(items_dump([{ name: 'b', q: 3 }, null, { name: 'a', level: 2 }, { name: 'a', level: 2 }, { name: 'c', l: 'l' }, { name: 'b', q: 2 }]))") === '{"a+2":2,"b":5,"c*":1}', "items_dump: name+level → count, stacks summed, * for locked, sorted");
 		delete ctx.G.sets; character.slots = {}; ctx.G.classes.mage = mc; ctx.G.classes.paladin = pc; ctx.G.classes.priest = prc;
