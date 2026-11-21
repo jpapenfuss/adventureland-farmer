@@ -1,4 +1,4 @@
-const VERSION = "24.80"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.81"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -175,6 +175,13 @@ const CFG = {
 	secondhand_auto: true,
 	secondhand_every_ms: 1_800_000,
 	secondhand_max_price: 500_000,     // v18.6: was 2M (it paid 936k for +0 pants)
+	// v24.81: Ponty routes — copies bought there (with ours) to compound into a piece a fighter would wear, up to +2 (the
+	// server's base odds: +1 99%, +2 75%, +3 40%); a route may cost this per gear point, weighed by its odds
+	ponty_routes: true,
+	// v24.81: an upgrade step under the odds floor is tried with the next scroll up (the server: x1.2 + 1%, so +4 goes
+	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
+	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
+	upgrade_boost_max: 50_000,
 	secondhand_gold_per_pt: 15_000,    // ...and an upgrade may cost at most this per gear point it adds
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
@@ -3092,6 +3099,16 @@ async function run_upgrade(a, row) {
 	let floor = chance_floor(a.name, CFG.min_upgrade_chance, k, from);
 	if (scroll === "scroll2") floor = Math.max(floor, CFG.upgrade_high.min_chance); // expensive copies: never a coin flip
 	let off = null;
+	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
+		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
+		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !(shop_for(a.name) && !G.items[a.name]?.cash) && gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
+			await ensure_scroll(hs);
+			if (!has_computer()) await go("upgrade");
+			await wait_budget(1, RESERVE.errand);
+			const p3 = await T(upgrade(k, find_slot(hs, 0), null, true)).catch(() => null);
+			if (p3?.chance >= floor) { game_log(`upgrade ${a.name}: ${hs} lifts +${from + 1} from ${Math.round(preview.chance * 100)}% to ${Math.round(p3.chance * 100)}%`, C.info); preview = p3; scroll = hs; }
+		}
+	}
 	if (preview && !(preview.chance >= floor)) { // a Primling (or other allowed offering) in the bags may lift it over
 		const ok_ = character.items.findIndex((i) => i && (CFG.upgrade_high.offerings || []).includes(i.name) && !i.l);
 		if (ok_ >= 0) {
@@ -5525,6 +5542,17 @@ function report_facts() {
 		const c = CFG.craft_power && craft_pick();
 		if (c) F("craft", "self", `craft: ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts${c.cost ? `, ${fmt_k(c.cost)} gold` : ""})${craft_inputs_in_bags(c.id) ? " — ready" : " — fetching inputs"}`);
 	}
+	// v24.81: the character's own numbers (the server's totals, as the client shows them)
+	{
+		const c = character, pick = ["level", "int", "str", "dex", "vit", "for", "attack", "frequency", "range", "speed", "armor", "resistance", "max_hp", "max_mp", "mp_cost", "crit", "critdamage",
+			"evasion", "reflection", "lifesteal", "manasteal", "apiercing", "rpiercing", "xpm", "goldm", "luckm"];
+		F("stats_json", "self", `stats JSON: ${JSON.stringify(Object.fromEntries(pick.filter((k) => typeof c[k] === "number" && c[k] !== 0).map((k) => [k, +c[k].toFixed(3)])))}`);
+	}
+	if (M_ && state.ponty) {
+		F("ponty_json", "self", `ponty JSON (seen ${ago(state.ponty.at)} ago; name+level → count): ${JSON.stringify(state.ponty.items)}`);
+		F("ponty_prices", "self", `ponty prices: ${JSON.stringify(state.ponty.prices)}`);
+		F("ponty_routes", "self", `ponty routes: ${state.ponty.routes?.length ? state.ponty.routes.join(" | ") : "none — nothing there compounds (at 75% or better) into a piece a fighter would wear within the price per point"}`);
+	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
 	F("worn_json", "self", `worn JSON: ${JSON.stringify(Object.fromEntries(Object.entries(character.slots || {}).filter(([k, v]) => v && !/^trade/.test(k)).map(([k, v]) => [k, v.name + (v.level ? "+" + v.level : "") + (v.stat_type ? ":" + v.stat_type : "") + (v.p ? ":" + v.p : "")])))}`);
 	if (CFG.stat_scroll?.enabled && !M_) {
@@ -6473,6 +6501,49 @@ function secondhand_reason(it, groups) {
 	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
 	return null;
 }
+// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..4
+const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25], 1: [0.90, 0.70, 0.40, 0.20], 2: [0.80, 0.60, 0.32, 0.16] };
+const cmp_odds = (name, to) => (CMP_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || CMP_ODDS[0])[to - 1] || 0;
+// Routes through Ponty's stock: for a compound item, the copies to buy there so that — with ours (bags + bank) — three
+// make a +1 or a +2 a fighter would wear. A +1 for the last step comes from ours, from Ponty, or from three +0s (ours
+// first, then Ponty's cheapest). Only steps at or over compound_min_chance; cost = Ponty prices + scrolls.
+// → [{ name, to, for, gain, cost, chance, buy: [list entries], text }], best points per gold first
+function ponty_routes(list, groups) {
+	if (!CFG.ponty_routes || !CFG.compound_auto) return [];
+	const takers = gear_takers().slice(1).filter((x) => x.ctype !== "merchant"), sc = G.items.cscroll0?.g || 6400, out = [];
+	const names = [...new Set(list.filter((it) => G.items[it.name]?.compound && !it.p).map((it) => it.name))];
+	for (const name of names) {
+		const have = (L) => { const g = groups[compound_key(name, L)]; return g ? g.bags + g.bank : 0; };
+		const shop = (L) => list.filter((it) => it.name === name && (it.level || 0) === L && !it.p).map((it) => ({ it, price: shop_price(it) })).sort((a, b) => a.price - b.price);
+		for (const to of [1, 2]) {
+			if (to > CFG.compound_max_level || cmp_odds(name, to) < CFG.compound_min_chance || to > cmp_top(name)) continue;
+			let best = null;
+			for (const m of takers) { const r = gear_gain({ name, level: to }, m.ctype, m.g); if (r && (!best || r.gain > best.gain)) best = { gain: r.gain, who: m.name }; }
+			if (!best) continue;
+			// units of level to-1: ours, Ponty's, and (for to = 2) ones made from three +0s
+			const need = 3 - have(to - 1);
+			if (need <= 0) continue; // we hold the set already: the compound task does it
+			const units = shop(to - 1).map((x) => ({ cost: x.price, buy: [x.it], chance: 1 }));
+			if (to === 2 && cmp_odds(name, 1) >= CFG.compound_min_chance) {
+				let own0 = have(0); const p0 = shop(0);
+				while (own0 + p0.length >= 3) {
+					const from_own = Math.min(3, own0), buy = p0.splice(0, 3 - from_own);
+					own0 -= from_own;
+					units.push({ cost: buy.reduce((a, x) => a + x.price, 0) + sc, buy: buy.map((x) => x.it), chance: cmp_odds(name, 1) });
+				}
+			}
+			units.sort((a, b) => a.cost - b.cost);
+			if (units.length < need) continue;
+			const use = units.slice(0, need), buy = use.flatMap((u) => u.buy);
+			if (!buy.length) continue; // all from our own +0s: nothing to buy (the compound task gets there)
+			const cost = use.reduce((a, u) => a + u.cost, 0) + sc, chance = use.reduce((a, u) => a * u.chance, 1) * cmp_odds(name, to);
+			if (buy.some((it) => shop_price(it) > CFG.secondhand_max_price) || cost > best.gain * CFG.secondhand_gold_per_pt * chance) continue;
+			out.push({ name, to, for: best.who, gain: Math.round(best.gain), cost, chance: +chance.toFixed(2), buy,
+				text: `${name}+${to} for ${best.who} (+${Math.round(best.gain)} pts): buy ${buy.map((it) => `+${it.level || 0}`).join(" ")} for ${fmt_k(buy.reduce((a, it) => a + shop_price(it), 0))}, ${Math.round(chance * 100)}% to come out` });
+		}
+	}
+	return out.sort((a, b) => b.gain * b.chance / b.cost - a.gain * a.chance / a.cost);
+}
 let secondhand_at = 0;
 async function task_secondhands() {
 	const ref = G.maps.main?.ref?.secondhands;
@@ -6487,10 +6558,16 @@ async function task_secondhands() {
 	const count = (it, where) => { const k = compound_key(it.name, it.level || 0); (groups[k] = groups[k] || { bags: 0, bank: 0 })[where]++; };
 	character.items.forEach((it, k) => { if (compound_spare(it, k, needed)) count(it, "bags"); });
 	for (const it of state.bank_gear || []) if (compound_spare(it, -1, needed)) count(it, "bank");
+	// v24.81: what Ponty had (report: "ponty JSON") and the compound routes through it; one route per name is bought
+	const groups2 = Object.fromEntries(Object.entries(groups).map(([k, g]) => [k, { ...g }]));
+	const routes = ponty_routes(list, groups2), route_of = new Map();
+	for (const r of routes) if (!routes.some((q) => q !== r && q.name === r.name && routes.indexOf(q) < routes.indexOf(r))) for (const it of r.buy) route_of.set(it, r);
+	state.ponty = { at: Date.now(), items: items_dump(list), prices: Object.fromEntries(list.slice(0, 80).map((it) => [it.name + (it.level ? "+" + it.level : ""), shop_price(it)])), routes: routes.slice(0, 5).map((r) => r.text) };
 	let n = 0;
 	for (const it of list) {
 		if (state.errand) state.errand_at = Date.now();
-		const why_buy = secondhand_reason(it, groups), price = shop_price(it);
+		const rt = route_of.get(it);
+		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
 		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !gold_ok(price)) continue;
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;

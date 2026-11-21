@@ -2093,6 +2093,20 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) === null, "an upgrade priced far above its points isn't bought");
 	ctx.calculate_item_value = () => 100;
 	assert(/upgrade for Torlis/.test(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) || ""), "a cheap upgrade for a fighter is bought");
+	// v24.81: a route through Ponty — two +0 copies there plus our one make a +1 a fighter would wear
+	ctx.G.items.rngp = { type: "ring", attack: 30, compound: { attack: 10 }, g: 1000 }; ctx.G.items.cscroll0 = ctx.G.items.cscroll0 || { type: "cscroll", g: 1000 };
+	{
+		const run = (groups) => JSON.parse(vm.runInContext(`JSON.stringify(ponty_routes([{ name: 'rngp', level: 0, rid: 'a' }, { name: 'rngp', level: 0, rid: 'b' }, { name: 'gpants', level: 0, rid: 'c' }], ${JSON.stringify(groups)}).map((r) => [r.name, r.to, r.for, r.buy.map((i) => i.rid).join("")]))`, ctx));
+		const r1 = run({ "cmp:rngp:0": { bags: 1, bank: 0 } });
+		assert(JSON.stringify(r1) === '[["rngp",1,"Torlis","ab"]]', `Ponty route: buy the two copies that complete a set whose +1 Torlis would wear (${JSON.stringify(r1)})`);
+		assert(run({ "cmp:rngp:0": { bags: 3, bank: 0 } }).length === 0, "...nothing to buy when we hold the three already");
+		assert(run({}).length === 0, "...and no route when Ponty's copies can't make a set");
+		ctx.calculate_item_value = () => 1e7;
+		assert(run({ "cmp:rngp:0": { bags: 1, bank: 0 } }).length === 0, "...nor when the copies cost more than the points are worth");
+		ctx.calculate_item_value = () => 100;
+		assert(/"attack":/.test(vm.runInContext("report_facts().find((f) => f.key === 'stats_json').text", ctx)), "v24.81: the report dumps the character's stats as JSON");
+	}
+	delete ctx.G.items.rngp;
 	ctx.calculate_item_value = sp_save;
 	character.items[4] = { name: "gpants", level: 0 };
 	assert(vm.runInContext("gear_target() && gear_target().name", ctx) === "Torlis", "merchant holding a fighter's upgrade: a delivery trip to it");
