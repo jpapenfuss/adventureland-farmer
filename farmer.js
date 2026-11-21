@@ -1,4 +1,4 @@
-const VERSION = "24.32"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
+const VERSION = "24.33"; // Adventure Land farmer: one file for every character. Overview at the bottom of this file.
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1618,6 +1618,9 @@ function history_lines(hours = 6) {
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
 	const probes = ev.filter((e) => e.type === "probe");
+	// v24.33: where the leader sent us, and why (the last 12 changes of spot, oldest first)
+	const spots = ev.filter((e) => e.type === "pack" || e.type === "boss");
+	if (spots.length) L.push(`spots (${spots.length} changes): ${spots.slice(-12).map((e) => `${ago(e.t)} ago → ${e.to || e.name} (${e.why || "?"})`).join(" | ")}`);
 	if (probes.length) L.push(`probes: ${probes.slice(-6).map((e) => `${e.mtype} ${e.result === "ok" ? "✓" : "✗ " + e.why} (x${e.over} over; calibration ${e.ratio ?? "?"} over ${e.n} fights)`).join(" | ")}`);
 	const modes = ev.filter((e) => e.type === "mode_ab");
 	if (modes.length) L.push(`mode changes: ${modes.slice(-6).map((e) => `${ago(e.t)} ago → ${e.mode} (${e.why}; split ${fmt_k(e.split)}/h, together ${fmt_k(e.together)}/h)`).join(" | ")}`);
