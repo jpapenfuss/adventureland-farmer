@@ -2862,6 +2862,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now() - 20 * 3600e3, per_unit: true }", ctx);
 			await vm.runInContext("stand_tick()", ctx);
 			assert(un.includes("trade9") && !vm.runInContext("'trade9' in state.stand", ctx), `an unlisted saved listing is taken down (${un})`);
+			ctx.unequip = () => Promise.reject({ reason: "busy" });
+			character.slots.trade9 = { name: "mace", level: 7, price: 999999 };
+			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now(), per_unit: true }", ctx);
+			await vm.runInContext("stand_tick()", ctx);
+			assert(vm.runInContext("'trade9' in state.stand", ctx), "a failed take-down keeps the listing (retried next tick)");
+			delete character.slots.trade9; vm.runInContext("delete state.stand.trade9", ctx);
 			ctx.unequip = uneq0;
 		}
 		ctx.trade = trade0; character.stand = false; character.slots = {}; character.items = Array(42).fill(null); vm.runInContext("state.stand = {}", ctx);

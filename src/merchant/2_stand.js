@@ -123,7 +123,7 @@ async function stand_tick() {
 			const L_ = state.stand[slot];
 			if ((S_.list || []).includes(L_.name)) continue;
 			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
-			delete state.stand[slot];
+			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried next tick
 			return;
 		}
 		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand
