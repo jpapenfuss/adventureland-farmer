@@ -49,13 +49,20 @@ function apply_status_box() {
 	try {
 		const fe = window.frameElement;
 		if (!fe || !fe.style || !(fe.offsetWidth > 2)) return false; // no box (a CODE runner without one, or the tests)
-		if (S.w > 0) fe.style.width = S.w + "px";
-		fe.style.height = S.h + "px";
+		// v25.23 (owner): w "log" — as wide as lines its left edge up with the log's. The row is right-aligned, so widening
+		// the box by (its left − the log's left) moves only its left edge, to the log's, and the corner keeps its width.
+		if (S.w === "log") {
+			const gl = parent.document?.getElementById?.("gamelog"), fr = fe.getBoundingClientRect?.(), lr = gl?.getBoundingClientRect?.();
+			const d = fr && lr && lr.width > 0 ? fr.left - lr.left : 0;
+			if (Math.abs(d) > 1) fe.style.width = Math.max(128, Math.round((fe.clientWidth || fe.offsetWidth) + d)) + "px";
+		} else if (S.w > 0) fe.style.width = S.w + "px";
+		if (fe.style.height !== S.h + "px") fe.style.height = S.h + "px";
 		const gg = typeof document !== "undefined" && document.getElementById ? document.getElementById("gg") : null;
 		if (gg) { gg.style.whiteSpace = "normal"; gg.style.overflowWrap = "anywhere"; gg.style.lineHeight = "1.2"; }
 		return true;
 	} catch (e) { return false; }
 }
+setInterval(apply_status_box, 5000); // v25.23: kept lined up with the log (it can be moved or resized)
 function apply_ui() {
 	apply_status_box();
 	const U = CFG.ui;

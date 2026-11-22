@@ -3398,8 +3398,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.window = { frameElement: fe }; ctx.document = { getElementById: (id) => (id === "gg" ? gg : null) };
 			els["farmer-ui"] = undefined; delete els["farmer-ui"]; ctx.parent.document = { getElementById: (id) => els[id] || null, createElement: () => mk(""), head: { appendChild: (e) => (els[e.id || "farmer-ui"] = e) } };
 			vm.runInContext("apply_ui()", ctx);
-			assert(!fe.style.width && fe.style.height === vm.runInContext("CFG.ui.status_box.h", ctx) + "px" && gg.style.whiteSpace === "normal",
-				`the status box grows taller only (width kept: ${fe.style.width || "game's"}, height ${fe.style.height}), its text wraps`);
+			assert(fe.style.height === vm.runInContext("CFG.ui.status_box.h", ctx) + "px" && gg.style.whiteSpace === "normal", `the status box is taller (${fe.style.height}), its text wraps`);
+			// v25.23: w "log": widened so its left edge meets the log's (box left 900, log left 700 → +200 px)
+			fe.clientWidth = 128; fe.getBoundingClientRect = () => ({ left: 900, width: 138 }); fe.style = {};
+			els.gamelog.getBoundingClientRect = () => ({ left: 700, width: 400 });
+			vm.runInContext("apply_status_box()", ctx);
+			assert(fe.style.width === "328px", `the box's left edge lined up with the log's (${fe.style.width})`);
+			fe.getBoundingClientRect = () => ({ left: 700, width: 338 }); fe.clientWidth = 328; fe.style.width = "328px";
+			vm.runInContext("apply_status_box()", ctx);
+			assert(fe.style.width === "328px", "...and left alone once it is");
+			delete els.gamelog.getBoundingClientRect; fe.style = {};
 			const fe1 = { style: {}, offsetWidth: 1 }; ctx.window = { frameElement: fe1 };
 			assert(vm.runInContext("apply_status_box()", ctx) === false && !fe1.style.height, "a 1px runner frame (no status box) is left alone");
 			ctx.window = { frameElement: fe };
