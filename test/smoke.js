@@ -1094,8 +1094,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.bank_free = { free: 2, total: 248, at: Date.now() }; bank_tight(); state.bank_free.free = 30", ctx);
 		assert(vm.runInContext("bank_tight()", ctx), "30 free after fetching the sets (12%): still nearly full (no flapping)");
 		vm.runInContext("state.bank_free.free = 40", ctx);
-		assert(!vm.runInContext("bank_tight()", ctx), "40 free (16%): no longer");
-		vm.runInContext("CFG.compound_bank_full = true; state.bank_free = null; state.cmp_caps = {}", ctx);
+		assert(vm.runInContext("bank_tight()", ctx), "40 free (16%): still on (off at 20%)");
+		vm.runInContext("state.bank_free.free = 50", ctx);
+		assert(!vm.runInContext("bank_tight()", ctx), "50 free (20%): no longer");
+		// a grade-1 set (cscroll1) sorted ahead of a grade-0 one: only the cheap one is combined at any odds; the other
+		// is paused and stays out of the groups (it used to take every attempt of every run)
+		{
+			const ig = ctx.item_grade; ctx.item_grade = (it) => (it?.name === "aring" ? 1 : 0);
+			ctx.G.items.aring = { type: "ring", compound: { attack: 1 }, attack: 1, g: 100 };
+			character.items = Array(42).fill(null);
+			for (const k of [1, 2, 3]) character.items[k] = { name: "aring", level: 1 };
+			for (const k of [4, 5, 6]) character.items[k] = { name: "ringx", level: 1 };
+			character.items[20] = { name: "cscroll0", q: 9 }; character.items[21] = { name: "cscroll1", q: 9 }; ctx.G.items.cscroll1 = ctx.G.items.cscroll1 || { type: "cscroll", g: 240000, s: 9999 };
+			const tries = []; ctx.compound = (a, b, c, sc, off, preview) => preview ? (tries.push(character.items[a].name), Promise.resolve({ chance: 0.4 })) : (tries.push("ROLL:" + character.items[a].name), character.items[b] = character.items[c] = null, character.items[a] = { name: character.items[a].name, level: 2 }, Promise.resolve({ success: true }));
+			vm.runInContext("CFG.compound_bank_full = true; state.gear_skip = {}; state.cmp_caps = {}; cmp_cache = null; state.bank_free = { free: 2, total: 248, at: Date.now() }", ctx);
+			await vm.runInContext("task_compound()", ctx); await vm.runInContext("cmp_cache = null; task_compound()", ctx);
+			assert(tries.includes("ROLL:ringx") && !tries.includes("ROLL:aring") && tries.filter((t) => t === "aring").length === 1 && !vm.runInContext("compound_groups().some((g) => g.name === 'aring')", ctx),
+				`bank nearly full: the cscroll0 set is combined, the cscroll1 one refused once and left out (${tries})`);
+			ctx.item_grade = ig; delete ctx.G.items.aring;
+		}
+		vm.runInContext("CFG.compound_bank_full = true; state.bank_free = null; state.cmp_caps = {}; bank_tight_on = false", ctx);
 	}
 	character.slots = {}; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);

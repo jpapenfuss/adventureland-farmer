@@ -176,26 +176,29 @@ async function run_compound(a, row, floor) {
 // bank. Bank copies are fetched on the next bank visit (bag_plan) and kept in the bags until compounded.
 const compound_key = (name, level) => `cmp:${name}:${level}`;
 // v25.32: the bank nearly full (CFG.compound_bank_full): odds no longer hold compounds back. On under purge_below free,
-// off again at 1.5x that (fetching the sets frees slots: without the margin they'd go back to the bank uncompounded),
+// off again at 2x that (one visit fetches up to 18 set copies: without the margin they'd go back to the bank uncompounded),
 // and only on a count seen in the last 6 h (it's saved: a stale one after a restart or a manual clear-out)
 let bank_tight_on = false;
 const bank_tight = () => {
 	const bf = state.bank_free, b = CFG.merchant?.purge_below || 0.1;
 	if (!CFG.compound_bank_full || !bf || !(bf.total > 0) || Date.now() - (bf.at || 0) > 6 * 3600_000) return (bank_tight_on = false);
 	if (bf.free < bf.total * b) bank_tight_on = true;
-	else if (bf.free >= bf.total * b * 1.5) bank_tight_on = false;
+	else if (bf.free >= bf.total * b * 2) bank_tight_on = false;
 	return bank_tight_on;
 };
 // ...and only for sets combined with the cheap scroll (cscroll0) and with no titled copy: a cscroll1 is 240k a roll, a
 // cscroll2 9.2M
-const tight_ok = (g, ks) => bank_tight() && item_grade({ name: g.name, level: g.level }) <= 0 && !ks.some((k) => character.items[k]?.p);
+// (one rule for every bypass — the ceiling in compound_spare, the odds pause in compound_groups and the floor in
+// task_compound: a set only the floor bypass refused stayed a group and took every attempt of every run)
+const tight_item = (it) => bank_tight() && !it.p && item_grade({ name: it.name, level: it.level || 0 }) <= 0;
+const tight_ok = (g, ks) => tight_item({ name: g.name, level: g.level }) && !ks.some((k) => character.items[k]?.p);
 const odds_pause = (key) => /low_chance/.test(skip_why[key] || "");
 function compound_spare(it, k, needed) {
 	const def = it && G.items[it.name];
 	// v24.73: a copy a member would wear is no longer left out. Three skull amulets sat in the merchant's bags, each
 	// "wanted" for one empty amulet slot, so there was never a set of three; the +1 goes to whoever wanted the +0.
 	// (v24.87: titled copies too — the server doesn't check titles; the result is the first copy, so a titled one goes first)
-	return !!def?.compound && !it.l && !it.b && !needed.has(k) && (it.level || 0) < (bank_tight() ? CFG.compound_max_level : cmp_top(it.name)) &&
+	return !!def?.compound && !it.l && !it.b && !needed.has(k) && (it.level || 0) < (tight_item(it) ? CFG.compound_max_level : cmp_top(it.name)) &&
 		!CFG.keep.includes(it.name);
 }
 // Report: three or more equal copies in the bags that aren't being compounded, and why
@@ -240,8 +243,7 @@ function compound_groups(needed) {
 	character.items.forEach((it, k) => { if (compound_spare(it, k, needed)) add(it, "bags", k); });
 	for (const it of state.bank_gear || []) if (compound_spare(it, -1, needed)) add(it, "bank");
 	for (const g of Object.values(by)) g.bags.sort((a, b) => (character.items[b]?.p ? 1 : 0) - (character.items[a]?.p ? 1 : 0));
-	const tight = bank_tight();
-	const list = Object.values(by).filter((g) => g.bags.length + g.bank >= 3 && (!skipped(g.key) || (tight && odds_pause(g.key))))
+	const list = Object.values(by).filter((g) => g.bags.length + g.bank >= 3 && (!skipped(g.key) || (odds_pause(g.key) && tight_ok(g, g.bags))))
 		.sort((a, b) => a.level - b.level || a.name.localeCompare(b.name)); // cheapest scrolls / best odds first
 	cmp_cache = { key, at: Date.now(), list };
 	return list;
