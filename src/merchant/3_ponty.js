@@ -43,7 +43,7 @@ function upgrade_start_reason(it, price, fighters) {
 	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name) || state.upg?.name === it.name) return null;
 	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
 	const budget = WP ? Infinity : Math.min(upgrade_gold(), gold_room()) * CFG.upgrade_spend;
-	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name));
+	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name), upg_reach(it.name));
 	if (own >= lv) return null; // ours is as far along already
 	let best = null;
 	for (let to = lv + 1; to <= top; to++) {

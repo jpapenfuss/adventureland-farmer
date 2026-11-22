@@ -3037,6 +3037,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("state.upg = null; globalThis.__us = CFG.upgrade_spend; CFG.upgrade_spend = 0");
 			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not over the planner's budget");
 			R("CFG.upgrade_spend = globalThis.__us; sold_c.delete('amulet119')");
+			// v25.19: the planner aims no higher than the run will go: grade 0, not sold, scroll1 within the boost —
+			// +4 70%→85% passes the 80% floor, +5 60%→73% doesn't; with a second copy owned (bank), the 60% spare floor: +5 passes
+			{
+				const s1 = ctx.G.items.scroll1; ctx.G.items.scroll1 = { g: 40000, type: "uscroll", grade: 1 };
+				ctx.G.items.xs138 = { type: "shoes", armor: 5, upgrade: { armor: 2 } };
+				R("sold_c.set('xs138', false); state.bank_gear = []; character.items[9] = { name: 'xs138', level: 3 }");
+				assert(R("upg_reach('xs138')") === 4, `one copy: reach +4 (${R("upg_reach('xs138')")})`);
+				R("state.bank_gear = [{ name: 'xs138', level: 0 }]");
+				assert(R("upg_reach('xs138')") === 5, `a spare in the bank: reach +5 (${R("upg_reach('xs138')")})`);
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare"), "the run's floor counts the bank spare (+0) too");
+				R("state.bank_gear = []");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance"), "...and without one, the full floor");
+				R("character.items[10] = { name: 'xs138', level: 0 }");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare") && R("upg_reach('xs138')") === 5, "a lower copy in the bags is a spare too");
+				R("character.items[10] = { name: 'xs138', level: 0, p: 'shiny' }; state.bank_gear = [{ name: 'xs138', level: 0, p: 'shiny' }]");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance") && R("upg_reach('xs138')") === 4, "titled copies aren't spares (a project never uses one)");
+				R("character.items[9] = null; character.items[10] = null; state.bank_gear = []; sold_c.delete('xs138')"); delete ctx.G.items.xs138;
+				if (s1) ctx.G.items.scroll1 = s1; else delete ctx.G.items.scroll1;
+			}
 			if (sc0) ctx.G.items.scroll0 = sc0; else delete ctx.G.items.scroll0;
 			R(`state.partners = ${parts0}`);
 		}
