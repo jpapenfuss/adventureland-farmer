@@ -346,7 +346,8 @@ const fmt_k = (n) => (Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(1) + "M" : Math.abs
 let gold_prev = null;
 // Every second: count xp toward the current pack's measurement while we're there (300px slack) and not walking or on
 // an errand. A measurement closes after 2 × measure_min_s so the picker keeps getting fresh numbers.
-setInterval(() => {
+// (v25.16: a named function, so the tests can run it)
+function meas_tick() {
 	const d = xp_delta(), p = state.pack;
 	stats.xp += d;
 	const b = bucket(), cls = time_class();
@@ -373,8 +374,10 @@ setInterval(() => {
 	if (!p || character.rip) return;
 	// v24.49: together, a spot's xp/s is only measured while the whole party is at it. Time spent there with a member in
 	// town, dead, a map behind or wandering was booked as the spot's rate, and those rates then steered the next pick.
-	const all_here = !in_party_cfg() || partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
-		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700);
+	// v25.16: every configured member heard from, too — partners_any() leaves out a member whose heartbeat stopped (a
+	// sleeping browser tab, 4:11 AM), so the party "all here" without her held at goo and booked it as goo's rate
+	const all_here = !in_party_cfg() || (others().every((n) => fresh(state.partners[n])) && partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
+		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
 		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, kc: 0, kc_n: 0, start: Date.now() };
@@ -385,8 +388,17 @@ setInterval(() => {
 	if (S) {
 		if (!here || walking() || errand_busy() || state.recovering || event_live() || pack_key(p) !== S.key) { S.end = S.last_here || S.start; end_session(); }
 		else {
-			S.xp += d; S.last_here = Date.now();
+			const now_ = Date.now(), gap = now_ - (S.last_here || now_);
+			// a tick more than 5 s late: the tab was asleep or frozen — the session closes at the last good tick, the gap
+			// isn't booked anywhere
+			if (gap > 5000) { S.end = S.last_here; end_session(); return; }
+			const dt = Math.max(0, gap);
+			S.xp += d; S.last_here = now_;
+			// v25.16: time the party isn't ready to fight isn't the camp's: a member too far for the tank to start
+			// (party_missing: engage_px, three missed beats), or the tank holding for one. Elapsed time since the last tick.
+			if (in_party_cfg() && (party_missing().length > 0 || gap_kind() === "monsters alive, holding for the party")) S.lost = (S.lost || 0) + dt;
 			if ((Date.now() - S.start) / 1000 > CFG.measure_min_s * 2) end_session();
 		}
 	}
-}, 1000);
+}
+setInterval(meas_tick, 1000);

@@ -5,10 +5,11 @@ const SAVE_KEY = "farmer_v9:" + character.name; // historical name — don't cha
 // Saved every 60s, after crafts and gold transfers, and in on_destroy (just before the code stops). Expired pauses and
 // cooldowns are dropped on load; stall timers resume where they were (time offline doesn't count against them).
 const DATA_V = 2; // bump to clear everything learned, once per character (load_state)
+const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism), once per character (v25.16)
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, upg_v: 3, cmp_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 3, cmp_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -30,6 +31,14 @@ function load_state() {
 	if (d.data_v !== DATA_V) {
 		for (const k of ["measured", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
+	}
+	// v25.16: the owner (2026-11-22): the time estimates were far off — the rates had been measured with the party held
+	// for members whose tabs slept, or waiting "in town" at a camp; each of those minutes counted as the camp being slow,
+	// and realism scaled every estimate down with it. Spot xp/s and realism are dropped once (calibration, safety and
+	// everything else are kept), and re-measured on the seconds the camp itself is responsible for.
+	if ((d.rates_v || 1) !== RATES_V) {
+		for (const k of ["measured", "meas_at", "realism"]) delete d[k];
+		game_log(`farmer v${VERSION}: learned spot rates and realism cleared once (measured while held for missing members) — re-measuring`, C.warn);
 	}
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
 	// v23.0: measurements are now in one unit (base xp of kills at the spot); older ones mixed received xp (a share of
