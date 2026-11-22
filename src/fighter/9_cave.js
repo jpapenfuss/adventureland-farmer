@@ -16,6 +16,7 @@ const cave_st = { entering: false, entered_at: 0, info_at: 0, voted: {}, bought:
 function cave_run_check(st) {
 	if (!st || st.run === cave_st.run) return;
 	cave_st.run = st.run; cave_st.bought = {}; cave_st.deaths = {}; cave_st.stuck = {}; cave_st.prog = null; cave_st.last_obj = null; cave_st.walk = null;
+	cave_st.visit_deaths = 0; cave_st.exiting = false;
 }
 // ---- the daily visit (the tank) ----
 async function cave_refresh_info() {
@@ -36,7 +37,23 @@ function cave_due() {
 	if (skipped("cave") || errand_busy() || state.ptown || Date.now() - cave_st.entered_at < 120_000) return false;
 	cave_refresh_info();
 	if (!cave_open()) return false;
+	if (cave_blocked()) return false;
 	return others().every((n) => { const p = state.partners[n]; return fresh(p) && !p.rip && !p.errand; });
+}
+// v25.29: after a visit the cave beat us, not again until the party is stronger (party_power: average level, gear points)
+function cave_blocked() {
+	const B = state.cave_block, pw = party_power();
+	if (!B) return false;
+	if (pw && (pw.lv >= B.lv + CFG.cave.retry_levels || pw.gs >= B.gs * CFG.cave.retry_gear)) { state.cave_block = null; game_log("cave: the party is stronger now — trying the cave again", C.info); return false; }
+	return true;
+}
+// Leave the visit for good (Amber pays out on exit). The tank: after give_up_deaths; a follower: when the tank has left.
+function cave_leave(why_) {
+	if (cave_st.exiting || typeof cave_exit !== "function") return;
+	cave_st.exiting = true;
+	game_log(`cave: leaving — ${why_}`, C.warn);
+	log_ev("cave", { what: "exit", why: why_ });
+	Promise.resolve(cave_exit()).catch((e) => { game_log(`cave: exit failed: ${why(e)}`, C.dim); cave_st.exiting = false; });
 }
 const cave_door = () => { const d = (G.maps.main?.npcs || []).find((n) => n.id === "dreamkeeper"); return { map: "main", x: d?.position?.[0] ?? 816, y: (d?.position?.[1] ?? 1200) + 40 }; };
 // → true while it's leading the party in (fighter_tick stops there)
@@ -193,6 +210,8 @@ function cave_tick() {
 	loot_chests();
 	if (is_follower()) {
 		const L = leader_hb();
+		// v25.29: the tank has left the cave (its map is no longer a cave floor): leave too
+		if (L && fresh(L) && L.map && !/^zone_/.test(L.map) && Date.now() - (cave_st.entered_seen || (cave_st.entered_seen = Date.now())) > 20_000) { cave_leave(`${L.name} has left the cave`); return 400; }
 		// the tank on another floor or far away: walk after it (smart_move takes the cave's doors)
 		if (L && !L.rip && (L.map !== character.map || Math.hypot(partner_pos(L).x - character.x, partner_pos(L).y - character.y) > CFG.party.follow_far)) {
 			const a = hit_on_me(); if (a) fight(a, false);
@@ -219,7 +238,15 @@ function cave_tick() {
 // A death inside counts against the room we were working on (two → the room is left); main.js's dead branch calls this
 // once per death (state.dead_handled)
 function cave_died() {
-	if (character.cave && cave_st.last_obj) cave_st.deaths[cave_st.last_obj] = (cave_st.deaths[cave_st.last_obj] || 0) + 1;
+	if (!character.cave) return;
+	cave_run_check(character.cave);
+	if (cave_st.last_obj) cave_st.deaths[cave_st.last_obj] = (cave_st.deaths[cave_st.last_obj] || 0) + 1;
+	// v25.29: the tank dying give_up_deaths times in one visit: this cave is beyond us for now — leave, and wait to be stronger
+	if (!is_follower() && is_tank_class(character.ctype) && ++cave_st.visit_deaths >= CFG.cave.give_up_deaths) {
+		const pw = party_power();
+		state.cave_block = { at: Date.now(), lv: pw?.lv || character.level, gs: pw?.gs || 0, deaths: cave_st.visit_deaths };
+		cave_leave(`the tank died ${cave_st.visit_deaths} times this visit; back when the party is stronger`);
+	}
 }
 // Report
 function facts_cave(F) {
@@ -230,6 +257,8 @@ function facts_cave(F) {
 			`rooms ${req.filter((o) => o.done).length}/${req.length} done${Object.keys(cave_st.deaths).length ? ` | deaths: ${Object.entries(cave_st.deaths).map(([k, n]) => `${k} ${n}`).join(", ")}` : ""}`);
 		F("cave_json", "self", `cave JSON: ${JSON.stringify({ floor: st.floor, doors: st.doors, objectives: st.objectives, choice: st.choice && { kind: st.choice.kind, options: st.choice.options }, hunts: st.hunts })}`);
 	} else if (CFG.cave?.enabled && is_tank_class(character.ctype)) {
+		const B = state.cave_block;
+		if (B) return F("cave", "self", `cave: on hold — it beat us ${ago(B.at)} ago (the tank died ${B.deaths || "?"}x); back at average level ${(B.lv + CFG.cave.retry_levels).toFixed(1)} or ${Math.round(B.gs * CFG.cave.retry_gear)} gear points (now ${party_power()?.lv ?? "?"} / ${party_power()?.gs ?? "?"})`);
 		F("cave", "self", `cave: ${!v ? "not checked yet" : v.error ? `check failed: ${v.error}` : cave_open() ? (skipped("cave") ? `open — paused (${skip_why["cave"] || "?"})` : "open — going today") : `visited today; next ${v.resets ? new Date(v.resets).toLocaleTimeString() : "?"}`}`);
 	}
 }

@@ -1,4 +1,4 @@
-const VERSION = "25.28"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.29"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -242,7 +242,11 @@ const CFG = {
 	// v24.21: off — enlarging the log in place pushed it under the DOCS panel and moved the tutorial/level bars
 	// v25.22: the Cave of Many Dreams (fighter/9_cave.js): once a day the tank takes the party in (Dorr, main 816,1200)
 	cave: { enabled: true, info_every_ms: 600_000, engage_px: 260, arrive_px: 120, max_deaths_per_room: 2,
-		stuck_ms: 45_000, camp_max_ms: 300_000, wait_party_ms: 120_000 }, // progress watchdog; a camp at most 5 min; the party at Dorr 2 min
+		stuck_ms: 45_000, camp_max_ms: 300_000, wait_party_ms: 120_000, // progress watchdog; a camp at most 5 min; the party at Dorr 2 min
+		// v25.29: the tank dying give_up_deaths times in a visit → the party leaves, and doesn't go back until it's
+		// stronger: average level + retry_levels or gear points x retry_gear (the first visit: 4 deaths in 2 min to the
+		// first camp's 6 rats + 2 spiders, no XP)
+		give_up_deaths: 3, retry_levels: 2, retry_gear: 1.1 },
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,
 		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text): taller (it grows up) and its
 		// text wraps. v25.23 w: "log" — its left edge lined up with the log's (owner); a number: that width (wider than the
@@ -494,6 +498,8 @@ const state = {
 	mspot: null,             // merchant: the stand spot for Merrit { x, y } (saved)
 	stand_since: 0,          // merchant: when the stand was last opened and left still (Merrit's 2-minute timer)
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
+	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
+	cave_block: null,        // v25.29: { at, lv, gs } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	upg_caps: {},            // item -> { level, at }: the level a project reached before odds/failures stopped it (v24.5, saved)
