@@ -187,3 +187,5 @@ function fighter_defers_town(due, what) {
 	}
 	return false;
 }
+// Party town trips are on (a role function, v25.11: the merchant's is false)
+function ptown_on() { return !!CFG.party.town_together && in_party_cfg(); }

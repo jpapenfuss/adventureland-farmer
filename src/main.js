@@ -57,12 +57,8 @@ function tick() {
 			state.dead_handled = false;
 			state.recovering = false;
 			wait = 500;
-		} else if (is_merchant() && (state.recovering || character.hp < character.max_hp * CFG.flee_hp)) {
-			// fleeing to town: only the merchant (fighters never flee)
+		} else if (flee_tick()) { // role function (v25.11): only the merchant flees to town; fighters never do
 			state.dead_handled = false;
-			recover();
-			loot_chests();
-			set_message(`Recovering ${((character.hp / character.max_hp) * 100).toFixed(0)}%`);
 			wait = 250; // recovery reacts faster (re-channel, heals)
 		} else if (state.parked) {
 			state.dead_handled = false;
@@ -75,13 +71,7 @@ function tick() {
 			// party's trip when one is announced, tells the tank what it needs (heartbeat: tn), and follows.
 			if (is_follower()) ptown_join_tick(); else town_check();
 			if (!is_follower() && event_tick()) { loot_chests(); setTimeout(tick, 200); return; }
-			if (is_merchant()) {
-				merchant_tick();
-				loot_chests();
-				setTimeout(tick, 250);
-				return;
-			}
-			wait = fighter_tick(); // v24.95: fighter/
+			wait = role_tick(); // role function (v25.11): fighter/0_loop.js, merchant/0_loop.js
 		}
 	} catch (e) { game_log("tick: " + e); log_error("tick: " + e); }
 	setTimeout(tick, wait);

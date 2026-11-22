@@ -188,3 +188,6 @@ function fighter_cm(m) {
 	}
 	return false;
 }
+// ---- role functions (v25.11): the main loop's fighter parts (tick(), main.js); the merchant's are in merchant/0_loop.js ----
+function flee_tick() { return false; } // fighters never flee (v24.51): at low HP they fight on with potions and heals
+function role_tick() { return fighter_tick(); }

@@ -290,3 +290,11 @@ function suicide(why_) {
 	log_ev("suicide", { why: why_, at: `${state.pack?.mtype || "?"}@${character.map}` });
 	parent.socket.emit("harakiri");
 }
+// ---- role functions (v25.11): the merchant's own versions are in merchant/0_loop.js ----
+// The merchant's last heartbeat while it's fresh (null if none)
+function merchant_hb() { return fresh(state.merchant) && state.merchant.name === CFG.merchant?.name ? state.merchant : null; }
+// Who does the shared work (compounding, upgrade/craft projects, town thresholds) must not flip with a single missed
+// heartbeat (the merchant skips beats when its call budget is tight): "merchant online" = heard within 10 minutes
+function merchant_recent() {
+	return !!state.merchant && state.merchant.name === CFG.merchant?.name && Date.now() - state.merchant.t < 600_000 && !state.merchant.rip;
+}

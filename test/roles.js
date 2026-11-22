@@ -2,7 +2,7 @@
 // role's names (tools/split_check.js), and in a mocked client a fighter (common + fighter + main) and the merchant
 // (common + merchant + main) start, tick, report and plan town work without an error.
 const vm = require("vm"), path = require("path");
-const { build, ROLE_FILES } = require(path.join(__dirname, "..", "tools", "build.js"));
+const { build, role_fns, ROLE_FILES } = require(path.join(__dirname, "..", "tools", "build.js"));
 const { check } = require(path.join(__dirname, "..", "tools", "split_check.js"));
 const assert = (c, m) => { if (!c) { console.error("FAIL:", m); process.exit(1); } console.log("ok -", m); };
 const fs = require("fs");
@@ -48,6 +48,16 @@ async function run(role) {
 	const need = ["on_party_invite", "on_party_request", "on_destroy", "report", "history", "deaths", "selftest", "why_not", "park", "resume", "unpause", "gear_check"];
 	const missing = need.filter((n) => typeof ctx[n] !== "function");
 	assert(!missing.length, `${role}: console and game hooks present${missing.length ? " — MISSING " + missing.join(", ") : ""}`);
+	// role functions (v25.11): the role's own version, by itself (no dispatcher in a role's own file set)
+	assert(!/__fighter|__merchant/.test(src) && vm.runInContext("ptown_on()", ctx) === (role === "fighter" && !!vm.runInContext("CFG.party.town_together && in_party_cfg()", ctx))
+		&& vm.runInContext("gold_keep()", ctx) === vm.runInContext(role === "merchant" ? "CFG.merchant.donate.keep" : "CFG.gold_reserve", ctx)
+		&& (role === "fighter" || vm.runInContext("merchant_hb() === null && merchant_recent() === false", ctx)), `${role}: role functions are its own (ptown_on, gold_keep, merchant_hb)`);
 	assert(!errs().length, `${role} (src/${ROLE_FILES[role].join(", src/")}): loads, ticks, reports with no error${errs().length ? ":\n  " + errs().slice(0, 8).join("\n  ") : ""}`);
+}
+// the all-in-one build (farmer.js): each role function calls the running character's role's version
+{
+	const fns = role_fns(), all = build();
+	assert(fns.length && fns.every((n) => all.includes(`function ${n}(...a) { return (is_merchant() ? ${n}__merchant : ${n}__fighter)`) && all.includes(`function ${n}__fighter(`) && all.includes(`function ${n}__merchant(`)),
+		`farmer.js dispatches the role functions by role (${fns.join(", ")})`);
 }
 (async () => { await run("fighter"); await run("merchant"); console.log("ROLES ALL PASS"); })().catch((e) => { console.error("FAIL:", e); process.exit(1); });

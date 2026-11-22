@@ -149,7 +149,7 @@ async function town_body(due) {
 // ---- Party town trips (v24.28, CFG.party.town_together) ----
 // state.ptown: { id, by (who started it), at, leavers (members known to be going), pending (we'll go once free),
 // joined (we went: our heartbeat pt), done (our work's finished: waiting in town), why (why we went / stayed) }
-const ptown_on = () => !!CFG.party.town_together && !is_merchant() && in_party_cfg();
+// ptown_on(): role function (v25.11, fighter/5_town.js; the merchant never joins a party trip)
 // The town teleport (to this map's spawn: server transport_player_to(player, player.in)) when it cuts the walk to
 // main's town by town_hop_px. 3s channel; a hit or a move cancels it, and it fails with more than 5 monsters on us.
 // Channel the town teleport (3s) to this map's spawn: true if we arrived

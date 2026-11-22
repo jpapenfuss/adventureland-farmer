@@ -37,7 +37,7 @@ async function task_craft_power() {
 	if (!c || !craft_inputs_in_bags(c.id)) return 0;
 	const r = G.craft[c.id];
 	if (!gold_ok(r.cost)) return (town_reason.forge = "gold budget"), 0;
-	if ((r.cost || 0) > character.gold - (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve)) {
+	if ((r.cost || 0) > character.gold - gold_keep()) {
 		merchant_asks_funds(null, r.cost); // v25.5: merchant/
 		return 0;
 	}

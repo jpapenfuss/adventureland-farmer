@@ -181,3 +181,8 @@ function stat_scroll_list() {
 	}
 	return out.sort((a, b) => a.cost / Math.max(a.pts, 0.01) - b.cost / Math.max(b.pts, 0.01)); // cheapest per point first
 }
+// ---- role functions (v25.11): the merchant's own versions are in merchant/0_loop.js ----
+// A fighter wears what helps it
+function self_taker_ok() { return true; }
+// Gold a fighter keeps when it spends on its own projects
+function gold_keep() { return CFG.gold_reserve; }

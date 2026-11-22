@@ -26,10 +26,12 @@ function check() {
 	const names = (f) => new Set(B[f].map((b) => b.name));
 	const errs = [];
 	const defaults = new Set(B["shared"].filter((b) => b.fn).map((b) => b.name));
-	// declared twice: only a common default replaced by a role file's function
-	const seen = {};
+	// declared twice: only a common default replaced by a role file's function, or a role function (a function both
+	// roles declare and shared doesn't: tools/build.js dispatches it by role)
+	const seen = {}, fn_in = (g, n) => B[g].some((b) => b.name === n && b.fn);
 	for (const f of files) for (const b of B[f]) {
-		if (seen[b.name] && !(seen[b.name] === "shared" && defaults.has(b.name) && b.fn && (f === "fighter" || f === "merchant")))
+		const role_fn = f === "merchant" && seen[b.name] === "fighter" && b.fn && fn_in("fighter", b.name);
+		if (seen[b.name] && !role_fn && !(seen[b.name] === "shared" && defaults.has(b.name) && b.fn && (f === "fighter" || f === "merchant")))
 			errs.push(`${b.name} declared in ${seen[b.name]} and ${b.file}:${b.line}`);
 		seen[b.name] = seen[b.name] || f;
 	}

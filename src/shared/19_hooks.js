@@ -4,18 +4,17 @@
 // load order (shared/, then fighter/ or merchant/, then main.js), and a later function declaration replaces an
 // earlier one. Every call site is reached by one role only (is_merchant() and the like decide), so a default never
 // stands in for real work. tools/split_check.js lists any use of a role-only name that has no default here.
+// Role functions (v25.11) need no default: a function BOTH roles declare (fight_back, flee_tick, role_tick, gold_keep,
+// merchant_hb, ptown_on…) is each role's own; farmer.js (all roles) calls the running character's (tools/build.js).
 // =====================================================================
 // merchant/
-function merchant_tick() {}
 function merchant_gives_to() { return true; }
 function merchant_awaits_funds() { return false; }
 function merchant_asks_funds() { return false; }
 function merchant_sells() { return false; }
-function merchant_fight_back() { return false; }
 function merchant_fetch_give() {}
 function merchant_fetch_stand() {}
 function merchant_fetch_sale() {}
-function recover() {}
 function facts_merchant() {}
 function merchant_job() { return null; }
 function bank_purge() { return 0; }
@@ -25,9 +24,7 @@ async function stand_close() {}
 function merrit_on() { return false; }
 function parcel_count() { return 0; }
 // fighter/
-function fighter_tick() { return 250; }
 function fighter_defers_town() { return false; }
-function fighter_fight_back() { return false; }
 function why_not_fighter() { return "the merchant doesn't fight"; }
 function facts_stat() {}
 function facts_elixir() {}

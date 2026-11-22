@@ -101,7 +101,7 @@ function recover() {
 	if (threat || hurt_ms() < CFG.flee_quiet_ms) {
 		// v25.4: a plain attack on what's hitting us (the fighters' combat — steering, kiting, skills — is in fighter/);
 		// it used to steer toward a ranged attacker while fleeing
-		if (merchant_fight_back()) {}
+		if (fight_back()) {}
 		else if (threat && Number.isFinite(threat.x)) { // v24.8: one we ignore as immune: step away from it (stood still before)
 			const a = Math.atan2(character.y - threat.y, character.x - threat.x), x = character.x + Math.cos(a) * 120, y = character.y + Math.sin(a) * 120;
 			if (can_move_to(x, y)) move_to_as("recover", x, y, 300);
@@ -115,7 +115,7 @@ function recover() {
 	}
 }
 // ---- the merchant's fight-back (v25.4): what's hitting us gets attacked if in reach; true when something is on us ----
-function merchant_fight_back() {
+function fight_back() { // v25.11: role function (the fighters' is in fighter/3_combat.js)
 	const t = hit_on_me();
 	if (!t) return false;
 	if (character.c.town) return true; // channelling the town teleport: an attack would cancel it
@@ -123,3 +123,22 @@ function merchant_fight_back() {
 	if (can_attack(t)) fire("attack", t);
 	return true;
 }
+// ---- role functions (v25.11): the fighters' versions are in fighter/1_party.js, 5_town.js and 6_gear.js ----
+// The merchant doesn't watch its own heartbeat
+function merchant_hb() { return null; }
+function merchant_recent() { return false; }
+// The merchant never joins a party trip
+function ptown_on() { return false; }
+// The merchant wears a piece only with merchant.wear_gear (it hands the rest to the fighters)
+function self_taker_ok() { return !!CFG.merchant.wear_gear; }
+// The merchant keeps its potion float (donate.keep) when it spends
+function gold_keep() { return CFG.merchant.donate.keep; }
+// The main loop's merchant parts (tick(), main.js): fleeing to town when hurt, then the merchant's own work
+function flee_tick() {
+	if (!(state.recovering || character.hp < character.max_hp * CFG.flee_hp)) return false;
+	recover();
+	loot_chests();
+	set_message(`Recovering ${((character.hp / character.max_hp) * 100).toFixed(0)}%`);
+	return true;
+}
+function role_tick() { merchant_tick(); loot_chests(); return 250; }

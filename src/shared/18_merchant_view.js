@@ -5,12 +5,8 @@
 // compound, upgrade projects, exchange) for everyone, so fighters rarely leave the pack.
 // =====================================================================
 const is_merchant = () => character.ctype === "merchant" && CFG.merchant?.name === character.name;
-const merchant_hb = () => (!is_merchant() && fresh(state.merchant) && state.merchant.name === CFG.merchant?.name ? state.merchant : null);
+// merchant_hb() / merchant_recent(): role functions (v25.11) — the fighters' in fighter/1_party.js; the merchant's say no
 // Upgrade projects: the merchant does them while it's online (fighters keep fighting)
-// Who does the shared work (compounding, upgrade/craft projects, town thresholds) must not flip with a single missed
-// heartbeat (the merchant skips beats when its call budget is tight): "merchant online" = heard within 10 minutes
-const merchant_recent = () => !is_merchant() && !!state.merchant && state.merchant.name === CFG.merchant?.name &&
-	Date.now() - state.merchant.t < 600_000 && !state.merchant.rip;
 const merchant_does_it = () => merchant_recent();
 // ---- Monster tokens (CFG.token_auto) ----
 // Best shop piece by points per token: class gear a member would wear (+0), not already owned (bags or bank)

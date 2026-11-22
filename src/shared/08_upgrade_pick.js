@@ -17,7 +17,7 @@ function upgrade_target(name, high = false) {
 // Gold a project may draw on: our own above the reserve; the merchant also counts fighters' gold above fund_keep
 // (they send it on supply runs when a step needs it)
 function upgrade_gold() {
-	let g = character.gold - (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve);
+	let g = character.gold - gold_keep(); // gold_keep(): role function (v25.11)
 	if (is_merchant()) for (const p of partners()) g += Math.max(0, (p.gold || 0) - CFG.merchant.fund_keep);
 	return Math.max(0, g);
 }
@@ -177,7 +177,7 @@ async function task_upgrade() {
 		// over the party's gold budget: don't ask the fighters for gold we then couldn't spend (v19.6)
 		if (!P.weapon && step > gold_room()) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
 		if (merchant_asks_funds(P, step)) break; // v25.5: merchant/ — the fighters fund the step
-		if (!(P.weapon ? character.gold - step >= (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve) : gold_ok(step))) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
+		if (!(P.weapon ? character.gold - step >= gold_keep() : gold_ok(step))) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
 		state.fund_need = 0;
 		// v23.1: the gold the project's steps cost (copy + scrolls), counted per step — measuring from total gold let loot,
 		// sales, potion buys and the fighters' funding move it

@@ -243,7 +243,7 @@ function gear_takers() {
 	return out;
 }
 // (a merchant that doesn't wear gear isn't a taker for itself: v24.7)
-const self_taker_ok = () => !is_merchant() || CFG.merchant.wear_gear;
+// self_taker_ok(): role function (v25.11) — a fighter always wears what helps it; the merchant only with merchant.wear_gear
 const gear_wanted_by = (item) => CFG.gear_auto && gear_takers().find((m, i) => (i > 0 || self_taker_ok()) && gear_gain(item, m.ctype, m.g));
 // An upgrade for us (not refused by the server) or for a fighter: such a piece is never banked, sold or listed
 const wanted_by_member = (item) => CFG.gear_auto && gear_takers().some((m, i) => (i > 0 || (!equip_paused(item) && self_taker_ok())) && gear_gain(item, m.ctype, m.g));

@@ -54,7 +54,7 @@ function tank_cover(pool = partners_near(300)) {
 	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp && Number.isFinite(p.armor)) || null;
 }
 // ---- a parked fighter fights back with its full combat (v25.4; park_tick → fight_back) ----
-function fighter_fight_back() {
+function fight_back() { // v25.11: role function (the merchant's is in merchant/0_loop.js)
 	const t = choose_target(false);
 	if (t && !character.c.town) { fight(t, false); return true; }
 	return false;
