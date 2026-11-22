@@ -1,7 +1,7 @@
 // =====================================================================
 // src/merchant/ — loaded by the merchant only (after shared/, before main.js; src/manifest.json). What only the merchant
 // does: supply runs, the stand and Merrit's parcels, Ponty, bank housekeeping, donations. Defaults for the fighters are
-// in shared/15_hooks.js.
+// in shared/19_hooks.js.
 // merchant/0_loop.js — merchant only (src/manifest.json): the merchant's part of tick(), its heartbeat, the flee to town, fight-back, donations
 // =====================================================================
 function merchant_beat() {

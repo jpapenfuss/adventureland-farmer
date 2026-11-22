@@ -1,5 +1,5 @@
 // Static check of the src/ split: a role's file set (common + its role + main) must not use a name that only the
-// other role's file declares, unless shared/ has a default for it (15_hooks.js); and no name may be declared in
+// other role's file declares, unless shared/ has a default for it (19_hooks.js); and no name may be declared in
 // two files except those defaults. Exit 1 with the list otherwise. Used by test/roles.js.
 const fs = require("fs"), path = require("path");
 const SRC = path.join(__dirname, "..", "src");
@@ -36,7 +36,7 @@ function check() {
 	for (const [role, other] of [["fighter", "merchant"], ["merchant", "fighter"]]) {
 		const have = new Set(["shared", role, "last"].flatMap((f) => [...names(f)])), theirs = names(other);
 		for (const f of ["shared", role, "last"]) for (const b of B[f]) for (const r of b.refs)
-			if (theirs.has(r) && !have.has(r)) errs.push(`${b.file}:${b.line} ${b.name} uses ${r}, which only the ${other} files declare (add a default to shared/15_hooks.js)`);
+			if (theirs.has(r) && !have.has(r)) errs.push(`${b.file}:${b.line} ${b.name} uses ${r}, which only the ${other} files declare (add a default to shared/19_hooks.js)`);
 	}
 	// a statement that runs at load (setInterval, character.on...) in a role file must use something that file declares:
 	// one that only uses shared names belongs in shared/ (v25.1: the xp/gold sampling had been carried to fighter.js)

@@ -1,7 +1,7 @@
 // =====================================================================
 // src/fighter/ — loaded by the fighters only (after shared/, before main.js; src/manifest.json). What only a fighter
 // does: follow the tank, heal, hand loot and gold to the merchant, its own token buys and upgrade projects, collecting
-// what the merchant holds for it. Defaults for the merchant are in shared/15_hooks.js.
+// what the merchant holds for it. Defaults for the merchant are in shared/19_hooks.js.
 // fighter/0_loop.js — fighters only (src/manifest.json): the fighter's part of tick() and the follower: what runs every tick, and the fighters' code messages
 // =====================================================================
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal
@@ -170,7 +170,7 @@ function fighter_tick() {
 // ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // ---- Assist the tank (v15.4): with a tank near, it picks the targets and everyone else hits its target ----
 const i_am_tank = () => CFG.party.tank_first && in_party_cfg() && CFG.gear_tank.includes(character.ctype) && partners_near(400).length > 0;
-// ---- the fighters' code-message kinds (v25.1): true = handled; on_cm_message (shared/13_party.js) calls this first ----
+// ---- the fighters' code-message kinds (v25.1): true = handled; on_cm_message (shared/17_party.js) calls this first ----
 function fighter_cm(m) {
 	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
 		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
