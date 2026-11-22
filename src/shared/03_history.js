@@ -388,9 +388,12 @@ function meas_tick() {
 	if (S) {
 		if (!here || walking() || errand_busy() || state.recovering || event_live() || pack_key(p) !== S.key) { S.end = S.last_here || S.start; end_session(); }
 		else {
-			S.xp += d; S.last_here = Date.now();
-			// v25.16: a second the tank holds for the party isn't the camp's time (a member slow to come, or not heard)
-			if (gap_kind() === "monsters alive, holding for the party") S.lost = (S.lost || 0) + 1000;
+			const now_ = Date.now(), dt = Math.min(5000, Math.max(0, now_ - (S.last_here || now_)));
+			S.xp += d; S.last_here = now_;
+			// v25.16: time the party isn't ready to fight isn't the camp's: a member too far for the tank to start
+			// (party_missing: engage_px, three missed beats), or the tank holding for one. Elapsed time since the last tick
+			// (a throttled tab ticks late), at most 5 s.
+			if (in_party_cfg() && (party_missing().length > 0 || gap_kind() === "monsters alive, holding for the party")) S.lost = (S.lost || 0) + dt;
 			if ((Date.now() - S.start) / 1000 > CFG.measure_min_s * 2) end_session();
 		}
 	}

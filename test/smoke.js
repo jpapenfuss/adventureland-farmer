@@ -2937,6 +2937,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(R("state.session") === null, "Sanala unheard: no measurement session");
 			R("state.partners.Sanala = { name: 'Sanala', ctype: 'mage', map: 'main', x: 40, y: 40, t: Date.now() }; meas_tick()");
 			assert(R("!!state.session"), "everyone heard and here: the session starts");
+			// a member out of the tank's engage range: the elapsed seconds are left out (not just 1 s a tick)
+			R("state.session.last_here = Date.now() - 3000; state.partners.Sanala.x = 50 + CFG.party.engage_px + 50; state.partners.Sanala.y = 50; meas_tick()");
+			assert(Math.abs(R("state.session.lost") - 3000) < 200, `3 s with Sanala out of engage range left out (${R("state.session.lost")})`);
+			R("state.session.last_here = Date.now() - 60000; meas_tick()");
+			assert(Math.abs(R("state.session.lost") - 8000) < 200, `a late tick counts at most 5 s (${R("state.session.lost")})`);
+			R("state.partners.Sanala.x = 40; state.partners.Sanala.y = 40; state.session.last_here = Date.now() - 2000; meas_tick()");
+			assert(R("!!state.session") && Math.abs(R("state.session.lost") - 8000) < 200, "everyone in range: nothing more left out");
 			R("state.session = null; state.pack = null; state.partners = {}"); Object.assign(character, sv);
 		}
 		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1; state.session = null", ctx);
