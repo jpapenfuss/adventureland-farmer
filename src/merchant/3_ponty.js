@@ -11,13 +11,21 @@ const shop_price = (it) => {
 function secondhand_reason(it, groups) {
 	if (!it || !G.items[it.name]) return null;
 	const price = shop_price(it);
-	for (const x of gear_takers().slice(1).filter((x) => x.ctype !== "merchant")) {
-		// someone already has one at this level or better: deliver that instead (v24.7: any copy of the name used to block it)
-		const lv = it.level || 0;
-		if (best_level_held(it.name) >= lv || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= lv) || party_holds_level(it.name, lv)) break;
+	const fighters = gear_takers().slice(1).filter((x) => x.ctype !== "merchant"), lv = it.level || 0;
+	// someone already has one at this level or better: deliver that instead (v24.7: any copy of the name used to block it).
+	// v25.18: a titled listing (shiny: more stats at the same level) is blocked only by a copy with the same title
+	const held_at = (lvl) => it.p
+		? [...character.items, ...(state.bank_gear || [])].some((b) => b && b.name === it.name && b.p === it.p && (b.level || 0) >= lvl)
+		: best_level_held(it.name) >= lvl || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= lvl) || party_holds_level(it.name, lvl);
+	if (!held_at(lv)) for (const x of fighters) {
 		const r = gear_gain(it, x.ctype, x.g);
 		if (r && price <= r.gain * CFG.secondhand_gold_per_pt) return `upgrade for ${x.name} (+${Math.round(r.gain)} pts)`;
 	}
+	// v25.18 (owner: "watch Ponty more closely and buy opportunistically"): a head start for an upgrade — a piece that wins
+	// for a fighter once upgraded, when its price plus the expected upgrades above its level is worth the gain and cheaper
+	// than our other way there (our own copy, or an NPC copy from +0). Pieces no NPC sells only come this way or as drops.
+	const head = CFG.secondhand_upgrade_starts && upgrade_start_reason(it, price, fighters);
+	if (head) return head;
 	const g = G.items[it.name].compound && (it.level || 0) < CFG.compound_max_level &&
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
@@ -25,6 +33,26 @@ function secondhand_reason(it, groups) {
 	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
 	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
 	return null;
+}
+function upgrade_start_reason(it, price, fighters) {
+	const d = G.items[it.name], lv = it.level || 0;
+	if (!d?.upgrade || !GEAR.has(d.type) || it.p || !CFG.upgrade_auto) return null; // (titled copies aren't project inputs)
+	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name));
+	if (own >= lv) return null; // ours is as far along already
+	let best = null;
+	for (let to = lv + 1; to <= top; to++) {
+		if (best_level_held(it.name) >= to || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= to) || party_holds_level(it.name, to, true)) break;
+		const total = price + Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, lv));
+		const alt = own >= 0 ? upgrade_expected(it.name, to) - upgrade_expected(it.name, own) : sold_by_npc(it.name) ? upgrade_expected(it.name, to) : Infinity;
+		if (total >= alt) continue;
+		for (const x of fighters) {
+			const r = gear_gain({ name: it.name, level: to }, x.ctype, x.g);
+			if (!r || total > r.gain * CFG.secondhand_gold_per_pt) continue;
+			const v = r.gain * CFG.secondhand_gold_per_pt - total;
+			if (!best || v > best.v) best = { v, to, who: x.name, gain: Math.round(r.gain), total };
+		}
+	}
+	return best ? `start for an upgrade: +${lv} → +${best.to} for ${best.who} (+${best.gain} pts, ~${fmt_k(best.total)} in all)` : null;
 }
 // v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..4
 const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25], 1: [0.90, 0.70, 0.40, 0.20], 2: [0.80, 0.60, 0.32, 0.16] };
