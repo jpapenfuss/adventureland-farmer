@@ -33,15 +33,16 @@ function on_death() {
 		incident(killer || p.mtype, 0.6);
 		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
 		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
-		let rest_n = 0;
+		let rest_n = 0, rest_ms = 0;
 		if (!roamer) {
 			const k = pack_key(p), now = Date.now(), L = (state.camp_deaths[k] = (state.camp_deaths[k] || []).filter((t) => now - t < 86_400_000));
 			L.push(now); rest_n = L.length;
-			state.cooldown[k] = now + Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (rest_n - 1));
+			rest_ms = Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (rest_n - 1));
+			state.cooldown[k] = now + rest_ms;
 		}
 		delete state.probe_ok[killer || p.mtype];
 		share_verdict({ kind: "incident", mtype: killer || p.mtype, mult: 0.6, key: roamer ? null : pack_key(p), cd: roamer ? 0 : state.cooldown[pack_key(p)], death: true });
-		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}${rest_n ? `; camp rested ${Math.round(Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (rest_n - 1)) / 60000)} min (death ${rest_n} here in 24h)` : ""}`);
+		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}${rest_n ? `; camp rested ${Math.round(rest_ms / 60000)} min (death ${rest_n} here in 24h)` : ""}`);
 	}
 	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, fled_home: false, ptown: null });
 }

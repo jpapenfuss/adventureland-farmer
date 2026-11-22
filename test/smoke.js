@@ -4527,7 +4527,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		let exits = 0; ctx.cave_exit = () => (exits++, Promise.resolve({ exited: true }));
 		Object.assign(character, { name: "Torlis", ctype: "paladin", level: 56 });
 		character.cave = { run: "rz", floor: 0, objectives: [], doors: [] };
-		R("cave_st.run = null; state.cave_block = null; globalThis.__pp = party_power; party_power = () => ({ lv: 56, gs: 500, n: 3 })");
+		R("cave_st.run = null; state.cave_block = null; globalThis.__pp = party_power; party_power = () => ({ lv: 56, gs: 500, n: 3 }); globalThis.__ss = save_state; save_state = () => {}");
 		R("cave_died(); cave_died()");
 		assert(exits === 0 && R("state.cave_block") === null, "two deaths in a visit: still in");
 		R("cave_died()");
@@ -4535,15 +4535,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		delete character.cave;
 		R("state.cave_visit = { available: true, at: Date.now() }; cave_st.info_at = Date.now()");
 		assert(R("cave_blocked()") === true, "on hold while the party is as strong as when it lost");
+		R("party_power = () => ({ lv: 58, gs: 500, n: 2 })");
+		assert(R("cave_blocked()") === true, "a higher average with a member offline isn't the party stronger");
 		R("party_power = () => ({ lv: 58, gs: 500, n: 3 })");
 		assert(R("cave_blocked()") === false && R("state.cave_block") === null, "two levels stronger: the cave again");
-		R("party_power = globalThis.__pp");
+		R("party_power = globalThis.__pp; save_state = globalThis.__ss");
 		// a follower: the tank's heartbeat shows it outside the cave → leave too
 		Object.assign(character, { name: "Sanala", ctype: "mage" });
 		character.cave = { run: "rz2", floor: 0, objectives: [], doors: [], paused: false };
 		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "main", x: 0, y: 0 });
-		R("cave_st.exiting = false; cave_st.entered_seen = Date.now() - 30000; cave_tick()");
-		assert(exits === 2, "a follower leaves when the tank is out of the cave");
+		R("cave_st.exiting = false; cave_tick()");
+		assert(exits === 1, "the tank's heartbeat outside on our first tick inside (its old beat): not yet");
+		R("cave_st.out_since = Date.now() - 21000; cave_tick()");
+		assert(exits === 2, "outside for 20 s straight: a follower leaves with the tank");
+		// a later visit: the clock starts again (it was kept across visits)
+		character.cave = { run: "rz3", floor: 0, objectives: [], doors: [], paused: false };
+		R("cave_st.exiting = false; cave_tick()");
+		assert(exits === 2, "a new visit: the tank's old heartbeat on main doesn't make us leave at once");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "zone_rz3_0", x: 0, y: 0 });
+		R("cave_tick()");
+		assert(R("cave_st.out_since") === 0, "...and the tank inside resets the clock");
 		delete character.cave; delete ctx.cave_exit; R("state.partners = {}; state.cave_visit = null; cave_st.exiting = false"); Object.assign(character, sv);
 	}
 	// v25.14: keep_awake calls the game's performance_trick only while no loop exists, then replays the loop only when it
