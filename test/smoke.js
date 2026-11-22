@@ -2367,8 +2367,20 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		const r3 = rest();
 		assert(r1 === 30 && r2 === 120 && r3 === 480, `deaths at one camp: rested 30, 120, 480 min (${r1}, ${r2}, ${r3})`);
-		vm.runInContext("state.camp_deaths['main:0,0,10,10'] = [Date.now() - 90000000]; pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		vm.runInContext("state.cooldown = {}; state.camp_deaths['main:0,0,10,10'] = [Date.now() - 90000000]; pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		assert(rest() === 30, "a death there over a day ago doesn't count");
+		// v25.31: a member's death reaches the tank's count (it picks the camps); the same wipe twice counts once;
+		// a shorter rest never shortens a longer one
+		vm.runInContext("state.cooldown = {}; state.camp_deaths = {}", ctx);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() - 5000 }, 'Sanala')", ctx);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() - 5000 }, 'Aspernari')", ctx);
+		assert(rest() === 30 && vm.runInContext("state.camp_deaths['main:0,0,10,10'].length", ctx) === 1, `a member's death: counted once, rested 30 min (${rest()})`);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() }, 'Sanala')", ctx);
+		assert(rest() === 120, `a second member death there: 120 min on the tank, not capped at 60 (${rest()})`);
+		vm.runInContext("rest_camp('main:0,0,10,10', 300000)", ctx);
+		assert(rest() === 120, "a 5-min rest doesn't shorten a 2-hour one");
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() - 3600000 }, 'Sanala')", ctx);
+		assert(vm.runInContext("state.camp_deaths['main:0,0,10,10'].length", ctx) === 2, "a stale death verdict (an hour old) isn't counted");
 		vm.runInContext("state.danger = {}; state.cooldown = {}; state.camp_deaths = {}; state.pack = null", ctx);
 		// spending categories: the purchase tags the gold that leaves
 		vm.runInContext(`globalThis.__hb3 = hist.buckets; hist.buckets = {}; tag_spend("ponty"); { const b = bucket(); b.spend = 500; b.cats = { ponty: 500 }; }`, ctx);

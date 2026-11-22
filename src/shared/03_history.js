@@ -1,3 +1,18 @@
+// v25.31: a camp's rest only ever lengthens (a 30-min rest written over an 8-hour death rest shortened it)
+function rest_camp(k, ms, now = Date.now()) {
+	if (k) state.cooldown[k] = Math.max(state.cooldown[k] || 0, now + ms);
+}
+// v25.29/v25.31: a death at a camp: each one there within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day).
+// Every fighter records every member's death (its own in on_death, the others' from their verdict), so the tank —
+// which picks the camps — counts and rests them all. `at` is when it happened; a shared death (`shared`) within 2 s
+// of one already counted is the same wipe (two members down together) and counts once.
+function camp_death(k, at = Date.now(), shared = false) {
+	const now = Date.now(), L = (state.camp_deaths[k] = (state.camp_deaths[k] || []).filter((t) => now - t < 86_400_000));
+	if (!shared || !L.some((t) => Math.abs(t - at) < 2000)) L.push(at);
+	const n = L.length, ms = Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (n - 1));
+	rest_camp(k, ms, at);
+	return { n, ms };
+}
 // =====================================================================
 // History (v15): a persistent event log + hourly buckets, and death/flee post-mortems. Saved under its own key with
 // save_state (every 60s and on_destroy). history(h) / deaths(n) print it as copyable text.
@@ -150,7 +165,7 @@ function watchdog() {
 		wd_act("frozen", `no movement and no hits for ${W.frozen_min} min${state.pack ? " at " + state.pack.mtype : ""}`);
 		halt("watchdog");
 		state.travel_block_until = 0;
-		if (state.pack) state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
+		if (state.pack) rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);
 		state.last_pick = 0;
 		return;
 	}
@@ -163,7 +178,7 @@ function watchdog() {
 		reset();
 		const repeat = wd.acts.filter((a) => a.kind === "noprog").length >= 2;
 		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
-		state.cooldown[pack_key(state.pack)] = now + CFG.pack_cooldown_ms;
+		rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);
 		state.last_pick = 0;
 		if (repeat) halt("watchdog"); // v24.60: no town teleport of the tank's own (it left the party behind)
 	}
