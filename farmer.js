@@ -1187,13 +1187,13 @@ function rest_camp(k, ms, now = Date.now()) {
 }
 // v25.29/v25.31: a death at a camp: each one there within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day).
 // Every fighter records every member's death (its own in on_death, the others' from their verdict), so the tank —
-// which picks the camps — counts and rests them all. `at` is when it happened; a shared death (`shared`) within 2 s
-// of one already counted is the same wipe (two members down together) and counts once.
-function camp_death(k, at = Date.now(), shared = false) {
+// which picks the camps — counts and rests them all. A death within 60 s of one already counted, own or shared, is
+// the same wipe (the others learn of a death from heartbeats seconds later) and counts once. Times are this tab's clock.
+function camp_death(k) {
 	const now = Date.now(), L = (state.camp_deaths[k] = (state.camp_deaths[k] || []).filter((t) => now - t < 86_400_000));
-	if (!shared || !L.some((t) => Math.abs(t - at) < 2000)) L.push(at);
+	if (!L.some((t) => Math.abs(t - now) < 60_000)) L.push(now);
 	const n = L.length, ms = Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (n - 1));
-	rest_camp(k, ms, at);
+	rest_camp(k, ms, now);
 	return { n, ms };
 }
 // =====================================================================
@@ -5281,7 +5281,7 @@ function apply_verdict(v, from) {
 		incident(v.mtype, v.mult);
 		// v25.31: a member's death at a camp counts here as our own (the tank picks the camps: a follower's death
 		// rested it 1 h at most on the tank, and the 4x escalation never reached it); any other shared rest: 1 h at most
-		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(Date.now() - v.at) < 600_000) camp_death(v.key, v.at, true);
+		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(Date.now() - v.at) < 600_000) camp_death(v.key); // (v.at, the sender's clock, only for staleness)
 		else if (v.key && v.cd > Date.now()) rest_camp(v.key, Math.min(v.cd, Date.now() + 3600_000) - Date.now());
 		if (v.death) delete state.probe_ok[v.mtype];
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
@@ -8382,7 +8382,7 @@ function on_death() {
 		incident(killer || p.mtype, 0.6);
 		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
 		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
-		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p), at);
+		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p));
 		delete state.probe_ok[killer || p.mtype];
 		share_verdict({ kind: "incident", mtype: killer || p.mtype, mult: 0.6, key: roamer ? null : pack_key(p), cd: roamer ? 0 : state.cooldown[pack_key(p)], death: true, at });
 		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}${rest_n ? `; camp rested ${Math.round(rest_ms / 60000)} min (death ${rest_n} here in 24h)` : ""}`);

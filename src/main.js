@@ -33,7 +33,7 @@ function on_death() {
 		incident(killer || p.mtype, 0.6);
 		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
 		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
-		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p), at);
+		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p));
 		delete state.probe_ok[killer || p.mtype];
 		share_verdict({ kind: "incident", mtype: killer || p.mtype, mult: 0.6, key: roamer ? null : pack_key(p), cd: roamer ? 0 : state.cooldown[pack_key(p)], death: true, at });
 		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}${rest_n ? `; camp rested ${Math.round(rest_ms / 60000)} min (death ${rest_n} here in 24h)` : ""}`);

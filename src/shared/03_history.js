@@ -4,13 +4,13 @@ function rest_camp(k, ms, now = Date.now()) {
 }
 // v25.29/v25.31: a death at a camp: each one there within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day).
 // Every fighter records every member's death (its own in on_death, the others' from their verdict), so the tank —
-// which picks the camps — counts and rests them all. `at` is when it happened; a shared death (`shared`) within 2 s
-// of one already counted is the same wipe (two members down together) and counts once.
-function camp_death(k, at = Date.now(), shared = false) {
+// which picks the camps — counts and rests them all. A death within 60 s of one already counted, own or shared, is
+// the same wipe (the others learn of a death from heartbeats seconds later) and counts once. Times are this tab's clock.
+function camp_death(k) {
 	const now = Date.now(), L = (state.camp_deaths[k] = (state.camp_deaths[k] || []).filter((t) => now - t < 86_400_000));
-	if (!shared || !L.some((t) => Math.abs(t - at) < 2000)) L.push(at);
+	if (!L.some((t) => Math.abs(t - now) < 60_000)) L.push(now);
 	const n = L.length, ms = Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (n - 1));
-	rest_camp(k, ms, at);
+	rest_camp(k, ms, now);
 	return { n, ms };
 }
 // =====================================================================
