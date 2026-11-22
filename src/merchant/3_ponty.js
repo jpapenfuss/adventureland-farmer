@@ -14,10 +14,9 @@ function secondhand_reason(it, groups) {
 	const fighters = gear_takers().slice(1).filter((x) => x.ctype !== "merchant"), lv = it.level || 0;
 	// someone already has one at this level or better: deliver that instead (v24.7: any copy of the name used to block it).
 	// v25.18: a titled listing (shiny: more stats at the same level) is blocked only by a copy with the same title
-	// (and not while a plain copy at its level in our bags is already an upgrade on its way to a member: one per slot)
+	// (owner: a shiny is an upgrade over the upgrade — bought even while a plain copy is on its way to the member)
 	const held_at = (lvl) => it.p
 		? [...character.items, ...(state.bank_gear || [])].some((b) => b && b.name === it.name && b.p === it.p && (b.level || 0) >= lvl)
-			|| character.items.some((b) => b && b.name === it.name && !b.p && (b.level || 0) >= lvl && wanted_by_member(b))
 		: best_level_held(it.name) >= lvl || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= lvl) || party_holds_level(it.name, lvl);
 	if (!held_at(lv)) for (const x of fighters) {
 		const r = gear_gain(it, x.ctype, x.g);
