@@ -44,6 +44,9 @@ vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
+// v25.32: the shipped odds floors are 10%; the tests of the floor mechanism run with the old values (80/60/20%, a
+// wanted compound 40%), and the shipped defaults are tested on their own (globalThis.__floors0)
+vm.runInContext("globalThis.__floors0 = { u: CFG.min_upgrade_chance, s: CFG.min_chance_spare, r: CFG.min_chance_rebuyable, w: CFG.compound_min_chance_wanted }; CFG.min_upgrade_chance = 0.8; CFG.min_chance_spare = 0.6; CFG.min_chance_rebuyable = 0.2; CFG.compound_min_chance_wanted = 0.4", ctx);
 vm.runInContext("seen.since = Date.now() - 60_000", ctx); // past the 30s start-up grace: the party rules (one party or nothing) apply in every test
 const st = () => vm.runInContext("state", ctx);
 const runTick = () => { const t = timers.filter((x) => x.fn.name === "tick").pop(); timers.length = 0; t.fn(); return timers.find((x) => x.fn.name === "tick").ms; };
@@ -1068,6 +1071,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("task_compound()", ctx);
 	assert(cmp.includes("REAL"), `a 45% compound whose result a fighter would wear goes ahead (${JSON.stringify(cmp)})`);
 	ctx.G.items.ringx.attack = 2; ctx.G.items.ringx.compound = { attack: 1 };
+	// v25.32 (owner): the bank nearly full — a set nobody wants at 40% odds, paused and capped for its odds, is combined
+	{
+		character.items = Array(42).fill(null); character.items[6] = { name: "ringx", level: 1 }; character.items[7] = { name: "ringx", level: 1 }; character.items[8] = { name: "ringx", level: 1 };
+		character.items[20] = { name: "cscroll0", q: 9 }; ctx.G.items.cscroll0 = ctx.G.items.cscroll0 || { type: "cscroll", g: 6400, s: 9999 };
+		const real = [];
+		ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.4 }) : (real.push([a, b, c]), character.items[b] = character.items[c] = null, character.items[a] = { name: "ringx", level: 2 }, Promise.resolve({ success: true }));
+		vm.runInContext("state.gear_skip = {}; state.cmp_caps = {}; cmp_cache = null; my_gear_cache = null; state.bank_free = { free: 40, total: 248, at: Date.now() }", ctx);
+		await vm.runInContext("task_compound()", ctx);
+		assert(real.length === 0 && vm.runInContext("skipped('cmp:ringx:1') && state.cmp_caps.ringx?.level === 1", ctx), "room in the bank: a 40% set nobody wants waits (paused, capped)");
+		vm.runInContext("state.bank_free = { free: 2, total: 248, at: Date.now() }; cmp_cache = null", ctx);
+		assert(vm.runInContext("compound_groups().some((g) => g.key === 'cmp:ringx:1')", ctx), "bank nearly full: the paused, capped set is a group again");
+		await vm.runInContext("task_compound()", ctx);
+		assert(real.length === 1, `bank nearly full: the 40% set is combined (${JSON.stringify(real)})`);
+		vm.runInContext("CFG.compound_bank_full = false; state.gear_skip = {}; cmp_cache = null", ctx);
+		character.items[7] = { name: "ringx", level: 1 }; character.items[8] = { name: "ringx", level: 1 }; character.items[9] = { name: "ringx", level: 1 };
+		await vm.runInContext("task_compound()", ctx);
+		assert(real.length === 1, "compound_bank_full off: odds hold it back as before");
+		vm.runInContext("CFG.compound_bank_full = true; state.bank_free = null; state.cmp_caps = {}", ctx);
+	}
 	character.slots = {}; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);
 	// 49) upgrade project: pick the NPC piece that beats Torlis's worn helmet most per gold, upgrade a spare to target
@@ -3177,6 +3199,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare") && R("upg_reach('xs138')") === 5, "a lower copy in the bags is a spare too");
 				R("character.items[10] = { name: 'xs138', level: 0, p: 'shiny' }; state.bank_gear = [{ name: 'xs138', level: 0, p: 'shiny' }]");
 				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance") && R("upg_reach('xs138')") === 4, "titled copies aren't spares (a project never uses one)");
+				// v25.32 (owner): the shipped floors (10%) — one copy, no spare: the planner aims as high as scroll0/1 go
+				// (+7; which level wins is then the expected-cost test), and the run takes a 70% step on the only copy
+				R("character.items[10] = null; state.bank_gear = []; globalThis.__fl = [CFG.min_upgrade_chance, CFG.min_chance_spare, CFG.min_chance_rebuyable]; CFG.min_upgrade_chance = __floors0.u; CFG.min_chance_spare = __floors0.s; CFG.min_chance_rebuyable = __floors0.r");
+				assert(R("__floors0.u") === 0.1 && R("upg_reach('xs138')") >= 7, `shipped floors: one copy reaches +${R("upg_reach('xs138')")} (was +4)`);
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === 0.1, "shipped floors: a 70% step on the only copy is taken (floor 10%)");
+				R("[CFG.min_upgrade_chance, CFG.min_chance_spare, CFG.min_chance_rebuyable] = __fl");
 				R("character.items[9] = null; character.items[10] = null; state.bank_gear = []; sold_c.delete('xs138')"); delete ctx.G.items.xs138;
 				if (s1) ctx.G.items.scroll1 = s1; else delete ctx.G.items.scroll1;
 			}

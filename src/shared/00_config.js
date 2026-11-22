@@ -1,4 +1,4 @@
-const VERSION = "25.31"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.32"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -130,9 +130,14 @@ const CFG = {
 	compound_min_chance: 0.75, // the server's preview must say >= 75% (failure destroys all three)...
 	// v24.87: ...or >= this when a fighter would wear the result. +2 → +3 is 40% at the server for every common
 	// accessory; three spare +2s (7 Belts of HP +2 lay in the bank) are worth more as a 40% shot at a worn +3.
-	compound_min_chance_wanted: 0.40,
+	compound_min_chance_wanted: 0.10, // v25.32 (owner): was 0.40
 	compound_min_chance_rebuyable: 0.6, // ...or >= 60% when an NPC sells the item (failure only costs gold)
 	compound_per_run: 6,       // compounds per town run at most
+	// v25.32 (owner: "items that can be combined that are clogging up the bank should just be combined — that's their
+	// purpose"): with the bank nearly full (free slots under merchant.purge_below of its size), spare sets of three
+	// are compounded at any odds, past the ceilings odds set (still up to compound_max_level): a success frees two
+	// slots, a failure three.
+	compound_bank_full: true,
 	gear_tank_mult: 2,
 	// v24.27: travel gear. Worn pieces that slow us come off for long walks and go back on when the walk ends. "Slow" counts
 	// the piece's own speed and the class's modifier for its type (priest staff -4, shield -5; paladin sword -7, shield -3).
@@ -261,12 +266,16 @@ const CFG = {
 	town_hp_critical: 0.5,     // ...or above 50% when bags are nearly full (<= 3 free)
 	errand_timeout_ms: 300_000, // an errand still running after 5 min is assumed hung; its lock is released
 	gold_reserve: 50_000,      // guide steps never spend below this much gold (potions may dip into it)
-	min_upgrade_chance: 0.80,  // upgrade only at >= 80% success (the server's own preview); failure destroys the item
+	// v25.32 (owner: "that floor really sucks since it completely blocks us from actually trying to upgrade"; low-tier
+	// copies are often on Ponty): the odds floors are down to 10%. Which level a project aims for is the expected-cost
+	// test (upgrade_gold_per_pt against the copies and scrolls lost to failed steps at the server's odds); the floor
+	// only stops hopeless rolls. Projects never use worn gear: a failure costs a spare copy.
+	min_upgrade_chance: 0.10,  // (was 0.80) the server's preview at least this; failure destroys the item
 	min_compound_chance: 0.80, // same for compounding (failure destroys all three inputs)
-	min_chance_rebuyable: 0.2, // items NPCs sell: failure only costs gold, accept the guide's odds down to this
+	min_chance_rebuyable: 0.10, // (was 0.2) items NPCs sell: failure only costs gold
 	rebuy_loss_max: 100_000,   // compounds of NPC-sold items take compound_min_chance_rebuyable odds only when the three
 	                           //   copies are worth at most this (a +L copy = 3^L base copies; v23.1)
-	min_chance_spare: 0.6,     // you hold another copy at that level or higher (bags/worn): a failure costs a spare
+	min_chance_spare: 0.10,    // (was 0.6) another copy held (bags/bank/worn): a failure costs a spare
 	gear_actions: ["equip", "buy", "upgrade", "develop", "compound", "craft", "stat", "exchange", "token", "dismantle", "retrieve", "supplies", "hunt"],
 	                           // guide row kinds the bot executes; other kinds are logged once and left to you
 	follow_farm_reasons: null, // null = every guide farm row; or e.g. ["material","bees","hunt_farm"]
