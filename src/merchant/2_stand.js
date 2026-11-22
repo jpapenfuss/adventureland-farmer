@@ -144,22 +144,22 @@ async function stand_tick() {
 		const D0 = S_.decoy;
 		for (const slot of TRADE_SLOTS) {
 			const cur = sl[slot];
-			if (!cur || state.stand[slot]) continue;
+			if (!cur || state.stand[slot] || cur.b || cur.giveaway !== undefined) continue; // (buy orders, giveaways: the owner's)
 			const dec = !!D0?.name && cur.name === D0.name && cur.price === D0.price;
 			if (!dec && !(S_.list || []).includes(cur.name)) continue;
 			const v = dec ? D0.price : unit_value(cur);
 			state.stand[slot] = { name: cur.name, level: cur.level || 0, q: cur.q || 1, price: cur.price, value: v, at: now, per_unit: true, ...(dec ? { decoy: true } : {}) };
 		}
 		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, taken off the list, or untracked)
-		// comes down — one per call
+		// comes down — one per call; a refusal (or full bags) pauses take-downs 2 min, the rest of the stand carries on
 		for (const slot of TRADE_SLOTS) {
 			const L_ = state.stand[slot], cur = sl[slot];
-			if (L_?.decoy) continue; // v25.26: Merrit's listing stays up
-			if (!cur) { if (L_ && !(S_.list || []).includes(L_.name)) delete state.stand[slot]; continue; }
-			if ((S_.list || []).includes(cur.name)) continue;
+			if (L_?.decoy || !cur || cur.b || cur.giveaway !== undefined) continue; // v25.26: Merrit's listing stays up
+			if ((S_.list || []).includes(cur.name) || skipped("stand:down")) continue;
+			if (character.esize <= 0) { skip("stand:down", 120_000, "bags full"); break; }
 			await T(unequip(slot), 5000).then(() => game_log(`stand: took ${cur.name}+${cur.level || 0} down — not on the owner's stand list`, C.dim))
-				.catch((e) => game_log(`stand: taking ${cur.name} down: ${why(e)}`, C.dim));
-			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried next tick
+				.catch((e) => { skip("stand:down", 120_000, why(e)); game_log(`stand: taking ${cur.name} down: ${why(e)} (again in 2 min)`, C.dim); });
+			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried after the pause
 			return;
 		}
 		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand

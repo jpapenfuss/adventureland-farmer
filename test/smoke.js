@@ -2903,7 +2903,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			character.slots.trade9 = { name: "mace", level: 7, price: 999999 };
 			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now(), per_unit: true }", ctx);
 			await vm.runInContext("stand_tick()", ctx);
-			assert(vm.runInContext("'trade9' in state.stand", ctx), "a failed take-down keeps the listing (retried next tick)");
+			assert(vm.runInContext("'trade9' in state.stand && skipped('stand:down')", ctx), "a failed take-down keeps the listing (retried after a 2-min pause)");
+			vm.runInContext("delete state.gear_skip['stand:down']", ctx);
 			delete character.slots.trade9; vm.runInContext("delete state.stand.trade9", ctx);
 			ctx.unequip = uneq0;
 		}
@@ -2947,6 +2948,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				for (let i = 0; i < 3; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
 				assert(vm.runInContext("state.stand.trade3?.decoy", ctx) === true && un.join() === "trade4" && tr2.length === n0 + 1,
 					`an untracked decoy is adopted, not re-listed; a potion at another price comes down (${un})`);
+				// a buy order and a giveaway (the owner's) stay; full bags pause take-downs; an owner-listed item is adopted
+				character.slots = { trade3: character.slots.trade3, trade5: { name: "harmor", price: 5000, b: true }, trade6: { name: "wcap", price: 1, giveaway: 600 }, trade7: { name: "gem0", q: 3, price: 900 }, trade8: { name: "coat", level: 4, price: 20000 } };
+				vm.runInContext("CFG.merchant.stand.list = ['gem0']; stand_busy = false", ctx); un.length = 0;
+				const es = character.esize; character.esize = 0;
+				await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+				assert(un.length === 0 && vm.runInContext("skipped('stand:down')", ctx), `full bags: nothing taken down, take-downs paused (${un})`);
+				character.esize = 10; vm.runInContext("delete state.gear_skip['stand:down']", ctx);
+				for (let i = 0; i < 3; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+				character.esize = es;
+				assert(un.join() === "trade8" && vm.runInContext("state.stand.trade7?.name === 'gem0' && state.stand.trade7.price === 900", ctx),
+					`a buy order and a giveaway stay, an owner-listed item is adopted at its price, the unlisted coat comes down (${un})`);
+				vm.runInContext("CFG.merchant.stand.list = []", ctx);
 			}
 			ctx.trade = trade1; ctx.unequip = uneq1; character.items[20] = null; character.slots = {};
 			vm.runInContext("state.stand = {}", ctx);
