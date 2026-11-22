@@ -30,7 +30,8 @@
   "fighter/5_town.js",
   "fighter/6_gear.js",
   "fighter/7_report.js",
-  "fighter/8_merchant_parts.js"
+  "fighter/8_merchant_parts.js",
+  "fighter/9_cave.js"
  ],
  "merchant": [
   "merchant/0_loop.js",

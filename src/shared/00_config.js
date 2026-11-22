@@ -1,4 +1,4 @@
-const VERSION = "25.23"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.24"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -240,6 +240,8 @@ const CFG = {
 	// status_*: the code runner's box under CODE (our set_message text; the game draws it 128x60 with no drag handle).
 	// ui(w, h, font) in the console sets the log's size and font.
 	// v24.21: off — enlarging the log in place pushed it under the DOCS panel and moved the tutorial/level bars
+	// v25.22: the Cave of Many Dreams (fighter/9_cave.js): once a day the tank takes the party in (Dorr, main 816,1200)
+	cave: { enabled: true, info_every_ms: 600_000, engage_px: 260, arrive_px: 120, max_deaths_per_room: 2 },
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,
 		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text): taller (it grows up) and its
 		// text wraps. v25.23 w: "log" — its left edge lined up with the log's (owner); a number: that width (wider than the

@@ -264,6 +264,7 @@ function report_facts() {
 	// v24.50: is the party gathered (may the tank start a fight)?
 	facts_engage(F, c);
 	facts_camp_time(F, c);
+	facts_cave(F, c); // v25.22
 	// v24.48: who moved us in the last minute, in order, and how often two owners overlapped since load
 	if (mv.log.length) F("moves", "self", `movement (1 min): ${mv.log.slice(-10).map((m) => `${m.who} ${m.kind}${m.n > 1 ? " x" + m.n : ""}`).join(" → ")} | clashes since load: ${mv.clash}`);
 	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out

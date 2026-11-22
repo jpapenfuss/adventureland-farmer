@@ -46,6 +46,7 @@ function tick() {
 		meter_socket();
 		if (spent() > BUDGET.soft) wait = 500;
 		else if (character.rip) {
+			if (character.cave && !state.dead_handled) cave_died(); // v25.22 (role function)
 			probe_check(); // v24.3: a probe ends as failed when the leader dies, not "held" after respawning
 			on_death();
 			if (Date.now() >= next_respawn && can_spend(1, RESERVE.potion)) {
@@ -53,6 +54,9 @@ function tick() {
 				Promise.resolve(respawn()).catch((e) => { if (e?.ms > 0) next_respawn = Date.now() + e.ms + 200; });
 			}
 			wait = 1000;
+		} else if (character.cave) { // v25.22: inside the Cave of Many Dreams (fighter/9_cave.js): its own loop — no party
+			state.dead_handled = false; // break (dying costs nothing there), no town, no camps
+			wait = cave_tick();
 		} else if (party_break_tick()) { // v24.51: the party isn't whole — suicide to town, or wait there
 			state.dead_handled = false;
 			state.recovering = false;

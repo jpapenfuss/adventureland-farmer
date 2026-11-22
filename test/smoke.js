@@ -2705,7 +2705,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("lead_lost()", ctx);
 		assert(vm.runInContext("leader_name() === 'Torlis' && !state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'dropped')", ctx), "not leading: the probe is dropped, not later closed as held");
 		// #2: the leader's death ends a probe as failed
-		assert(/else if \(character\.rip\) \{\s*probe_check\(\);/.test(src), "the death branch runs probe_check");
+		assert(/else if \(character\.rip\) \{\s*(?:if \(character\.cave[^\n]*\n\s*)?probe_check\(\);/.test(src), "the death branch runs probe_check");
 		vm.runInContext(`state.recovering = false; const S = globalThis.__s115; mt_xps = S.mt_xps; quest_recipes = S.quest_recipes; recipe_open = S.recipe_open;
 			drop_sources = S.drop_sources; kills_per_s = S.kills_per_s; CFG.hunt_min_xp = S.hmx; CFG.quest_crafts = S.qc; delete G.craft.qx115;
 			state.partners = {}; state.goals_cache = null; hist.ev = []`, ctx);
@@ -4346,6 +4346,66 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 55, map: "main", x: 10, y: 0, os: [] });
 		assert(R("tank_first(__E.a)") === true && R("free_for_all(__E.a)") === false, "the tank stops one-shooting it: back to the tank's first hit");
 		ctx.parent.entities = ents; R("CFG.party.tank_first = globalThis.__tf; if (globalThis.__sf) state.safe.os150 = globalThis.__sf; else delete state.safe.os150; state.pack = null; state.os_pick = null; state.partners = {}; delete globalThis.__E"); Object.assign(character, sv);
+	}
+	// v25.22: the Cave of Many Dreams
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const G0 = ctx.G.events;
+		ctx.G.events = { dreams: { encounters: [
+			{ kind: "wolves", group: "mixed", options: [{ id: "e10_0", effect: "wolves" }, { id: "e10_1", effect: "venture", outcomes: [{ weight: 1, reward: "cave_parcel" }, { weight: 1, fight: ["cave_guard", 3] }] }, { id: "e10_5", effect: "leave" }] },
+			{ kind: "rescue", group: "mixed", options: [{ id: "save", effect: "save" }, { id: "watch", effect: "watch" }, { id: "finish", effect: "both" }] },
+			{ kind: "shadow", group: "mixed", options: [{ id: "e17_0", effect: "venture", outcomes: [{ weight: 1, shadow: true }] }, { id: "e17_4", effect: "careful" }, { id: "e17_5", effect: "leave" }] },
+			{ kind: "toll", group: "bad", options: [{ id: "e27_0", effect: "pay", cost: 3000 }, { id: "e27_1", effect: "bad_fight" }, { id: "e27_3", effect: "time", cost: 1000 }, { id: "e27_5", effect: "bad_double" }] },
+		] } };
+		const ch = (kind, ids, extra) => ({ id: "c1", kind, options: ids.map((id) => ({ id, cost: 0, amber: 0, ...(extra?.[id] || {}) })) });
+		const pol = (c, st) => R(`cave_policy(${JSON.stringify(c)}, ${JSON.stringify(st || { gold: 5000, amber: 3 })})`);
+		assert(pol(ch("wolves", ["e10_0", "e10_1", "e10_5"])) === "e10_1", "never the wolves; a box that's a parcel or three guards beats walking away");
+		assert(pol(ch("rescue", ["save", "watch", "finish"])) === "watch", "a rescue (Cave Wolves): watch, never fight them");
+		assert(pol(ch("shadow", ["e17_0", "e17_4", "e17_5"])) === "e17_4", "never a shadow of our strongest; the careful reward");
+		assert(pol(ch("toll", ["e27_0", "e27_1", "e27_3", "e27_5"])) === "e27_1", "a toll: three guards (easy, XP) over paying or losing time");
+		assert(pol(ch("toll", ["e27_0", "e27_3"], { e27_0: { unavailable: "purse_short" } })) === "e27_3", "an option the purse can't pay isn't taken");
+		assert(pol({ id: "r", kind: "revival", options: [{ id: "here", amber: 2 }, { id: "landing" }] }, { amber: 3 }) === "here", "revive where we fell when the purse has the Amber");
+		assert(pol({ id: "r", kind: "revival", options: [{ id: "here", amber: 2 }, { id: "landing" }] }, { amber: 1 }) === "landing", "...at the doorway when it doesn't");
+		// goals: camps first, the guard camp last, then the stairs; a room died at twice is left
+		const st = { floor: 0, objectives: [{ id: "a", floor: 0, kind: "fight", required: true, done: false, x: 1, y: 1 }, { id: "b", floor: 0, kind: "boss", required: true, done: false, x: 2, y: 2 },
+			{ id: "c", floor: 0, kind: "farm", done: false, x: 3, y: 3 }, { id: "d", floor: 1, kind: "boss", required: true, done: false }], doors: [{ to: "z1", down: true, locked: true }] };
+		R("for (const k in cave_st.deaths) delete cave_st.deaths[k]");
+		const g = (x) => R(`JSON.stringify(cave_next_goal(${JSON.stringify(x)}))`);
+		assert(/"id":"c"/.test(g(st)), `a camp first (${g(st)})`);
+		st.objectives[2].done = true;
+		assert(/"id":"b"/.test(g(st)), "then the floor keeper before the guard camp (two Cave Wolves on floor 1)");
+		st.objectives[1].done = true;
+		assert(/"id":"a"/.test(g(st)), "then the guard camp");
+		R("cave_st.deaths.a = 2");
+		assert(g(st) === "null", "a room died at twice is left; stairs still locked: nothing");
+		st.doors[0].locked = false;
+		assert(/"door"/.test(g(st)), "the stairs once they're open");
+		R("for (const k in cave_st.deaths) delete cave_st.deaths[k]");
+		// the daily entry: the tank, a visit open, the party online → walks to Dorr; beside it with the party → cave_enter()
+		const sv = { name: character.name, ctype: character.ctype, map: character.map, x: character.x, y: character.y }, ents = ctx.parent.entities;
+		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 816, y: 1240, rip: false });
+		ctx.parent.entities = {};
+		hb("Aspernari", { ...asp, ctype: "priest", level: 59, map: "main", x: 830, y: 1240 });
+		hb("Sanala", { ...san, ctype: "mage", level: 54, map: "main", x: 800, y: 1240 });
+		let entered = 0; ctx.cave_enter = () => (entered++, Promise.resolve({ run: "r", level: 1 })); ctx.cave_info = () => Promise.resolve({ available: true });
+		R("state.cave_visit = { available: true, at: Date.now() }; cave_st.info_at = Date.now(); state.gear_skip = {}; state.errand = null; state.ptown = null; cave_st.entering = false");
+		assert(R("cave_due()") === true, "the tank, the visit open, the party online: due");
+		R("cave_entry_tick()");
+		assert(entered === 1, "beside Dorr with the party: cave_enter()");
+		R("state.cave_visit = { available: false, at: Date.now() }; cave_st.entering = false");
+		assert(R("cave_due()") === false, "visited today: not due");
+		R("state.cave_visit = { available: true, at: Date.now() }; CFG.cave.enabled = false");
+		assert(R("cave_due()") === false, "...nor when switched off");
+		R("CFG.cave.enabled = true");
+		// inside: one vote per choice, and the shop's item bought with the purse
+		let votes = [], buys = 0;
+		ctx.cave_reply = (c, o) => (votes.push(o), Promise.resolve({})); ctx.cave_buy = () => (buys++, Promise.resolve({ recipient: "Sanala" }));
+		character.cave = { floor: 0, paused: true, gold: 9000, amber: 1, objectives: [], doors: [], choice: { id: "v1", kind: "toll", options: [{ id: "e27_1" }, { id: "e27_3" }], votes: {}, resolved: false, shop: { room: "m1", name: "cave_counterweight", price: 8000, sold: false, nearby: true } } };
+		R("cave_tick(); cave_tick()");
+		assert(votes.length === 1 && votes[0] === "e27_1" && buys === 1, `one vote per choice (${votes}), the shop item bought once (${buys})`);
+		delete character.cave; delete ctx.cave_enter; delete ctx.cave_info; delete ctx.cave_reply; delete ctx.cave_buy;
+		ctx.parent.entities = ents; Object.assign(character, sv); R("state.partners = {}; state.cave_visit = null");
+		ctx.G.events = G0;
 	}
 	// v25.14: keep_awake calls the game's performance_trick only while no loop exists, then replays the loop only when it
 	// stopped and sound is allowed (no stacked or queued copies)
