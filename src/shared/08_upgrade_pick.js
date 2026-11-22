@@ -52,6 +52,24 @@ const upg_step_cost = (name, top) => {
 // (the project's bank fetch skips titled copies too); -1 if none
 const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.p).map((i) => i.level || 0),
 	...(state.bank_gear || []).filter((i) => i.name === name && !i.p).map((i) => i.level || 0));
+// v25.19: the highest level a project of this piece will actually be taken to: each step's base odds (lifted by the next
+// scroll up where run_upgrade would use it: not for shop pieces, that scroll at most upgrade_boost_max) at or over the
+// floor run_upgrade applies (chance_floor; a second copy owned — bags or bank — counts as a spare). The planner aimed
+// past it: xmasshoes was taken to +4, then refused +5 (73% < 80%) — gold spent short of the level that was the upgrade.
+function upg_reach(name) {
+	const base = chance_floor(name, CFG.min_upgrade_chance), shop = shop_for(name) && !G.items[name]?.cash;
+	const copies = character.items.filter((i) => i && i.name === name && !i.l).length + (state.bank_gear || []).filter((i) => i.name === name).length;
+	const floor = !shop && copies >= 2 ? Math.min(base, CFG.min_chance_spare) : base;
+	let L = 0;
+	for (let l = 1; l <= 12; l++) {
+		let p = upg_odds(name, l);
+		const hc = G.items["scroll" + (Math.max(0, item_grade({ name, level: l - 1 })) + 1)]?.g;
+		if (!shop && hc && hc <= (CFG.upgrade_boost_max || 0)) p = Math.min(1, p * 1.2 + 0.01);
+		if (p < floor) break;
+		L = l;
+	}
+	return L;
+}
 // Is it sold by an NPC we can find? (cached: G doesn't change)
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
@@ -75,7 +93,7 @@ function pick_upgrade() {
 		if (WP) targets.push([WP, Infinity, false, true]); // v24.86: a weapon goes straight to +7, no budget
 		else for (let L = 1, T = upgrade_target(name); L <= T; L++) targets.push([L, budget, false]); // v24.82: every level, by expected cost
 		if (H?.enabled) targets.push([upgrade_target(name, true), gold * H.spend, true]);
-		const capL = upg_cap_level(name);
+		const capL = Math.min(upg_cap_level(name), upg_reach(name)); // v25.19: and no higher than the run will go
 		for (let [to, cap, high, weapon] of targets) {
 			if (to > capL) to = capL; // v24.5: no higher than a past project of it reached before its odds/failures stopped it
 			if (!to) continue;
