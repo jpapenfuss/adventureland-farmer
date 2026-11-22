@@ -1,4 +1,4 @@
-const VERSION = "25.24"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.25"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -327,14 +327,15 @@ const CFG = {
 		// merchant runs the upgrades. (It used to top the merchant up to `float` only, from the richest fighter.)
 		dump_gold: true,
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
-		// Stand: while idle at home the merchant lists spare valuables for other players (16 trade slots) at
-		// markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value
-		// (above the NPC's 0.6x). Worth listing: value >= min_value, gear at +3 or more, a higher grade, or titled.
-		// Stand trades also give merchant XP. The stand is closed before every walk (speed 10 while open).
-		// Bank housekeeping: when the bank's free slots drop below purge_below of its size, each merchant bank visit
-		// pulls up to purge_n of the least valuable items nobody needs; worth >= stand.min_value goes on the stand,
-		// the rest is sold to an NPC. Never recipe materials (anyone's quests), exchangeables, tokens, gear a member
-		// would wear, compound-set copies, keep or locked items.
+		// Stand: while idle at home the merchant opens its stand (16 trade slots) and lists only the item names in
+		// stand.list (owner's rule: nothing is sold unless the owner lists it; empty by default, so nothing is listed),
+		// at markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value. A
+		// listed copy must also be worth listing: value >= min_value, gear at +3 or more, a higher grade, or titled.
+		// The stand is closed before every walk (speed 10 while open).
+		// Bank housekeeping (only with sell_junk, off): when the bank's free slots drop below purge_below of its size,
+		// each merchant bank visit pulls up to purge_n of the least valuable items nobody needs, to sell. Never recipe
+		// materials (anyone's quests), exchangeables, tokens, gear a member would wear, compound-set copies, keep or
+		// locked items.
 		purge_below: 0.1, purge_n: 10,
 		// Merrit (Market Parcels): an open stand with a listing, in Mainland's square (x -240..240, y -120..144) or
 		// southern aisle (x -88..88, y 144..360), on pavement she can reach, held still for 2 minutes, gets one parcel
@@ -344,7 +345,8 @@ const CFG = {
 		merrit: { enabled: true, square: [-240, -120, 240, 144], aisle: [-88, 144, 88, 360], npc_gap: 40, stand_gap: 10,
 			stand_vgap: 15, step: 16, min_stay_ms: 150_000, urgent_free: 4, urgent_pots: 30 },
 		// v25.15: the stand lists only item names in `list` (owner: nothing is sold unless the owner lists it). Empty: the
-		// stand still opens (Merrit's parcels) and holds no bag slots. Before, any piece worth min_value, gear at +3 or
+		// stand opens but lists nothing and holds no bag slots — and Merrit gives no parcel (the server wants a listing:
+		// market_patron_runtime.js hasListing; a parcel is worth 1 Shell). Before, any piece worth min_value, gear at +3 or
 		// better, high-grade or titled went up at 3x value — 16 slots held (mace+7, frankypants...) with 7 bag slots free.
 		stand: { enabled: true, list: [], min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
 		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
@@ -368,7 +370,8 @@ const CFG = {
 		heal_at: 0.75,         // priests heal any member below 75% HP
 		heal_bonus: 2.5,       // safety allowance × 2.5 while a priest partner is near (its heals offset damage)
 		// The tank decides (v24.50): with a tank (CFG.gear_tank) in the party, only it starts a fight, and only once
-		// every online fighter is within engage_px of it. Nobody else touches a monster that has no target.
+		// every online fighter is within engage_px of it. Nobody else touches a monster that has no target — except
+		// (v25.20) the free-for-all: where the tank kills a type in one hit, at its camp, within ffa_pad of the box.
 		tank_first: true,
 		ffa_pad: 100, // v25.20: px around the camp box where the free-for-all applies (the tank one-shoots its type)
 		// v24.51: one party or nothing. Every member of `members` must be online and alive. If one is offline or dead,

@@ -1,5 +1,6 @@
 // =====================================================================
-// merchant/2_stand.js — merchant only (src/manifest.json): the stand, Merrit's parcels, what the merchant sells
+// merchant/2_stand.js — merchant only (src/manifest.json): the stand (it lists only what the owner names in
+// CFG.merchant.stand.list), Merrit's parcels (they need a listing), what the merchant sells (only with sell_junk)
 // =====================================================================
 // Fixed NPCs on Mainland (roamers — citizens, ones with a boundary or a loop — don't count)
 function fixed_npcs() {

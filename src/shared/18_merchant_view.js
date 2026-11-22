@@ -1,8 +1,8 @@
 // =====================================================================
 // Merchant (CFG.merchant). Not a party member: it never leads, fights or joins the game party. Fighters send it their
 // heartbeats; it sends "mhb" back (position, free slots, gold). It carries potions out to fighters running low or
-// short on bag space, collects their bankable/sellable items, casts mluck, and does the town work (sell, bank,
-// compound, upgrade projects, exchange) for everyone, so fighters rarely leave the pack.
+// short on bag space, collects their loot, casts mluck, and does the town work (bank, compounds, every upgrade project,
+// exchange; selling only what the owner lists) for everyone, so fighters rarely leave the camp.
 // =====================================================================
 const is_merchant = () => character.ctype === "merchant" && CFG.merchant?.name === character.name;
 // merchant_hb() / merchant_recent(): role functions (v25.11) — the fighters' in fighter/1_party.js; the merchant's say no

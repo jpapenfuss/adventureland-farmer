@@ -1,4 +1,4 @@
-# farmer.js refactor
+# farmer.js refactor (the design and its history)
 
 Why: on 2026-11-21 one evening produced a door loop, a spot ping-pong (76 changes of spot in an hour), followers
 stuck on a corner and a party walking past its targets. Each took several reports to find, because the rules
@@ -32,7 +32,7 @@ In the code as of v24.50:
   never joins an event by itself, has no keep-away steps, kiting or route refusal of its own, and the watchdog no
   longer sends it to town. What a follower still does by itself: heal, hit what already targets the party (closing
   in on it), stay beside the tank, loot, drink potions, wear its gear.
-- [x] v24.60–v24.63 (v24.62–v24.63: the second audit's findings): the camp is sticky (no periodic re-pick; hunts and quest farming off). The tank never goes on
+- [x] v24.60–v24.63 (v24.62–v24.63: the second audit's findings): the camp is sticky (no periodic re-pick; hunts and quest farming off — both back on since v24.88, owner). The tank never goes on
   without a member: no group-hold timeout, no join window or wait limit on town trips, no teleports. On a town trip
   the tank walks to town with the party behind it; a follower follows it in and starts its town work on arrival. A
   camp where every monster has levelled past the limit is rested at once.
@@ -41,7 +41,7 @@ In the code as of v24.50:
   measured camps by measurement, untried ones by estimate, past switch_margin; a measurement loses weight as the
   party grows. This replaces v24.60's "no re-pick" (the 2-minute re-pick it removed had moved the party 18 times an
   hour).
-- [~] v24.94–v25.12: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
+- [x] v24.94–v25.12: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
   farmer.js is their build. First cut: the merchant's supply runs, stand, Merrit, Ponty, bank purge and donations
   went to merchant.js; following, healing, the hand-off to the merchant, token buys, own projects and collecting
   went to fighter.js. v24.95–v24.98: the fighter's part of tick() (fighter_tick), camp choice and review, danger
@@ -60,17 +60,35 @@ In the code as of v24.50:
   v25.12: shared/19_hooks.js is gone — each default became the other role's version (fighter/8_merchant_parts.js,
   merchant/6_fighter_parts.js), so farmer.js runs exactly each role's own code; is_merchant() guards made redundant
   by that (facts_* in report(), stand_hold, bank_purge, collect_list, merchant_hb/merchant_does_it) are removed;
-  fund_pool, upgrade_steps, bank_cands are role functions.
-- [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.
+  fund_pool, upgrade_steps, bank_cands are role functions. Done: the remaining ~24 is_merchant() checks in shared/
+  are policy conditions inside code both roles run, left as they are.
+- [ ] Stage 4 (proposed, **not approved by the owner** — don't do it unasked): delete the guide, travel gear and
+  probes (all three are switched off in CFG); keep a camp on measured results only.
 
-Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the
-watchdog, convoy and group-hold code paths each steer on their own (step 4b).
+Still to bring under the tank: a follower still closes in on its target by itself (approach) and fight() can kite;
+the watchdog and the tank's group hold each steer on their own (step 4b).
+
+## Owner decisions since v25.13 (2026-11-22)
+
+- **Every push** goes on a branch with a pull request; a Claude Haiku review may approve the merge. The characters
+  are then restarted remotely (the game's MCP API) once GitHub serves the new version.
+- **The merchant runs every upgrade and compound** (v25.17), the fighters' own pieces too; projects aim only as
+  high as the run will go (v25.19). Nothing is sold unless the owner lists it: the stand lists only
+  `CFG.merchant.stand.list` (v25.15). With that list empty, Merrit gives no parcels (she needs a listing).
+- **Ponty** is checked every 10 min; head starts for upgrades and shiny copies are bought (v25.18).
+- **Quests** only for outputs that are an upgrade and not already owned (v25.15).
+- **Measured rates** count only time the party is all there and ready; learned rates were reset once (v25.16).
+- **Tank first, one exception** (v25.20): where the tank kills its targets in one hit, followers pick their own
+  random monsters of that type at its camp.
+- **Cave of Many Dreams** once a day (v25.22–v25.24), unverified until its first real run.
+- **Browser tabs**: keep_awake() (the game's performance_trick, v25.14); the status box under CODE is taller and
+  lined up with the log (v25.21–v25.23). Mainframe isn't used (CODE slots are limited to 64 KB).
 
 ## Rules that were simplified (owner's instruction, v24.46)
 
 - **Town:** together, a town trip is everyone's. One rule; the "could the rest keep farming" judgement is gone.
-- **Tank first:** with the tank within `tank_near`, nobody else touches a monster that has no target. No time
-  limit, no exceptions; enforced in `fire()`.
+- **Tank first:** nobody but the tank touches a monster that has no target, and the tank only with every member
+  within `engage_px`; enforced in `fire()` (`tank_first`). One exception since v25.20: the one-hit free-for-all.
 - **Hopeless monsters** (v24.44): never attacked; enforced in `fire()`.
 
 ## What the published bots do instead (read 2026-11-21)
