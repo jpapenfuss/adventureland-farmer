@@ -1131,7 +1131,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const P = "state.upg = { name: 'slimestaff', to: 7, for: 'Torlis', slot: 'mainhand', gain: 10, cost: 80000, own: true }";
 		vm.runInContext(P, ctx);
 		const line = vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx);
-		assert(/slimestaff .* — our own \(the merchant doesn't take it over\)$/.test(line || ""), `report marks an own project (${line})`);
+		assert(/slimestaff .* — our own \(while the merchant is away\)$/.test(line || ""), `report marks an own project (${line})`);
 		vm.runInContext(P.replace("own: true", "own: false"), ctx);
 		assert(!/our own/.test(vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx) || ""), "and not a shared one");
 		vm.runInContext("state.upg = null", ctx);
@@ -3522,6 +3522,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				assert(/"name":"mmg137"/.test(pk) && /"from_copy":0/.test(pk) && new RegExp(`"for":"${me}"`).test(pk), `the merchant picks the bank copy as a project for ${me} (${pk})`);
 				R("state.upg = pick_upgrade(); state.fetch_try = {}");
 				assert(R("bag_plan().fetch.some((f) => f.key === 'upgin:mmg137')"), "...and fetches that copy from the bank for it");
+				// the run fetches the bank copy before its first step (the bank step comes later in a town run); an unsold
+				// piece gone from the bank ends the project instead of pausing it a day
+				{
+					const tb = ctx.task_bank, ru = ctx.run_upgrade, calls = [];
+					ctx.task_bank = async (f) => { calls.push("bank:" + f.map((x) => x.key).join()); character.items[5] = { name: "mmg137", level: 0 }; return 1; };
+					ctx.run_upgrade = async (a) => { calls.push("upgrade:" + a.name + "@" + R("best_level_held('mmg137')")); character.items[5].level++; return 1; };
+					R("state.gear_skip = {}; sold_c.set('mmg137', false)");
+					await R("task_upgrade()");
+					assert(calls[0] === "bank:upgin:mmg137" && calls[1] === "upgrade:mmg137@0", `copy fetched from the bank first, then upgraded (${calls})`);
+					character.items[5] = null; calls.length = 0;
+					ctx.task_bank = async (f) => { calls.push("bank"); return 0; };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 0 }; state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(R("state.upg") === null && !R("skipped('upg:mmg137')") && calls.length === 1 && R("state.bank_gear.length") === 0, "a copy gone from the bank (unsold piece): project ended, not paused 24h");
+					ctx.task_bank = tb; ctx.run_upgrade = ru; R("sold_c.delete('mmg137')");
+				}
 				Object.assign(character, sv);
 				R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; spp_cache.clear()");
 			}

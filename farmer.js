@@ -2546,8 +2546,10 @@ const upg_step_cost = (name, top) => {
 	const lv = Math.max(0, top), g = Math.max(0, item_grade({ name, level: lv }));
 	return (G.items["scroll" + (g + 1)]?.g <= (CFG.upgrade_boost_max || 0) ? G.items["scroll" + (g + 1)].g : G.items["scroll" + g]?.g || 0) + (top < 0 ? G.items[name]?.g || 0 : 0);
 };
-// v25.17: the best level of a copy we own, in the bags or (last seen) in the bank, not a titled one; -1 if none
-const owned_level = (name) => Math.max(best_level_held(name), ...(state.bank_gear || []).filter((i) => i.name === name && !i.p).map((i) => i.level || 0), -1);
+// v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
+// (the project's bank fetch skips titled copies too); -1 if none
+const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.p).map((i) => i.level || 0),
+	...(state.bank_gear || []).filter((i) => i.name === name && !i.p).map((i) => i.level || 0));
 // Is it sold by an NPC we can find? (cached: G doesn't change)
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
@@ -2667,13 +2669,30 @@ function upgrade_due() {
 	if (merchant_awaits_funds()) return false; // v25.5: merchant/
 	return !!state.upg && !skipped("upg:" + state.upg.name) && best_level_held(state.upg.name) < state.upg.to;
 }
+// v25.17: the project's best copy lies in the bank (a piece we own: the bank step comes after this one in a town run,
+// and run_upgrade only looks in the bags) → fetch it first. Gone from the bank (bank_gear is last seen) and no NPC sells
+// one: the project ends, it isn't paused for a day on "input_missing". → false to stop this run
+async function upg_fetch_copy(P) {
+	const have = best_level_held(P.name);
+	const b = CFG.bank && (state.bank_gear || []).filter((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > have).sort((x, y) => (y.level || 0) - (x.level || 0))[0];
+	if (!b) return true;
+	try { await task_bank([{ name: P.name, level: b.level || 0, exact: true, key: `upgin:${P.name}` }]); }
+	catch (e) { if (TRANSIENT.has(why(e)) || why(e) === "bank_busy") { skip("upg:" + P.name, 600_000, "bank: " + why(e)); return false; } }
+	if (best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
+	state.bank_gear = (state.bank_gear || []).filter((i) => i !== b);
+	game_log(`upgrade ${P.name}: the copy isn't in the bank any more, and no NPC sells one — project ended`, C.dim);
+	state.upg = null; state.upg_pick_at = 0;
+	return false;
+}
 async function task_upgrade() {
 	let n = 0;
+	if (state.upg && !(await upg_fetch_copy(state.upg))) return 0;
 	for (let i = 0; i < upgrade_steps(); i++) { // role function (v25.11)
 		if (state.errand) state.errand_at = Date.now();
 		if (upg_drop_if_stale()) break; // v24.91: something better is worn now
 		const P = state.upg;
 		if (!P) break;
+		if (merchant_does_it()) { game_log(`upgrade project ${P.name} handed to the merchant`, C.dim); state.upg = null; break; } // v25.17: it came online
 		const top = best_level_held(P.name);
 		if (top >= P.to) {
 			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
@@ -2692,7 +2711,10 @@ async function task_upgrade() {
 		if (P.spent === undefined) P.spent = 0;
 		P.max = Math.max(P.max ?? -1, top); // v24.7: the highest level this project reached (a failure destroys the copy)
 		// (v24.85: against the expected cost with failures, not the cost if every step succeeds)
-		if (!P.weapon && P.spent > Math.max(P.cost || 0, upgrade_expected(P.name, P.to) - (P.own ? G.items[P.name]?.g || 0 : 0)) * CFG.upgrade_abort_x) {
+		// (v25.17: a project from our copy: the expected cost above that copy's level)
+		const est = P.from_copy !== undefined ? Math.max(P.cost || 0, upgrade_expected(P.name, P.to) - upgrade_expected(P.name, P.from_copy))
+			: Math.max(P.cost || 0, upgrade_expected(P.name, P.to) - (P.own ? G.items[P.name]?.g || 0 : 0));
+		if (!P.weapon && P.spent > est * CFG.upgrade_abort_x) {
 			upg_cap(P.name, Math.max(0, P.max));
 			skip("upg:" + P.name, 24 * 3600_000, "over budget");
 			game_log(`upgrade ${P.name}: failures pushed the cost past ${CFG.upgrade_abort_x}x the estimate; stopped${top >= 1 ? ` at +${top}` : ""}`, C.bad);
@@ -4275,7 +4297,7 @@ function report_facts() {
 	facts_stat(F, c);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
-		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${P.own ? " — our own (the merchant doesn't take it over)" : ""}${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "projects are the merchant's (ours too: it gets the copy)" : "no project") + upgrade_why()}`);
+		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${P.own ? " — our own (while the merchant is away)" : ""}${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "projects are the merchant's (ours too: it gets the copy)" : "no project") + upgrade_why()}`);
 	}
 	facts_elixir(F, c);
 	if (CFG.compound_auto) {
