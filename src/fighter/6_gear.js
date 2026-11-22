@@ -186,3 +186,9 @@ function stat_scroll_list() {
 function self_taker_ok() { return true; }
 // Gold a fighter keeps when it spends on its own projects
 function gold_keep() { return CFG.gold_reserve; }
+// Gold the fighters' accounts add to an upgrade project's budget: none (the merchant counts theirs)
+function fund_pool() { return 0; }
+// Upgrade steps per run
+function upgrade_steps() { return CFG.upgrade_steps_per_run; }
+// A bank piece: ours if it helps us, else the members' it would help (v24.5: a fighter keeps first claim)
+function bank_cands(own, theirs) { return own ? [[character.name, own]] : theirs(); }

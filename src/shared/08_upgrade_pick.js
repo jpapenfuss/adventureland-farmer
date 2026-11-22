@@ -18,7 +18,7 @@ function upgrade_target(name, high = false) {
 // (they send it on supply runs when a step needs it)
 function upgrade_gold() {
 	let g = character.gold - gold_keep(); // gold_keep(): role function (v25.11)
-	if (is_merchant()) for (const p of partners()) g += Math.max(0, (p.gold || 0) - CFG.merchant.fund_keep);
+	g += fund_pool(); // role function (v25.11): the merchant counts the fighters' gold above fund_keep
 	return Math.max(0, g);
 }
 // Gold for a +0 copy and the scrolls up to `to` (no failures counted)
@@ -102,7 +102,7 @@ function upgrade_why() {
 			.map(([i, w]) => [i, w, set_piece_plan(i.name, i.level || 0)]).filter(([, , pl]) => pl).sort((a, b) => b[2].gain - a[2].gain)[0];
 		out.push(own ? `ours next: ${own[0].name}+${own[0].level || 0} (${own[1]}) → +${own[2].to} (+${own[2].gain} pts)` : "nothing we own would win once upgraded");
 	}
-	if (is_merchant() || !merchant_does_it()) {
+	if (!merchant_does_it()) { // the merchant, or a fighter while it is away
 		const gold = Math.min(upgrade_gold(), gold_room()), budget = gold * CFG.upgrade_spend, takers = gear_takers().filter((m) => m.ctype !== "merchant"), rows = [];
 		for (const name in G.items) {
 			const def = G.items[name];
@@ -147,7 +147,7 @@ function upgrade_due() {
 	if (merchant_does_it()) {
 		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags
 		// (v24.67: except our own project on a token piece — the copy is ours, and the merchant can't buy one)
-		if (state.upg && !is_merchant() && !state.upg.own) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
+		if (state.upg && !state.upg.own) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
 		if (!state.upg?.own) return false;
 	}
 	const now = Date.now();
@@ -161,7 +161,7 @@ function upgrade_due() {
 }
 async function task_upgrade() {
 	let n = 0;
-	for (let i = 0; i < (is_merchant() ? CFG.merchant_upgrade_steps : CFG.upgrade_steps_per_run); i++) {
+	for (let i = 0; i < upgrade_steps(); i++) { // role function (v25.11)
 		if (state.errand) state.errand_at = Date.now();
 		if (upg_drop_if_stale()) break; // v24.91: something better is worn now
 		const P = state.upg;

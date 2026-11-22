@@ -25,11 +25,11 @@ of what it does is at the bottom.
 - `src/` — the bot's source, split by role. `manifest.json` lists the load order per role: `shared/` (every
   character, in numbered files by subject: config, infrastructure, fight model, history, combat, gear, travel gear,
   upgrade runs, upgrade choice, crafting, bags, quests, guide, town, recovery, persistence, report, party, the
-  fighters' view of the merchant, role hooks), then `fighter/` (loop, party, camp, combat, goals, town, gear, report)
-  or `merchant/` (loop, serve, stand, Ponty, bank, report), then `main.js` (death handling, the main loop, start-up).
-  `shared/19_hooks.js` holds defaults for the functions that live in one role's files, which that role's own
-  declaration replaces. A function both roles declare (a role function: `role_tick`, `flee_tick`, `fight_back`,
-  `gold_keep`, `merchant_hb`, …) is each role's own; `farmer.js` renames them and calls the running character's.
+  fighters' view of the merchant), then `fighter/` (loop, party, camp, combat, goals, town, gear, report, and its
+  answers to the merchant's functions) or `merchant/` (loop, serve, stand, Ponty, bank, report, and its answers to
+  the fighters' functions), then `main.js` (death handling, the main loop, start-up). A function either role's work
+  needs is declared by both (a role function); `farmer.js` renames the two and calls the running character's, so it
+  behaves as each character's own file set does.
 - `farmer.js` — GENERATED: every file in one (`node tools/build.js`; `--check` verifies it). Loaders v1/v2 and the
   tests run it. Edit `src/`, never `farmer.js`.
 - `loader.js` — the paste-once loader. v4 reads `src/manifest.json` at the newest commit and fetches only the

@@ -57,7 +57,7 @@ function town_due(relaxed = false) {
 		restock: !skipped("town:restock") && (pot_count("hp") < pot_min || pot_count("mp") < pot_min),
 		// fetches of our bank upgrades alone don't send us while the merchant is online: it fetches and delivers them
 		bank: !skipped("town:bank") && CFG.bank && ((short && plan.free + plan.sell.length < min_free && plan.bank.length > 0) ||
-			plan.fetch.some((f) => !(merchant_recent() && !is_merchant() && String(f.key || "").startsWith("gear:")))),
+			plan.fetch.some((f) => !(merchant_recent() && String(f.key || "").startsWith("gear:")))),
 		plan, min_free, pot_min, relaxed,
 	};
 	// merchant online: a fighter doesn't walk to town for guide steps alone more than once per guide_gap_ms; they're
@@ -94,7 +94,7 @@ async function town_body(due) {
 		};
 		let did = 0;
 		const town_t0 = Date.now();
-		if (!is_merchant() && collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
+		if (collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;

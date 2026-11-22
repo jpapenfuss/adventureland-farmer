@@ -1,7 +1,8 @@
 // =====================================================================
 // src/fighter/ — loaded by the fighters only (after shared/, before main.js; src/manifest.json). What only a fighter
 // does: follow the tank, heal, hand loot and gold to the merchant, its own token buys and upgrade projects, collecting
-// what the merchant holds for it. Defaults for the merchant are in shared/19_hooks.js.
+// what the merchant holds for it. Its answers to the merchant's functions are in
+// fighter/8_merchant_parts.js (role functions).
 // fighter/0_loop.js — fighters only (src/manifest.json): the fighter's part of tick() and the follower: what runs every tick, and the fighters' code messages
 // =====================================================================
 // Follower: stay with the leader, shoot its target (or whatever is hitting the party), heal

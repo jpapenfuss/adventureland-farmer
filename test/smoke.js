@@ -3656,7 +3656,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.parent.entities = {};
 		assert(R("ptown_join_tick()") === true && R("__runs.length") === 1 && R("state.ptown.joined === true && !state.ptown.pending"), "then we go");
 		assert(cms.some(([to, k, id, by]) => k === "ptown" && id === "Torlis:1" && by === "Torlis" && to.includes("Aspernari")), `we tell the others we're going (${JSON.stringify(cms)})`);
-		const hb_s = R("heartbeat.toString()");
+		const hb_s = R("heartbeat__fighter.toString()");
 		assert(/pt: state\.ptown\?\.joined \? \{ id: state\.ptown\.id, done: !!state\.ptown\.done \}/.test(hb_s), "our heartbeat carries the trip (pt)");
 		// an easy spot we could farm without them, nothing of our own due: we go all the same
 		R("state.ptown = null; state.pack = { mtype: 'easy138', map: 'main', boundary: [-100, -100, 100, 100] }");
@@ -4082,7 +4082,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const scm = ctx.send_cm, msgs = []; ctx.send_cm = (to, m) => (msgs.push(m), Promise.resolve());
 		const src_tick = R("tick.toString()");
 		assert(/if \(is_follower\(\)\) ptown_join_tick\(\); else town_check\(\);/.test(src_tick) && /if \(!is_follower\(\) && event_tick\(\)\)/.test(src_tick), "tick: a follower runs neither town_check nor event_tick");
-		assert(!/looming\(\)|keep_away\(|kite\(|route_danger\(/.test(R("follower_tick.toString()")), "follower_tick: no keep-away, no kiting, no route refusal of its own");
+		assert(!/looming\(\)|keep_away\(|kite\(|route_danger\(/.test(R("follower_tick__fighter.toString()")), "follower_tick: no keep-away, no kiting, no route refusal of its own");
 		// the follower's heartbeat carries its need; the tank acts on it
 		R("globalThis.__td148 = town_due; globalThis.__tr148 = town_run; globalThis.__n148 = 0; town_run = () => (++globalThis.__n148, true); state.partners = {}; state.errand = null; state.ptown = null; state.town_runs = []; smart_depth = 0");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 53, map: "main", x: 700, y: 1600, rip: false, esize: 2 });

@@ -121,12 +121,12 @@ function health_checks() {
 function report_facts() {
 	const out = [], F = (key, scope, text, quiet = false) => out.push({ key, scope, text, quiet });
 	const p = state.pack, d = state.directive, M_ = is_merchant(), now = Date.now();
-	const c = { p, d, now }; // v24.96: for the role sections (facts_* in fighter/ / merchant/)
+	const c = { p, d, now }; // v24.96: for the role sections (facts_*: role functions, v25.12 — each role's own; the other's adds nothing)
 	{ const W = health_checks(); F("checks", "self", W.length ? `checks: ⚠ ${W.join(" | ")}` : "checks: ok"); }
 	// what we're doing (fight target and reason merged into one line; say so when we're not there yet)
 	if (M_) F("doing", "self", `merchant: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);
 	else facts_doing(F, c);
-	if (!M_) facts_party(F, c);
+	facts_party(F, c);
 	{
 		const ev = event_live();
 		if (ev) F("event", "self", `event: ${ev} — ${event_here(ev) ? "at it" : "joining"}`);
@@ -169,10 +169,10 @@ function report_facts() {
 		const M = merchant_hb();
 		F("merchant", "party", `merchant ${CFG.merchant.name}: ${M ? `online, ${M.serving ? "serving " + M.serving : "in " + M.map}, ${M.esize} free, ${fmt_k(M.gold)} gold` : "offline (fighters do their own town runs)"}`);
 	}
-	if (!M_) facts_bosses(F, c);
+	facts_bosses(F, c);
 	{
 		// must-hold items and tokens in one line
-		const miss = hold_missing(), names = Object.keys(CFG.hold || {}).filter((n) => G.items[n]), tok = held_any("monstertoken"), b = !M_ && CFG.token_auto ? token_pick() : null;
+		const miss = hold_missing(), names = Object.keys(CFG.hold || {}).filter((n) => G.items[n]), tok = held_any("monstertoken"), b = CFG.token_auto ? token_pick() : null;
 		const parts = names.map((n) => {
 			if (!miss.includes(n)) return `${n} ✓`;
 			if (state.bank_seen[n] > 0) return `${n} missing — fetching from the bank`;
@@ -200,12 +200,12 @@ function report_facts() {
 	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
 	F("worn_json", "self", `worn JSON: ${JSON.stringify(Object.fromEntries(Object.entries(character.slots || {}).filter(([k, v]) => v && !/^trade/.test(k)).map(([k, v]) => [k, v.name + (v.level ? "+" + v.level : "") + (v.stat_type ? ":" + v.stat_type : "") + (v.p ? ":" + v.p : "")])))}`);
-	if (!M_) facts_stat(F, c);
+	facts_stat(F, c);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
 		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "shop projects are the merchant's" : "no project") + upgrade_why()}`);
 	}
-	if (!M_) facts_elixir(F, c);
+	facts_elixir(F, c);
 	if (CFG.compound_auto) {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
 		const cw = compound_why();
@@ -213,37 +213,37 @@ function report_facts() {
 			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : "") +
 			(cw.length ? ` | not compounded: ${cw.join("; ")}` : "") + (town_reason.compound ? ` | last: ${town_reason.compound}` : ""), !gs.length && !paused.length && !cw.length);
 	}
-	if (!M_) facts_probe(F, c);
-	if (!M_) facts_safety(F, c);
-	if (!M_) facts_guide_farm(F, c);
+	facts_probe(F, c);
+	facts_safety(F, c);
+	facts_guide_farm(F, c);
 	if (CFG.spend?.enabled) F("budget", "party", budget_text());
 	const golds = partners().filter((x) => Number.isFinite(x.gold));
 	if (golds.length && CFG.party.gold?.enabled) {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
 		F("gold", "party", `gold: us ${character.gold.toLocaleString()} / ${golds.map((x) => `${x.name} ${x.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((now - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > now ? `, next allowed in ${mins(next)}` : ""}`);
 	}
-	if (!M_) facts_dir_held(F, c);
-	if (!M_) facts_shared(F, c);
-	if (!M_) facts_goals(F, c);
+	facts_dir_held(F, c);
+	facts_shared(F, c);
+	facts_goals(F, c);
 	const h = character.s.monsterhunt;
 	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
-	if (!M_) facts_hunt(F, c);
+	facts_hunt(F, c);
 	const due = town_due();
 	const tc = town_causes();
 	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
 	F("trips", "self", `trips v${VERSION} (last ${tc.span}m): ${tc.n}${tc.n ? ` — triggered by ${tc.trig.map(([w, n]) => `${w} ${n}`).join(", ")}; work due on them: ${tc.by.map(([w, n]) => `${w} ${n}`).join(", ")}` : ""}` +
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
-	if (!M_) facts_owe(F, c);
+	facts_owe(F, c);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	// v24.50: is the party gathered (may the tank start a fight)?
-	if (!M_) facts_engage(F, c);
-	if (!M_) facts_camp_time(F, c);
+	facts_engage(F, c);
+	facts_camp_time(F, c);
 	// v24.48: who moved us in the last minute, in order, and how often two owners overlapped since load
 	if (mv.log.length) F("moves", "self", `movement (1 min): ${mv.log.slice(-10).map((m) => `${m.who} ${m.kind}${m.n > 1 ? " x" + m.n : ""}`).join(" → ")} | clashes since load: ${mv.clash}`);
 	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out
-	if (!M_) facts_picks(F, c);
+	facts_picks(F, c);
 	// v24.37: why the monsters in view are or aren't targets (the spot's type): attackable, or skipped and why
-	if (!M_) facts_targets(F, c);
+	facts_targets(F, c);
 	// v24.28: party town trips — the one on now, else the last (1h)
 	{
 		const P = state.ptown, L = state.ptown_last;
@@ -256,7 +256,7 @@ function report_facts() {
 		const st = r.kind === "farm" ? "farm row" : !CFG.gear_actions.includes(r.kind) ? "not automated" : skipped(r.id) ? `paused ${mins(state.gear_skip[r.id])}: ${skip_why[r.id] || "reason not recorded"}` : r.affordable === false ? "unaffordable" : "next";
 		F("guide:" + r.id, "self", `guide ${r.id}: ${st}`, r.kind === "farm" || !CFG.gear_actions.includes(r.kind));
 	}
-	if (!M_) facts_quests(F, c);
+	facts_quests(F, c);
 	const plan = bag_plan(), kept = {}, why_k = {}, fetched_n = {}, nd = needed_slots(), cm = compound_slots(nd);
 	character.items.forEach((i, k) => {
 		if (!i) return;

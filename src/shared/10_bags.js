@@ -18,7 +18,7 @@ const purge_key = (it) => `${it.name}:${it.level || 0}${it.p ? ":" + it.p : ""}$
 function bag_class(item, needed = needed_slots(), held_cmp) {
 	if (!item) return "empty";
 	if ((held_cmp || compound_slots(needed)).has(character.items.indexOf(item))) return "keep"; // waiting to be compounded
-	if (is_merchant() && stand_hold().has(character.items.indexOf(item))) return "keep"; // stock for the stand
+	if (stand_hold().has(character.items.indexOf(item))) return "keep"; // stock for the stand
 	const def = G.items[item.name];
 	if (sell_plain_item(item) && !needed.has(character.items.indexOf(item)) && !CFG.keep.includes(item.name)) return "sell"; // before "fetched within the hour → keep"
 	if (item.l || item.b || !def || CFG.keep.includes(item.name) || BAG_TYPES.has(def.type) ||
@@ -37,7 +37,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 function keep_reason(item, k, needed, cmp) {
 	const def = G.items[item.name];
 	if (cmp.has(k)) return "compound";
-	if (is_merchant() && stand_hold().has(k)) return "stand";
+	if (stand_hold().has(k)) return "stand";
 	if (item.l || item.b) return "locked";
 	if (!def) return "unknown";
 	if (CFG.keep.includes(item.name)) return "keep-list";
@@ -192,7 +192,7 @@ async function task_bank(fetch_names) {
 	// v24.22: one character of an account in the bank at a time (server: "X is in the bank"); walking at its door with
 	// another inside retried the door until the walk timed out, flooding the log
 	if (character.map !== "bank") {
-		const inside = [...partners_any(), ...(is_merchant() ? [] : [merchant_hb()].filter(Boolean))].filter((p) => fresh(p) && /^bank/.test(p.map || "")).map((p) => p.name);
+		const inside = [...partners_any(), ...[merchant_hb()].filter(Boolean)].filter((p) => fresh(p) && /^bank/.test(p.map || "")).map((p) => p.name);
 		if (inside.length) { town_reason.bank = `${inside.join(", ")} in the bank: waiting`; throw { reason: "bank_busy" }; }
 	}
 	try { if (character.map !== "bank") await go({ map: "bank" }); } catch (e) { town_reason.bank = "can't reach the bank: " + why(e); throw e; }
@@ -269,7 +269,7 @@ async function task_bank(fetch_names) {
 		left = left.filter((w) => !there.includes(w) || still.includes(w));
 	}
 	for (const w of left) game_log(`bank: ${w.name || w} not found in the bank; not trying again for 2h`, C.dim);
-	if (is_merchant()) got += await bank_purge();
+	got += await bank_purge(); // role function: 0 on a fighter
 	remember_bank();
 	game_log(`Bank: stored ${stored}, retrieved ${got}; ${character.esize} slots free`, C.ok);
 	return stored + got;

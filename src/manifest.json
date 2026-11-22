@@ -1,5 +1,5 @@
 {
- "_comment": "Load order per role (tools/build.js, loader v4). shared/ is every character's; then the role's file; then main.js. A later function declaration replaces an earlier one: role files replace the defaults in shared/15_hooks.js.",
+ "_comment": "Load order per role (tools/build.js, loader v4). shared/ is every character's; then the role's files; then main.js. A function both roles declare (a role function) is each role's own; farmer.js (every role) dispatches it by role.",
  "shared": [
   "shared/00_config.js",
   "shared/01_infra.js",
@@ -19,8 +19,7 @@
   "shared/15_persist.js",
   "shared/16_report.js",
   "shared/17_party.js",
-  "shared/18_merchant_view.js",
-  "shared/19_hooks.js"
+  "shared/18_merchant_view.js"
  ],
  "fighter": [
   "fighter/0_loop.js",
@@ -30,7 +29,8 @@
   "fighter/4_goals.js",
   "fighter/5_town.js",
   "fighter/6_gear.js",
-  "fighter/7_report.js"
+  "fighter/7_report.js",
+  "fighter/8_merchant_parts.js"
  ],
  "merchant": [
   "merchant/0_loop.js",
@@ -38,7 +38,8 @@
   "merchant/2_stand.js",
   "merchant/3_ponty.js",
   "merchant/4_bank.js",
-  "merchant/5_report.js"
+  "merchant/5_report.js",
+  "merchant/6_fighter_parts.js"
  ],
  "last": [
   "main.js"

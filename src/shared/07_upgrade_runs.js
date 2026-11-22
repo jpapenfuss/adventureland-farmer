@@ -187,7 +187,7 @@ function compound_why() {
 		const lv = it.level || 0;
 		const why_ = skipped(key) ? `paused ${mins(state.gear_skip[key])} (${skip_why[key] || "?"})` : lv >= cmp_top(it.name) ? `+${lv} is its ceiling here (max +${CFG.compound_max_level}, or the odds were under ${Math.round(CFG.compound_min_chance * 100)}%)`
 			: CFG.keep.includes(it.name) ? "on the keep list" : L.some(([i]) => i.l || i.b) ? "locked or bound copies" : L.some(([i]) => i.p) ? "titled copies" : L.some(([, k]) => needed.has(k)) ? "copies held for a quest or project"
-			: !CFG.compound_auto ? "compound_auto is off" : !is_merchant() && merchant_does_it() ? "the merchant compounds" : "?";
+			: !CFG.compound_auto ? "compound_auto is off" : merchant_does_it() ? "the merchant compounds" : "?";
 		out.push(`${it.name}+${lv} x${L.length}: ${why_}`);
 	}
 	return out;
@@ -204,7 +204,7 @@ const cmp_top = (name) => {
 let cmp_cache = null; // { key, at, list }: keyed by bags + bank snapshot + pauses; bag_class asks once per item
 function compound_groups(needed) {
 	// while the merchant is online it compounds for everyone (shared bank); fighters hand it their spares instead
-	if (!CFG.compound_auto || (!is_merchant() && merchant_does_it())) return [];
+	if (!CFG.compound_auto || merchant_does_it()) return [];
 	const key = character.items.map((i) => (i ? `${i.name}${i.level || 0}${i.l ? "l" : ""}` : "")).join() + "|" +
 		(state.bank_gear || []).length + "|" + Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k)).join();
 	if (cmp_cache && cmp_cache.key === key && Date.now() - cmp_cache.at < 2000) return cmp_cache.list;

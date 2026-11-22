@@ -11,7 +11,7 @@ function craft_pick() {
 	return v;
 }
 function craft_pick_raw() {
-	if (!CFG.craft_power || (!is_merchant() && merchant_does_it())) return null;
+	if (!CFG.craft_power || merchant_does_it()) return null;
 	if (!quest_inputs) { quest_inputs = new Set(); for (const id in G.craft || {}) if (G.craft[id].quest) for (const [, n] of G.craft[id].items || []) quest_inputs.add(n); }
 	const gold = upgrade_gold(), takers = gear_takers().filter((m) => m.ctype !== "merchant");
 	let best = null;

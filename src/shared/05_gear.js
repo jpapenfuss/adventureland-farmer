@@ -253,12 +253,12 @@ function bank_upgrades() {
 	const g = my_gear(), offers = [];
 	// the merchant fetches fighters' upgrades and delivers them; with no merchant online, fighters fetch each other's
 	// (share_gear hands them over when near)
-	const takers = is_merchant() || !merchant_recent() ? gear_takers().slice(1) : [];
+	const takers = !merchant_recent() ? gear_takers().slice(1) : [];
 	(state.bank_gear || []).forEach((it, i) => {
 		const own = !equip_paused(it) && gear_gain(it, character.ctype, g);
 		const theirs = () => takers.map((m) => [m.name, gear_gain(it, m.ctype, m.g)]).filter(([, r]) => r);
 		// v24.5: a fighter keeps first claim; the merchant takes a piece only if no fighter would
-		const cands = is_merchant() ? (theirs().length ? theirs() : own && CFG.merchant.wear_gear ? [[character.name, own]] : []) : own ? [[character.name, own]] : theirs();
+		const cands = bank_cands(own, theirs); // role function (v25.11)
 		for (const [who, r] of cands) offers.push({ ms: `${who}:${r.slot}`, i, gain: r.gain, it });
 	});
 	// v23.2: one piece per (member, slot); v24.5: and each bank copy to one (member, slot), biggest gains first — a
@@ -343,7 +343,7 @@ async function share_gear() {
 	const near = new Set(partners_near(CFG.gear_share_range).map((p) => p.name));
 	const takers = gear_takers().slice(1).filter((m) => near.has(m.name) && (m.esize ?? 1) > 0), now = Date.now();
 	// v20.0: the merchant (near, from its heartbeat) takes what no fighter would wear
-	const M = !is_merchant() && merchant_hb();
+	const M = merchant_hb();
 	const Mt = M && M.gear?.w && (M.esize ?? 0) > 2 && M.map === character.map && Math.hypot((parent.entities?.[M.name] || M).x - character.x, (parent.entities?.[M.name] || M).y - character.y) <= CFG.gear_share_range
 		? { name: M.name, ctype: "merchant", g: M.gear } : null;
 	if (!takers.length && !Mt) return false;

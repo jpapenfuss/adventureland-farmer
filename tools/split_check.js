@@ -1,6 +1,7 @@
 // Static check of the src/ split: a role's file set (common + its role + main) must not use a name that only the
-// other role's file declares, unless shared/ has a default for it (19_hooks.js); and no name may be declared in
-// two files except those defaults. Exit 1 with the list otherwise. Used by test/roles.js.
+// other role's files declare (the role declares its own version instead: a role function, which tools/build.js
+// dispatches in farmer.js); and no name may be declared twice except a role function (one in each role, both
+// function declarations, none in shared/ or main). Exit 1 with the list otherwise. Used by test/roles.js.
 const fs = require("fs"), path = require("path");
 const SRC = path.join(__dirname, "..", "src");
 const DECL = /^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)|^(?:const|let|var|class)\s+([A-Za-z_$][\w$]*)/;
@@ -25,20 +26,18 @@ function check() {
 	const files = Object.keys(G), B = Object.fromEntries(files.map((g) => [g, G[g].flatMap((f) => blocks(f).map((b) => ({ ...b, file: f })))]));
 	const names = (f) => new Set(B[f].map((b) => b.name));
 	const errs = [];
-	const defaults = new Set(B["shared"].filter((b) => b.fn).map((b) => b.name));
-	// declared twice: only a common default replaced by a role file's function, or a role function (a function both
-	// roles declare and shared doesn't: tools/build.js dispatches it by role)
+	// declared twice: only a role function (both roles declare it as a function; tools/build.js dispatches it by role)
 	const seen = {}, fn_in = (g, n) => B[g].some((b) => b.name === n && b.fn);
 	for (const f of files) for (const b of B[f]) {
 		const role_fn = f === "merchant" && seen[b.name] === "fighter" && b.fn && fn_in("fighter", b.name);
-		if (seen[b.name] && !role_fn && !(seen[b.name] === "shared" && defaults.has(b.name) && b.fn && (f === "fighter" || f === "merchant")))
+		if (seen[b.name] && !role_fn)
 			errs.push(`${b.name} declared in ${seen[b.name]} and ${b.file}:${b.line}`);
 		seen[b.name] = seen[b.name] || f;
 	}
 	for (const [role, other] of [["fighter", "merchant"], ["merchant", "fighter"]]) {
 		const have = new Set(["shared", role, "last"].flatMap((f) => [...names(f)])), theirs = names(other);
 		for (const f of ["shared", role, "last"]) for (const b of B[f]) for (const r of b.refs)
-			if (theirs.has(r) && !have.has(r)) errs.push(`${b.file}:${b.line} ${b.name} uses ${r}, which only the ${other} files declare (add a default to shared/19_hooks.js)`);
+			if (theirs.has(r) && !have.has(r)) errs.push(`${b.file}:${b.line} ${b.name} uses ${r}, which only the ${other} files declare (declare the ${role}'s own version: fighter/8_merchant_parts.js or merchant/6_fighter_parts.js)`);
 	}
 	// a statement that runs at load (setInterval, character.on...) in a role file must use something that file declares:
 	// one that only uses shared names belongs in shared/ (v25.1: the xp/gold sampling had been carried to fighter.js)

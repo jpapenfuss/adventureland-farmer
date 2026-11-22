@@ -1,7 +1,7 @@
 // =====================================================================
 // src/merchant/ — loaded by the merchant only (after shared/, before main.js; src/manifest.json). What only the merchant
-// does: supply runs, the stand and Merrit's parcels, Ponty, bank housekeeping, donations. Defaults for the fighters are
-// in shared/19_hooks.js.
+// does: supply runs, the stand and Merrit's parcels, Ponty, bank housekeeping, donations. Its answers to the fighters'
+// functions are in merchant/6_fighter_parts.js (role functions).
 // merchant/0_loop.js — merchant only (src/manifest.json): the merchant's part of tick(), its heartbeat, the flee to town, fight-back, donations
 // =====================================================================
 function merchant_beat() {
@@ -142,3 +142,8 @@ function flee_tick() {
 	return true;
 }
 function role_tick() { merchant_tick(); loot_chests(); return 250; }
+// Gold for an upgrade project: the fighters' gold above fund_keep counts too (they send it on supply runs)
+function fund_pool() { return partners().reduce((g, p) => g + Math.max(0, (p.gold || 0) - CFG.merchant.fund_keep), 0); }
+function upgrade_steps() { return CFG.merchant_upgrade_steps; }
+// A bank piece: the members' it would help; ours only if none would and merchant.wear_gear (v24.5)
+function bank_cands(own, theirs) { const t = theirs(); return t.length ? t : own && CFG.merchant.wear_gear ? [[character.name, own]] : []; }
