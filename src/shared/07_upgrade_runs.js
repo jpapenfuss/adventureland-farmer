@@ -120,7 +120,9 @@ async function run_upgrade(a, row) {
 	await wait_budget(1, RESERVE.errand);
 	let preview = await T(upgrade(k, find_slot(scroll, 0), null, true)); // last arg true = preview only: {chance}
 	let floor = chance_floor(a.name, CFG.min_upgrade_chance, k, from);
-	if (scroll === "scroll2") floor = Math.max(floor, CFG.upgrade_high.min_chance); // expensive copies: never a coin flip
+	// expensive copies: never a coin flip — a scroll2 step, and (v25.32) any step past upgrade_max_level (+8 on scroll1
+	// was 15%: with the 10% floors a +7 weapon became a +8 project)
+	if (scroll === "scroll2" || from >= CFG.upgrade_max_level) floor = Math.max(floor, CFG.upgrade_high.min_chance);
 	let off = null;
 	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
@@ -173,8 +175,20 @@ async function run_compound(a, row, floor) {
 // Own compounding (CFG.compound_auto). A group = one item name at one level with >= 3 spare copies across bags and
 // bank. Bank copies are fetched on the next bank visit (bag_plan) and kept in the bags until compounded.
 const compound_key = (name, level) => `cmp:${name}:${level}`;
-// v25.32: the bank nearly full (CFG.compound_bank_full): odds no longer hold compounds back
-const bank_tight = () => { const bf = state.bank_free; return !!CFG.compound_bank_full && !!bf && bf.total > 0 && bf.free < bf.total * (CFG.merchant?.purge_below || 0.1); };
+// v25.32: the bank nearly full (CFG.compound_bank_full): odds no longer hold compounds back. On under purge_below free,
+// off again at 1.5x that (fetching the sets frees slots: without the margin they'd go back to the bank uncompounded),
+// and only on a count seen in the last 6 h (it's saved: a stale one after a restart or a manual clear-out)
+let bank_tight_on = false;
+const bank_tight = () => {
+	const bf = state.bank_free, b = CFG.merchant?.purge_below || 0.1;
+	if (!CFG.compound_bank_full || !bf || !(bf.total > 0) || Date.now() - (bf.at || 0) > 6 * 3600_000) return (bank_tight_on = false);
+	if (bf.free < bf.total * b) bank_tight_on = true;
+	else if (bf.free >= bf.total * b * 1.5) bank_tight_on = false;
+	return bank_tight_on;
+};
+// ...and only for sets combined with the cheap scroll (cscroll0) and with no titled copy: a cscroll1 is 240k a roll, a
+// cscroll2 9.2M
+const tight_ok = (g, ks) => bank_tight() && item_grade({ name: g.name, level: g.level }) <= 0 && !ks.some((k) => character.items[k]?.p);
 const odds_pause = (key) => /low_chance/.test(skip_why[key] || "");
 function compound_spare(it, k, needed) {
 	const def = it && G.items[it.name];
@@ -265,7 +279,7 @@ async function task_compound() {
 		if (!g) break;
 		// rebuyable odds only when the three copies are cheap: a +L copy embodies 3^L base copies (v23.1)
 		const wanted = gear_takers().filter((m) => m.ctype !== "merchant").some((m) => gear_gain({ name: g.name, level: g.level + 1 }, m.ctype, m.g));
-		const floor = bank_tight() ? 0 : Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
+		const floor = tight_ok(g, g.bags.slice(0, 3)) ? 0 : Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
 			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance, wanted ? CFG.compound_min_chance_wanted : 1);
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
 		if (!gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }

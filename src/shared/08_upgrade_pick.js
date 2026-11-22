@@ -63,8 +63,8 @@ function upg_reach(name) {
 	let L = 0;
 	for (let l = 1; l <= 12; l++) {
 		let p = upg_odds(name, l);
-		// a scroll2 step: run_upgrade raises the floor to upgrade_high.min_chance
-		const floor = upgrade_scroll(name, l - 1) === "scroll2" ? Math.max(floor0, CFG.upgrade_high?.min_chance || 0) : floor0;
+		// a scroll2 step, or (v25.32) one past upgrade_max_level: run_upgrade raises the floor to upgrade_high.min_chance
+		const floor = upgrade_scroll(name, l - 1) === "scroll2" || l > CFG.upgrade_max_level ? Math.max(floor0, CFG.upgrade_high?.min_chance || 0) : floor0;
 		const hc = G.items["scroll" + (Math.max(0, item_grade({ name, level: l - 1 })) + 1)]?.g;
 		if (!shop && hc && hc <= (CFG.upgrade_boost_max || 0)) p = Math.min(1, p * 1.2 + 0.01);
 		if (p < floor) break;

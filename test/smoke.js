@@ -1084,10 +1084,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("compound_groups().some((g) => g.key === 'cmp:ringx:1')", ctx), "bank nearly full: the paused, capped set is a group again");
 		await vm.runInContext("task_compound()", ctx);
 		assert(real.length === 1, `bank nearly full: the 40% set is combined (${JSON.stringify(real)})`);
-		vm.runInContext("CFG.compound_bank_full = false; state.gear_skip = {}; cmp_cache = null", ctx);
+		vm.runInContext("CFG.compound_bank_full = false; state.gear_skip = {}; state.cmp_caps = {}; cmp_cache = null", ctx);
 		character.items[7] = { name: "ringx", level: 1 }; character.items[8] = { name: "ringx", level: 1 }; character.items[9] = { name: "ringx", level: 1 };
 		await vm.runInContext("task_compound()", ctx);
-		assert(real.length === 1, "compound_bank_full off: odds hold it back as before");
+		assert(real.length === 1 && vm.runInContext("compound_groups().length === 0 || skipped('cmp:ringx:1')", ctx) && vm.runInContext("skip_why['cmp:ringx:1']", ctx)?.includes("low_chance"), `compound_bank_full off: odds hold it back as before (${vm.runInContext("skip_why['cmp:ringx:1']", ctx)})`);
+		// a stale count (over 6 h old) or a recovered bank (15% free) isn't "nearly full"
+		vm.runInContext("CFG.compound_bank_full = true; state.bank_free = { free: 2, total: 248, at: Date.now() - 7 * 3600e3 }", ctx);
+		assert(!vm.runInContext("bank_tight()", ctx), "a bank count over 6 h old isn't trusted");
+		vm.runInContext("state.bank_free = { free: 2, total: 248, at: Date.now() }; bank_tight(); state.bank_free.free = 30", ctx);
+		assert(vm.runInContext("bank_tight()", ctx), "30 free after fetching the sets (12%): still nearly full (no flapping)");
+		vm.runInContext("state.bank_free.free = 40", ctx);
+		assert(!vm.runInContext("bank_tight()", ctx), "40 free (16%): no longer");
 		vm.runInContext("CFG.compound_bank_full = true; state.bank_free = null; state.cmp_caps = {}", ctx);
 	}
 	character.slots = {}; character.items = Array(42).fill(null);
@@ -3202,8 +3209,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				// v25.32 (owner): the shipped floors (10%) — one copy, no spare: the planner aims as high as scroll0/1 go
 				// (+7; which level wins is then the expected-cost test), and the run takes a 70% step on the only copy
 				R("character.items[10] = null; state.bank_gear = []; globalThis.__fl = [CFG.min_upgrade_chance, CFG.min_chance_spare, CFG.min_chance_rebuyable]; CFG.min_upgrade_chance = __floors0.u; CFG.min_chance_spare = __floors0.s; CFG.min_chance_rebuyable = __floors0.r");
-				assert(R("__floors0.u") === 0.1 && R("upg_reach('xs138')") >= 7, `shipped floors: one copy reaches +${R("upg_reach('xs138')")} (was +4)`);
-				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === 0.1, "shipped floors: a 70% step on the only copy is taken (floor 10%)");
+				assert(R("__floors0.u") === 0.1 && R("upg_reach('xs138')") === 7, `shipped floors: one copy reaches +7, no further — a step past +7 needs upgrade_high's floor (${R("upg_reach('xs138')")}; was +4)`);
+				{ // the run itself: a 70% preview on the only copy goes ahead; a 15% one past +7 doesn't
+					const up0 = ctx.upgrade, rolls = []; let pv = 0.7;
+					ctx.upgrade = (k, sk, off, calc) => calc ? Promise.resolve({ chance: pv }) : (rolls.push(k), Promise.resolve({ success: true }));
+					R("character.items[11] = { name: 'computer' }; character.items[12] = { name: 'scroll1', q: 5 }; character.items[13] = { name: 'scroll0', q: 5 }");
+					const r1 = await R("run_upgrade({ name: 'xs138', level: 3 })").then(() => "ok", (e) => e.reason);
+					assert(r1 === "ok" && rolls.length === 1, `shipped floors: a 70% step on the only copy is taken (${r1}, ${rolls.length} roll)`);
+					R("character.items[9] = { name: 'xs138', level: 7 }"); pv = 0.15;
+					const r2 = await R("run_upgrade({ name: 'xs138', level: 7 })").then(() => "ok", (e) => e.reason);
+					assert(r2 === "low_chance" && rolls.length === 1, `shipped floors: +7 → +8 at 15% is refused (${r2})`);
+					R("character.items[11] = character.items[12] = character.items[13] = null; character.items[9] = { name: 'xs138', level: 3 }"); ctx.upgrade = up0;
+				}
 				R("[CFG.min_upgrade_chance, CFG.min_chance_spare, CFG.min_chance_rebuyable] = __fl");
 				R("character.items[9] = null; character.items[10] = null; state.bank_gear = []; sold_c.delete('xs138')"); delete ctx.G.items.xs138;
 				if (s1) ctx.G.items.scroll1 = s1; else delete ctx.G.items.scroll1;

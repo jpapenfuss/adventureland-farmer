@@ -1,4 +1,4 @@
-const VERSION = "25.32"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.33"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -156,11 +156,11 @@ const CFG = {
 	// v24.82 (owner: lower odds have to be accepted for meaningful upgrades): a shop piece's target level is the one
 	// where gain x upgrade_gold_per_pt most exceeds its EXPECTED cost — the copy and scrolls, counting the copies lost
 	// to failed steps at the server's base odds (+4 70%, +5 60%, +6 40%, +7 25%). A wand: +5 ≈ 136k, +6 ≈ 340k,
-	// +7 ≈ 1.4M. Steps on shop pieces are then taken down to min_chance_rebuyable (20%).
+	// +7 ≈ 1.4M. Steps are then taken down to the floors below (10% since v25.32; past +7, upgrade_high.min_chance).
 	upgrade_gold_per_pt: 40_000,
 	// v24.86 (owner: weapon upgrades are sorely needed): a shop weapon a fighter would hold is taken to +weapon_to with
 	// no budget — no gold-per-point test, no spending cap, no give-up after failures — and weapons come before every
-	// other project. Steps still need the server's odds over min_chance_rebuyable (+7 is 25%).
+	// other project. Steps still need the server's odds over min_chance_rebuyable (10%; +7 is 25%).
 	upgrade_weapon: { enabled: true, to: 7 },
 	upgrade_spend: 0.2,        // a project may cost at most 20% of the gold above gold_reserve (estimate without failures)
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
@@ -351,6 +351,15 @@ const CFG = {
 		// materials (anyone's quests), exchangeables, tokens, gear a member would wear, compound-set copies, keep or
 		// locked items.
 		purge_below: 0.1, purge_n: 10,
+		// v25.33 (owner): gear the party has no use for, and duplicates past what it could use, are sold to an NPC
+		// while the bank is nearly full (purge_below) — sell_junk stays off for everything else (materials, stacks).
+		// Per item name: useful (a fighter would wear it over what it wears, at some level up to +7 or the best copy
+		// held) → keep the best `ring_earring` copies of a ring or earring (two slots x three fighters) or `other` of
+		// any other piece, plus `failure_stock` more when no NPC sells it (an upgrade failure destroys the copy; an
+		// NPC-sold one is rebought); not useful → keep none. Never sold: titled, locked or bound copies, keep-list
+		// items, exchangeables, recipe and quest inputs, compound-set copies, anything a fighter would wear now, and
+		// the current upgrade project's piece. Up to purge_n copies per bank visit, each sale logged.
+		gear_purge: { enabled: true, ring_earring: 6, other: 3, failure_stock: 3 },
 		// Merrit (Market Parcels): an open stand with a listing, in Mainland's square (x -240..240, y -120..144) or
 		// southern aisle (x -88..88, y 144..360), on pavement she can reach, held still for 2 minutes, gets one parcel
 		// per account per hour when she walks by. Spacing: > npc_gap px from fixed NPCs, > stand_gap px from other
