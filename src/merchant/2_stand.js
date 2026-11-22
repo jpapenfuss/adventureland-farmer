@@ -137,13 +137,29 @@ async function stand_tick() {
 			await T(open_stand(k), 3000).catch(() => {});
 			return;
 		}
-		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, or taken off the list) comes down
-		for (const slot in state.stand) {
-			if (state.stand[slot].decoy) continue; // v25.26: Merrit's listing stays up
-			const L_ = state.stand[slot];
-			if ((S_.list || []).includes(L_.name)) continue;
-			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
-			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried next tick
+		// v25.30: the trade slots themselves are the truth, not our record of them. A listing we have no record of (the
+		// record was lost; 16 old listings sat up untracked, so nothing took them down and Merrit's decoy had no slot):
+		// the decoy (its name at its price) is adopted; an item on the owner's list is adopted at its price; anything
+		// else comes down below.
+		const D0 = S_.decoy;
+		for (const slot of TRADE_SLOTS) {
+			const cur = sl[slot];
+			if (!cur || state.stand[slot] || cur.b || cur.giveaway !== undefined) continue; // (buy orders, giveaways: the owner's)
+			const dec = !!D0?.name && cur.name === D0.name && cur.price === D0.price;
+			if (!dec && !(S_.list || []).includes(cur.name)) continue;
+			const v = dec ? D0.price : unit_value(cur);
+			state.stand[slot] = { name: cur.name, level: cur.level || 0, q: cur.q || 1, price: cur.price, value: v, at: now, per_unit: true, ...(dec ? { decoy: true } : {}) };
+		}
+		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, taken off the list, or untracked)
+		// comes down — one per call; a refusal (or full bags) pauses take-downs 2 min, the rest of the stand carries on
+		for (const slot of TRADE_SLOTS) {
+			const L_ = state.stand[slot], cur = sl[slot];
+			if (L_?.decoy || !cur || cur.b || cur.giveaway !== undefined) continue; // v25.26: Merrit's listing stays up
+			if ((S_.list || []).includes(cur.name) || skipped("stand:down")) continue;
+			if (character.esize <= 0) { skip("stand:down", 120_000, "bags full"); break; }
+			await T(unequip(slot), 5000).then(() => game_log(`stand: took ${cur.name}+${cur.level || 0} down — not on the owner's stand list`, C.dim))
+				.catch((e) => { skip("stand:down", 120_000, why(e)); game_log(`stand: taking ${cur.name} down: ${why(e)} (again in 2 min)`, C.dim); });
+			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried after the pause
 			return;
 		}
 		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand
@@ -158,6 +174,7 @@ async function stand_tick() {
 		for (const slot in state.stand) {
 			const L_ = state.stand[slot];
 			if (L_.decoy) continue; // v25.26: Merrit's listing keeps its price
+			if (!(S_.list || []).includes(L_.name)) continue; // v25.30: not the owner's: it comes down, never re-listed cheaper
 			// v24.5: the server's price is per unit (a buyer pays price x q); stacks were listed at q times their value.
 			// A stack listed before (no per_unit) is re-listed at once at the per-unit price.
 			const old = L_.q > 1 && !L_.per_unit;
