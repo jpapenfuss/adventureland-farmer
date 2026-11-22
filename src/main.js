@@ -79,6 +79,19 @@ function tick() {
 
 setInterval(() => { if (spent() <= BUDGET.soft) sustain(); }, 250); // potions/regen checked 4x a second
 setInterval(gap_tick, 250);
+// v25.14: keep the browser from throttling a background tab (Safari's sleeping tabs froze the party at 4:11 AM: no
+// heartbeats, so the tank waited "in town" for members standing next to it). The game's performance_trick() plays a
+// silent looping sound; a second play() would stack another copy, so it is started once and replayed only if it stopped.
+// Browsers may block sound until the tab has been clicked once after a load.
+function keep_awake() {
+	try {
+		const snd = parent.sounds?.empty;
+		if (!snd) { if (typeof performance_trick === "function") performance_trick(); }
+		else if (typeof snd.playing === "function" && !snd.playing()) snd.play();
+	} catch (e) {}
+}
+keep_awake();
+setInterval(keep_awake, 60_000);
 tick();
 
 // =====================================================================

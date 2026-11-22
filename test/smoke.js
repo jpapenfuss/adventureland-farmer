@@ -4111,6 +4111,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_cm = scm;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0, esize: 30 });
 	}
+	// v25.14: keep_awake starts the game's silent loop once, replays it only when it stopped (no stacked copies)
+	{
+		let started = 0, plays = 0, on = false;
+		ctx.performance_trick = () => { started++; on = true; ctx.parent.sounds = { empty: { playing: () => on, play: () => { plays++; on = true; } } }; };
+		delete ctx.parent.sounds;
+		vm.runInContext("keep_awake(); keep_awake()", ctx);
+		assert(started === 1 && plays === 0, `started once (${started}), not replayed while playing (${plays})`);
+		on = false; vm.runInContext("keep_awake()", ctx);
+		assert(started === 1 && plays === 1, "replayed when it stopped");
+		ctx.performance_trick = () => { throw new Error("no Howl"); }; delete ctx.parent.sounds;
+		vm.runInContext("keep_awake()", ctx);
+		assert(true, "a failing performance_trick doesn't throw");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
