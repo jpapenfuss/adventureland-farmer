@@ -3049,7 +3049,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare"), "the run's floor counts the bank spare (+0) too");
 				R("state.bank_gear = []");
 				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance"), "...and without one, the full floor");
-				R("character.items[9] = null; sold_c.delete('xs138')"); if (s1) ctx.G.items.scroll1 = s1; else delete ctx.G.items.scroll1;
+				R("character.items[10] = { name: 'xs138', level: 0 }");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare") && R("upg_reach('xs138')") === 5, "a lower copy in the bags is a spare too");
+				R("character.items[10] = { name: 'xs138', level: 0, p: 'shiny' }; state.bank_gear = [{ name: 'xs138', level: 0, p: 'shiny' }]");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance") && R("upg_reach('xs138')") === 4, "titled copies aren't spares (a project never uses one)");
+				R("character.items[9] = null; character.items[10] = null; state.bank_gear = []; sold_c.delete('xs138')"); delete ctx.G.items.xs138;
+				if (s1) ctx.G.items.scroll1 = s1; else delete ctx.G.items.scroll1;
 			}
 			if (sc0) ctx.G.items.scroll0 = sc0; else delete ctx.G.items.scroll0;
 			R(`state.partners = ${parts0}`);

@@ -77,9 +77,10 @@ function chance_floor(name, base, k, level) {
 		// v25.19: a spare at any level in the bags or the bank counts too (owner: accept higher failure rates for
 		// meaningful upgrades) — a failure then costs the steps to rebuild from it, not the only copy. xmasshoes stopped
 		// at +4 (+5 at 73% with scroll1, floor 80%) with two +0 copies in the bank.
-		const spares = character.items.filter((i, n) => n !== k && i && i.name === name && !i.l).length +
+		// (not titled copies: a project never fetches or rebuilds from one)
+		const spares = character.items.filter((i, n) => n !== k && i && i.name === name && !i.l && !i.p).length +
 			Object.values(character.slots || {}).filter((i) => i && i.name === name && (i.level || 0) >= lv).length +
-			(state.bank_gear || []).filter((i) => i.name === name).length;
+			(state.bank_gear || []).filter((i) => i.name === name && !i.p).length;
 		if (spares > 0) return Math.min(base, CFG.min_chance_spare);
 	}
 	return base;

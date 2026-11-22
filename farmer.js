@@ -2289,9 +2289,10 @@ function chance_floor(name, base, k, level) {
 		// v25.19: a spare at any level in the bags or the bank counts too (owner: accept higher failure rates for
 		// meaningful upgrades) — a failure then costs the steps to rebuild from it, not the only copy. xmasshoes stopped
 		// at +4 (+5 at 73% with scroll1, floor 80%) with two +0 copies in the bank.
-		const spares = character.items.filter((i, n) => n !== k && i && i.name === name && !i.l).length +
+		// (not titled copies: a project never fetches or rebuilds from one)
+		const spares = character.items.filter((i, n) => n !== k && i && i.name === name && !i.l && !i.p).length +
 			Object.values(character.slots || {}).filter((i) => i && i.name === name && (i.level || 0) >= lv).length +
-			(state.bank_gear || []).filter((i) => i.name === name).length;
+			(state.bank_gear || []).filter((i) => i.name === name && !i.p).length;
 		if (spares > 0) return Math.min(base, CFG.min_chance_spare);
 	}
 	return base;
@@ -2562,11 +2563,13 @@ const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i &&
 // past it: xmasshoes was taken to +4, then refused +5 (73% < 80%) — gold spent short of the level that was the upgrade.
 function upg_reach(name) {
 	const base = chance_floor(name, CFG.min_upgrade_chance), shop = shop_for(name) && !G.items[name]?.cash;
-	const copies = character.items.filter((i) => i && i.name === name && !i.l).length + (state.bank_gear || []).filter((i) => i.name === name).length;
-	const floor = !shop && copies >= 2 ? Math.min(base, CFG.min_chance_spare) : base;
+	const copies = character.items.filter((i) => i && i.name === name && !i.l && !i.p).length + (state.bank_gear || []).filter((i) => i.name === name && !i.p).length;
+	const floor0 = !shop && copies >= 2 ? Math.min(base, CFG.min_chance_spare) : base;
 	let L = 0;
 	for (let l = 1; l <= 12; l++) {
 		let p = upg_odds(name, l);
+		// a scroll2 step: run_upgrade raises the floor to upgrade_high.min_chance
+		const floor = upgrade_scroll(name, l - 1) === "scroll2" ? Math.max(floor0, CFG.upgrade_high?.min_chance || 0) : floor0;
 		const hc = G.items["scroll" + (Math.max(0, item_grade({ name, level: l - 1 })) + 1)]?.g;
 		if (!shop && hc && hc <= (CFG.upgrade_boost_max || 0)) p = Math.min(1, p * 1.2 + 0.01);
 		if (p < floor) break;
@@ -2641,7 +2644,7 @@ function upgrade_why() {
 			const def = G.items[name];
 			if (!def.upgrade || !GEAR.has(def.type) || def.cash || !sold_by_npc(name)) continue;
 			let g = null, to = 0, cost = 0;
-			for (let L = 1, T = Math.min(upgrade_target(name), upg_cap_level(name)); L <= T; L++) for (const m of takers) {
+			for (let L = 1, T = Math.min(upgrade_target(name), upg_cap_level(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
 				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = upgrade_expected(name, L);
 				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
 			}
@@ -6545,7 +6548,7 @@ function set_piece_plan__fighter(name, from = 0) {
 function set_piece_plan_raw(name, from) {
 	if (!CFG.upgrade_auto || !CFG.gear_auto || is_merchant() || !G.items[name]?.upgrade || !GEAR.has(G.items[name].type) || state.upg || skipped("upg:" + name)) return null;
 	if (merchant_does_it()) return null; // v25.17: the merchant upgrades our pieces (pick_upgrade's owned copies)
-	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name));
+	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name), upg_reach(name)); // (v25.19: as far as the run goes)
 	if (gear_gain({ name, level: from }, character.ctype, g)) return null; // wins as it is: the ordinary pick
 	for (let to = from + 1; to <= max; to++) {
 		const r = gear_gain({ name, level: to }, character.ctype, g);

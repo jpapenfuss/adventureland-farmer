@@ -58,11 +58,13 @@ const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i &&
 // past it: xmasshoes was taken to +4, then refused +5 (73% < 80%) — gold spent short of the level that was the upgrade.
 function upg_reach(name) {
 	const base = chance_floor(name, CFG.min_upgrade_chance), shop = shop_for(name) && !G.items[name]?.cash;
-	const copies = character.items.filter((i) => i && i.name === name && !i.l).length + (state.bank_gear || []).filter((i) => i.name === name).length;
-	const floor = !shop && copies >= 2 ? Math.min(base, CFG.min_chance_spare) : base;
+	const copies = character.items.filter((i) => i && i.name === name && !i.l && !i.p).length + (state.bank_gear || []).filter((i) => i.name === name && !i.p).length;
+	const floor0 = !shop && copies >= 2 ? Math.min(base, CFG.min_chance_spare) : base;
 	let L = 0;
 	for (let l = 1; l <= 12; l++) {
 		let p = upg_odds(name, l);
+		// a scroll2 step: run_upgrade raises the floor to upgrade_high.min_chance
+		const floor = upgrade_scroll(name, l - 1) === "scroll2" ? Math.max(floor0, CFG.upgrade_high?.min_chance || 0) : floor0;
 		const hc = G.items["scroll" + (Math.max(0, item_grade({ name, level: l - 1 })) + 1)]?.g;
 		if (!shop && hc && hc <= (CFG.upgrade_boost_max || 0)) p = Math.min(1, p * 1.2 + 0.01);
 		if (p < floor) break;
@@ -137,7 +139,7 @@ function upgrade_why() {
 			const def = G.items[name];
 			if (!def.upgrade || !GEAR.has(def.type) || def.cash || !sold_by_npc(name)) continue;
 			let g = null, to = 0, cost = 0;
-			for (let L = 1, T = Math.min(upgrade_target(name), upg_cap_level(name)); L <= T; L++) for (const m of takers) {
+			for (let L = 1, T = Math.min(upgrade_target(name), upg_cap_level(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
 				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = upgrade_expected(name, L);
 				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
 			}
