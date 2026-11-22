@@ -1727,3 +1727,31 @@ function live_guide_farm() {
 	if (gxp !== null && best_known_xps() > 0 && gxp < CFG.guide_farm_min_xp * best_known_xps()) return null;
 	return g;
 }
+// ---- why_not("bee") (console): is this monster farmable and safe for us — the fighters' answer (v25.3) ----
+function why_not_fighter(mtype) {
+	const lines = [];
+	const L = (s) => { lines.push(s); game_log(s, C.note); };
+	const out = (r) => (share_text(`why_not("${mtype}")`, lines), r);
+	const m = G.monsters[mtype];
+	if (!m) return out(L(`${mtype}: no such monster`));
+	const flags = ["special", "cooperative", "global", "unlist", "immune", "passive", "peaceful", "stationary", "cute"].filter((f) => m[f]);
+	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
+	const f = fight_math(m);
+	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
+	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
+	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
+		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
+	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
+	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
+	if (sk.length) L(`  skipped as dangerous at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split(":")[0]} (${w})`).join("; ")}`);
+	const areas = [];
+	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
+	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
+	return out();
+}
+// ---- moved from common.js (v24.95): used by the fighters only ----
+function calib_text(mt) {
+	const c = state.calib[calib_key(mt)];
+	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < CALIB_MIN_N ? `, needs ${CALIB_MIN_N}: judged as an unknown monster` : ""})`
+		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet: judged as the worst we've measured, at least x${CFG.model_distrust} the prediction)`;
+}

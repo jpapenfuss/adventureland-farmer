@@ -1,4 +1,4 @@
-const VERSION = "25.2"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
+const VERSION = "25.3"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1285,11 +1285,6 @@ function postmortem() {
 		priest: partners_near().some((p) => p.ctype === "priest"), pots: { hp: pot_count("hp"), mp: pot_count("mp") },
 		predicted: f ? Math.round(fight_risk(f)) : null, pool: f ? Math.round(f.hp_pool) : null,
 		danger: killer ? +danger_of(killer).toFixed(2) : null, last: pmring.ring.slice(-6) };
-}
-function calib_text(mt) {
-	const c = state.calib[calib_key(mt)];
-	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < CALIB_MIN_N ? `, needs ${CALIB_MIN_N}: judged as an unknown monster` : ""})`
-		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet: judged as the worst we've measured, at least x${CFG.model_distrust} the prediction)`;
 }
 // ---- Calibration (v15.1): damage actually taken per fight vs the model's prediction ----
 // Hits are summed per attacker type; a fight with type M ends when our target of type M dies or we switch away from
@@ -5014,27 +5009,7 @@ const hold_price = (n) => G.tokens?.[CFG.hold?.[n]]?.[n];
 const hold_missing = () => Object.keys(CFG.hold || {}).filter((n) => G.items[n] && held_any(n) === 0);
 // ---- Merrit: a stand spot that earns Market Parcels ----
 const in_rect = (x, y, r) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
-function why_not(mtype) {
-	const lines = [];
-	const L = (s) => { lines.push(s); game_log(s, C.note); };
-	const out = (r) => (share_text(`why_not("${mtype}")`, lines), r);
-	const m = G.monsters[mtype];
-	if (!m) return out(L(`${mtype}: no such monster`));
-	const flags = ["special", "cooperative", "global", "unlist", "immune", "passive", "peaceful", "stationary", "cute"].filter((f) => m[f]);
-	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
-	const f = fight_math(m);
-	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
-	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
-	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
-		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
-	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
-	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
-	if (sk.length) L(`  skipped as dangerous at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split(":")[0]} (${w})`).join("; ")}`);
-	const areas = [];
-	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
-	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
-	return out();
-}
+function why_not(mtype) { return why_not_fighter(mtype); } // v25.3: the fighters' answer is in fighter.js
 
 // xp and gold samples every minute, for rates() (every character; v25.1: back from fighter.js, where v24.95 had carried it
 // with send_own_gold — the merchant stopped sampling)
@@ -5065,6 +5040,7 @@ function merrit_on() { return false; }
 function parcel_count() { return 0; }
 // fighter.js
 function fighter_tick() { return 250; }
+function why_not_fighter() { return "the merchant doesn't fight"; }
 function facts_stat() {}
 function facts_elixir() {}
 function facts_safety() {}
