@@ -19,7 +19,14 @@
   "shared/15_hooks.js"
  ],
  "fighter": [
-  "fighter.js"
+  "fighter/0_loop.js",
+  "fighter/1_party.js",
+  "fighter/2_camp.js",
+  "fighter/3_combat.js",
+  "fighter/4_goals.js",
+  "fighter/5_town.js",
+  "fighter/6_gear.js",
+  "fighter/7_report.js"
  ],
  "merchant": [
   "merchant.js"

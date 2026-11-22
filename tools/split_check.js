@@ -19,7 +19,7 @@ function blocks(file) {
 	return out;
 }
 function check() {
-	// the groups: every shared file counts as one ("common"), then each role file, then the last files
+	// the groups: the shared files count as one ("common"), each role's files as one, then the last files
 	const MAN = JSON.parse(fs.readFileSync(path.join(SRC, "manifest.json"), "utf8"));
 	const G = { "common.js": MAN.shared, "fighter.js": MAN.fighter, "merchant.js": MAN.merchant, "main.js": MAN.last };
 	const files = Object.keys(G), B = Object.fromEntries(files.map((g) => [g, G[g].flatMap((f) => blocks(f).map((b) => ({ ...b, file: f })))]));
@@ -41,14 +41,14 @@ function check() {
 	// a statement that runs at load (setInterval, character.on...) in a role file must use something that file declares:
 	// one that only uses shared names belongs in shared/ (v25.1: the xp/gold sampling had been carried to fighter.js)
 	const DECL_OR_SKIP = /^(?:async\s+function|function|const|let|var|class|\/\/|\}|\)|\]|\s|$)/;
-	for (const f of ["fighter.js", "merchant.js"]) {
-		const lines = fs.readFileSync(path.join(SRC, f), "utf8").split("\n"), own = names(f);
+	for (const g of ["fighter.js", "merchant.js"]) for (const f of G[g]) {
+		const lines = fs.readFileSync(path.join(SRC, f), "utf8").split("\n"), own = names(g);
 		for (let i = 0; i < lines.length; i++) {
 			if (DECL_OR_SKIP.test(lines[i])) continue;
 			let j = i, depth = 0, txt = "";
 			do { txt += lines[j] + "\n"; depth += (lines[j].match(/[({[]/g) || []).length - (lines[j].match(/[)}\]]/g) || []).length; j++; } while (depth > 0 && j < lines.length);
 			const ids = new Set(txt.replace(/\/\/.*$/gm, "").match(/(?<![\w$.])[A-Za-z_$][\w$]*/g) || []);
-			if (![...ids].some((x) => own.has(x))) errs.push(`${f}:${i + 1} runs at load but uses nothing ${f} declares (move it to shared/): ${lines[i].trim().slice(0, 60)}`);
+			if (![...ids].some((x) => own.has(x))) errs.push(`${f}:${i + 1} runs at load but uses nothing the ${g.replace('.js', '')} files declare (move it to shared/): ${lines[i].trim().slice(0, 60)}`);
 			i = j - 1;
 		}
 	}

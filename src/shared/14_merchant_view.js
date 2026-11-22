@@ -19,9 +19,9 @@ const hold_price = (n) => G.tokens?.[CFG.hold?.[n]]?.[n];
 const hold_missing = () => Object.keys(CFG.hold || {}).filter((n) => G.items[n] && held_any(n) === 0);
 // ---- Merrit: a stand spot that earns Market Parcels ----
 const in_rect = (x, y, r) => x >= r[0] && x <= r[2] && y >= r[1] && y <= r[3];
-function why_not(mtype) { return why_not_fighter(mtype); } // v25.3: the fighters' answer is in fighter.js
+function why_not(mtype) { return why_not_fighter(mtype); } // v25.3: the fighters' answer is in fighter/
 
-// xp and gold samples every minute, for rates() (every character; v25.1: back from fighter.js, where v24.95 had carried it
+// xp and gold samples every minute, for rates() (every character; v25.1: back from fighter/, where v24.95 had carried it
 // with send_own_gold — the merchant stopped sampling)
 setInterval(() => {
 	stats.samples.push({ t: Date.now(), xp: stats.xp, gold: character.gold + stats.adj });

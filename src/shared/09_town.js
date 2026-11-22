@@ -181,7 +181,7 @@ function town_check() {
 	const townies = partners().filter((p) => p.errand === "town").map((p) => p.name);
 	const due = town_due(townies.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
-	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter.js)
+	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
 	if (!what.length) return void (state.town_block = null);
 	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
 	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
@@ -189,7 +189,7 @@ function town_check() {
 	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
-	if (fighter_defers_town(due, what)) return; // v25.5: fighter.js — work that can wait
+	if (fighter_defers_town(due, what)) return; // v25.5: fighter/ — work that can wait
 	const attacked = !!get_nearest_monster({ target: character.name });
 	const floor = critical ? CFG.town_hp_critical : CFG.town_hp;
 	const blockers = [];

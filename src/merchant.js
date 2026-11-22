@@ -596,7 +596,7 @@ function recover() {
 	}
 	if (channeling()) return void set_message("Teleporting to town…"); // nothing that would cancel it
 	if (threat || hurt_ms() < CFG.flee_quiet_ms) {
-		// v25.4: a plain attack on what's hitting us (the fighters' combat — steering, kiting, skills — is in fighter.js);
+		// v25.4: a plain attack on what's hitting us (the fighters' combat — steering, kiting, skills — is in fighter/);
 		// it used to steer toward a ranged attacker while fleeing
 		if (merchant_fight_back()) {}
 		else if (threat && Number.isFinite(threat.x)) { // v24.8: one we ignore as immune: step away from it (stood still before)

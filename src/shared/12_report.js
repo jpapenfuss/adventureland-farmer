@@ -121,7 +121,7 @@ function health_checks() {
 function report_facts() {
 	const out = [], F = (key, scope, text, quiet = false) => out.push({ key, scope, text, quiet });
 	const p = state.pack, d = state.directive, M_ = is_merchant(), now = Date.now();
-	const c = { p, d, now }; // v24.96: for the role sections (facts_* in fighter.js / merchant.js)
+	const c = { p, d, now }; // v24.96: for the role sections (facts_* in fighter/ / merchant.js)
 	{ const W = health_checks(); F("checks", "self", W.length ? `checks: ⚠ ${W.join(" | ")}` : "checks: ok"); }
 	// what we're doing (fight target and reason merged into one line; say so when we're not there yet)
 	if (M_) F("doing", "self", `merchant: doesn't fight; serves ${(CFG.party.members || []).join(", ")}`);

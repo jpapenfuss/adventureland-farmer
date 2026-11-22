@@ -1,7 +1,7 @@
 // =====================================================================
 // Role hooks (v24.94): functions that live in one role's file, called from code every character runs. Each default
 // here is what that function returns for the OTHER role; the role's own file declares the real one, later in the
-// load order (shared/, then fighter.js or merchant.js, then main.js), and a later function declaration replaces an
+// load order (shared/, then fighter/ or merchant.js, then main.js), and a later function declaration replaces an
 // earlier one. Every call site is reached by one role only (is_merchant() and the like decide), so a default never
 // stands in for real work. tools/split_check.js lists any use of a role-only name that has no default here.
 // =====================================================================
@@ -24,7 +24,7 @@ function stand_worthy() { return false; }
 async function stand_close() {}
 function merrit_on() { return false; }
 function parcel_count() { return 0; }
-// fighter.js
+// fighter/
 function fighter_tick() { return 250; }
 function fighter_defers_town() { return false; }
 function fighter_fight_back() { return false; }

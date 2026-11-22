@@ -64,7 +64,7 @@ function tell_party(msg) {
 function share_verdict(v) {
 	if (in_party_cfg()) tell_party({ k: "verdict", ...v });
 }
-// Code messages from the other characters (v25.1: a named function; the fighters' own kinds are fighter_cm in fighter.js)
+// Code messages from the other characters (v25.1: a named function; the fighters' own kinds are fighter_cm in fighter/)
 function on_cm_message(m) {
 	if (m?.message?.k) seen.cm[m.message.k] = (seen.cm[m.message.k] || 0) + 1;
 	if (m && (m.message?.k === "ping" || m.message?.k === "pong") && party_names_all().includes(m.name)) {
@@ -72,7 +72,7 @@ function on_cm_message(m) {
 		else if (st_runs[m.message.id]) st_runs[m.message.id].pong[m.name] = { v: m.message.v, ms: Date.now() - st_runs[m.message.id].at };
 		return;
 	}
-	if (fighter_cm(m)) return; // v25.1: tgt, mhb, verdict, ptown, ptown_off, bill (fighter.js)
+	if (fighter_cm(m)) return; // v25.1: tgt, mhb, verdict, ptown, ptown_off, bill (fighter/)
 	if (m && m.message?.k === "bank" && party_names_all().includes(m.name)) return void adopt_bank(m);
 	if (m && (m.message?.k === "rreq" || m.message?.k === "rrep") && party_names_all().includes(m.name)) {
 		if (m.message.k === "rreq") report_reply(m); else report_collect(m);
