@@ -48,6 +48,8 @@ const upg_step_cost = (name, top) => {
 	const lv = Math.max(0, top), g = Math.max(0, item_grade({ name, level: lv }));
 	return (G.items["scroll" + (g + 1)]?.g <= (CFG.upgrade_boost_max || 0) ? G.items["scroll" + (g + 1)].g : G.items["scroll" + g]?.g || 0) + (top < 0 ? G.items[name]?.g || 0 : 0);
 };
+// v25.17: the best level of a copy we own, in the bags or (last seen) in the bank, not a titled one; -1 if none
+const owned_level = (name) => Math.max(best_level_held(name), ...(state.bank_gear || []).filter((i) => i.name === name && !i.p).map((i) => i.level || 0), -1);
 // Is it sold by an NPC we can find? (cached: G doesn't change)
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
@@ -61,7 +63,10 @@ function pick_upgrade() {
 		if (!def.upgrade || !GEAR.has(def.type) || def.cash || skipped("upg:" + name) || CFG.quest_craft_skip.includes(name)) continue;
 		// v24.71: only what an NPC sells. The check used to come after the winner was chosen — over every item in the
 		// game: when a piece nobody sells scored best (pyjamas, for Torlis), there was no project at all, ever.
-		if (!sold_by_npc(name)) continue;
+		// v25.17: or a copy we own (bags, or the bank: fetched for the project, upgin:) — the fighters' own pieces (a set
+		// piece, a token buy) are the merchant's projects now; they reach it through the bank or share_gear
+		const own_lv = owned_level(name);
+		if (!sold_by_npc(name) && own_lv < 0) continue;
 		// normal target (scroll0/1 levels) and, for weapon slots, the high target (scroll2 levels too)
 		const targets = [];
 		const WP = CFG.upgrade_weapon?.enabled && def.type === "weapon" ? Math.min(CFG.upgrade_weapon.to, upgrade_target(name)) : 0;
@@ -72,7 +77,11 @@ function pick_upgrade() {
 		for (let [to, cap, high, weapon] of targets) {
 			if (to > capL) to = capL; // v24.5: no higher than a past project of it reached before its odds/failures stopped it
 			if (!to) continue;
-			const cost = high ? upgrade_cost(name, to) : upgrade_expected(name, to);
+			if (own_lv >= to) continue;
+			// v25.17: from our copy, only the steps above its level (a lost copy of a piece no NPC sells can't be rebought:
+			// the project ends there)
+			const cost = own_lv >= 0 ? Math.max(0, (high ? upgrade_cost(name, to) - upgrade_cost(name, own_lv) : upgrade_expected(name, to) - upgrade_expected(name, own_lv)))
+				: high ? upgrade_cost(name, to) : upgrade_expected(name, to);
 			if (cost > cap) continue;
 			// a copy at the target level already exists: ours, the bank's, or (v23.2) in another member's bags or worn
 			// (v24.74: a copy another member WEARS no longer counts — a wand+7 on one caster blocked the other's for good)
@@ -87,7 +96,7 @@ function pick_upgrade() {
 				// worth (gain x gold per point) less the expected cost; a scroll2 project only when nothing else is worth doing
 				const v = weapon ? 1e12 + r.gain : high ? -1e12 + r.gain / cost : r.gain * CFG.upgrade_gold_per_pt - cost;
 				if (!high && !weapon && v <= 0) continue;
-				if (!best || v > best.v) best = { name, to, for: m.name, slot: r.slot, gain: Math.round(r.gain), cost, v, high, weapon: !!weapon };
+				if (!best || v > best.v) best = { name, to, for: m.name, slot: r.slot, gain: Math.round(r.gain), cost, v, high, weapon: !!weapon, ...(own_lv >= 0 ? { from_copy: own_lv } : {}) };
 			}
 		}
 	}
@@ -97,7 +106,7 @@ function pick_upgrade() {
 // stops each
 function upgrade_why() {
 	const out = [];
-	if (!is_merchant()) {
+	if (!is_merchant() && !merchant_does_it()) { // v25.17: with the merchant online, our pieces are its projects
 		const own = [...character.items.filter((i) => i && !i.l && GEAR.has(G.items[i.name]?.type)).map((i) => [i, "bags"]), ...(state.bank_gear || []).map((i) => [i, "bank"])]
 			.map(([i, w]) => [i, w, set_piece_plan(i.name, i.level || 0)]).filter(([, , pl]) => pl).sort((a, b) => b[2].gain - a[2].gain)[0];
 		out.push(own ? `ours next: ${own[0].name}+${own[0].level || 0} (${own[1]}) → +${own[2].to} (+${own[2].gain} pts)` : "nothing we own would win once upgraded");
@@ -145,10 +154,11 @@ function upgrade_due() {
 	upg_drop_if_stale(); // v24.91
 	set_piece_start(); // v24.69: a set piece in our bags that wins once upgraded
 	if (merchant_does_it()) {
-		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags
-		// (v24.67: except our own project on a token piece — the copy is ours, and the merchant can't buy one)
-		if (state.upg && !state.upg.own) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
-		if (!state.upg?.own) return false;
+		// v21.2: the merchant runs projects now; a fighter's own one would sit forever, holding its copies in the bags.
+		// v25.17 (owner: "make the merchant do it"): our own ones too (a set piece, a token buy) — the copy is no longer
+		// kept, so it goes to the merchant (share_gear) or the bank, and the merchant picks it as a project from there
+		if (state.upg) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; }
+		return false;
 	}
 	const now = Date.now();
 	if (!state.upg && now - (state.upg_pick_at || 0) > 600_000) {

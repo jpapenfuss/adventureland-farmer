@@ -3506,6 +3506,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			character.items[1] = { name: "mmg137", level: 0 };
 			assert(R("set_piece_fetch().length") === 0, "...not fetched again once a copy is in the bags");
 			assert(R("upgrade_due()") === true && R("state.upg && state.upg.own && state.upg.name") === "mmg137" && R("state.upg.to") >= 1, `...and in the bags it becomes our own upgrade project (${R("JSON.stringify(state.upg)")})`);
+			// v25.17: with the merchant online, our pieces are its projects: the own project is handed over, none is started
+			{
+				const gm = R("JSON.parse(JSON.stringify(my_gear()))"), me = character.name;
+				R("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0, esize: 30, gold: 9e6 }; spp_cache.clear()");
+				assert(R("upgrade_due()") === false && R("state.upg") === null, "merchant online: our own project is handed to it");
+				assert(R("set_piece_plan('mmg137', 0)") === null && R("set_piece_fetch().length") === 0, "...and none is started or fetched");
+				assert(R("bag_class(character.items[1])") !== "keep" && !R("needed_slots().has(1)"), `...the copy isn't kept for one (${R("bag_class(character.items[1])")})`);
+				// the merchant: the fighter's piece in the bank becomes its project for her
+				const sv = { name: character.name, ctype: character.ctype, items: character.items, slots: character.slots };
+				Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {} });
+				R(`state.merchant = null; state.upg = null; state.upg_caps = {}; state.gear_skip = {}; state.bank_gear = [{ name: 'mmg137', level: 0 }];
+					state.partners = { ${JSON.stringify(me)}: { name: ${JSON.stringify(me)}, ctype: 'mage', level: 54, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: ${JSON.stringify(gm)} } }`);
+				const pk = R("JSON.stringify(pick_upgrade())");
+				assert(/"name":"mmg137"/.test(pk) && /"from_copy":0/.test(pk) && new RegExp(`"for":"${me}"`).test(pk), `the merchant picks the bank copy as a project for ${me} (${pk})`);
+				R("state.upg = pick_upgrade(); state.fetch_try = {}");
+				assert(R("bag_plan().fetch.some((f) => f.key === 'upgin:mmg137')"), "...and fetches that copy from the bank for it");
+				Object.assign(character, sv);
+				R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; spp_cache.clear()");
+			}
 			R("state.bank_gear = []");
 			for (const n of ["mmh137", "mma137", "mmp137", "mms137", "mmg137", "gl137"]) delete I[n];
 			delete ctx.G.sets.mm137; ctx.G.tokens = keep.tokens; character.items = keep.items; character.ctype = keep.ctype; character.gold = keep.gold;

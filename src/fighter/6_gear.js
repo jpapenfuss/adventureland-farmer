@@ -59,6 +59,7 @@ function set_piece_plan(name, from = 0) {
 }
 function set_piece_plan_raw(name, from) {
 	if (!CFG.upgrade_auto || !CFG.gear_auto || is_merchant() || !G.items[name]?.upgrade || !GEAR.has(G.items[name].type) || state.upg || skipped("upg:" + name)) return null;
+	if (merchant_does_it()) return null; // v25.17: the merchant upgrades our pieces (pick_upgrade's owned copies)
 	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name));
 	if (gear_gain({ name, level: from }, character.ctype, g)) return null; // wins as it is: the ordinary pick
 	for (let to = from + 1; to <= max; to++) {
@@ -109,7 +110,8 @@ async function task_tokens() {
 			if (b.hold && b.for !== character.name) state.hold_for[b.name] = { to: b.for, at: Date.now() };
 			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
 			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
-			if (b.to) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
+			// (v25.17: only while the merchant is away; otherwise it gets the piece and upgrades it)
+			if (b.to && !merchant_does_it()) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }
