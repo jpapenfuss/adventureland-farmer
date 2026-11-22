@@ -9,7 +9,7 @@ Paste `loader.js` into each character's CODE slot once and run it. It fetches th
 via `reload_farmer()` in its code console. Loader v2 fetches the file at the branch's newest commit (asked from the
 GitHub API), so a reload right after a push gets that push; the load line shows the commit (`farmer v24.2 @3f57324`).
 Loader v1 fetched the branch copy, which GitHub caches for up to 5 minutes: re-paste the loader once to upgrade.
-Loader v3 (v24.94) runs only the character's own role files; v1/v2 keep working (they run `farmer.js`).
+Loader v4 (v25.7) runs only the character's own files from `src/`; v1–v3 keep working (they run `farmer.js`).
 
 ## Use
 In the CODE console: `report()` (whole party), `report("solo")` (report() includes everyone's last-hour history), `history(6)` (whole party), `history(6, "solo")`, `deaths()`, `selftest()`,
@@ -22,13 +22,15 @@ of what it does is at the bottom.
 (`tools/split_check.js`), and that each role's file set loads, ticks and reports on its own.
 
 ## Layout
-- `src/` — the bot's source, split by role (v24.94): `common.js` (everything every character runs), `fighter.js`,
-  `merchant.js`, `main.js` (death handling, the main loop, start-up). `common.js` ends with "Role hooks": defaults
-  for the functions that live in one role's file, which that file's own declaration replaces.
+- `src/` — the bot's source, split by role. `manifest.json` lists the load order per role: `shared/` (every
+  character, in numbered files by subject: config, infrastructure, fight model, history, combat, items, bags, quests,
+  guide, town, recovery, persistence, report, party, the fighters' view of the merchant, role hooks), then
+  `fighter.js` or `merchant.js`, then `main.js` (death handling, the main loop, start-up). `shared/15_hooks.js` holds
+  defaults for the functions that live in one role's file, which that file's own declaration replaces.
 - `farmer.js` — GENERATED: every file in one (`node tools/build.js`; `--check` verifies it). Loaders v1/v2 and the
   tests run it. Edit `src/`, never `farmer.js`.
-- `loader.js` — the paste-once loader. v3 fetches only the character's own files from `src/` (common + its role +
-  main) at the newest commit, falling back to `farmer.js`.
+- `loader.js` — the paste-once loader. v4 reads `src/manifest.json` at the newest commit and fetches only the
+  character's own files (shared + its role + main), falling back to `farmer.js`.
 - `test/` — `smoke.js` (the bot against a mocked game client), `loader.js`, `fixtures/`.
 - `tools/` — diagnostic scripts (route simulator on the live map data, map geometry checks, a test runner that
   lists every failure). See `tools/README.md`.

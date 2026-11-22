@@ -1,7 +1,7 @@
 // =====================================================================
-// merchant.js — loaded by the merchant only (after common.js, before main.js). What only the merchant does: supply
+// merchant.js — loaded by the merchant only (after shared/, before main.js; src/manifest.json). What only the merchant does: supply
 // runs, the stand and Merrit's parcels, Ponty, bank housekeeping, donations. Defaults for the fighters are in
-// common.js ("Role hooks").
+// shared/15_hooks.js.
 // =====================================================================
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
@@ -549,7 +549,7 @@ function merchant_tick() {
 		travel_as("merchant_tick", { map: "main", x: home[0], y: home[1] });
 	} else if (!character.moving) stand_tick().catch(() => {});
 }
-// ---- moved from common.js (v24.95): used by the merchant only ----
+// ---- from the shared code (v24.95–v25.6): used by the merchant only ----
 // Item types that always stay in the bags: consumables, scrolls, tools, keys
 // Item types the bot may ever sell, list on the stand or purge from the bank: gear, plain materials, gems. Everything
 // else (dungeon keys, licences, cosmetics, quest items, tomes, flutes, containers...) is only ever kept or banked.
@@ -575,7 +575,7 @@ function facts_merchant(F, ctx) {
 	F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
 	F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
 }
-// ---- moved from common.js (v24.95): used by the merchant only ----
+// ---- from the shared code (v24.95–v25.6): used by the merchant only ----
 function recover() {
 	if (!state.recovering) {
 		const pmf = postmortem();
@@ -646,7 +646,7 @@ function merchant_fetch_sale(fetch) {
 		}
 	}
 }
-// ---- moved from common.js (v24.95): used by the merchant only ----
+// ---- from the shared code (v24.95–v25.6): used by the merchant only ----
 // ---- Stand (CFG.merchant.stand) ----
 const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
 // ---- the merchant's fight-back (v25.4): what's hitting us gets attacked if in reach; true when something is on us ----
@@ -677,7 +677,7 @@ function merchant_sells(item) {
 	if (Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return true;
 	return !!(CFG.merchant.sell_dead_compounds && dead_compound(item)); // v24.15
 }
-// ---- moved from common.js (v24.95): used by the merchant only ----
+// ---- from the shared code (v24.95–v25.6): used by the merchant only ----
 // A compound piece at its ceiling that no member wants: it can't go further and nobody wears it (v24.15). The merchant
 // sells it (an NPC pays its value: ~134k for an Amulet of HP +2) — it held 12 of those, refetched every 6h.
 function dead_compound(it) {
@@ -687,7 +687,7 @@ function dead_compound(it) {
 }
 // ---- share_gear (v25.6): the merchant hands a piece only to the fighter it helps most (v24.7) ----
 function merchant_gives_to(it, name) { return best_fighter_for(it)?.name === name; }
-// ---- moved from common.js (v24.95): used by the merchant only ----
+// ---- from the shared code (v24.95–v25.6): used by the merchant only ----
 // The online fighter a piece helps most: { name, ctype, g, p, gain } or null
 function best_fighter_for(it) {
 	let best = null;

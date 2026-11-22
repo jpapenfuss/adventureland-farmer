@@ -25,17 +25,23 @@ const good = `const VERSION = "9.9";\n` + "// pad\n".repeat(3000);
 	assert(s.ran.length === 1 && JSON.parse(s.store.farmer_code).text === good && s.logs.some((l) => /farmer v9.9 loaded from GitHub/.test(l)), "download is cached and run");
 	// 1b) v2: the API names master's newest commit → the file is fetched at that commit (not the cached branch copy)
 	const SHA = "3f57324" + "a".repeat(33), urls = [];
-	s = sandbox(async (u, o) => { urls.push([u, o && o.headers]); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA + "\n" } : { ok: true, text: async () => good }; });
+	const MANI = JSON.stringify({ shared: ["shared/a.js"], fighter: ["fighter.js"], merchant: ["merchant.js"], last: ["main.js"] });
+	s = sandbox(async (u, o) => { urls.push([u, o && o.headers]); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA + "\n" } : /manifest\.json$/.test(u) ? { ok: true, text: async () => MANI } : { ok: true, text: async () => good }; });
 	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
 	assert(/repos\/jpapenfuss\/adventureland-farmer\/commits\/master$/.test(urls[0][0]) && urls[0][1].Accept === "application/vnd.github.sha"
-		&& urls.length === 4 && ["common", "fighter", "main"].every((f, i) => urls[i + 1][0] === `https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/src/${f}.js`), `v3: the role's src/ files at the newest commit are fetched (${urls.map((x) => x[0]).join(", ")})`);
-	assert(s.ctx.window.farmer_loaded.sha === SHA && JSON.parse(s.store.farmer_code).sha === SHA && s.logs.some((l) => /farmer v9\.9 @3f57324 loaded from GitHub \(src: common \+ fighter \+ main\)$/.test(l)), "the commit is logged, passed on and cached");
-	// 1b2) v3: the merchant fetches merchant.js; a commit without src/ falls back to farmer.js at that commit
+		&& urls[1][0] === `https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/src/manifest.json`
+		&& ["shared/a.js", "fighter.js", "main.js"].every((f, i) => urls[i + 2][0] === `https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/src/${f}`), `v4: the manifest, then the role's files at the newest commit (${urls.map((x) => x[0]).join(", ")})`);
+	assert(s.ctx.window.farmer_loaded.sha === SHA && JSON.parse(s.store.farmer_code).sha === SHA && s.logs.some((l) => /farmer v9\.9 @3f57324 loaded from GitHub \(src: 3 files for the fighter\)$/.test(l)), "the commit is logged, passed on and cached");
+	// 1b2) v4: the merchant fetches merchant.js; a commit without a manifest falls back to farmer.js at that commit
+	{ const u3 = []; s = sandbox(async (u) => { u3.push(u); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA } : /manifest\.json$/.test(u) ? { ok: true, text: async () => MANI } : { ok: true, text: async () => good }; });
+		s.ctx.character = { ctype: "merchant" };
+		vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
+		assert(u3.some((x) => /src\/merchant\.js$/.test(x)) && !u3.some((x) => /src\/fighter\.js$/.test(x)) && s.ran.length === 1, `v4: the merchant fetches merchant.js, not fighter.js (${u3.join(", ")})`); }
 	{ const u2 = []; s = sandbox(async (u) => { u2.push(u); return /api\.github\.com/.test(u) ? { ok: true, text: async () => SHA } : /\/src\//.test(u) ? { ok: false, status: 404 } : { ok: true, text: async () => good }; });
 		s.ctx.character = { ctype: "merchant" };
 		vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));
-		assert(u2.some((x) => /src\/merchant\.js$/.test(x)) && !u2.some((x) => /src\/fighter\.js$/.test(x)) && u2.includes(`https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/farmer.js`)
-			&& s.ran.length === 1 && s.ctx.window.farmer_loaded.sha === SHA, `v3: the merchant asks for merchant.js; no src/ at the commit → farmer.js at the commit (${u2.join(", ")})`); }
+		assert(u2.some((x) => /src\/manifest\.json$/.test(x)) && u2.includes(`https://raw.githubusercontent.com/jpapenfuss/adventureland-farmer/${SHA}/farmer.js`)
+			&& s.ran.length === 1 && s.ctx.window.farmer_loaded.sha === SHA, `v4: no manifest at the commit → farmer.js at the commit (${u2.join(", ")})`); }
 	// 1c) API refused (rate limit) → branch copy, said so
 	s = sandbox(async (u) => (/api\.github\.com/.test(u) ? { ok: false, status: 403 } : { ok: true, text: async () => good }));
 	vm.runInContext(loader, s.ctx); await new Promise((r) => setTimeout(r, 20));

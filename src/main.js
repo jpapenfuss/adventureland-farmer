@@ -93,8 +93,8 @@ tick();
 
 // =====================================================================
 // OVERVIEW
-// Adventure Land farmer. Source in src/ by role (common.js, fighter.js, merchant.js, main.js; v24.94), built into
-// farmer.js; VERSION (first line of common.js) is the only
+// Adventure Land farmer. Source in src/ (v24.94; manifest.json: shared/ for every character, fighter.js or
+// merchant.js, main.js), built into farmer.js; VERSION (first line of shared/00_config.js) is the only
 // version number, and report() prints it. What changed between versions is in the git history, not here.
 //
 // Each tick, first match wins:

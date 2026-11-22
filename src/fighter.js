@@ -1,7 +1,7 @@
 // =====================================================================
-// fighter.js — loaded by the fighters only (after common.js, before main.js). What only a fighter does: follow the
+// fighter.js — loaded by the fighters only (after shared/, before main.js; src/manifest.json). What only a fighter does: follow the
 // tank, heal, hand loot and gold to the merchant, its own token buys and upgrade projects, collecting what the
-// merchant holds for it. Defaults for the merchant are in common.js ("Role hooks").
+// merchant holds for it. Defaults for the merchant are in shared/15_hooks.js.
 // =====================================================================
 // Fighters: what the merchant (in town) holds for us / for anyone, from its heartbeat
 function collect_list(mine = false) {
@@ -422,7 +422,7 @@ function fighter_tick() {
 	}
 	return wait;
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // ---- Assist the tank (v15.4): with a tank near, it picks the targets and everyone else hits its target ----
 const i_am_tank = () => CFG.party.tank_first && in_party_cfg() && CFG.gear_tank.includes(character.ctype) && partners_near(400).length > 0;
 // The tank's current target, as a live entity (its "tgt" broadcasts update state.partners[tank].target at once)
@@ -821,7 +821,7 @@ function group_hold(pack, here) {
 	W.who = far.map((p) => p.name).join(", ");
 	return W.who;
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Why the party isn't whole: a member offline or dead — else null. (v24.52: low HP is not a reason. v24.51 had a
 // member under flee_hp use the suicide command; the owner's rule is that only a member's DEATH sends the others.)
 function party_break() {
@@ -1029,7 +1029,7 @@ function facts_quests(F, ctx) {
 		F("quest:" + id, "self", `quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`, st === "done");
 	}
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Why probe_ready() says no right now (report; v20.0 — the probe line used to be hidden until a first probe ran)
 function probe_why() {
 	const P = CFG.probe, now = Date.now();
@@ -1051,7 +1051,7 @@ function probe_why() {
 	if (lp) return `${lp.name} potions under ${CFG.pot_min * 2}`;
 	return "ready (next pick)";
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // ---- One party or nothing (v24.51) ----
 const in_town = () => character.map === "main" && Math.hypot(character.x, character.y) < CFG.party.town_px;
 const ptown_tell = (P) => tell_party({ k: "ptown", id: P.id, by: P.by });
@@ -1146,7 +1146,7 @@ async function ptown_wait() {
 	state.ptown = null;
 	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 const drop_rate = (mt, item) => (drop_sources(item).find(([m]) => m === mt) || [, 0])[1];
 // Farm the quickest missing drop of the first open quest recipe (guide quests: no time/xp limits)
 function quest_directive(guide_only) {
@@ -1313,7 +1313,7 @@ function refresh_directive() {
 		state.last_pick = 0;
 	}
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Self-tuning safety (CFG.safety_tune): up a step after every step_h without a death or flee; down on a flee; reset on
 // a death. Checked every minute; the clock restarts on every change.
 function safety_tune(ev) {
@@ -1427,14 +1427,14 @@ function party_trip_check(due, what) {
 	}
 	return false;
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // A monster on any party member that the party fights (not one it never attacks)
 function party_hit() {
 	const party = party_names();
 	for (const id in parent.entities || {}) { const e = parent.entities[id]; if (e?.type === "monster" && !e.dead && e.target && party.has(e.target) && !hopeless(e)) return e; }
 	return null;
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 let event_join_at = 0, event_logged = null;
 // Leader and followers alike: join, then fight the event's monsters (they're cooperative, which normal targeting
 // skips). Leaving: off the event map once it's over. Returns true when it took the tick.
@@ -1473,7 +1473,7 @@ function event_tick() {
 	}
 	return true;
 }
-// ---- the fighters' code-message kinds (v25.1): true = handled; on_cm_message (common.js) calls this first ----
+// ---- the fighters' code-message kinds (v25.1): true = handled; on_cm_message (shared/13_party.js) calls this first ----
 function fighter_cm(m) {
 	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
 		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
@@ -1491,7 +1491,7 @@ function fighter_cm(m) {
 	}
 	return false;
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
 function tank_cover(pool = partners_near(300)) {
 	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
@@ -1620,7 +1620,7 @@ function facts_camp_time(F, ctx) {
 	const { p, d, now } = ctx;
 	{ const g = gaps_text(); if (g) F("camp_time", "self", g); }
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 function gaps_text() {
 	const by = {};
 	for (const b of gaps.min) for (const k in b.by) by[k] = (by[k] || 0) + b.by[k];
@@ -1749,7 +1749,7 @@ function why_not_fighter(mtype) {
 	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
 	return out();
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 function calib_text(mt) {
 	const c = state.calib[calib_key(mt)];
 	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < CALIB_MIN_N ? `, needs ${CALIB_MIN_N}: judged as an unknown monster` : ""})`
@@ -1761,7 +1761,7 @@ function fighter_fight_back() {
 	if (t && !character.c.town) { fight(t, false); return true; }
 	return false;
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 function farmable_entity(e) {
 	return e && e.type === "monster" && e.visible && !e.dead && !e.npc && !e.immune && !e.peaceful &&
 		farmable_type(e.mtype) && !((state.bad_ids[e.id] || 0) > Date.now());
@@ -2077,7 +2077,7 @@ function fight(t, steer = true) {
 	if (hold_for_tank(t)) { if (character.ctype === "priest") party_heal(); return; }
 	if (!class_skills(t) && can_attack(t)) fire("attack", t);
 }
-// ---- moved from common.js (v24.95): used by the fighters only ----
+// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Best normal spot's xp/s, without being there (for a member that doesn't pick)
 function best_score() {
 	const prof = {};

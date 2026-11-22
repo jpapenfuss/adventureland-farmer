@@ -1,4 +1,4 @@
-const LOADER = "3"; // Adventure Land farmer loader: paste this (once) into each character's CODE slot; it runs the latest farmer.js
+const LOADER = "4"; // Adventure Land farmer loader: paste this (once) into each character's CODE slot; it runs the latest farmer.js
 // =====================================================================
 // Fetches farmer.js from the public GitHub repo below and runs it, so a release reaches every character by restarting
 // its code (no pasting). The last good download is cached in the browser; if GitHub is unreachable that copy runs.
@@ -12,10 +12,11 @@ const LOADER = "3"; // Adventure Land farmer loader: paste this (once) into each
 // branch's newest commit and fetches the file at that commit (never stale); the branch URL is only the fallback when
 // the API is unreachable or rate-limited (60 requests/hour per IP). The commit is shown in the load line and passed on
 // in window.farmer_loaded.sha, so two builds can't be mistaken for each other.
-// v3: the script is split into src/common.js, src/fighter.js, src/merchant.js and src/main.js. At the newest commit
-// the loader fetches only what this character runs — common + its role (merchant.js for the merchant, fighter.js for
-// everyone else) + main — and runs them as one text. A commit without src/ (or a failed download) falls back to
-// farmer.js, the build of every file together, which loaders v1/v2 keep using.
+// v4: the script is split into files listed in src/manifest.json: "shared" (every character), "fighter" / "merchant"
+// (the role's own), "last". At the newest commit the loader reads the manifest and fetches only what this character
+// runs — shared + its role (merchant for the merchant, fighter for everyone else) + last — and runs them as one text.
+// A commit without a manifest (or a failed download) falls back to farmer.js, the build of every file together,
+// which loaders v1–v3 keep using.
 // =====================================================================
 const FARMER_REPO = "jpapenfuss/adventureland-farmer", FARMER_BRANCH = "master";
 const FARMER_URL = `https://raw.githubusercontent.com/${FARMER_REPO}/${FARMER_BRANCH}/farmer.js`;
@@ -47,14 +48,16 @@ async function farmer_load() {
 		if (/^[0-9a-f]{40}$/.test(r)) sha = r;
 	} catch (e) {}
 	const role = typeof character !== "undefined" && character && character.ctype === "merchant" ? "merchant" : "fighter";
-	const parts = ["common.js", `${role}.js`, "main.js"];
 	const raw = (f) => `https://raw.githubusercontent.com/${FARMER_REPO}/${sha}/${f}`;
-	for (const u of sha ? [parts, raw("farmer.js"), FARMER_URL] : [FARMER_URL]) {
+	for (const u of sha ? ["manifest", raw("farmer.js"), FARMER_URL] : [FARMER_URL]) {
 		try {
-			if (Array.isArray(u)) { // v3: this role's files at the commit, run as one text
-				text = (await Promise.all(u.map((f) => farmer_get(raw("src/" + f))))).join("");
+			if (u === "manifest") { // v4: this role's files at the commit, in the manifest's order, run as one text
+				const man = JSON.parse(await farmer_get(raw("src/manifest.json")));
+				const files = [...(man.shared || []), ...(man[role] || []), ...(man.last || [])];
+				if (!files.length) throw new Error("empty manifest");
+				text = (await Promise.all(files.map((f) => farmer_get(raw("src/" + f))))).join("");
 				if (!farmer_valid(text)) throw new Error("src/ download doesn't look like the script");
-				url = raw("src/") + `{${u.join(",")}}`; how = `loaded from GitHub (src: ${u.map((f) => f.replace(".js", "")).join(" + ")})`;
+				url = raw("src/manifest.json"); how = `loaded from GitHub (src: ${files.length} files for the ${role})`;
 				break;
 			}
 			text = await farmer_get(u === FARMER_URL ? `${u}?t=${Date.now()}` : u);

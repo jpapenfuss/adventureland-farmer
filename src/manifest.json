@@ -1,0 +1,30 @@
+{
+ "_comment": "Load order per role (tools/build.js, loader v4). shared/ is every character's; then the role's file; then main.js. A later function declaration replaces an earlier one: role files replace the defaults in shared/15_hooks.js.",
+ "shared": [
+  "shared/00_config.js",
+  "shared/01_infra.js",
+  "shared/02_fight_model.js",
+  "shared/03_history.js",
+  "shared/04_combat.js",
+  "shared/05_items.js",
+  "shared/06_bags.js",
+  "shared/07_quests.js",
+  "shared/08_guide.js",
+  "shared/09_town.js",
+  "shared/10_recovery.js",
+  "shared/11_persist.js",
+  "shared/12_report.js",
+  "shared/13_party.js",
+  "shared/14_merchant_view.js",
+  "shared/15_hooks.js"
+ ],
+ "fighter": [
+  "fighter.js"
+ ],
+ "merchant": [
+  "merchant.js"
+ ],
+ "last": [
+  "main.js"
+ ]
+}
