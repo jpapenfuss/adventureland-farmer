@@ -2940,10 +2940,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			// a member out of the tank's engage range: the elapsed seconds are left out (not just 1 s a tick)
 			R("state.session.last_here = Date.now() - 3000; state.partners.Sanala.x = 50 + CFG.party.engage_px + 50; state.partners.Sanala.y = 50; meas_tick()");
 			assert(Math.abs(R("state.session.lost") - 3000) < 200, `3 s with Sanala out of engage range left out (${R("state.session.lost")})`);
-			R("state.session.last_here = Date.now() - 60000; meas_tick()");
-			assert(Math.abs(R("state.session.lost") - 8000) < 200, `a late tick counts at most 5 s (${R("state.session.lost")})`);
 			R("state.partners.Sanala.x = 40; state.partners.Sanala.y = 40; state.session.last_here = Date.now() - 2000; meas_tick()");
-			assert(R("!!state.session") && Math.abs(R("state.session.lost") - 8000) < 200, "everyone in range: nothing more left out");
+			assert(R("!!state.session") && Math.abs(R("state.session.lost") - 3000) < 200, "everyone in range: nothing more left out");
+			// the tank holding (gap_kind) is left out too
+			{ const gk = ctx.gap_kind; ctx.gap_kind = () => "monsters alive, holding for the party";
+				R("state.session.last_here = Date.now() - 2000; meas_tick()"); ctx.gap_kind = gk; }
+			assert(Math.abs(R("state.session.lost") - 5000) < 200, `the tank's hold left out (${R("state.session.lost")})`);
+			// a tick 60 s late (tab asleep): the session closes at the last good tick; the gap isn't booked
+			R("state.session.last_here = Date.now() - 60000; meas_tick()");
+			assert(R("state.session") === null, "a 60 s gap closes the session instead of booking it");
 			R("state.session = null; state.pack = null; state.partners = {}"); Object.assign(character, sv);
 		}
 		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1; state.session = null", ctx);
