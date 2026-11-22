@@ -21,10 +21,10 @@ function spot_ok(x, y, keep = CFG.merchant.merrit.keep_px || 0) {
 	if (fixed_npcs().some(([nx, ny]) => Math.hypot(nx - x, ny - y) <= M.npc_gap)) return false;
 	for (const e of Object.values(parent.entities || {})) {
 		if (!e || e.type !== "character" || !e.stand || e.name === character.name || e.map && e.map !== "main") continue;
-		const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y);
-		if (Math.hypot(dx, dy) <= M.stand_gap || (dx <= M.stand_gap && dy <= M.stand_vgap)) return false;
+		const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y), d = Math.hypot(dx, dy);
+		if (d <= M.stand_gap || (dx <= M.stand_gap && dy <= M.stand_vgap)) return false;
 		// v25.28 (owner): keep our distance from other merchants' stands, well past the server's 10 px rule
-		if (keep && Math.hypot(dx, dy) < keep) return false;
+		if (keep && d < keep) return false;
 	}
 	if (typeof can_move === "function") {
 		try { if (!can_move({ map: "main", x: 0, y: 0, going_x: x, going_y: y, base: character.base || { h: 8, v: 7, vn: 2 } })) return false; } catch (e) {}
@@ -39,6 +39,7 @@ function spot_ok(x, y, keep = CFG.merchant.merrit.keep_px || 0) {
 function merrit_spot() {
 	const M = CFG.merchant.merrit, now = Date.now(), cur = state.mspot;
 	if (cur && (cur.fb ? spot_ok(cur.x, cur.y, 0) && now - (cur.at || 0) < M.rescan_ms : spot_ok(cur.x, cur.y, M.keep_hold_px || 0))) return cur;
+	if (!cur && now - (merrit_spot.failed_at || 0) < M.rescan_ms) return null; // no valid spot at the last scan: not every tick
 	const pts = [];
 	for (const r of [M.square, M.aisle]) for (let x = r[0]; x <= r[2]; x += M.step) for (let y = r[1]; y <= r[3]; y += M.step) pts.push([x, y]);
 	pts.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
@@ -52,6 +53,7 @@ function merrit_spot() {
 	}
 	const changed = !cur || !p || cur.x !== p[0] || cur.y !== p[1];
 	state.mspot = p ? { x: p[0], y: p[1], fb, at: now } : null;
+	merrit_spot.failed_at = p ? 0 : now;
 	if (p && changed) game_log(`merrit: stand spot ${p[0]},${p[1]}${fb ? " (the square is crowded: the farthest from other stands)" : ""}`, C.dim);
 	return state.mspot;
 }

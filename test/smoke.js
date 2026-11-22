@@ -1850,6 +1850,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const logs78 = log.length;
 	vm.runInContext("merrit_spot(); merrit_spot(); merrit_spot()", ctx);
 	assert(calls78 === 3 && log.length === logs78, `a fallback spot is kept: one check per call (${calls78}), no log lines (${log.length - logs78})`);
+	// no valid spot at all: the failed scan isn't repeated every tick (rescan_ms)
+	vm.runInContext("state.mspot = null; merrit_spot.failed_at = Date.now()", ctx); calls78 = 0;
+	vm.runInContext("merrit_spot(); merrit_spot()", ctx);
+	assert(calls78 === 0 && vm.runInContext("state.mspot", ctx) === null, `after a scan that found nothing, no rescan until rescan_ms (${calls78} checks)`);
+	vm.runInContext("merrit_spot.failed_at = 0", ctx);
 	ctx.spot_ok = so78;
 	vm.runInContext("CFG.merchant.merrit.keep_px = globalThis.__kp; state.mspot = null", ctx);
 	delete ctx.parent.entities.rival;
