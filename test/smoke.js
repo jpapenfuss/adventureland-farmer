@@ -4373,6 +4373,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("tank_first(__E.a)") === true && R("free_for_all(__E.a)") === false, "the tank stops one-shooting it: back to the tank's first hit");
 		ctx.parent.entities = ents; R("CFG.party.tank_first = globalThis.__tf; if (globalThis.__sf) state.safe.os150 = globalThis.__sf; else delete state.safe.os150; state.pack = null; state.os_pick = null; state.partners = {}; delete globalThis.__E"); Object.assign(character, sv);
 	}
+	// v25.27: a door leg goes through the planned door (walk to it, transport), not smart_move({map: next})
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const calls = [], sv = { map: character.map, x: character.x, y: character.y };
+		Object.assign(character, { map: "halloween", x: 0, y: 0 });
+		R("globalThis.__gr = go_raw; globalThis.__rp = route_plan; globalThis.__rpl = route_plain; globalThis.__tc = CFG.travel.safe_routes; CFG.travel.safe_routes = true");
+		const hd = ctx.G.maps.halloween; ctx.G.maps.halloween = ctx.G.maps.halloween || { doors: [[1, 1, 10, 10, "spookytown", 0]] };
+		if (!ctx.G.maps.halloween.doors) ctx.G.maps.halloween.doors = [[1, 1, 10, 10, "spookytown", 0]];
+		ctx.__calls = calls;
+		R(`route_plan = route_plain = () => ({ d: 100, around: "prat @ level1", legs: [{ kind: "door", map: "halloween", fx: 0, fy: 0, x: 300, y: 40, to: "spookytown", s: 2, tx: 5, ty: 6 }] });
+			go_raw = async (d) => { __calls.push("walk " + d.map + " " + d.x + "," + d.y); if (d.map !== character.map) character.map = d.map; return true; }`);
+		const tp0 = ctx.transport; ctx.transport = (m, sp) => { calls.push("transport " + m + " " + sp); character.map = m; return Promise.resolve(); };
+		await R("go_route({ map: 'spookytown', x: 50, y: 60 }, 5000)");
+		assert(calls[0] === "walk halloween 300,40" && calls[1] === "transport spookytown 2" && !calls.some((c) => /walk main/.test(c)), `the planned door: walked to on this map, then used (${calls})`);
+		// no path to the door's point: the old way (smart_move to the next map)
+		calls.length = 0; character.map = "halloween";
+		R(`go_raw = async (d) => { __calls.push("walk " + d.map + " " + d.x + "," + d.y); if (d.map === "halloween" && d.x === 300) throw { reason: "failed" }; character.map = d.map; return true; }`);
+		await R("go_route({ map: 'spookytown', x: 50, y: 60 }, 5000)");
+		assert(calls[1] === "walk spookytown 5,6", `no path to the door's point: the old way (${calls})`);
+		R("go_raw = globalThis.__gr; route_plan = globalThis.__rp; route_plain = globalThis.__rpl; CFG.travel.safe_routes = globalThis.__tc");
+		ctx.transport = tp0; if (hd) ctx.G.maps.halloween = hd; else delete ctx.G.maps.halloween; delete ctx.__calls;
+		Object.assign(character, sv);
+	}
 	// v25.22: the Cave of Many Dreams
 	{
 		const R = (c) => vm.runInContext(c, ctx);

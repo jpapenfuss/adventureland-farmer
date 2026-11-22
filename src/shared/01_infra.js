@@ -117,11 +117,26 @@ async function go_route(dest, ms, tele_tried = false) {
 				if (L.kind === "tp") {
 					await go_transporter(L, ms);
 					if (typeof transport === "function") await T(transport(L.to, L.s), 25_000);
-				} else await go_raw({ map: L.to, x: L.tx, y: L.ty }, ms);
+				} else if (L.kind === "door") await go_door(L, ms);
+				else await go_raw({ map: L.to, x: L.tx, y: L.ty }, ms);
 			}
 		}
 	}
 	return go_raw(dest, ms);
+}
+// v25.27: a door leg goes through the door the plan chose: walk to it on this map, then use it (transport(map, spawn)).
+// It used to be smart_move({map: next}), and the game's pathfinder picks its own shortest door: the planned way around
+// level1's prats (main → halloween → spookytown) was walked back out through main after every re-plan — Torlis went in
+// a door, stopped for the party, then walked back out, again and again (owner's report and screenshot, 2026-11-22).
+// No path to the door's own point (inside a wall): the old way, once.
+async function go_door(L, ms) {
+	try { await go_raw({ map: L.map, x: L.x, y: L.y }, ms); }
+	catch (e) { if (e?.reason !== "failed") throw e; return go_raw({ map: L.to, x: L.tx, y: L.ty }, ms); }
+	if (character.map === L.map && typeof transport === "function") {
+		await T(transport(L.to, L.s), 10_000).catch(() => {});
+		await until(() => character.map === L.to, 5000);
+	}
+	if (character.map !== L.to) return go_raw({ map: L.to, x: L.tx, y: L.ty }, ms);
 }
 // v24.41: walk to a transporter. The ground nearest one can be 50-60px from the NPC (desertland: nothing walkable within
 // 55px; winterland 48px — measured on the map geometry), so the pathfinder finds no way to the NPC's own point or just
