@@ -8307,14 +8307,17 @@ tick();
 // report() prints it. What changed between versions is in the git history and REFACTOR.md, not here.
 //
 // Each tick (main.js tick()), first match wins:
-//   1. Dead → respawn as soon as the server allows (in the cave: the cave's own revive vote).
+//   1. Dead → respawn as soon as the server allows. In the cave the death also counts against the room being worked on
+//      (cave_died); the cave's revive offer is a vote, taken once alive or by the others (cave_tick).
 //   2. Inside the Cave of Many Dreams → its own loop (fighter/9_cave.js); none of the steps below.
 //   3. The party isn't whole (a member dead or offline) → the others use the suicide command and wait in town
 //      (party_break_tick). Nobody suicides for any other reason; fighters never flee.
 //   4. The merchant, HP < flee_hp → walk to town, fight back only if hit, resume when recovered (flee_tick).
 //   5. park() was called → finish the current errand, stand in town until resume().
-//   6. Town work, when something is due (the tank starts a party trip; followers only join it): Daisy (hunt, tokens)
-//      → quest crafts → compound → upgrade project → stat scrolls → exchange → elixir → sell → potions → bank. With
+//   6. Town work, when something is due (the tank starts a party trip; followers only join it), in town_run's order:
+//      collect from the merchant → Daisy (hunt, tokens) → quest crafts → guide steps (off) → compound → upgrade project
+//      → stat scrolls → forge (craft_power) → exchange → elixir → bank if already inside it → sell → potions → bank →
+//      compound / upgrade again with what the bank visit fetched. With
 //      the merchant online, fighters leave compounds and upgrade projects to it and go only when bags or potions
 //      run low; work that can wait is deferred to the next trip (fighter_defers_town).
 //   7. The role's own tick (role_tick): the merchant's merchant_tick, or the fighter's fighter_tick:
