@@ -203,7 +203,7 @@ function report_facts() {
 	facts_stat(F, c);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
-		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${P.own ? " — our own (a copy in our bags; the merchant doesn't take it over)" : ""}${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "shop projects are the merchant's" : "no project") + upgrade_why()}`);
+		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${P.own ? " — our own (the merchant doesn't take it over)" : ""}${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "shop projects are the merchant's" : "no project") + upgrade_why()}`);
 	}
 	facts_elixir(F, c);
 	if (CFG.compound_auto) {
