@@ -93,6 +93,7 @@ function fighter_tick() {
 		set_message(`${errand_busy() ? state.errand + " | " : ""}${!L ? "no tank online" : L.rip ? "waiting for " + L.name + " (dead)" : "with " + L.name + (L.pack ? " @ " + L.pack.mtype : "")} | ${character.esize} free`);
 		return 150;
 	}
+	if (cave_entry_tick()) { loot_chests(); return 200; } // v25.22: once a day, the party goes into the Cave of Many Dreams
 	// v24.8: with the party waiting at our pack while we're on an errand or walking back: no re-pick (the periodic
 	// one, town_body's reset) — that switched to another pack and moved them
 	const cp = state.pack, waiting = in_party_cfg() && !!cp && partners().length > 0 && !partners_near().length &&

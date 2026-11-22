@@ -53,3 +53,7 @@ async function task_collect() { return 0; }
 function set_piece_plan() { return null; }
 function set_piece_fetch() { return []; }
 function set_piece_start() {}
+function cave_tick() { return 250; }
+function cave_died() {}
+function facts_cave() {}
+function cave_entry_tick() { return false; }
