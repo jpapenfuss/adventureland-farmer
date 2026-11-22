@@ -1110,6 +1110,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// with the merchant online, fighters leave projects to it
 	vm.runInContext("state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 0 }", ctx);
 	assert(!vm.runInContext("upgrade_due()", ctx), "fighter skips upgrade projects while the merchant is online");
+	// v25.13: the report says when a project is the fighter's own (kept while the merchant is online)
+	{
+		const P = "state.upg = { name: 'slimestaff', to: 7, for: 'Torlis', slot: 'mainhand', gain: 10, cost: 80000, own: true }";
+		vm.runInContext(P, ctx);
+		const line = vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx);
+		assert(/slimestaff .* — our own \(a copy in our bags/.test(line || ""), `report marks an own project (${line})`);
+		vm.runInContext(P.replace("own: true", "own: false"), ctx);
+		assert(!/our own/.test(vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx) || ""), "and not a shared one");
+		vm.runInContext("state.upg = null", ctx);
+	}
 	vm.runInContext("state.merchant = null", ctx);
 	ctx.find_npc = fn_save;
 
