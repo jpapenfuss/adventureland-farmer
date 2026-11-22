@@ -41,13 +41,16 @@ In the code as of v24.50:
   measured camps by measurement, untried ones by estimate, past switch_margin; a measurement loses weight as the
   party grows. This replaces v24.60's "no re-pick" (the 2-minute re-pick it removed had moved the party 18 times an
   hour).
-- [~] v24.94–v25.3: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
+- [~] v24.94–v25.4: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
   farmer.js is their build. First cut: the merchant's supply runs, stand, Merrit, Ponty, bank purge and donations
   went to merchant.js; following, healing, the hand-off to the merchant, token buys, own projects and collecting
   went to fighter.js. v24.95–v24.98: the fighter's part of tick() (fighter_tick), camp choice and review, danger
   checks, the party break, party town trips, goals and directives, report()'s role sections (facts_*), safety tuning,
-  worn-gear swaps, stat scrolls, events. Still in common.js: combat (the merchant fights back when hit), gear
-  scoring, bags, town runs, quests' crafting, and ~65 is_merchant() branches inside shared functions.
+  worn-gear swaps, stat scrolls, events. v25.1–v25.4: messages
+  (fighter_cm), heartbeat, party invites, the rest of report()'s fighter lines, goals and hunts, why_not's answer,
+  combat (fight, choose_target, approach, kite, class skills; the merchant has its own plain fight-back). Still in
+  common.js: gear scoring, bags, town runs, upgrades/compounds (merchant, or a fighter when it's offline), the fight
+  model's numbers, and ~45 one-line role conditions.
 - [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.
 
 Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the

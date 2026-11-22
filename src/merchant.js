@@ -596,8 +596,9 @@ function recover() {
 	}
 	if (channeling()) return void set_message("Teleporting to town…"); // nothing that would cancel it
 	if (threat || hurt_ms() < CFG.flee_quiet_ms) {
-		const t = choose_target(false); // what's hitting us (then a partner)
-		if (t) fight(t, true); // steer: a melee fighter walks to a ranged attacker; a ranged one kites
+		// v25.4: a plain attack on what's hitting us (the fighters' combat — steering, kiting, skills — is in fighter.js);
+		// it used to steer toward a ranged attacker while fleeing
+		if (merchant_fight_back()) {}
 		else if (threat && Number.isFinite(threat.x)) { // v24.8: one we ignore as immune: step away from it (stood still before)
 			const a = Math.atan2(character.y - threat.y, character.x - threat.x), x = character.x + Math.cos(a) * 120, y = character.y + Math.sin(a) * 120;
 			if (can_move_to(x, y)) move_to_as("recover", x, y, 300);
@@ -648,3 +649,12 @@ function merchant_fetch_sale(fetch) {
 // ---- moved from common.js (v24.95): used by the merchant only ----
 // ---- Stand (CFG.merchant.stand) ----
 const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
+// ---- the merchant's fight-back (v25.4): what's hitting us gets attacked if in reach; true when something is on us ----
+function merchant_fight_back() {
+	const t = hit_on_me();
+	if (!t) return false;
+	if (character.c.town) return true; // channelling the town teleport: an attack would cancel it
+	if (get_targeted_monster() !== t) change_target(t);
+	if (can_attack(t)) fire("attack", t);
+	return true;
+}

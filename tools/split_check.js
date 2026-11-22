@@ -11,7 +11,7 @@ function blocks(file) {
 	lines.forEach((l, i) => { const m = l.match(DECL); if (m) out.push({ name: m[1] || m[2], line: i + 1, fn: /function/.test(l.split(/[=(]/)[0]) }); });
 	for (let k = 0; k < out.length; k++) {
 		const body = lines.slice(out[k].line - 1, k + 1 < out.length ? out[k + 1].line - 1 : lines.length).join("\n")
-			.replace(/\/\/.*$/gm, "").replace(/`(?:\\.|[^`\\])*`/g, (m) => m.replace(/\$\{([^}]*)\}/g, " $1 ").replace(/[^${}\w\s]/g, " "))
+			.replace(/\/\/.*$/gm, "").replace(/`(?:\\.|[^`\\])*`/g, (m) => " " + (m.match(/\$\{[^}]*\}/g) || []).map((x) => x.slice(2, -1)).join(" ") + " ")
 			.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""');
 		out[k].refs = new Set(body.match(/(?<![\w$.])[A-Za-z_$][\w$]*(?!\s*:(?!:))/g) || []);
 	}

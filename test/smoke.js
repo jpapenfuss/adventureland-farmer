@@ -2688,16 +2688,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 42, hp: 300, max_hp: 1000, mp: 1000, max_mp: 1000, map: "main", x: 0, y: 0, rip: false, c: {} });
 		const rec = [], sk = []; const us = ctx.use_skill, gnm = ctx.get_nearest_monster;
 		ctx.use_skill = (n, t, x) => (sk.push([n, t, x]), Promise.resolve());
-		vm.runInContext(`state.partners = {}; state.pack = null; globalThis.__f116 = { fight, choose_target }; globalThis.__fought = [];
+		vm.runInContext(`state.partners = {}; state.pack = null; globalThis.__f116 = { fight, choose_target, hit_on_me, fire }; globalThis.__fought = [];
 			fight = (t, steer) => globalThis.__fought.push([t.id, steer]); choose_target = () => globalThis.__thr || null;
+			hit_on_me = () => globalThis.__thr || null; fire = (s, t, x) => (s === "attack" ? (globalThis.__fought.push([t.id, s]), true) : globalThis.__f116.fire(s, t, x)); // v25.4: merchant_fight_back
 			Object.assign(state, { recovering: true, fled: false, fled_home: false, town_at: 0 }); pmring.hits.length = 0;
 			for (const k in inflight) inflight[k] = false;`, ctx);
 		const T116 = { id: "x116", mtype: "goo", target: "DoWhatNow" };
 		ctx.get_nearest_monster = (a) => (a && a.target === "DoWhatNow" && ctx.__thr ? ctx.__thr : null);
 		ctx.__thr = T116;
 		vm.runInContext("recover()", ctx);
-		assert(vm.runInContext("globalThis.__fought.length === 1 && globalThis.__fought[0][1] === true", ctx) && !sk.some(([n]) => n === "use_town"),
-			"something on us: fight it (walking to it if needed), no channel (its hits would cancel it)");
+		assert(vm.runInContext("globalThis.__fought.length === 1 && globalThis.__fought[0][1] === 'attack'", ctx) && !sk.some(([n]) => n === "use_town"),
+			`something on us: attack it (v25.4: a plain attack; it used to steer toward it), no channel (its hits would cancel it) (${vm.runInContext("JSON.stringify(globalThis.__fought)", ctx)})`);
 		ctx.__thr = null; vm.runInContext("pmring.hits.push({ t: Date.now() - 500, mtype: 'goo', dmg: 50 }); recover()", ctx);
 		assert(!sk.some(([n]) => n === "use_town"), "hit 0.5s ago: still not quiet enough to channel");
 		vm.runInContext("pmring.hits.length = 0; pmring.hits.push({ t: Date.now() - 5000, mtype: 'goo', dmg: 50 }); recover()", ctx);
@@ -2719,7 +2720,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(sk.some(([n]) => n === "regen_hp"), "calm at 70%: regen");
 		character.items[0] = null;
 		vm.runInContext("state.recovering = false; state.fled_home = false", ctx);
-		vm.runInContext("pmring.hits.length = 0; state.dead_handled = false; state.danger = {}; state.cooldown = {}; state.safety_mult = 1; fight = globalThis.__f116.fight; choose_target = globalThis.__f116.choose_target", ctx);
+		vm.runInContext("pmring.hits.length = 0; state.dead_handled = false; state.danger = {}; state.cooldown = {}; state.safety_mult = 1; hit_on_me = globalThis.__f116.hit_on_me; fire = globalThis.__f116.fire; fight = globalThis.__f116.fight; choose_target = globalThis.__f116.choose_target", ctx);
 		// paladin smash: only from MP above the floor, only with a mace
 		Object.assign(character, { name: "Torlis", ctype: "paladin", hp: 1000, max_hp: 1000, mp: 900, max_mp: 1000, attack: 100, slots: { mainhand: { name: "mace116" } } });
 		vm.runInContext("globalThis.__pur = G.skills.purify; delete G.skills.purify; G.skills.smash = { mp: 380, cooldown: 320, wtype: 'mace' }; G.items.mace116 = { wtype: 'mace', type: 'weapon' }; G.items.blade116 = { wtype: 'sword', type: 'weapon' }", ctx);
