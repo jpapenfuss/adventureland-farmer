@@ -4555,7 +4555,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "zone_rz3_0", x: 0, y: 0 });
 		R("cave_tick()");
 		assert(R("cave_st.out_since") === 0, "...and the tank inside resets the clock");
-		delete character.cave; delete ctx.cave_exit; R("state.partners = {}; state.cave_visit = null; cave_st.exiting = false"); Object.assign(character, sv);
+		// a cave_exit that throws synchronously: caught, retried, at most 6 tries
+		{
+			let tries = 0; ctx.cave_exit = () => { tries++; throw new Error("not now"); };
+			const st = ctx.setTimeout; let pend = []; ctx.setTimeout = (f) => pend.push(f);
+			R("cave_st.exiting = false; cave_st.exit_tries = 0; cave_leave('test')");
+			for (let i = 0; i < 10; i++) { await new Promise((r) => setImmediate(r)); const f = pend.shift(); if (f) f(); }
+			ctx.setTimeout = st;
+			assert(tries === 6, `a synchronous throw from cave_exit is caught and retried, 6 tries at most (got ${tries})`);
+		}
+		delete character.cave; delete ctx.cave_exit; R("state.partners = {}; state.cave_visit = null; cave_st.exiting = false; cave_st.exit_tries = 0"); Object.assign(character, sv);
 	}
 	// v25.14: keep_awake calls the game's performance_trick only while no loop exists, then replays the loop only when it
 	// stopped and sound is allowed (no stacked or queued copies)

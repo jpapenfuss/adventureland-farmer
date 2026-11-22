@@ -16,7 +16,7 @@ const cave_st = { entering: false, entered_at: 0, info_at: 0, voted: {}, bought:
 function cave_run_check(st) {
 	if (!st || st.run === cave_st.run) return;
 	cave_st.run = st.run; cave_st.bought = {}; cave_st.deaths = {}; cave_st.stuck = {}; cave_st.prog = null; cave_st.last_obj = null; cave_st.walk = null;
-	cave_st.visit_deaths = 0; cave_st.exiting = false; cave_st.out_since = 0;
+	cave_st.visit_deaths = 0; cave_st.exiting = false; cave_st.out_since = 0; cave_st.exit_tries = 0;
 }
 // ---- the daily visit (the tank) ----
 async function cave_refresh_info() {
@@ -52,11 +52,15 @@ function cave_blocked() {
 function cave_leave(why_) {
 	if (cave_st.exiting || typeof cave_exit !== "function") return;
 	cave_st.exiting = true;
-	game_log(`cave: leaving — ${why_}`, C.warn);
-	log_ev("cave", { what: "exit", why: why_ });
-	Promise.resolve(cave_exit()).catch((e) => {
-		game_log(`cave: exit failed: ${why(e)} (again in 5 s)`, C.dim);
-		setTimeout(() => { cave_st.exiting = false; if (character.cave) cave_leave(why_); }, 5000);
+	if (!cave_st.exit_tries) { game_log(`cave: leaving — ${why_}`, C.warn); log_ev("cave", { what: "exit", why: why_ }); }
+	cave_st.exit_tries = (cave_st.exit_tries || 0) + 1;
+	// (a synchronous throw is caught too; 6 tries, 5 s apart, then the visit plays on)
+	let p;
+	try { p = Promise.resolve(cave_exit()); } catch (e) { p = Promise.reject(e); }
+	p.catch((e) => {
+		const more = cave_st.exit_tries < 6;
+		game_log(`cave: exit failed: ${why(e)}${more ? " (again in 5 s)" : " — giving up this visit"}`, C.dim);
+		if (more) setTimeout(() => { cave_st.exiting = false; if (character.cave) cave_leave(why_); }, 5000);
 	});
 }
 const cave_door = () => { const d = (G.maps.main?.npcs || []).find((n) => n.id === "dreamkeeper"); return { map: "main", x: d?.position?.[0] ?? 816, y: (d?.position?.[1] ?? 1200) + 40 }; };

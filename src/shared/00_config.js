@@ -499,7 +499,7 @@ const state = {
 	stand_since: 0,          // merchant: when the stand was last opened and left still (Merrit's 2-minute timer)
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
 	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
-	cave_block: null,        // v25.29: { at, lv, gs } — the cave beat us: not again until the party is stronger (saved)
+	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
 	upg_caps: {},            // item -> { level, at }: the level a project reached before odds/failures stopped it (v24.5, saved)
