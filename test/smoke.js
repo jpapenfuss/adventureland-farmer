@@ -3007,6 +3007,39 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.bank_gear = [{ name: 'amulet119', level: 6 }]", ctx);
 		assert(!/upgrade for/.test(vm.runInContext("secondhand_reason({ name: 'amulet119', level: 5 }, {}) || ''", ctx)), "a +6 in the bank does");
 		vm.runInContext("state.bank_gear = []", ctx);
+		// v25.18: a shiny listing isn't blocked by a plain copy at its level; a shiny one blocks it
+		vm.runInContext("state.bank_gear = [{ name: 'amulet119', level: 6 }]", ctx);
+		assert(/upgrade for/.test(vm.runInContext("secondhand_reason({ name: 'amulet119', level: 5, p: 'shiny' }, {}) || ''", ctx)), "a shiny +5 isn't blocked by a plain +6");
+		vm.runInContext("state.bank_gear = [{ name: 'amulet119', level: 6, p: 'shiny' }]", ctx);
+		assert(!/upgrade for/.test(vm.runInContext("secondhand_reason({ name: 'amulet119', level: 5, p: 'shiny' }, {}) || ''", ctx)), "...a shiny +6 blocks it");
+		vm.runInContext("state.bank_gear = []", ctx);
+		// v25.18: a head start — a +1 that doesn't win as it is, but wins at +3, and nobody sells one: bought to be upgraded
+		{
+			const R = (c) => vm.runInContext(c, ctx);
+			const sc0 = ctx.G.items.scroll0; ctx.G.items.scroll0 = { g: 1000, type: "uscroll", grade: 0 };
+			const g2 = R("gear_gain({ name: 'amulet119', level: 2 }, 'mage', { w: { amulet: 0 }, own: {} }).gain");
+			const parts0 = R("JSON.stringify(state.partners)"); R("state.partners = {}");
+			hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { amulet: g2 + 0.1 }, own: {} } });
+			R("CFG.secondhand_gold_per_pt = 15000; state.upg_caps = {}; state.gear_skip = {}; sold_c.set('amulet119', false)");
+			const why1 = R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''");
+			assert(/start for an upgrade: \+1 → \+\d+ for Sanala/.test(why1), `a +1 that wins once upgraded is a head start (${why1}; target ${R("upgrade_target('amulet119')")})`);
+			character.items[7] = { name: "amulet119", level: 2 };
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not when our own copy is as far along");
+			character.items[7] = null;
+			R("CFG.secondhand_upgrade_starts = false");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...and not when switched off");
+			R("CFG.secondhand_upgrade_starts = true");
+			// the planner's gates: not for a paused piece, the current project's piece, or over the project budget
+			R("skip('upg:amulet119', 60000, 'test')");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for a piece the planner has paused");
+			R("state.gear_skip = {}; state.upg = { name: 'amulet119', to: 6, for: 'Sanala' }");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for the piece the current project builds");
+			R("state.upg = null; globalThis.__us = CFG.upgrade_spend; CFG.upgrade_spend = 0");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not over the planner's budget");
+			R("CFG.upgrade_spend = globalThis.__us; sold_c.delete('amulet119')");
+			if (sc0) ctx.G.items.scroll0 = sc0; else delete ctx.G.items.scroll0;
+			R(`state.partners = ${parts0}`);
+		}
 		// stand: a partial sale is logged and the listing's quantity follows
 		character.stand = true; character.slots = { trade1: { name: "gem119", q: 3, price: 100 } };
 		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false; CFG.merchant.stand.list = ['gem119']", ctx);

@@ -1,4 +1,4 @@
-const VERSION = "25.17"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.18"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -195,7 +195,9 @@ const CFG = {
 	// checks every secondhand_every_ms and buys anything a fighter would wear as an upgrade, or that completes a compound
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
-	secondhand_every_ms: 1_800_000,
+	secondhand_every_ms: 600_000, // v25.18: was 30 min (owner: watch Ponty more closely)
+	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
+	secondhand_upgrade_starts: true,
 	secondhand_max_price: 500_000,     // v18.6: was 2M (it paid 936k for +0 pants)
 	// v24.81: Ponty routes — copies bought there (with ours) to compound into a piece a fighter would wear, up to +2 (the
 	// server's base odds: +1 99%, +2 75%, +3 40%); a route may cost this per gear point, weighed by its odds
