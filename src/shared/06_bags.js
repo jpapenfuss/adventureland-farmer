@@ -29,7 +29,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
-	if (merchant_sells(item)) return "sell"; // v25.5: merchant.js — a purge pull, a dead compound piece
+	if (merchant_sells(item)) return "sell"; // v25.5: merchant/ — a purge pull, a dead compound piece
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -70,11 +70,11 @@ function bag_plan() {
 		if (c) for (const [q, n] of G.craft[c.id].items || []) if (held_any(n) < q && (state.bank_seen[n] || 0) > 0 &&
 			Date.now() - (state.fetch_try["craft:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "craft:" + n });
 	}
-	merchant_fetch_give(fetch); // v25.0: merchant.js
+	merchant_fetch_give(fetch); // v25.0: merchant/
 	for (const n of hold_missing()) if (state.bank_seen[n] > 0 && Date.now() - (state.fetch_try["hold:" + n] || 0) > 1_800_000) fetch.push({ name: n, key: "hold:" + n });
 	const bx = CFG.elixir_auto && character.ctype !== "merchant" && !elixir_active() && !best_elixir() && bank_elixir();
 	if (bx) fetch.push({ name: bx.name, key: "elixir:" + bx.name });
-	merchant_fetch_stand(fetch); // v25.0: merchant.js
+	merchant_fetch_stand(fetch); // v25.0: merchant/
 	// v24.85: an upgrade project starts from the best copy we own below its target — the bank's too. It bought a +0 and
 	// upgraded it from scratch while a +5 of the same piece lay in the bank (Torlis's mace+7 project: mace+5 banked).
 	{
@@ -88,7 +88,7 @@ function bag_plan() {
 	const bu_ = bank_upgrades(); // a piece that wins as it is comes first: nothing is fetched to be upgraded meanwhile
 	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
-	merchant_fetch_sale(fetch); // v25.0: merchant.js
+	merchant_fetch_sale(fetch); // v25.0: merchant/
 	return { sell, bank, fetch, free: character.esize };
 }
 // Nearest NPC with a shop on this map (any shop buys anything), else one on main

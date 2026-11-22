@@ -29,7 +29,12 @@
   "fighter/7_report.js"
  ],
  "merchant": [
-  "merchant.js"
+  "merchant/0_loop.js",
+  "merchant/1_serve.js",
+  "merchant/2_stand.js",
+  "merchant/3_ponty.js",
+  "merchant/4_bank.js",
+  "merchant/5_report.js"
  ],
  "last": [
   "main.js"

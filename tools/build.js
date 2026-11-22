@@ -1,4 +1,4 @@
-// Builds farmer.js (every role in one file) from src/, in src/manifest.json's order: shared/*, fighter/*, merchant.js,
+// Builds farmer.js (every role in one file) from src/, in src/manifest.json's order: shared/*, fighter/*, merchant/,
 // main.js. farmer.js is what loaders v1/v2 and the tests run; loader v4 reads the manifest and fetches only its role's
 // files (shared + its role + last).
 //   node tools/build.js          write farmer.js

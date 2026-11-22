@@ -26,14 +26,14 @@ function unpause(prefix = "town:") {
 }
 function resume() { state.parked = false; state.last_pick = 0; state.last_target_at = Date.now(); game_log("Resuming", C.info); }
 // While parked: one trip to town, then stand and defend
-// Fight back what's on us (parked): a fighter with its full combat (fighter/), the merchant with a plain attack (merchant.js)
+// Fight back what's on us (parked): a fighter with its full combat (fighter/), the merchant with a plain attack (merchant/)
 function fight_back() { return is_merchant() ? merchant_fight_back() : fighter_fight_back(); }
 function park_tick() {
 	if (!errand_busy() && !state.park_home) {
 		if (walking()) halt("park_tick");
 		state.park_home = errand("park", async () => { await go("town"); });
 	}
-	fight_back(); // v25.4: the role's own (fighter/ / merchant.js)
+	fight_back(); // v25.4: the role's own (fighter/ / merchant/)
 	set_message(errand_busy() ? `Parking (${state.errand})` : "Parked");
 }
 if (CFG.park_key && typeof map_key === "function") map_key(CFG.park_key, "snippet", "state.parked ? resume() : park()");

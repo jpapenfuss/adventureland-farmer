@@ -358,7 +358,7 @@ async function share_gear() {
 		}
 		// v24.7: the merchant hands a piece only to the fighter it helps most (gear_target walks to that one), not to
 		// whoever is near when it serves someone
-		if (to && !merchant_gives_to(it, to.m.name)) to = null; // v25.5+: merchant.js — only to the fighter it helps most
+		if (to && !merchant_gives_to(it, to.m.name)) to = null; // v25.5+: merchant/ — only to the fighter it helps most
 		if (!to && Mt && CFG.merchant.wear_gear) { const r = gear_gain(it, "merchant", Mt.g); if (r) to = { ...r, m: Mt }; }
 		const key = `${it.name}:${it.level || 0}>${to?.m.name}`;
 		if (!to || now - (state.gear_sent[key] || 0) < 600_000 || !can_spend(1, RESERVE.errand)) continue;
@@ -954,7 +954,7 @@ function upgrade_due() {
 		state.upg = pick_upgrade();
 		if (state.upg) game_log(`upgrade project: ${state.upg.name} → +${state.upg.to} for ${state.upg.for}'s ${state.upg.slot} (+${state.upg.gain} pts, ~${Math.round(state.upg.cost / 1000)}k)`, C.info);
 	}
-	if (merchant_awaits_funds()) return false; // v25.5: merchant.js
+	if (merchant_awaits_funds()) return false; // v25.5: merchant/
 	return !!state.upg && !skipped("upg:" + state.upg.name) && best_level_held(state.upg.name) < state.upg.to;
 }
 async function task_upgrade() {
@@ -974,7 +974,7 @@ async function task_upgrade() {
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
 		// over the party's gold budget: don't ask the fighters for gold we then couldn't spend (v19.6)
 		if (!P.weapon && step > gold_room()) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
-		if (merchant_asks_funds(P, step)) break; // v25.5: merchant.js — the fighters fund the step
+		if (merchant_asks_funds(P, step)) break; // v25.5: merchant/ — the fighters fund the step
 		if (!(P.weapon ? character.gold - step >= (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve) : gold_ok(step))) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
 		state.fund_need = 0;
 		// v23.1: the gold the project's steps cost (copy + scrolls), counted per step — measuring from total gold let loot,
@@ -1049,7 +1049,7 @@ async function task_craft_power() {
 	const r = G.craft[c.id];
 	if (!gold_ok(r.cost)) return (town_reason.forge = "gold budget"), 0;
 	if ((r.cost || 0) > character.gold - (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve)) {
-		merchant_asks_funds(null, r.cost); // v25.5: merchant.js
+		merchant_asks_funds(null, r.cost); // v25.5: merchant/
 		return 0;
 	}
 	if (character.esize < 1) return 0;

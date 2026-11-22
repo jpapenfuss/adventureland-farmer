@@ -41,7 +41,7 @@ In the code as of v24.50:
   measured camps by measurement, untried ones by estimate, past switch_margin; a measurement loses weight as the
   party grows. This replaces v24.60's "no re-pick" (the 2-minute re-pick it removed had moved the party 18 times an
   hour).
-- [~] v24.94–v25.8: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
+- [~] v24.94–v25.9: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
   farmer.js is their build. First cut: the merchant's supply runs, stand, Merrit, Ponty, bank purge and donations
   went to merchant.js; following, healing, the hand-off to the merchant, token buys, own projects and collecting
   went to fighter.js. v24.95–v24.98: the fighter's part of tick() (fighter_tick), camp choice and review, danger
@@ -52,7 +52,8 @@ In the code as of v24.50:
   common.js: gear scoring, bags, town runs, upgrades/compounds (merchant, or a fighter when it's offline), the fight
   model's numbers, and ~45 one-line role conditions. v25.7: common.js became src/shared/ (16 files by subject) with
   src/manifest.json giving each role's load order; loader v4 reads it. v25.8: fighter.js became src/fighter/
-  (8 files: loop, party, camp, combat, goals, town, gear, report).
+  (8 files: loop, party, camp, combat, goals, town, gear, report). v25.9: merchant.js became src/merchant/
+  (6 files: loop, serve, stand, ponty, bank, report).
 - [ ] Stage 4: delete the guide, travel gear and probes; a camp is kept on measured results only.
 
 Still to bring under the tank: followers choose their own approach, kiting and step-away movement, and the

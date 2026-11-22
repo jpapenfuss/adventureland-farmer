@@ -21,27 +21,27 @@ function blocks(file) {
 function check() {
 	// the groups: the shared files count as one ("common"), each role's files as one, then the last files
 	const MAN = JSON.parse(fs.readFileSync(path.join(SRC, "manifest.json"), "utf8"));
-	const G = { "common.js": MAN.shared, "fighter.js": MAN.fighter, "merchant.js": MAN.merchant, "main.js": MAN.last };
+	const G = { "shared": MAN.shared, "fighter": MAN.fighter, "merchant": MAN.merchant, "last": MAN.last };
 	const files = Object.keys(G), B = Object.fromEntries(files.map((g) => [g, G[g].flatMap((f) => blocks(f).map((b) => ({ ...b, file: f })))]));
 	const names = (f) => new Set(B[f].map((b) => b.name));
 	const errs = [];
-	const defaults = new Set(B["common.js"].filter((b) => b.fn).map((b) => b.name));
+	const defaults = new Set(B["shared"].filter((b) => b.fn).map((b) => b.name));
 	// declared twice: only a common default replaced by a role file's function
 	const seen = {};
 	for (const f of files) for (const b of B[f]) {
-		if (seen[b.name] && !(seen[b.name] === "common.js" && defaults.has(b.name) && b.fn && (f === "fighter.js" || f === "merchant.js")))
+		if (seen[b.name] && !(seen[b.name] === "shared" && defaults.has(b.name) && b.fn && (f === "fighter" || f === "merchant")))
 			errs.push(`${b.name} declared in ${seen[b.name]} and ${b.file}:${b.line}`);
 		seen[b.name] = seen[b.name] || f;
 	}
-	for (const [role, other] of [["fighter.js", "merchant.js"], ["merchant.js", "fighter.js"]]) {
-		const have = new Set(["common.js", role, "main.js"].flatMap((f) => [...names(f)])), theirs = names(other);
-		for (const f of ["common.js", role, "main.js"]) for (const b of B[f]) for (const r of b.refs)
-			if (theirs.has(r) && !have.has(r)) errs.push(`${b.file}:${b.line} ${b.name} uses ${r}, which only ${other} declares (add a default to shared/15_hooks.js)`);
+	for (const [role, other] of [["fighter", "merchant"], ["merchant", "fighter"]]) {
+		const have = new Set(["shared", role, "last"].flatMap((f) => [...names(f)])), theirs = names(other);
+		for (const f of ["shared", role, "last"]) for (const b of B[f]) for (const r of b.refs)
+			if (theirs.has(r) && !have.has(r)) errs.push(`${b.file}:${b.line} ${b.name} uses ${r}, which only the ${other} files declare (add a default to shared/15_hooks.js)`);
 	}
 	// a statement that runs at load (setInterval, character.on...) in a role file must use something that file declares:
 	// one that only uses shared names belongs in shared/ (v25.1: the xp/gold sampling had been carried to fighter.js)
 	const DECL_OR_SKIP = /^(?:async\s+function|function|const|let|var|class|\/\/|\}|\)|\]|\s|$)/;
-	for (const g of ["fighter.js", "merchant.js"]) for (const f of G[g]) {
+	for (const g of ["fighter", "merchant"]) for (const f of G[g]) {
 		const lines = fs.readFileSync(path.join(SRC, f), "utf8").split("\n"), own = names(g);
 		for (let i = 0; i < lines.length; i++) {
 			if (DECL_OR_SKIP.test(lines[i])) continue;
