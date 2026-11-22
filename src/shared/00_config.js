@@ -1,4 +1,4 @@
-const VERSION = "25.33"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.32"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -351,15 +351,6 @@ const CFG = {
 		// materials (anyone's quests), exchangeables, tokens, gear a member would wear, compound-set copies, keep or
 		// locked items.
 		purge_below: 0.1, purge_n: 10,
-		// v25.33 (owner): gear the party has no use for, and duplicates past what it could use, are sold to an NPC
-		// while the bank is nearly full (purge_below) — sell_junk stays off for everything else (materials, stacks).
-		// Per item name: useful (a fighter would wear it over what it wears, at some level up to +7 or the best copy
-		// held) → keep the best `ring_earring` copies of a ring or earring (two slots x three fighters) or `other` of
-		// any other piece, plus `failure_stock` more when no NPC sells it (an upgrade failure destroys the copy; an
-		// NPC-sold one is rebought); not useful → keep none. Never sold: titled, locked or bound copies, keep-list
-		// items, exchangeables, recipe and quest inputs, compound-set copies, anything a fighter would wear now, and
-		// the current upgrade project's piece. Up to purge_n copies per bank visit, each sale logged.
-		gear_purge: { enabled: true, ring_earring: 6, other: 3, failure_stock: 3 },
 		// Merrit (Market Parcels): an open stand with a listing, in Mainland's square (x -240..240, y -120..144) or
 		// southern aisle (x -88..88, y 144..360), on pavement she can reach, held still for 2 minutes, gets one parcel
 		// per account per hour when she walks by. Spacing: > npc_gap px from fixed NPCs, > stand_gap px from other
