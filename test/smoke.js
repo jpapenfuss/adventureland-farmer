@@ -1831,6 +1831,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.entities.rival.x = sp78b.x; ctx.parent.entities.rival.y = sp78b.y + 12; // within 10px sideways, 12px vertically
 	assert(!vm.runInContext(`spot_ok(${sp78b.x}, ${sp78b.y})`, ctx), "too close in front/behind another stand is refused");
 	delete ctx.parent.entities.rival;
+	// v25.28 (owner): no spot within keep_px (80) of another player's stand; with none left, the farthest valid one
+	ctx.parent.entities.rival = { id: "rival", name: "Rival", type: "character", stand: true, map: "main", x: 0, y: 100 };
+	assert(!vm.runInContext("spot_ok(40, 100)", ctx) && vm.runInContext("spot_ok(40, 100, false)", ctx), "40 px from another stand: refused (keep_px), though the server would allow it");
+	const sp78c = vm.runInContext("state.mspot = null; merrit_spot()", ctx);
+	assert(sp78c && Math.hypot(sp78c.x - 0, sp78c.y - 100) >= 80, `the spot keeps 80 px from the other stand (${JSON.stringify(sp78c)})`);
+	vm.runInContext("globalThis.__kp = CFG.merchant.merrit.keep_px; CFG.merchant.merrit.keep_px = 5000; state.mspot = null", ctx);
+	const sp78d = vm.runInContext("merrit_spot()", ctx);
+	assert(sp78d && vm.runInContext(`spot_ok(${sp78d.x}, ${sp78d.y}, false)`, ctx) && Math.hypot(sp78d.x, sp78d.y - 100) > 250, `nowhere far enough: the valid spot farthest from the stand (${JSON.stringify(sp78d)})`);
+	vm.runInContext("CFG.merchant.merrit.keep_px = globalThis.__kp; state.mspot = null", ctx);
+	delete ctx.parent.entities.rival;
 	// routine trip waits while the stand settles; an urgent one goes
 	Object.assign(character, { x: sp78b.x, y: sp78b.y, stand: true });
 	vm.runInContext(`state.mspot = { x: ${sp78b.x}, y: ${sp78b.y} }; state.stand_since = Date.now() - 30000; merchant_trip_at = 0; state.errand = null; smart_depth = 0`, ctx);

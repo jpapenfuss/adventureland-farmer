@@ -14,7 +14,7 @@ function fixed_npcs() {
 	return out;
 }
 // Can a stand stand here? Region, NPC and stand spacing, and walkable straight from (0,0) (Merrit's centre)
-function spot_ok(x, y) {
+function spot_ok(x, y, keep = true) {
 	const M = CFG.merchant.merrit;
 	if (!in_rect(x, y, M.square) && !in_rect(x, y, M.aisle)) return false;
 	if (fixed_npcs().some(([nx, ny]) => Math.hypot(nx - x, ny - y) <= M.npc_gap)) return false;
@@ -22,6 +22,9 @@ function spot_ok(x, y) {
 		if (!e || e.type !== "character" || !e.stand || e.name === character.name || e.map && e.map !== "main") continue;
 		const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y);
 		if (Math.hypot(dx, dy) <= M.stand_gap || (dx <= M.stand_gap && dy <= M.stand_vgap)) return false;
+		// v25.28 (owner): keep our distance from other merchants' stands, well past the server's 10 px rule. A stand that
+		// sets up within keep_px of ours later makes our spot not ok: we move to the next one (Merrit's 2 minutes restart)
+		if (keep && Math.hypot(dx, dy) < (M.keep_px || 0)) return false;
 	}
 	if (typeof can_move === "function") {
 		try { if (!can_move({ map: "main", x: 0, y: 0, going_x: x, going_y: y, base: character.base || { h: 8, v: 7, vn: 2 } })) return false; } catch (e) {}
@@ -35,7 +38,13 @@ function merrit_spot() {
 	const pts = [];
 	for (const r of [M.square, M.aisle]) for (let x = r[0]; x <= r[2]; x += M.step) for (let y = r[1]; y <= r[3]; y += M.step) pts.push([x, y]);
 	pts.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
-	const p = pts.find(([x, y]) => spot_ok(x, y));
+	let p = pts.find(([x, y]) => spot_ok(x, y));
+	// v25.28: the square too crowded for keep_px — the valid spot farthest from every other stand
+	if (!p) {
+		const stands = Object.values(parent.entities || {}).filter((e) => e?.type === "character" && e.stand && e.name !== character.name && (!e.map || e.map === "main"));
+		const gap = ([x, y]) => Math.min(Infinity, ...stands.map((e) => Math.hypot(e.x - x, e.y - y)));
+		p = pts.filter(([x, y]) => spot_ok(x, y, false)).sort((a, b) => gap(b) - gap(a))[0];
+	}
 	state.mspot = p ? { x: p[0], y: p[1] } : null;
 	if (p) game_log(`merrit: stand spot ${p[0]},${p[1]}`, C.dim);
 	return state.mspot;
