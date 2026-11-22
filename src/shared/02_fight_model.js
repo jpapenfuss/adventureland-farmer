@@ -125,7 +125,7 @@ function party_missing() {
 function free_for_all(t) {
 	if (!t || t.type !== "monster" || !t.mtype || !in_party_cfg()) return false;
 	const L = leader_hb(), P = state.pack;
-	if (!L || L.rip || !fresh(L) || !Array.isArray(L.os) || !L.os.includes(t.mtype)) return false;
+	if (!L || L.rip || L.errand || !fresh(L) || !Array.isArray(L.os) || !L.os.includes(t.mtype)) return false; // (not while it's on an errand)
 	if (!P || P.mtype !== t.mtype || P.map !== character.map || !valid_boundary(P.boundary)) return false;
 	const b = P.boundary, pad = CFG.party.ffa_pad ?? 100; // the camp itself (near_pad's 450 px would scatter the party)
 	return t.x >= b[0] - pad && t.x <= b[2] + pad && t.y >= b[1] - pad && t.y <= b[3] + pad;
