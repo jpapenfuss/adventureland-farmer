@@ -108,6 +108,11 @@ function facts_targets(F, ctx) {
 
 function facts_quests(F, ctx) {
 	const { p, d, now } = ctx;
+	// v25.15: own quests left out because their output wouldn't be worn (or we already have one)
+	if (CFG.quest_crafts && !Array.isArray(CFG.quest_crafts)) {
+		const sk = Object.keys(G.craft).filter((id) => G.craft[id].quest && CFG.quest_npcs.includes(G.craft[id].quest) && !is_guide_quest(id) && quest_skip_why(id));
+		if (sk.length) F("quest_skip", "self", `quests skipped: ${sk.map((id) => `${id} (${quest_skip_why(id)})`).join(", ")}`);
+	}
 	for (const id of quest_recipes()) {
 		const r = G.craft[id];
 		const inputs = r.items.map(([q, n, l]) => { const b = l ? 0 : bank_share(n), t = state.bank_seen[n] || 0;

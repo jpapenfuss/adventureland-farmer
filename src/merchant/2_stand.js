@@ -60,6 +60,7 @@ const unit_value = (it) => {
 function stand_worthy(it, k, needed, cmp) {
 	const d = it && G.items[it.name], S_ = CFG.merchant.stand;
 	if (!d || it.l || it.b || needed.has(k) || cmp.has(k) || CFG.keep.includes(it.name) || !tradeable(it.name) || gear_wanted_by(it)) return false;
+	if (!(S_.list || []).includes(it.name)) return false; // v25.15: only what the owner lists
 	return unit_value(it) >= S_.min_value || (GEAR.has(d.type) && (it.level || 0) >= 3) || item_grade(it) >= 1 || !!it.p;
 }
 // Bag slots held back for the stand: the most valuable candidates, as many as there are free trade slots

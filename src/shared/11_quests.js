@@ -38,6 +38,23 @@ const owned = (name) =>
 	Object.values(character.slots || {}).filter((i) => i && i.name === name).length + (state.bank_seen[name] || 0);
 // Has the guide asked for this recipe within guide_quest_keep_h?
 const is_guide_quest = (id) => CFG.guide_enabled && !!state.guide_quests[id] && Date.now() - (state.guide_quests[id].last || 0) < CFG.guide_quest_keep_h * 3600_000;
+// v25.15: an own quest whose output is gear is worth farming only while that piece is an upgrade for us and we have no
+// copy (bags or bank: bank_upgrades fetches a bank copy). The 4:09 AM report: the party committed to goo for Cole's
+// Wanderer's Attire (~11,530 min) — no fighter would wear it, and the bank held a wcap, a wbreeches and six wshoes.
+// → the reason it's skipped, or null. 10 s cache (quest_recipes runs from several report lines and the goal picker).
+let qskip_cache = { at: 0, m: new Map() };
+function quest_skip_why(id) {
+	if (Date.now() - qskip_cache.at > 10_000) qskip_cache = { at: Date.now(), m: new Map() };
+	if (qskip_cache.m.has(id)) return qskip_cache.m.get(id);
+	const out = G.craft[id]?.output?.name || id, d = G.items[out];
+	let why = null;
+	if (d && GEAR.has(d.type) && CFG.gear_auto) {
+		if (held_any(out) > 0 || (state.bank_seen[out] || 0) > 0 || (state.bank_gear || []).some((i) => i.name === out)) why = "a copy is in our bags or the bank";
+		else if (!gear_gain({ name: out, level: 0 }, character.ctype, my_gear())) why = "not an upgrade for us";
+	}
+	qskip_cache.m.set(id, why);
+	return why;
+}
 // Quest recipes to work on, in order: guide quests (in the order the guide asked), then own quests (quest_crafts /
 // quest_npcs). Skips outputs our class can't wear.
 function quest_recipes() {
@@ -54,6 +71,7 @@ function quest_recipes() {
 		if (is_guide_quest(id)) { guide.push(id); continue; }
 		if (Array.isArray(mode) ? !mode.includes(id)
 			: !CFG.quest_npcs.includes(r.quest) || (mode === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type)))) continue;
+		if (!Array.isArray(mode) && quest_skip_why(id)) continue; // v25.15 (a list of ids is the owner's choice)
 		own.push(id);
 	}
 	guide.sort((a, b) => state.guide_quests[a].first - state.guide_quests[b].first);
