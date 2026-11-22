@@ -118,6 +118,14 @@ async function stand_tick() {
 			await T(open_stand(k), 3000).catch(() => {});
 			return;
 		}
+		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, or taken off the list) comes down
+		for (const slot in state.stand) {
+			const L_ = state.stand[slot];
+			if ((S_.list || []).includes(L_.name)) continue;
+			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
+			delete state.stand[slot];
+			return;
+		}
 		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand
 		for (const slot in state.stand) {
 			const cur = sl[slot];

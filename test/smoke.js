@@ -2854,6 +2854,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await vm.runInContext("stand_tick()", ctx);
 		const one = vm.runInContext("Math.ceil(unit_value({ name: 'gem117', q: 1 }) * CFG.merchant.stand.markup)", ctx);
 		assert(tr.length === 1 && tr[0][0] === "gem117" && tr[0][2] === 5 && tr[0][1] === one, `5 gems listed at ${one} each, not x5 (${JSON.stringify(tr)})`);
+		// v25.15: a saved listing of an item the owner hasn't listed comes down (and isn't price-cut or re-listed)
+		{
+			const un = []; const uneq0 = ctx.unequip;
+			ctx.unequip = (slot) => { un.push(slot); delete character.slots[slot]; return Promise.resolve(); };
+			character.slots.trade9 = { name: "mace", level: 7, price: 999999 };
+			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now() - 20 * 3600e3, per_unit: true }", ctx);
+			await vm.runInContext("stand_tick()", ctx);
+			assert(un.includes("trade9") && !vm.runInContext("'trade9' in state.stand", ctx), `an unlisted saved listing is taken down (${un})`);
+			ctx.unequip = uneq0;
+		}
 		ctx.trade = trade0; character.stand = false; character.slots = {}; character.items = Array(42).fill(null); vm.runInContext("state.stand = {}", ctx);
 		// a project stopped by its odds: remembered, and a re-pick aims no higher
 		vm.runInContext("state.upg_caps = {}; upg_cap('helm117', 6)", ctx);
@@ -2961,7 +2971,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.bank_gear = []", ctx);
 		// stand: a partial sale is logged and the listing's quantity follows
 		character.stand = true; character.slots = { trade1: { name: "gem119", q: 3, price: 100 } };
-		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false", ctx);
+		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false; CFG.merchant.stand.list = ['gem119']", ctx);
 		await vm.runInContext("stand_tick()", ctx);
 		assert(vm.runInContext("state.stand.trade1 && state.stand.trade1.q === 3 && hist.ev.some((e) => e.type === 'sold' && e.q === 2 && e.price === 200)", ctx), "2 of 5 sold: logged for 200, listing now x3");
 		character.stand = false; character.slots = {}; vm.runInContext("state.stand = {}; hist.ev = []", ctx);

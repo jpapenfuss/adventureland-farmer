@@ -110,7 +110,9 @@ function facts_quests(F, ctx) {
 	const { p, d, now } = ctx;
 	// v25.15: own quests left out because their output wouldn't be worn (or we already have one)
 	if (CFG.quest_crafts && !Array.isArray(CFG.quest_crafts)) {
-		const sk = Object.keys(G.craft).filter((id) => G.craft[id].quest && CFG.quest_npcs.includes(G.craft[id].quest) && !is_guide_quest(id) && quest_skip_why(id));
+		const sk = Object.keys(G.craft).filter((id) => { const r = G.craft[id];
+			return r.quest && CFG.quest_npcs.includes(r.quest) && !CFG.quest_craft_skip.includes(id) && !is_guide_quest(id)
+				&& !(CFG.quest_crafts === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type))) && quest_skip_why(id); });
 		if (sk.length) F("quest_skip", "self", `quests skipped: ${sk.map((id) => `${id} (${quest_skip_why(id)})`).join(", ")}`);
 	}
 	for (const id of quest_recipes()) {

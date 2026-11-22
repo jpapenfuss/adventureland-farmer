@@ -3154,7 +3154,8 @@ const owned = (name) =>
 const is_guide_quest = (id) => CFG.guide_enabled && !!state.guide_quests[id] && Date.now() - (state.guide_quests[id].last || 0) < CFG.guide_quest_keep_h * 3600_000;
 // v25.15: an own quest whose output is gear is worth farming only while that piece is an upgrade for us and we have no
 // copy (bags or bank: bank_upgrades fetches a bank copy). The 4:09 AM report: the party committed to goo for Cole's
-// Wanderer's Attire (~11,530 min) — no fighter would wear it, and the bank held a wcap, a wbreeches and six wshoes.
+// Wanderer's Attire (~11,530 min), not an upgrade for it, and the bank held a wcap, a wbreeches and six wshoes. Each
+// fighter judges its own quests; a piece a partner would wear stays that partner's goal (its heartbeat's goals).
 // → the reason it's skipped, or null. 10 s cache (quest_recipes runs from several report lines and the goal picker).
 let qskip_cache = { at: 0, m: new Map() };
 function quest_skip_why(id) {
@@ -6708,7 +6709,9 @@ function facts_quests__fighter(F, ctx) {
 	const { p, d, now } = ctx;
 	// v25.15: own quests left out because their output wouldn't be worn (or we already have one)
 	if (CFG.quest_crafts && !Array.isArray(CFG.quest_crafts)) {
-		const sk = Object.keys(G.craft).filter((id) => G.craft[id].quest && CFG.quest_npcs.includes(G.craft[id].quest) && !is_guide_quest(id) && quest_skip_why(id));
+		const sk = Object.keys(G.craft).filter((id) => { const r = G.craft[id];
+			return r.quest && CFG.quest_npcs.includes(r.quest) && !CFG.quest_craft_skip.includes(id) && !is_guide_quest(id)
+				&& !(CFG.quest_crafts === "materials" && r.items.some(([, n]) => GEAR.has(G.items[n]?.type))) && quest_skip_why(id); });
 		if (sk.length) F("quest_skip", "self", `quests skipped: ${sk.map((id) => `${id} (${quest_skip_why(id)})`).join(", ")}`);
 	}
 	for (const id of quest_recipes()) {
@@ -7328,6 +7331,14 @@ async function stand_tick() {
 				return;
 			}
 			await T(open_stand(k), 3000).catch(() => {});
+			return;
+		}
+		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, or taken off the list) comes down
+		for (const slot in state.stand) {
+			const L_ = state.stand[slot];
+			if ((S_.list || []).includes(L_.name)) continue;
+			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
+			delete state.stand[slot];
 			return;
 		}
 		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand

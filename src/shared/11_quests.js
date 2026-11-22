@@ -40,7 +40,8 @@ const owned = (name) =>
 const is_guide_quest = (id) => CFG.guide_enabled && !!state.guide_quests[id] && Date.now() - (state.guide_quests[id].last || 0) < CFG.guide_quest_keep_h * 3600_000;
 // v25.15: an own quest whose output is gear is worth farming only while that piece is an upgrade for us and we have no
 // copy (bags or bank: bank_upgrades fetches a bank copy). The 4:09 AM report: the party committed to goo for Cole's
-// Wanderer's Attire (~11,530 min) — no fighter would wear it, and the bank held a wcap, a wbreeches and six wshoes.
+// Wanderer's Attire (~11,530 min), not an upgrade for it, and the bank held a wcap, a wbreeches and six wshoes. Each
+// fighter judges its own quests; a piece a partner would wear stays that partner's goal (its heartbeat's goals).
 // → the reason it's skipped, or null. 10 s cache (quest_recipes runs from several report lines and the goal picker).
 let qskip_cache = { at: 0, m: new Map() };
 function quest_skip_why(id) {
