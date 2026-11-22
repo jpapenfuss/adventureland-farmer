@@ -1,4 +1,4 @@
-const VERSION = "25.21"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.23"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -242,8 +242,9 @@ const CFG = {
 	// v24.21: off — enlarging the log in place pushed it under the DOCS panel and moved the tutorial/level bars
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,
 		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text): taller (it grows up) and its
-		// text wraps; w: 0 keeps the game's width — a wider box would widen the corner and shift the bars and log
-		status_box: { enabled: true, w: 0, h: 90 } },
+		// text wraps. v25.23 w: "log" — its left edge lined up with the log's (owner); a number: that width (wider than the
+		// log's line would widen the corner and shift the bars and log); 0: the game's
+		status_box: { enabled: true, w: "log", h: 90 } },
 	town_soft_gap_ms: 3_600_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 60 min (v24.71: was 20 — the party sits at its camp)
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
 	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
