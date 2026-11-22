@@ -1,4 +1,4 @@
-const VERSION = "25.0"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
+const VERSION = "25.1"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -779,12 +779,6 @@ const safety_now = () => {
 	return Math.min(CFG.safety * m, CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
 };
 const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
-// A party tank (paladin/warrior) near enough to take aggro: version-matched, alive, not on an errand, sturdier than us
-function tank_cover(pool = partners_near(300)) {
-	if (!CFG.party.tank_first || !in_party_cfg() || CFG.gear_tank.includes(character.ctype)) return null;
-	// v24.24: any version (a rollout with mixed versions turned tanking off for everyone)
-	return pool.find((p) => CFG.gear_tank.includes(p.ctype) && !p.errand && p.max_hp > character.max_hp && Number.isFinite(p.armor)) || null;
-}
 const tank_hold = { id: null, at: 0 }; // the monster we last told the tank about
 // v24.50: the tank decides. Together, with a tank in the party:
 //  - only the tank starts a fight: nobody else touches a monster that has no target, wherever the tank is (v24.46 had
@@ -3617,10 +3611,6 @@ async function equip_if_empty(name) {
 }
 // Material count for a recipe: bags at that level, plus the bank's last-seen count for +0 materials
 const owned_in_bags_or_bank = (n, l) => held(n, l) + (l ? 0 : bank_share(n));
-// Our share of the bank's copies of a quest material (v23.1). The bank is account-wide and every fighter runs the same
-// own quests, so each used to count all of it toward its own copy. Copies go to the fighters short of the item (bags
-// vs what they need; each one's shortfall comes in its heartbeat) in name order, so all agree. The merchant counts all.
-const qshort = () => { const o = {}; for (const [n, q] of state.needs) if (G.items[n]?.s) { const v = q - held_any(n); if (v > 0) o[n] = v; } return o; };
 function bank_share(n) {
 	const pool = state.bank_seen[n] || 0;
 	if (!pool || is_merchant() || !in_party_cfg()) return pool;
@@ -5034,12 +5024,6 @@ const leader_name_any = leader_name;
 const leader_hb = () => state.partners[leader_name()];
 // In a party, everyone but the leader follows — with no tank online too (nobody leads, nobody picks a spot)
 const is_follower = () => in_party_cfg() && leader_name() !== character.name;
-// Our party-fight calibration ratios (20+ fights), for the leader's verdicts under our cover (tanks only, v24.6)
-function calp_share() {
-	const o = {};
-	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= CALIB_MIN_N) o[k.slice(0, -2)] = +state.calib[k].ratio.toFixed(3);
-	return o;
-}
 // v24.13: the server's xp multiplier (1 + gear/party/other xp% / 100): party kill xp is split equally among an account's
 // characters, so a member earning less in the same fights has a lower one. Breakdown: worn gear's xp, the party bonus.
 const xp_mult = () => (Number.isFinite(character.xpm) ? +character.xpm.toFixed(3) : null);
@@ -5063,54 +5047,15 @@ function tell_party(msg) {
 function share_verdict(v) {
 	if (in_party_cfg()) tell_party({ k: "verdict", ...v });
 }
-function apply_verdict(v, from) {
-	if (!v || !G.monsters[v.mtype]) return;
-	if (v.kind === "incident" && v.mult > 0 && v.mult < 1) {
-		incident(v.mtype, v.mult);
-		if (v.key && v.cd > Date.now()) state.cooldown[v.key] = Math.max(state.cooldown[v.key] || 0, Math.min(v.cd, Date.now() + 3600_000));
-		if (v.death) delete state.probe_ok[v.mtype];
-		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
-		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
-		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_fail") delete state.probe_ok[v.mtype];
-}
-// Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
-// fight model), hunt, goals and gold. Skipped while the call budget is tight.
-function heartbeat() {
-	if (!in_party_cfg() || typeof send_cm !== "function") return;
-	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, tn: is_follower() && !errand_busy() ? town_urgent(town_due()) || null : null, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : Date.now() - (state.ptown_done_at || 0) < 6000 ? { done: true } : null, xpm: xp_mult(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
-		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
-		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
-		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
-		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
-		rpiercing: character.rpiercing || 0, range: character.range,
-		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
-		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
-		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
-		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
-		party: Object.keys(get_party() || {}), // who we're in a game party with (invites use it)
-		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
-		worn: CFG.gear_auto ? worn_items() : null, // swap_worn: what's in each slot
-		armor: character.armor, resistance: character.resistance, // tank_first fight model
-		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
-		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing() };
-	if (state.travel_off.length && state.travel_full) Object.assign(msg, state.travel_full); // v24.31: as with everything on
-	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
-	Promise.resolve(send_cm(to, msg)).catch(() => {});
-}
-if (typeof character.on === "function") character.on("cm", (m) => {
+// Code messages from the other characters (v25.1: a named function; the fighters' own kinds are fighter_cm in fighter.js)
+function on_cm_message(m) {
 	if (m?.message?.k) seen.cm[m.message.k] = (seen.cm[m.message.k] || 0) + 1;
 	if (m && (m.message?.k === "ping" || m.message?.k === "pong") && party_names_all().includes(m.name)) {
 		if (m.message.k === "ping") Promise.resolve(send_cm([m.name], { k: "pong", id: m.message.id, v: VERSION })).catch(() => {});
 		else if (st_runs[m.message.id]) st_runs[m.message.id].pong[m.name] = { v: m.message.v, ms: Date.now() - st_runs[m.message.id].at };
 		return;
 	}
-	if (m && m.message?.k === "tgt" && (CFG.party.members || []).includes(m.name) && fresh(state.partners[m.name])) {
-		state.partners[m.name].target = m.message.id; // a member holding fire for us: hit this one now
-		return;
-	}
+	if (fighter_cm(m)) return; // v25.1: tgt, mhb, verdict, ptown, ptown_off, bill (fighter.js)
 	if (m && m.message?.k === "bank" && party_names_all().includes(m.name)) return void adopt_bank(m);
 	if (m && (m.message?.k === "rreq" || m.message?.k === "rrep") && party_names_all().includes(m.name)) {
 		if (m.message.k === "rreq") report_reply(m); else report_collect(m);
@@ -5121,23 +5066,14 @@ if (typeof character.on === "function") character.on("cm", (m) => {
 		log_ev("gold", { from: m.name, g: +m.message.g || 0 });
 		return;
 	}
-	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) return void (state.merchant = { ...m.message, name: m.name, t: Date.now() });
-	if (m && m.message?.k === "verdict" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) return void apply_verdict(m.message, m.name);
-	if (m && m.message?.k === "ptown_off" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { if (state.ptown && !errand_busy()) state.ptown = null; return; }
-	if (m && m.message?.k === "ptown" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) return void ptown_recv(m.message, m.name);
-	if (m && m.message?.k === "bill" && m.name === CFG.merchant?.name && !is_merchant()) { // potions it handed us (v23.0)
-		const g = Math.max(0, Math.round(+m.message.g || 0));
-		state.owe = (state.owe || 0) + g;
-		log_ev("bill", { g, what: m.message.what || "" });
-		return;
-	}
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;
 	const first = !fresh(state.partners[m.name]);
 	state.partners[m.name] = { ...m.message, name: m.name, t: Date.now() };
 	if (m.message.gold_xfer_at > (state.gold_xfer_at || 0)) state.gold_xfer_at = m.message.gold_xfer_at; // one party-wide clock
 	if (first) game_log(`party: ${m.name} (${m.message.ctype} ${m.message.level}) online; ${leader_name() || "nobody"} leads`, C.info);
 	if (first && other_build(m.message.v, m.message.b)) game_log(`party: ${m.name} runs ${build_txt(m.message.v, m.message.b)}, we run ${build_txt(VERSION, BUILD)} - load the same version on every character`, C.warn);
-});
+}
+if (typeof character.on === "function") character.on("cm", on_cm_message);
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) heartbeat(); }, CFG.party.beat_ms);
 // Game party membership. Accepting an invite (or having your join request accepted) makes the server pull you out of
 // your current party, so:
@@ -5165,28 +5101,6 @@ function on_party_request(name) {
 	party_log("raccept:" + name, `party: letting ${name} join`);
 	accept_party_request(name);
 }
-function party_invite_tick() {
-	if (!in_party_cfg() || character.rip) return;
-	const mine = Object.keys(get_party() || {});
-	const missing = partners().filter((p) => !mine.includes(p.name));
-	if (!missing.length) return;
-	const call = (fn, name, key, msg) => { party_log(key, msg); Promise.resolve(fn(name)).catch(() => {}); };
-	const partied = (p) => (p.party || []).some((n) => n !== p.name && members_cfg().includes(n));
-	if (in_member_party()) {
-		for (const p of missing) if (!partied(p)) call(send_party_invite, p.name, "inv:" + p.name, `party: inviting ${p.name}`);
-		return;
-	}
-	const hosts = partners().filter(partied);
-	if (hosts.length) {
-		// ask one host per tick, rotating, in case one runs an old version that ignores us
-		const h = hosts.sort((a, b) => (a.name < b.name ? -1 : 1))[Math.floor(Date.now() / 10_000) % hosts.length];
-		call(send_party_request, h.name, "req:" + h.name, `party: asking to join ${h.name}'s party`);
-	} else if (leader_name() === character.name) {
-		for (const p of missing) call(send_party_invite, p.name, "inv:" + p.name, `party: inviting ${p.name}`);
-	}
-}
-setInterval(party_invite_tick, 10_000); // every 10s until everyone online is in
-
 // =====================================================================
 // Merchant (CFG.merchant). Not a party member: it never leads, fights or joins the game party. Fighters send it their
 // heartbeats; it sends "mhb" back (position, free slots, gold). It carries potions out to fighters running low or
@@ -5240,6 +5154,12 @@ function why_not(mtype) {
 	return out();
 }
 
+// xp and gold samples every minute, for rates() (every character; v25.1: back from fighter.js, where v24.95 had carried it
+// with send_own_gold — the merchant stopped sampling)
+setInterval(() => {
+	stats.samples.push({ t: Date.now(), xp: stats.xp, gold: character.gold + stats.adj });
+	if (stats.samples.length > 61) stats.samples.shift();
+}, 60_000);
 // =====================================================================
 // Role hooks (v24.94): functions that live in one role's file, called from code every character runs. Each default
 // here is what that function returns for the OTHER role; the role's own file declares the real one, later in the
@@ -5263,6 +5183,10 @@ function merrit_on() { return false; }
 function parcel_count() { return 0; }
 // fighter.js
 function fighter_tick() { return 250; }
+function heartbeat() {}
+function party_invite_tick() {}
+function tank_cover() { return null; }
+function fighter_cm() { return false; }
 function event_tick() { return false; }
 function party_trip_check() { return false; }
 function safety_tune() {}

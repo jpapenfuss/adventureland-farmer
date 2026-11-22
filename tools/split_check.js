@@ -34,6 +34,20 @@ function check() {
 		for (const f of ["common.js", role, "main.js"]) for (const b of B[f]) for (const r of b.refs)
 			if (theirs.has(r) && !have.has(r)) errs.push(`${f}:${b.line} ${b.name} uses ${r}, which only ${other} declares (add a default to common.js "Role hooks")`);
 	}
+	// a statement that runs at load (setInterval, character.on...) in a role file must use something that file declares:
+	// one that only uses shared names belongs in common.js (v25.1: the xp/gold sampling had been carried to fighter.js)
+	const DECL_OR_SKIP = /^(?:async\s+function|function|const|let|var|class|\/\/|\}|\)|\]|\s|$)/;
+	for (const f of ["fighter.js", "merchant.js"]) {
+		const lines = fs.readFileSync(path.join(SRC, f), "utf8").split("\n"), own = names(f);
+		for (let i = 0; i < lines.length; i++) {
+			if (DECL_OR_SKIP.test(lines[i])) continue;
+			let j = i, depth = 0, txt = "";
+			do { txt += lines[j] + "\n"; depth += (lines[j].match(/[({[]/g) || []).length - (lines[j].match(/[)}\]]/g) || []).length; j++; } while (depth > 0 && j < lines.length);
+			const ids = new Set(txt.replace(/\/\/.*$/gm, "").match(/(?<![\w$.])[A-Za-z_$][\w$]*/g) || []);
+			if (![...ids].some((x) => own.has(x))) errs.push(`${f}:${i + 1} runs at load but uses nothing ${f} declares (move it to common.js): ${lines[i].trim().slice(0, 60)}`);
+			i = j - 1;
+		}
+	}
 	return errs;
 }
 module.exports = { check };

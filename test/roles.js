@@ -42,6 +42,8 @@ async function run(role) {
 	for (const c of ["report_lines(false)", "town_due()", "bag_plan()", "my_gear()", "heartbeat()", "upgrade_due()", "history_lines(1)"]) {
 		try { vm.runInContext(c, ctx); } catch (e) { log.push(`${c}: ${e}`); }
 	}
+	// the xp/gold sampling (rates() in reports) runs on every character — it had been carried to fighter.js (v24.95–v25.0)
+	assert(vm.runInContext("stats.samples.length", ctx) > 0, `${role}: xp/gold samples are taken (rates in the report)`);
 	// what the game and the console call must exist on every character, whatever its role
 	const need = ["on_party_invite", "on_party_request", "on_destroy", "report", "history", "deaths", "selftest", "why_not", "park", "resume", "unpause", "gear_check"];
 	const missing = need.filter((n) => typeof ctx[n] !== "function");
