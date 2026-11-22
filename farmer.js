@@ -2676,8 +2676,9 @@ async function upg_fetch_copy(P) {
 	const have = best_level_held(P.name);
 	const b = CFG.bank && (state.bank_gear || []).filter((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > have).sort((x, y) => (y.level || 0) - (x.level || 0))[0];
 	if (!b) return true;
+	// a failed bank visit pauses the project 10 min (any reason: an unknown one mustn't end it and forget the copy)
 	try { await task_bank([{ name: P.name, level: b.level || 0, exact: true, key: `upgin:${P.name}` }]); }
-	catch (e) { if (TRANSIENT.has(why(e)) || why(e) === "bank_busy") { skip("upg:" + P.name, 600_000, "bank: " + why(e)); return false; } }
+	catch (e) { skip("upg:" + P.name, 600_000, "bank: " + why(e)); game_log(`upgrade ${P.name}: fetching its copy from the bank: ${why(e)}; retrying in 10 min`, C.dim); return false; }
 	if (best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
 	state.bank_gear = (state.bank_gear || []).filter((i) => i !== b);
 	game_log(`upgrade ${P.name}: the copy isn't in the bank any more, and no NPC sells one — project ended`, C.dim);
@@ -2686,6 +2687,7 @@ async function upg_fetch_copy(P) {
 }
 async function task_upgrade() {
 	let n = 0;
+	if (state.upg && merchant_does_it()) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; return 0; }
 	if (state.upg && !(await upg_fetch_copy(state.upg))) return 0;
 	for (let i = 0; i < upgrade_steps(); i++) { // role function (v25.11)
 		if (state.errand) state.errand_at = Date.now();

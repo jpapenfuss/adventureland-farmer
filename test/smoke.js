@@ -3536,6 +3536,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 0 }; state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.gear_skip = {}");
 					await R("task_upgrade()");
 					assert(R("state.upg") === null && !R("skipped('upg:mmg137')") && calls.length === 1 && R("state.bank_gear.length") === 0, "a copy gone from the bank (unsold piece): project ended, not paused 24h");
+					ctx.task_bank = async () => { throw { reason: "weird" }; };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 0 }; state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(R("!!state.upg && skipped('upg:mmg137') && state.bank_gear.length === 1"), "a failed bank visit pauses the project, keeps the copy on record");
 					ctx.task_bank = tb; ctx.run_upgrade = ru; R("sold_c.delete('mmg137')");
 				}
 				Object.assign(character, sv);
