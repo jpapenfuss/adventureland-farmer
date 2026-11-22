@@ -2903,6 +2903,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			character.slots.trade9 = { name: "mace", level: 7, price: 999999 };
 			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now(), per_unit: true }", ctx);
 			await vm.runInContext("stand_tick()", ctx);
+			vm.runInContext("state.stand.trade9.at = Date.now() - 20 * 3600e3", ctx);
+			{ const tr0 = ctx.trade; let relist = 0; ctx.trade = () => (relist++, Promise.resolve());
+				for (let i = 0; i < 3; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+				ctx.trade = tr0;
+				assert(relist === 0, `while take-downs are paused, an unlisted listing isn't price-cut and re-listed (${relist})`); }
 			assert(vm.runInContext("'trade9' in state.stand && skipped('stand:down')", ctx), "a failed take-down keeps the listing (retried after a 2-min pause)");
 			vm.runInContext("delete state.gear_skip['stand:down']", ctx);
 			delete character.slots.trade9; vm.runInContext("delete state.stand.trade9", ctx);
