@@ -5281,8 +5281,10 @@ function apply_verdict(v, from) {
 		incident(v.mtype, v.mult);
 		// v25.31: a member's death at a camp counts here as our own (the tank picks the camps: a follower's death
 		// rested it 1 h at most on the tank, and the 4x escalation never reached it); any other shared rest: 1 h at most
-		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(Date.now() - v.at) < 600_000) camp_death(v.key); // (v.at, the sender's clock, only for staleness)
-		else if (v.key && v.cd > Date.now()) rest_camp(v.key, Math.min(v.cd, Date.now() + 3600_000) - Date.now());
+		// (v.at is the sender's clock: only for staleness, either way, since tabs on other machines can run ahead)
+		const now = Date.now();
+		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) camp_death(v.key);
+		else if (v.key && v.cd > now) rest_camp(v.key, Math.min(v.cd - now, 3600_000), now);
 		if (v.death) delete state.probe_ok[v.mtype];
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
