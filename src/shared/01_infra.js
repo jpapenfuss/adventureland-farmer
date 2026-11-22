@@ -128,9 +128,12 @@ async function go_route(dest, ms, tele_tried = false) {
 // It used to be smart_move({map: next}), and the game's pathfinder picks its own shortest door: the planned way around
 // level1's prats (main → halloween → spookytown) was walked back out through main after every re-plan — Torlis went in
 // a door, stopped for the party, then walked back out, again and again (owner's report and screenshot, 2026-11-22).
-// No path to the door's own point (inside a wall): the old way, once.
+// Where to stand: the server lets a door be used within B.door_dist of this side's spawn for it (doors[i][6], boxed to
+// the door's size — server.js transport), and a spawn is walkable; the door's centre only when the spawn is unknown.
+// No path there: the old way, once.
 async function go_door(L, ms) {
-	try { await go_raw({ map: L.map, x: L.x, y: L.y }, ms); }
+	const sp = G.maps[L.map]?.spawns?.[L.fs], at = sp ? { x: sp[0], y: sp[1] } : { x: L.x, y: L.y };
+	try { await go_raw({ map: L.map, x: at.x, y: at.y }, ms); }
 	catch (e) { if (e?.reason !== "failed") throw e; return go_raw({ map: L.to, x: L.tx, y: L.ty }, ms); }
 	if (character.map === L.map && typeof transport === "function") {
 		await T(transport(L.to, L.s), 10_000).catch(() => {});

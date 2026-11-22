@@ -214,7 +214,7 @@ function route_graph(map, x, y, safe = false) {
 		};
 		for (const dr of M?.doors || []) {
 			if (!dr || typeof dr[4] !== "string" || !map_ok(dr[4]) || /^bank/.test(dr[4]) || dr[7] === "key" || dr[8] === "complicated") continue;
-			add(dr[4], dr[5] || 0, Math.hypot(dr[0] - p.x, dr[1] - p.y) + DP, { kind: "door", map: p.map, fx: p.x, fy: p.y, x: dr[0], y: dr[1], to: dr[4], s: dr[5] || 0 });
+			add(dr[4], dr[5] || 0, Math.hypot(dr[0] - p.x, dr[1] - p.y) + DP, { kind: "door", map: p.map, fx: p.x, fy: p.y, x: dr[0], y: dr[1], to: dr[4], s: dr[5] || 0, fs: dr[6] });
 		}
 		for (const npc of M?.npcs || []) if (npc?.id === "transporter" && npc.position)
 			for (const pl in tp) if (pl !== p.map && map_ok(pl))

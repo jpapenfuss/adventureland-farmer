@@ -4382,14 +4382,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const hd = ctx.G.maps.halloween; ctx.G.maps.halloween = ctx.G.maps.halloween || { doors: [[1, 1, 10, 10, "spookytown", 0]] };
 		if (!ctx.G.maps.halloween.doors) ctx.G.maps.halloween.doors = [[1, 1, 10, 10, "spookytown", 0]];
 		ctx.__calls = calls;
-		R(`route_plan = route_plain = () => ({ d: 100, around: "prat @ level1", legs: [{ kind: "door", map: "halloween", fx: 0, fy: 0, x: 300, y: 40, to: "spookytown", s: 2, tx: 5, ty: 6 }] });
+		R(`route_plan = route_plain = () => ({ d: 100, around: "prat @ level1", legs: [{ kind: "door", map: "halloween", fx: 0, fy: 0, x: 300, y: 40, to: "spookytown", s: 2, fs: 3, tx: 5, ty: 6 }] });
 			go_raw = async (d) => { __calls.push("walk " + d.map + " " + d.x + "," + d.y); if (d.map !== character.map) character.map = d.map; return true; }`);
 		const tp0 = ctx.transport; ctx.transport = (m, sp) => { calls.push("transport " + m + " " + sp); character.map = m; return Promise.resolve(); };
 		await R("go_route({ map: 'spookytown', x: 50, y: 60 }, 5000)");
 		assert(calls[0] === "walk halloween 300,40" && calls[1] === "transport spookytown 2" && !calls.some((c) => /walk main/.test(c)), `the planned door: walked to on this map, then used (${calls})`);
+		// with this side's spawn for the door known: stand there (the server's door check is from that spawn)
+		calls.length = 0; character.map = "halloween"; const spw = ctx.G.maps.halloween.spawns; ctx.G.maps.halloween.spawns = [[0, 0], [1, 1], [2, 2], [290, 60]];
+		await R("go_route({ map: 'spookytown', x: 50, y: 60 }, 5000)");
+		assert(calls[0] === "walk halloween 290,60" && calls[1] === "transport spookytown 2", `...from this side's spawn for the door (${calls})`);
+		ctx.G.maps.halloween.spawns = spw;
 		// no path to the door's point: the old way (smart_move to the next map)
 		calls.length = 0; character.map = "halloween";
-		R(`go_raw = async (d) => { __calls.push("walk " + d.map + " " + d.x + "," + d.y); if (d.map === "halloween" && d.x === 300) throw { reason: "failed" }; character.map = d.map; return true; }`);
+		R(`go_raw = async (d) => { __calls.push("walk " + d.map + " " + d.x + "," + d.y); if (d.map === "halloween") throw { reason: "failed" }; character.map = d.map; return true; }`);
 		await R("go_route({ map: 'spookytown', x: 50, y: 60 }, 5000)");
 		assert(calls[1] === "walk spookytown 5,6", `no path to the door's point: the old way (${calls})`);
 		R("go_raw = globalThis.__gr; route_plan = globalThis.__rp; route_plain = globalThis.__rpl; CFG.travel.safe_routes = globalThis.__tc");
