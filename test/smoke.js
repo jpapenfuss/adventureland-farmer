@@ -4352,14 +4352,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const R = (c) => vm.runInContext(c, ctx);
 		const G0 = ctx.G.events;
 		ctx.G.events = { dreams: { encounters: [
-			{ kind: "wolves", group: "mixed", options: [{ id: "e10_0", effect: "wolves" }, { id: "e10_1", effect: "venture", outcomes: [{ weight: 1, reward: "cave_parcel" }, { weight: 1, fight: ["cave_guard", 3] }] }, { id: "e10_5", effect: "leave" }] },
+			{ kind: "wolves", group: "mixed", options: [{ id: "e10_0", effect: "wolves" }, { id: "e10_1", effect: "venture", outcomes: [{ weight: 1, fight: ["cave_wolf", 2] }] }, { id: "e10_2", effect: "venture", amber: 2, outcomes: [{ weight: 1, reward: "cave_parcel" }, { weight: 1, fight: ["cave_guard", 3] }] }, { id: "e10_5", effect: "leave" }] },
 			{ kind: "rescue", group: "mixed", options: [{ id: "save", effect: "save" }, { id: "watch", effect: "watch" }, { id: "finish", effect: "both" }] },
 			{ kind: "shadow", group: "mixed", options: [{ id: "e17_0", effect: "venture", outcomes: [{ weight: 1, shadow: true }] }, { id: "e17_4", effect: "careful" }, { id: "e17_5", effect: "leave" }] },
 			{ kind: "toll", group: "bad", options: [{ id: "e27_0", effect: "pay", cost: 3000 }, { id: "e27_1", effect: "bad_fight" }, { id: "e27_3", effect: "time", cost: 1000 }, { id: "e27_5", effect: "bad_double" }] },
 		] } };
 		const ch = (kind, ids, extra) => ({ id: "c1", kind, options: ids.map((id) => ({ id, cost: 0, amber: 0, ...(extra?.[id] || {}) })) });
 		const pol = (c, st) => R(`cave_policy(${JSON.stringify(c)}, ${JSON.stringify(st || { gold: 5000, amber: 3 })})`);
-		assert(pol(ch("wolves", ["e10_0", "e10_1", "e10_5"])) === "e10_1", "never the wolves; a box that's a parcel or three guards beats walking away");
+		assert(pol(ch("wolves", ["e10_0", "e10_1", "e10_5"])) === "e10_5", "never the wolves (e10_0, nor e10_1: two Cave Wolves, as in the game's data): walk away");
+		assert(pol(ch("wolves", ["e10_0", "e10_2", "e10_5"], { e10_2: { amber: 0 } })) === "e10_2", "a parcel or three guards beats walking away");
 		assert(pol(ch("rescue", ["save", "watch", "finish"])) === "watch", "a rescue (Cave Wolves): watch, never fight them");
 		assert(pol(ch("shadow", ["e17_0", "e17_4", "e17_5"])) === "e17_4", "never a shadow of our strongest; the careful reward");
 		assert(pol(ch("toll", ["e27_0", "e27_1", "e27_3", "e27_5"])) === "e27_1", "a toll: three guards (easy, XP) over paying or losing time");
@@ -4396,7 +4397,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("cave_due()") === false, "visited today: not due");
 		R("state.cave_visit = { available: true, at: Date.now() }; CFG.cave.enabled = false");
 		assert(R("cave_due()") === false, "...nor when switched off");
-		R("CFG.cave.enabled = true");
+		R("CFG.cave.enabled = true; cave_st.entered_at = 0");
+		// a member that can't reach Dorr: the tank waits at most wait_party_ms, then leaves it for 30 min
+		hb("Sanala", { ...san, ctype: "mage", level: 54, map: "main", x: 2000, y: 1240 });
+		R("state.gear_skip = {}; cave_st.entering = false; cave_st.wait_at = Date.now() - CFG.cave.wait_party_ms - 1000");
+		assert(R("cave_entry_tick()") === false && R("skipped('cave')"), "a member that can't reach Dorr: the wait times out, the visit is put off");
+		R("state.gear_skip = {}; cave_st.wait_at = 0");
+		// a new run forgets the last one's rooms and shops (their ids repeat every visit)
+		R("cave_st.run = 'r1'; cave_st.deaths = { '0:1': 2 }; cave_st.bought = { '0:shop': true }; cave_st.stuck = { '0:2': true }; cave_run_check({ run: 'r2' })");
+		assert(R("cave_st.run === 'r2' && !Object.keys(cave_st.deaths).length && !Object.keys(cave_st.bought).length && !Object.keys(cave_st.stuck).length"), "a new run starts with no rooms skipped or shops bought");
+		// the watchdog: no closer to a room for stuck_ms → given up; a camp after camp_max_ms
+		character.cave = { run: "r2", floor: 0 };
+		R("cave_st.prog = null");
+		const og = { obj: { id: "0:1", kind: "boss", x: character.x + 600, y: character.y } };
+		assert(R(`cave_progress(${JSON.stringify(og)})`) === false, "a new goal isn't given up");
+		R("cave_st.prog.best_at = Date.now() - CFG.cave.stuck_ms - 1000");
+		assert(R(`cave_progress(${JSON.stringify(og)})`) === true && R("cave_st.stuck['0:1']"), "no closer for stuck_ms: given up for this visit");
+		const oc = { obj: { id: "0:c", kind: "farm", x: character.x, y: character.y } };
+		R(`cave_progress(${JSON.stringify(oc)}); cave_st.prog.since = Date.now() - CFG.cave.camp_max_ms - 1000`);
+		assert(R(`cave_progress(${JSON.stringify(oc)})`) === true && R("cave_st.stuck['0:c']"), "a camp held past camp_max_ms is left (the required rooms and stairs come next)");
+		R("cave_st.stuck = {}; cave_st.prog = null"); delete character.cave;
 		// inside: one vote per choice, and the shop's item bought with the purse
 		let votes = [], buys = 0;
 		ctx.cave_reply = (c, o) => (votes.push(o), Promise.resolve({})); ctx.cave_buy = () => (buys++, Promise.resolve({ recipient: "Sanala" }));

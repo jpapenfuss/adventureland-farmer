@@ -11,7 +11,12 @@
 // Followers: follow and assist the tank as usual (follower_tick), walking after it between rooms and floors.
 // Everyone: votes by cave_policy (rewards that cost nothing, never the wolves), loots the cave's chests.
 // =====================================================================
-const cave_st = { entering: false, info_at: 0, voted: {}, bought: {}, walk: null, deaths: {}, last_obj: null };
+const cave_st = { entering: false, entered_at: 0, info_at: 0, voted: {}, bought: {}, walk: null, deaths: {}, stuck: {}, prog: null, last_obj: null, run: null, wait_at: 0 };
+// Rooms, shops and objective ids repeat on every visit ("0:shop", "0:1"...): what's remembered about them is per run
+function cave_run_check(st) {
+	if (!st || st.run === cave_st.run) return;
+	cave_st.run = st.run; cave_st.bought = {}; cave_st.deaths = {}; cave_st.stuck = {}; cave_st.prog = null; cave_st.last_obj = null; cave_st.walk = null;
+}
 // ---- the daily visit (the tank) ----
 async function cave_refresh_info() {
 	if (typeof cave_info !== "function" || Date.now() - cave_st.info_at < CFG.cave.info_every_ms) return;
@@ -28,7 +33,7 @@ function cave_open() {
 // The tank takes the party in: the visit is open, every member is online, alive, on no errand, nothing on us
 function cave_due() {
 	if (!CFG.cave?.enabled || character.cave || !in_party_cfg() || is_follower() || !is_tank_class(character.ctype)) return false;
-	if (skipped("cave") || errand_busy() || state.ptown) return false;
+	if (skipped("cave") || errand_busy() || state.ptown || Date.now() - cave_st.entered_at < 120_000) return false;
 	cave_refresh_info();
 	if (!cave_open()) return false;
 	return others().every((n) => { const p = state.partners[n]; return fresh(p) && !p.rip && !p.errand; });
@@ -46,15 +51,22 @@ function cave_entry_tick() {
 	}
 	const a = hit_on_me();
 	if (a) { fight(a, false); return true; }
-	// everyone beside us, alive and out of a fight (the game wants the whole party near Dorr)
+	// everyone beside us, alive and out of a fight (the game wants the whole party near Dorr) — at most
+	// cave.wait_party_ms: a member that can't get here mustn't keep the party standing at the door all day
 	const far = partners_any().filter((q) => q.rip || q.map !== character.map || Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) > 150);
-	if (far.length || partners_any().length < others().length || cave_st.entering) return true;
+	if (far.length || partners_any().length < others().length) {
+		if (!cave_st.wait_at) cave_st.wait_at = Date.now();
+		if (Date.now() - cave_st.wait_at > CFG.cave.wait_party_ms) { skip("cave", 1_800_000, `waited for ${far.map((q) => q.name).join(", ") || "the party"} at Dorr`); cave_st.wait_at = 0; return false; }
+		return true;
+	}
+	cave_st.wait_at = 0;
+	if (cave_st.entering) return true;
 	cave_st.entering = true;
 	game_log("cave: entering the Cave of Many Dreams with the party", C.info);
 	log_ev("cave", { what: "enter" });
-	Promise.resolve(cave_enter()).then((r) => game_log(`cave: in (${r?.resumed ? "returned to our visit" : "floor 1"})`, C.ok))
+	Promise.resolve(cave_enter()).then((r) => { cave_st.entered_at = Date.now(); game_log(`cave: in (${r?.resumed ? "returned to our visit" : "floor 1"})`, C.ok); })
 		.catch((e) => { game_log(`cave: entering failed: ${why(e)}; again in 30 min`, C.warn); skip("cave", 1_800_000, why(e)); })
-		.finally(() => { cave_st.entering = false; cave_st.info_at = 0; });
+		.finally(() => { cave_st.entering = false; cave_st.info_at = Date.now() - CFG.cave.info_every_ms + 60_000; }); // re-check in a minute
 	return true;
 }
 // ---- votes ----
@@ -84,7 +96,7 @@ function cave_option_score(choice, o, st) {
 			s += fight_score(x.fight);
 			v += s * (x.weight || 1) / w;
 		}
-		return v - cost - (def.hazard === "wolves" ? 100 : 0);
+		return v - cost;
 	}
 	const base = {
 		careful: 3, exchange: 3, gift: 3, small_gift: 1.5, free_die: 1.5, moths: 3, peace: 1.5, inspect: 2, buy: 2, appraise: 1, reveal: 1,
@@ -113,7 +125,7 @@ function cave_vote_tick(st) {
 	cave_st.voted[c.id] = true;
 	game_log(`cave vote — ${c.title || c.kind}: ${id}`, C.dim);
 	log_ev("cave", { what: "vote", kind: c.kind, option: id });
-	Promise.resolve(cave_reply(c.id, id)).catch((e) => game_log(`cave vote failed: ${why(e)}`, C.dim));
+	Promise.resolve(cave_reply(c.id, id)).catch((e) => { game_log(`cave vote failed: ${why(e)} (trying again)`, C.dim); setTimeout(() => { delete cave_st.voted[c.id]; }, 3000); });
 }
 // A merchant's one item: bought with the purse (it never becomes our gold), when the purse has it
 function cave_shop_tick(st) {
@@ -134,16 +146,16 @@ function cave_hostile(e) {
 // Where the tank goes next on this floor: the floor's required rooms (the guard camp last: two Cave Wolves on floor 1),
 // then the stairs down once they're done; with nothing reachable, the camps again (they refill) for the XP.
 function cave_next_goal(st) {
-	const f = st.floor, objs = (st.objectives || []).filter((o) => o.floor === f && !o.done && !cave_skip(o));
+	const f = st.floor, objs = (st.objectives || []).filter((o) => o.floor === f && !o.done && !cave_skip(o) && !cave_st.stuck[o.id]);
 	const req = objs.filter((o) => o.required).sort((a, b) => (a.kind === "fight") - (b.kind === "fight"));
 	const camps = objs.filter((o) => o.kind === "farm");
 	if (camps.length) return { obj: camps[0] };
 	if (req.length) return { obj: req[0] };
-	const down = (st.doors || []).find((d) => d.down && !d.locked);
+	const down = (st.doors || []).find((d) => d.down && !d.locked && !cave_st.stuck["door:" + d.to]);
 	if (down) return { door: down };
 	return null;
 }
-// A room the party has died at twice is left (fight on elsewhere); a revive brings it back next visit
+// A room the party has died at twice is left (fight on elsewhere) for the rest of this visit
 function cave_skip(o) { return (cave_st.deaths[o.id] || 0) >= CFG.cave.max_deaths_per_room; }
 function cave_walk(dest, why_) {
 	const k = `${dest.map}:${Math.round(dest.x)},${Math.round(dest.y)}`, now = Date.now();
@@ -152,9 +164,29 @@ function cave_walk(dest, why_) {
 	Promise.resolve(smart_move(dest)).catch(() => {});
 	set_message(`cave: ${why_}`);
 }
+// Progress watchdog (the tank): a goal is given up for this visit when we get no closer to it for cave.stuck_ms while
+// walking (unreachable: a smart_move that fails is re-issued forever otherwise), or a camp after cave.camp_max_ms
+// there (it needs three waves; one that never completes mustn't hold the required rooms and the stairs)
+function cave_progress(g) {
+	const id = g.door ? "door:" + g.door.to : g.obj.id, now = Date.now();
+	const d = g.door ? (character.map === g.door.to ? 0 : Math.hypot((g.door.x ?? character.x) - character.x, (g.door.y ?? character.y) - character.y)) : Math.hypot(g.obj.x - character.x, g.obj.y - character.y);
+	let P = cave_st.prog;
+	if (!P || P.id !== id) P = cave_st.prog = { id, best: d, best_at: now, since: now, map: character.map };
+	if (d < P.best - 40 || character.map !== P.map) { P.best = d; P.best_at = now; P.map = character.map; }
+	const near = !g.door && d <= CFG.cave.arrive_px;
+	if (near) P.best_at = now; // at the room: fighting there is progress
+	const stuck = !near && now - P.best_at > CFG.cave.stuck_ms;
+	const camp_over = !g.door && g.obj.kind === "farm" && now - P.since > CFG.cave.camp_max_ms;
+	if (!stuck && !camp_over) return false;
+	cave_st.stuck[id] = true; cave_st.prog = null;
+	game_log(`cave: giving up on ${g.door ? "the stairs" : g.obj.name || g.obj.kind} (${camp_over ? "camp time up" : "no way closer"})`, C.dim);
+	log_ev("cave", { what: "skip", goal: id, why: camp_over ? "camp_time" : "stuck" });
+	return true;
+}
 function cave_tick() {
 	const st = character.cave;
 	if (!st) return 250;
+	cave_run_check(st);
 	cave_vote_tick(st);
 	cave_shop_tick(st);
 	if (st.paused) { set_message("cave: vote"); return 250; }
@@ -177,6 +209,7 @@ function cave_tick() {
 	if (t) { if (!hold_for_tank(t)) fight(t); set_message(`cave: ${t.name || t.mtype}`); return 200; }
 	const g = cave_next_goal(st);
 	if (!g) { set_message(`cave: floor ${st.floor + 1} done`); return 400; }
+	if (cave_progress(g)) return 200; // given up on: the next goal next tick
 	if (g.door) { cave_walk({ map: g.door.to }, `stairs to floor ${st.floor + 2}`); return 300; }
 	cave_st.last_obj = g.obj.id;
 	if (Math.hypot(g.obj.x - character.x, g.obj.y - character.y) > CFG.cave.arrive_px) cave_walk({ map: character.map, x: g.obj.x, y: g.obj.y }, g.obj.name || g.obj.kind);
