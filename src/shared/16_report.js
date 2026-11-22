@@ -38,7 +38,26 @@ quiet_logs();
 // ---- Bigger panels (CFG.ui, v24.20) ----
 // A style rule in the game page for the log (size, font, a resize handle) and our own iframe's size for the status box.
 // A size dragged with the log's handle is saved (shared by every character in this browser) and reapplied on reload.
+// v25.21 (owner): the status box under CODE alone — our iframe, which the game makes 128x60 and which cut off
+// set_message's text ("gscorpion (xp" ...). It sits in the bottom-aligned top row of #bottomrightcorner (position:
+// fixed, bottom/right 0, no width: its widest row sets its width) above the tutorial bar and the log. So only its
+// height grows (upward: nothing is above it) and its text wraps; a wider box would widen the whole corner and pull the
+// left-aligned bars and log with it — v24.20 resized the log and broke the layout. status_box.w: 0 keeps the game's.
+function apply_status_box() {
+	const S = CFG.ui?.status_box;
+	if (!S?.enabled || typeof window === "undefined") return false;
+	try {
+		const fe = window.frameElement;
+		if (!fe || !fe.style || !(fe.offsetWidth > 2)) return false; // no box (a CODE runner without one, or the tests)
+		if (S.w > 0) fe.style.width = S.w + "px";
+		fe.style.height = S.h + "px";
+		const gg = typeof document !== "undefined" && document.getElementById ? document.getElementById("gg") : null;
+		if (gg) { gg.style.whiteSpace = "normal"; gg.style.overflowWrap = "anywhere"; gg.style.lineHeight = "1.2"; }
+		return true;
+	} catch (e) { return false; }
+}
 function apply_ui() {
+	apply_status_box();
 	const U = CFG.ui;
 	if (typeof parent === "undefined" || !parent.document) return false;
 	if (!U?.enabled) { // v24.21: take back the rule an earlier version left in the game page (it lasts until the page reloads)

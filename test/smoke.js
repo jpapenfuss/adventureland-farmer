@@ -3392,6 +3392,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/width:560px/.test(els["farmer-ui"].textContent), "ui(): back to CFG.ui");
 		vm.runInContext("CFG.ui.enabled = false", ctx);
 		[ctx.set, ctx.get] = sg; ctx.parent.document = pd0;
+		// v25.21: the status box alone (CFG.ui.status_box): our iframe grows to its size; the log is left alone
+		{
+			const fe = { style: {}, offsetWidth: 128 }, gg = { style: {} }, w0 = ctx.window, d0 = ctx.document;
+			ctx.window = { frameElement: fe }; ctx.document = { getElementById: (id) => (id === "gg" ? gg : null) };
+			els["farmer-ui"] = undefined; delete els["farmer-ui"]; ctx.parent.document = { getElementById: (id) => els[id] || null, createElement: () => mk(""), head: { appendChild: (e) => (els[e.id || "farmer-ui"] = e) } };
+			vm.runInContext("apply_ui()", ctx);
+			assert(!fe.style.width && fe.style.height === vm.runInContext("CFG.ui.status_box.h", ctx) + "px" && gg.style.whiteSpace === "normal",
+				`the status box grows taller only (width kept: ${fe.style.width || "game's"}, height ${fe.style.height}), its text wraps`);
+			const fe1 = { style: {}, offsetWidth: 1 }; ctx.window = { frameElement: fe1 };
+			assert(vm.runInContext("apply_status_box()", ctx) === false && !fe1.style.height, "a 1px runner frame (no status box) is left alone");
+			ctx.window = { frameElement: fe };
+			assert(!els["farmer-ui"], "...and the log isn't touched (CFG.ui.enabled stays off)");
+			vm.runInContext("CFG.ui.status_box.enabled = false", ctx); fe.style = {};
+			vm.runInContext("apply_status_box()", ctx);
+			assert(!fe.style.width, "status_box off: the game's own size");
+			vm.runInContext("CFG.ui.status_box.enabled = true", ctx);
+			ctx.window = w0; ctx.document = d0; ctx.parent.document = pd0;
+		}
 		assert(vm.runInContext("map_ok('jail') === false", ctx) && /if \(!\(p\.score > 0\)\) return;/.test(src), "jail is never a pick, nor a spot with no way there");
 	}
 	// 132) v24.22: one in the bank at a time
