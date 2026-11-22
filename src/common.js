@@ -1,4 +1,4 @@
-const VERSION = "25.1"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
+const VERSION = "25.2"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1716,15 +1716,6 @@ function gap_tick() {
 	const m = Math.floor(now / 60_000);
 	if (gaps.min[0]?.m !== m) { gaps.min.unshift({ m, by: {} }); gaps.min.length = Math.min(gaps.min.length, 10); }
 	gaps.min[0].by[k] = (gaps.min[0].by[k] || 0) + dt;
-}
-function gaps_text() {
-	const by = {};
-	for (const b of gaps.min) for (const k in b.by) by[k] = (by[k] || 0) + b.by[k];
-	const tot = sum_obj(by);
-	if (tot < 30_000) return null;
-	const pk = state.pack, spawn = pk && (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype).reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
-	const cap = spawn && rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
-	return `camp time (${Math.round(tot / 60_000)} min): ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / tot * 100)}%`).join(" | ") + cap;
 }
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
@@ -3621,94 +3612,6 @@ function bank_share(n) {
 	for (const c of claims) { const take = Math.min(left, c.s); if (c.name === character.name) return take; left -= take; }
 	return left; // not short of it ourselves (crafting materials...): what the members short of it leave
 }
-// Farm our own monster hunt's target if we can fight it safely
-// A hunt that can't be finished before it expires (h.ms left) isn't worth chasing: let it lapse and take a new one
-// (v18.6: a 417-bee hunt pulled the party onto bees at half the xp/s of croc for hours). Party kills count, so the
-// party's rate is estimated as ours × (1 + 0.6 per member near).
-// xp/s we'd get at a monster's best area (measured if we've been there, else estimated)
-function mt_xps(mt) {
-	let best = 0;
-	const tab = meas();
-	const fa = fight_profile(mt);
-	// v24.6: aged like spot picks (meas_aged)
-	each_area((pack, area) => {
-		if (pack.type !== mt || tab[pack_key(area)] === undefined) return;
-		const est = fa ? fa.xp * Math.min(1 / (fa.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism : tab[pack_key(area)];
-		best = Math.max(best, meas_aged(pack_key(area), est));
-	});
-	if (best) return best;
-	const f = fa;
-	return f ? kills_per_s(mt) * (f.xp || G.monsters[mt]?.xp || 0) : 0;
-}
-// The best xp/s we know of: this pick's best, or the best measured pack
-// v23.6: this pick's best (safe and not cooling down now); only a member that doesn't pick (a follower) falls back to the
-// best rate measured — the max over every measured spot included ones now unsafe or on cooldown and raised the bar
-// v24.3: our own pick's best counts only if it was made in the last 10 min (a follower never picks). Otherwise: the
-// best spot, computed (cached 60s).
-const best_known_xps = () => {
-	const now = Date.now();
-	if (state.best_score > 0 && now - (state.best_at || 0) < 600_000) return state.best_score;
-	const c = state.best_ref;
-	if (c && now - c.at < 60_000) return c.v;
-	const v = best_score() || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
-	state.best_ref = { at: now, v };
-	return v;
-};
-function hunt_feasible(h) {
-	if (!h || !(h.c > 0)) return false;
-	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
-	const best = best_known_xps();
-	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
-	if (!(h.ms > 0)) return true; // no expiry known
-	// v24.3: kills_per_s is already the party's rate (party table, or an estimate with the members counted); adding
-	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
-	const kps = kills_per_s(h.id);
-	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
-}
-// Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
-function kills_per_s(mt) {
-	const f = fight_profile(mt);
-	if (!f) return 0;
-	let best = 0;
-	each_area((pack, area) => {
-		if (pack.type !== mt) return;
-		const est = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-		const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp)) / Math.max(1, f.xp); // v24.6: aged
-		best = Math.max(best, kps);
-	});
-	return best;
-}
-// Every monster worth farming for this character, weighted by CFG.goal_w (monster hunt, own-quest material,
-// guide-quest material, guide farm row). eta_h = estimated hours to finish at our
-// kill rate. Shared with the partner in the heartbeat; recomputed at most every 10s (it scans every map).
-function goals_list() {
-	const out = [], now = Date.now();
-	if (state.goals_cache && now - state.goals_cache.at < 10_000) return state.goals_cache.list;
-	const W = CFG.goal_w, g = live_guide_farm();
-	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
-	const h = character.s.monsterhunt;
-	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
-	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
-	// v24.3: own-quest goals get quest_directive's rules here too (at least quest_farm_min_xp of the best xp/s, done within
-	// quest_farm_max_h): this list goes to the leader, whose shared pick (mutual goals, turns) used it unfiltered and
-	// took the party to low-xp quest monsters the floor was meant to keep it off
-	const bk = best_known_xps();
-	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
-		if (!recipe_open(id)) continue;
-		const guided = is_guide_quest(id);
-		for (const [q, n, l] of G.craft[id].items) {
-			const have = owned_in_bags_or_bank(n, l);
-			if (l || GEAR.has(G.items[n]?.type) || have >= q) continue;
-			for (const [mt, rate] of drop_sources(n)) if (farmable_type(mt)) {
-				const eh = eta(q - have, rate / party_n(), mt); // v24.6: drops go to a random member (as best_source counts)
-				if (!guided && (eh > CFG.quest_farm_max_h || (bk > 0 && mt_xps(mt) < CFG.quest_farm_min_xp * bk))) continue;
-				out.push({ monster: mt, w: guided ? W.guide_quest : W.quest, reason: `${id}: ${n} ${have}/${q}`, eta_h: eh });
-			}
-		}
-	}
-	state.goals_cache = { at: now, list: out };
-	return out;
-}
 // Visit Daisy when we have no hunt or a finished one (h.c = kills left)
 const hunt_due = () => {
 	const h = character.s.monsterhunt;
@@ -3756,15 +3659,6 @@ function event_here(name) {
 	const ev = CFG.events[name], e = ev_info(name);
 	if (ev.map) return character.map === ev.map;
 	return !!e && e.map === character.map && Number.isFinite(e.x) && Math.hypot(e.x - character.x, e.y - character.y) < 800;
-}
-// The guide's farm row if it's current, not paused and not outlevelled (guide_farm_min_xp; a row we can't measure,
-// e.g. a monster we can't fight but the guide calls safe, is kept)
-function live_guide_farm() {
-	const g = state.guide_farm, now = Date.now();
-	if (!g || !(g.until > now) || (state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now) return null;
-	const f = fight_profile(g.monster), gxp = f ? kills_per_s(g.monster) * f.xp : null;
-	if (gxp !== null && best_known_xps() > 0 && gxp < CFG.guide_farm_min_xp * best_known_xps()) return null;
-	return g;
 }
 // =====================================================================
 // Progression Guide adapter
@@ -4680,20 +4574,12 @@ function report_facts() {
 	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
 	F("worn_json", "self", `worn JSON: ${JSON.stringify(Object.fromEntries(Object.entries(character.slots || {}).filter(([k, v]) => v && !/^trade/.test(k)).map(([k, v]) => [k, v.name + (v.level ? "+" + v.level : "") + (v.stat_type ? ":" + v.stat_type : "") + (v.p ? ":" + v.p : "")])))}`);
-	if (CFG.stat_scroll?.enabled && !M_) {
-		const L = stat_scroll_list();
-		if (L.length) F("stat", "self", `stat scrolls: ${L.map((r) => `${r.name}${r.level ? "+" + r.level : ""} → ${r.stat} (${r.q} scroll${r.q === 1 ? "" : "s"}, ${fmt_k(r.cost)}, +${r.pts.toFixed(1)} pts)${r.ok ? " — on the next town trip" : " — not done: " + r.why}`).join("; ")}`);
-	}
+	if (!M_) facts_stat(F, c);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
 		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "shop projects are the merchant's" : "no project") + upgrade_why()}`);
 	}
-	if (CFG.elixir_auto && !M_) {
-		const e = character.slots?.elixir;
-		const t = elixir_active() ? `${e.name}${e.expires ? ` until ${new Date(e.expires).toLocaleTimeString()}` : ""}` : best_elixir() ? "about to drink " + best_elixir().name
-			: bank_elixir() ? "fetching " + bank_elixir().name + " from the bank" : character.gold >= CFG.elixir_buy_min_gold ? "buying " + CFG.elixir_buy : `none (buys ${CFG.elixir_buy} at ${fmt_k(CFG.elixir_buy_min_gold)} gold)`;
-		F("elixir", "self", `elixir: ${t}`, !elixir_active() && !best_elixir() && !bank_elixir() && character.gold < CFG.elixir_buy_min_gold);
-	}
+	if (!M_) facts_elixir(F, c);
 	if (CFG.compound_auto) {
 		const gs = compound_groups(), paused = Object.keys(state.gear_skip).filter((k) => k.startsWith("cmp:") && skipped(k));
 		const cw = compound_why();
@@ -4702,34 +4588,30 @@ function report_facts() {
 			(cw.length ? ` | not compounded: ${cw.join("; ")}` : "") + (town_reason.compound ? ` | last: ${town_reason.compound}` : ""), !gs.length && !paused.length && !cw.length);
 	}
 	if (!M_) facts_probe(F, c);
-	if (p && !p.boss && !M_) F("safety", "self", `safety limit ${Math.round(safety_now() * 100)}% of HP per kill${(state.safety_mult || 1) > 1 ? ` (raised from ${Math.round(CFG.safety * 100)}%; next step ${mins((state.safety_at || Date.now()) + CFG.safety_tune.step_h * 3600_000)})` : ""} | at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
-	if (state.guide_farm && !M_) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
+	if (!M_) facts_safety(F, c);
+	if (!M_) facts_guide_farm(F, c);
 	if (CFG.spend?.enabled) F("budget", "party", budget_text());
 	const golds = partners().filter((x) => Number.isFinite(x.gold));
 	if (golds.length && CFG.party.gold?.enabled) {
 		const next = (state.gold_xfer_at || 0) + CFG.party.gold.every_h * 3600_000;
 		F("gold", "party", `gold: us ${character.gold.toLocaleString()} / ${golds.map((x) => `${x.name} ${x.gold.toLocaleString()}`).join(" / ")} | last transfer ${state.gold_xfer_at ? Math.round((now - state.gold_xfer_at) / 60_000) + "m ago" : "never"}${next > now ? `, next allowed in ${mins(next)}` : ""}`);
 	}
-	if (state.dir_held && state.dir_lock && !M_) F("dir_held", "self", `committed to ${state.directive?.monster} for ${mins(state.dir_lock.until)} more; then: ${state.dir_held.monster} (${state.dir_held.reason})`);
-	if (!is_follower() && partners().length && !M_) {
-		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
-		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
-		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
-	}
-	if (is_follower() && !M_) F("goals", "self", `my goals (shared with ${leader_name() || "nobody"}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
+	if (!M_) facts_dir_held(F, c);
+	if (!M_) facts_shared(F, c);
+	if (!M_) facts_goals(F, c);
 	const h = character.s.monsterhunt;
 	for (const P of partners()) if (P.hunt?.c > 0) F("hunt:" + P.name, "party", `${P.name}'s hunt: ${P.hunt.c}x ${P.hunt.id} left`);
-	if (!M_) F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	if (!M_) facts_hunt(F, c);
 	const due = town_due();
 	const tc = town_causes();
 	F("town", "self", `town due: ${due_tasks(due).join(", ") || "nothing"} | errand: ${state.errand || "none"} | last run ${state.last_town ? Math.round((now - state.last_town) / 60_000) + "m ago" : "never"}`);
 	F("trips", "self", `trips v${VERSION} (last ${tc.span}m): ${tc.n}${tc.n ? ` — triggered by ${tc.trig.map(([w, n]) => `${w} ${n}`).join(", ")}; work due on them: ${tc.by.map(([w, n]) => `${w} ${n}`).join(", ")}` : ""}` +
 		`${tc.older ? ` | ${tc.older} more on older versions` : ""}`);
-	if ((state.owe || 0) >= 1 && !M_) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
+	if (!M_) facts_owe(F, c);
 	if (state.town_block?.blockers.length) F("town_block", "self", `town blocked (${Math.round((now - state.town_block.at) / 1000)}s ago): ${state.town_block.blockers.join(", ")}`);
 	// v24.50: is the party gathered (may the tank start a fight)?
 	if (!M_) facts_engage(F, c);
-	if (!M_) { const g = gaps_text(); if (g) F("camp_time", "self", g); }
+	if (!M_) facts_camp_time(F, c);
 	// v24.48: who moved us in the last minute, in order, and how often two owners overlapped since load
 	if (mv.log.length) F("moves", "self", `movement (1 min): ${mv.log.slice(-10).map((m) => `${m.who} ${m.kind}${m.n > 1 ? " x" + m.n : ""}`).join(" → ")} | clashes since load: ${mv.clash}`);
 	// v24.38: the spots the last pick weighed, best first: xp/s (measured or estimated), after the walk, and what ruled it out
@@ -5183,6 +5065,16 @@ function merrit_on() { return false; }
 function parcel_count() { return 0; }
 // fighter.js
 function fighter_tick() { return 250; }
+function facts_stat() {}
+function facts_elixir() {}
+function facts_safety() {}
+function facts_guide_farm() {}
+function facts_dir_held() {}
+function facts_shared() {}
+function facts_goals() {}
+function facts_hunt() {}
+function facts_owe() {}
+function facts_camp_time() {}
 function heartbeat() {}
 function party_invite_tick() {}
 function tank_cover() { return null; }

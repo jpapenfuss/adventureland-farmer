@@ -1566,3 +1566,164 @@ function party_invite_tick() {
 	}
 }
 setInterval(party_invite_tick, 10_000); // every 10s until everyone online is in
+// ---- more report() lines of the fighters (v25.2), called from report_facts in order ----
+function facts_stat(F, ctx) {
+	const { p, d, now } = ctx;
+	if (CFG.stat_scroll?.enabled) {
+		const L = stat_scroll_list();
+		if (L.length) F("stat", "self", `stat scrolls: ${L.map((r) => `${r.name}${r.level ? "+" + r.level : ""} → ${r.stat} (${r.q} scroll${r.q === 1 ? "" : "s"}, ${fmt_k(r.cost)}, +${r.pts.toFixed(1)} pts)${r.ok ? " — on the next town trip" : " — not done: " + r.why}`).join("; ")}`);
+	}
+}
+function facts_elixir(F, ctx) {
+	const { p, d, now } = ctx;
+	if (CFG.elixir_auto) {
+		const e = character.slots?.elixir;
+		const t = elixir_active() ? `${e.name}${e.expires ? ` until ${new Date(e.expires).toLocaleTimeString()}` : ""}` : best_elixir() ? "about to drink " + best_elixir().name
+			: bank_elixir() ? "fetching " + bank_elixir().name + " from the bank" : character.gold >= CFG.elixir_buy_min_gold ? "buying " + CFG.elixir_buy : `none (buys ${CFG.elixir_buy} at ${fmt_k(CFG.elixir_buy_min_gold)} gold)`;
+		F("elixir", "self", `elixir: ${t}`, !elixir_active() && !best_elixir() && !bank_elixir() && character.gold < CFG.elixir_buy_min_gold);
+	}
+}
+function facts_safety(F, ctx) {
+	const { p, d, now } = ctx;
+	if (p && !p.boss) F("safety", "self", `safety limit ${Math.round(safety_now() * 100)}% of HP per kill${(state.safety_mult || 1) > 1 ? ` (raised from ${Math.round(CFG.safety * 100)}%; next step ${mins((state.safety_at || Date.now()) + CFG.safety_tune.step_h * 3600_000)})` : ""} | at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
+}
+function facts_guide_farm(F, ctx) {
+	const { p, d, now } = ctx;
+	if (state.guide_farm) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
+}
+function facts_dir_held(F, ctx) {
+	const { p, d, now } = ctx;
+	if (state.dir_held && state.dir_lock) F("dir_held", "self", `committed to ${state.directive?.monster} for ${mins(state.dir_lock.until)} more; then: ${state.dir_held.monster} (${state.dir_held.reason})`);
+}
+function facts_shared(F, ctx) {
+	const { p, d, now } = ctx;
+	if (!is_follower() && partners().length) {
+		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
+		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
+		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
+	}
+}
+function facts_goals(F, ctx) {
+	const { p, d, now } = ctx;
+	if (is_follower()) F("goals", "self", `my goals (shared with ${leader_name() || "nobody"}): ${goals_list().sort((a, b) => b.w - a.w).slice(0, 4).map((g) => g.monster + " (" + g.reason + ")").join(", ") || "none"}`);
+}
+function facts_hunt(F, ctx) {
+	const { p, d, now } = ctx;
+	const h = character.s.monsterhunt;
+	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+}
+function facts_owe(F, ctx) {
+	const { p, d, now } = ctx;
+	if ((state.owe || 0) >= 1) F("owe", "self", `owes ${CFG.merchant?.name || "the merchant"} ${fmt_k(state.owe)} for potions (paid when it's within reach, from gold above ${fmt_k(CFG.gold_reserve)})`);
+}
+function facts_camp_time(F, ctx) {
+	const { p, d, now } = ctx;
+	{ const g = gaps_text(); if (g) F("camp_time", "self", g); }
+}
+// ---- moved from common.js (v24.95): used by the fighters only ----
+function gaps_text() {
+	const by = {};
+	for (const b of gaps.min) for (const k in b.by) by[k] = (by[k] || 0) + b.by[k];
+	const tot = sum_obj(by);
+	if (tot < 30_000) return null;
+	const pk = state.pack, spawn = pk && (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype).reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
+	const cap = spawn && rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
+	return `camp time (${Math.round(tot / 60_000)} min): ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / tot * 100)}%`).join(" | ") + cap;
+}
+// Farm our own monster hunt's target if we can fight it safely
+// A hunt that can't be finished before it expires (h.ms left) isn't worth chasing: let it lapse and take a new one
+// (v18.6: a 417-bee hunt pulled the party onto bees at half the xp/s of croc for hours). Party kills count, so the
+// party's rate is estimated as ours × (1 + 0.6 per member near).
+// xp/s we'd get at a monster's best area (measured if we've been there, else estimated)
+function mt_xps(mt) {
+	let best = 0;
+	const tab = meas();
+	const fa = fight_profile(mt);
+	// v24.6: aged like spot picks (meas_aged)
+	each_area((pack, area) => {
+		if (pack.type !== mt || tab[pack_key(area)] === undefined) return;
+		const est = fa ? fa.xp * Math.min(1 / (fa.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism : tab[pack_key(area)];
+		best = Math.max(best, meas_aged(pack_key(area), est));
+	});
+	if (best) return best;
+	const f = fa;
+	return f ? kills_per_s(mt) * (f.xp || G.monsters[mt]?.xp || 0) : 0;
+}
+// The best xp/s we know of: this pick's best, or the best measured pack
+// v23.6: this pick's best (safe and not cooling down now); only a member that doesn't pick (a follower) falls back to the
+// best rate measured — the max over every measured spot included ones now unsafe or on cooldown and raised the bar
+// v24.3: our own pick's best counts only if it was made in the last 10 min (a follower never picks). Otherwise: the
+// best spot, computed (cached 60s).
+const best_known_xps = () => {
+	const now = Date.now();
+	if (state.best_score > 0 && now - (state.best_at || 0) < 600_000) return state.best_score;
+	const c = state.best_ref;
+	if (c && now - c.at < 60_000) return c.v;
+	const v = best_score() || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
+	state.best_ref = { at: now, v };
+	return v;
+};
+function hunt_feasible(h) {
+	if (!h || !(h.c > 0)) return false;
+	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
+	const best = best_known_xps();
+	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
+	if (!(h.ms > 0)) return true; // no expiry known
+	// v24.3: kills_per_s is already the party's rate (party table, or an estimate with the members counted); adding
+	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
+	const kps = kills_per_s(h.id);
+	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
+}
+// Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
+function kills_per_s(mt) {
+	const f = fight_profile(mt);
+	if (!f) return 0;
+	let best = 0;
+	each_area((pack, area) => {
+		if (pack.type !== mt) return;
+		const est = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
+		const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp)) / Math.max(1, f.xp); // v24.6: aged
+		best = Math.max(best, kps);
+	});
+	return best;
+}
+// Every monster worth farming for this character, weighted by CFG.goal_w (monster hunt, own-quest material,
+// guide-quest material, guide farm row). eta_h = estimated hours to finish at our
+// kill rate. Shared with the partner in the heartbeat; recomputed at most every 10s (it scans every map).
+function goals_list() {
+	const out = [], now = Date.now();
+	if (state.goals_cache && now - state.goals_cache.at < 10_000) return state.goals_cache.list;
+	const W = CFG.goal_w, g = live_guide_farm();
+	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
+	const h = character.s.monsterhunt;
+	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
+	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
+	// v24.3: own-quest goals get quest_directive's rules here too (at least quest_farm_min_xp of the best xp/s, done within
+	// quest_farm_max_h): this list goes to the leader, whose shared pick (mutual goals, turns) used it unfiltered and
+	// took the party to low-xp quest monsters the floor was meant to keep it off
+	const bk = best_known_xps();
+	if (CFG.quest_farm && CFG.quest_crafts) for (const id of quest_recipes()) {
+		if (!recipe_open(id)) continue;
+		const guided = is_guide_quest(id);
+		for (const [q, n, l] of G.craft[id].items) {
+			const have = owned_in_bags_or_bank(n, l);
+			if (l || GEAR.has(G.items[n]?.type) || have >= q) continue;
+			for (const [mt, rate] of drop_sources(n)) if (farmable_type(mt)) {
+				const eh = eta(q - have, rate / party_n(), mt); // v24.6: drops go to a random member (as best_source counts)
+				if (!guided && (eh > CFG.quest_farm_max_h || (bk > 0 && mt_xps(mt) < CFG.quest_farm_min_xp * bk))) continue;
+				out.push({ monster: mt, w: guided ? W.guide_quest : W.quest, reason: `${id}: ${n} ${have}/${q}`, eta_h: eh });
+			}
+		}
+	}
+	state.goals_cache = { at: now, list: out };
+	return out;
+}
+// The guide's farm row if it's current, not paused and not outlevelled (guide_farm_min_xp; a row we can't measure,
+// e.g. a monster we can't fight but the guide calls safe, is kept)
+function live_guide_farm() {
+	const g = state.guide_farm, now = Date.now();
+	if (!g || !(g.until > now) || (state.guide_ignore[`${g.monster}:${g.map}`] || 0) > now) return null;
+	const f = fight_profile(g.monster), gxp = f ? kills_per_s(g.monster) * f.xp : null;
+	if (gxp !== null && best_known_xps() > 0 && gxp < CFG.guide_farm_min_xp * best_known_xps()) return null;
+	return g;
+}
