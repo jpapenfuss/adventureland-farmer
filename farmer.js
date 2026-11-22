@@ -7879,6 +7879,7 @@ async function stand_tick() {
 		for (const slot in state.stand) {
 			const L_ = state.stand[slot];
 			if (L_.decoy) continue; // v25.26: Merrit's listing keeps its price
+			if (!(S_.list || []).includes(L_.name)) continue; // v25.30: not the owner's: it comes down, never re-listed cheaper
 			// v24.5: the server's price is per unit (a buyer pays price x q); stacks were listed at q times their value.
 			// A stack listed before (no per_unit) is re-listed at once at the per-unit price.
 			const old = L_.q > 1 && !L_.per_unit;
