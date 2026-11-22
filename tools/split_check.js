@@ -4,8 +4,8 @@
 const fs = require("fs"), path = require("path");
 const SRC = path.join(__dirname, "..", "src");
 const DECL = /^(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)|^(?:const|let|var|class)\s+([A-Za-z_$][\w$]*)/;
-// top-level declarations of a file, each with the identifiers its block references (comments and strings removed;
-// object keys `name:` don't count)
+// top-level declarations of a file, each with the identifiers its block references (comments, strings and template
+// text removed)
 function blocks(file) {
 	const lines = fs.readFileSync(path.join(SRC, file), "utf8").split("\n"), out = [];
 	lines.forEach((l, i) => { const m = l.match(DECL); if (m) out.push({ name: m[1] || m[2], line: i + 1, fn: /function/.test(l.split(/[=(]/)[0]) }); });
@@ -13,7 +13,8 @@ function blocks(file) {
 		const body = lines.slice(out[k].line - 1, k + 1 < out.length ? out[k + 1].line - 1 : lines.length).join("\n")
 			.replace(/\/\/.*$/gm, "").replace(/`(?:\\.|[^`\\])*`/g, (m) => " " + (m.match(/\$\{[^}]*\}/g) || []).map((x) => x.slice(2, -1)).join(" ") + " ")
 			.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g, '""');
-		out[k].refs = new Set(body.match(/(?<![\w$.])[A-Za-z_$][\w$]*(?!\s*:(?!:))/g) || []);
+		// an object key (`name:`) isn't a reference; a bare name before a ternary's ":" would be missed — rare enough
+		out[k].refs = new Set(body.match(/(?<![\w$.])[A-Za-z_$][\w$]*\b(?!\s*:(?!:))/g) || []);
 	}
 	return out;
 }

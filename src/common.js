@@ -1,4 +1,4 @@
-const VERSION = "25.4"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
+const VERSION = "25.5"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -1090,20 +1090,6 @@ function party_power() {
 // Measured xp/s per spot with the party there: base xp of the party's kills at it (kill_credit)
 const meas = () => state.measured;
 
-// Best normal spot's xp/s, without being there (for a member that doesn't pick)
-function best_score() {
-	const prof = {};
-	let best = 0;
-	each_area((pack, area) => {
-		const t = pack.type;
-		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
-		const f = prof[t];
-		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
-		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-		best = Math.max(best, meas_aged(pack_key(area), est * state.realism));
-	});
-	return best;
-}
 // xp/s measurement per pack (feeds the picker)
 let xp_prev = { level: character.level, xp: character.xp };
 // XP gained since the last call; across a level-up: what was left of the old level + xp into the new one
@@ -2406,13 +2392,6 @@ const cmp_top = (name) => {
 	for (let L = 0; L < top; L++) if (skipped(compound_key(name, L)) && /low_chance/.test(skip_why[compound_key(name, L)] || "")) { top = L; break; }
 	return top;
 };
-// A compound piece at its ceiling that no member wants: it can't go further and nobody wears it (v24.15). The merchant
-// sells it (an NPC pays its value: ~134k for an Amulet of HP +2) — it held 12 of those, refetched every 6h.
-function dead_compound(it) {
-	const def = it && G.items[it.name];
-	return !!def?.compound && !it.l && !it.b && !it.p && (it.level || 0) > 0 && (it.level || 0) >= cmp_top(it.name) &&
-		!CFG.keep.includes(it.name) && !wanted_by_member(it);
-}
 let cmp_cache = null; // { key, at, list }: keyed by bags + bank snapshot + pauses; bag_class asks once per item
 function compound_groups(needed) {
 	// while the merchant is online it compounds for everyone (shared bank); fighters hand it their spares instead
@@ -2654,7 +2633,7 @@ function upgrade_due() {
 		state.upg = pick_upgrade();
 		if (state.upg) game_log(`upgrade project: ${state.upg.name} → +${state.upg.to} for ${state.upg.for}'s ${state.upg.slot} (+${state.upg.gain} pts, ~${Math.round(state.upg.cost / 1000)}k)`, C.info);
 	}
-	if (is_merchant() && state.fund_need > 0 && character.gold - CFG.merchant.donate.keep < state.fund_need) return false; // wait for funding
+	if (merchant_awaits_funds()) return false; // v25.5: merchant.js
 	return !!state.upg && !skipped("upg:" + state.upg.name) && best_level_held(state.upg.name) < state.upg.to;
 }
 async function task_upgrade() {
@@ -2674,12 +2653,7 @@ async function task_upgrade() {
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
 		// over the party's gold budget: don't ask the fighters for gold we then couldn't spend (v19.6)
 		if (!P.weapon && step > gold_room()) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
-		// the merchant asks for funding when the next step (scroll, and a copy if none is held) is beyond its gold
-		if (is_merchant() && character.gold - CFG.merchant.donate.keep < step) {
-			state.fund_need = P.weapon ? Math.max(step * 3, (P.cost || 0) - (P.spent || 0)) : Math.min(P.cost, step * 3); // v24.86: a weapon asks for what's left
-			game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
-			break;
-		}
+		if (merchant_asks_funds(P, step)) break; // v25.5: merchant.js — the fighters fund the step
 		if (!(P.weapon ? character.gold - step >= (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve) : gold_ok(step))) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
 		state.fund_need = 0;
 		// v23.1: the gold the project's steps cost (copy + scrolls), counted per step — measuring from total gold let loot,
@@ -2754,7 +2728,7 @@ async function task_craft_power() {
 	const r = G.craft[c.id];
 	if (!gold_ok(r.cost)) return (town_reason.forge = "gold budget"), 0;
 	if ((r.cost || 0) > character.gold - (is_merchant() ? CFG.merchant.donate.keep : CFG.gold_reserve)) {
-		if (is_merchant()) state.fund_need = r.cost;
+		merchant_asks_funds(null, r.cost); // v25.5: merchant.js
 		return 0;
 	}
 	if (character.esize < 1) return 0;
@@ -2862,8 +2836,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
-	if (CFG.sell_junk && is_merchant() && Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return "sell";
-	if (CFG.sell_junk && is_merchant() && CFG.merchant.sell_dead_compounds && dead_compound(item)) return "sell"; // v24.15
+	if (merchant_sells(item)) return "sell"; // v25.5: merchant.js — a purge pull, a dead compound piece
 	if (is_junk(item)) return "sell";
 	return CFG.bank ? "bank" : "keep";
 }
@@ -3852,17 +3825,7 @@ function town_check() {
 	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
-	if (!is_merchant() && !town_urgent(due)) {
-		const since = Date.now() - Math.max(state.last_town || 0, state.town_end_at || 0);
-		if (since < CFG.town_soft_gap_ms) {
-			state.town_block = { what: what.join("+"), blockers: [`deferrable: next trip in ${Math.ceil((CFG.town_soft_gap_ms - since) / 60_000)}m`], at: Date.now() };
-			return;
-		}
-		if (walking() && !errand_busy()) { // on the way to the pack: arrive first; deferrable work never turns us around
-			state.town_block = { what: what.join("+"), blockers: ["deferrable: walking to the pack"], at: Date.now() };
-			return;
-		}
-	}
+	if (fighter_defers_town(due, what)) return; // v25.5: fighter.js — work that can wait
 	const attacked = !!get_nearest_monster({ target: character.name });
 	const floor = critical ? CFG.town_hp_critical : CFG.town_hp;
 	const blockers = [];
@@ -4712,6 +4675,9 @@ setInterval(() => {
 // =====================================================================
 // merchant.js
 function merchant_tick() {}
+function merchant_awaits_funds() { return false; }
+function merchant_asks_funds() { return false; }
+function merchant_sells() { return false; }
 function merchant_fight_back() { return false; }
 function merchant_fetch_give() {}
 function merchant_fetch_stand() {}
@@ -4727,6 +4693,7 @@ function merrit_on() { return false; }
 function parcel_count() { return 0; }
 // fighter.js
 function fighter_tick() { return 250; }
+function fighter_defers_town() { return false; }
 function fighter_fight_back() { return false; }
 function why_not_fighter() { return "the merchant doesn't fight"; }
 function facts_stat() {}

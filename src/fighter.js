@@ -2077,3 +2077,33 @@ function fight(t, steer = true) {
 	if (hold_for_tank(t)) { if (character.ctype === "priest") party_heal(); return; }
 	if (!class_skills(t) && can_attack(t)) fire("attack", t);
 }
+// ---- moved from common.js (v24.95): used by the fighters only ----
+// Best normal spot's xp/s, without being there (for a member that doesn't pick)
+function best_score() {
+	const prof = {};
+	let best = 0;
+	each_area((pack, area) => {
+		const t = pack.type;
+		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
+		const f = prof[t];
+		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
+		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+		best = Math.max(best, meas_aged(pack_key(area), est * state.realism));
+	});
+	return best;
+}
+// ---- town_check's deferral (v25.5): a fighter's work that can wait doesn't start a trip within town_soft_gap_ms of the
+// last, nor turn a walk to the camp around. true = town_check is done (town_block says why) ----
+function fighter_defers_town(due, what) {
+	if (town_urgent(due)) return false;
+	const since = Date.now() - Math.max(state.last_town || 0, state.town_end_at || 0);
+	if (since < CFG.town_soft_gap_ms) {
+		state.town_block = { what: what.join("+"), blockers: [`deferrable: next trip in ${Math.ceil((CFG.town_soft_gap_ms - since) / 60_000)}m`], at: Date.now() };
+		return true;
+	}
+	if (walking() && !errand_busy()) { // on the way to the pack: arrive first; deferrable work never turns us around
+		state.town_block = { what: what.join("+"), blockers: ["deferrable: walking to the pack"], at: Date.now() };
+		return true;
+	}
+	return false;
+}

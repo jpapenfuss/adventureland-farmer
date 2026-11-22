@@ -658,3 +658,30 @@ function merchant_fight_back() {
 	if (can_attack(t)) fire("attack", t);
 	return true;
 }
+// ---- project funding (v25.5): the merchant's projects are paid by the fighters (merchant.fund_keep) ----
+// waiting for gold asked for earlier
+function merchant_awaits_funds() {
+	return state.fund_need > 0 && character.gold - CFG.merchant.donate.keep < state.fund_need;
+}
+// the next step (P: an upgrade project; null: a craft costing `step`) is beyond our gold: ask the fighters. true = asked
+function merchant_asks_funds(P, step) {
+	if (character.gold - CFG.merchant.donate.keep >= step) return false;
+	if (!P) { state.fund_need = step; return true; }
+	state.fund_need = P.weapon ? Math.max(step * 3, (P.cost || 0) - (P.spent || 0)) : Math.min(P.cost, step * 3); // v24.86: a weapon asks for what's left
+	game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
+	return true;
+}
+// ---- bag_class's merchant sells (v25.5): pieces pulled from the bank by a purge, dead compound pieces (sell_junk only) ----
+function merchant_sells(item) {
+	if (!CFG.sell_junk) return false;
+	if (Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000) return true;
+	return !!(CFG.merchant.sell_dead_compounds && dead_compound(item)); // v24.15
+}
+// ---- moved from common.js (v24.95): used by the merchant only ----
+// A compound piece at its ceiling that no member wants: it can't go further and nobody wears it (v24.15). The merchant
+// sells it (an NPC pays its value: ~134k for an Amulet of HP +2) — it held 12 of those, refetched every 6h.
+function dead_compound(it) {
+	const def = it && G.items[it.name];
+	return !!def?.compound && !it.l && !it.b && !it.p && (it.level || 0) > 0 && (it.level || 0) >= cmp_top(it.name) &&
+		!CFG.keep.includes(it.name) && !wanted_by_member(it);
+}
