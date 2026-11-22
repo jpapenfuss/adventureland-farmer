@@ -159,16 +159,21 @@ async function stand_tick() {
 		// v25.26 (owner): Merrit gives a parcel only to a stand with a listing (server: market_patron.js hasListing — a
 		// trade slot holding an item with a price > 0). With the owner's list empty, one common item (stand.decoy: a
 		// health potion) is listed at an absurd price nobody pays, so there's always a listing.
+		// (Bought anyway: the sale is logged like any other, at that price, and another potion goes up.) A failed listing
+		// pauses the decoy 10 min and the owner's listings carry on; no potion in the bags is logged once an hour.
 		const D_ = S_.decoy;
-		if (D_?.name && !Object.values(state.stand).some((L) => L.decoy)) {
+		if (D_?.name && !skipped("stand:decoy") && !Object.values(state.stand).some((L) => L.decoy)) {
 			const ds = TRADE_SLOTS.find((t) => !sl[t] && !state.stand[t]), dk = character.items.findIndex((i) => i && i.name === D_.name && !i.l);
-			if (ds && dk >= 0) {
+			if (ds && dk < 0) { skip("stand:decoy", 3_600_000, `no ${D_.name} in the bags`); game_log(`stand: no ${D_.name} in the bags for Merrit's listing`, C.dim); }
+			else if (ds) {
 				await wait_budget(1, RESERVE.errand);
-				await T(trade(dk, ds, D_.price, 1), 5000).then(() => {
+				const ok = await T(trade(dk, ds, D_.price, 1), 5000).then(() => true).catch((e) => {
+					skip("stand:decoy", 600_000, why(e)); game_log(`stand: listing the ${D_.name} for Merrit: ${why(e)} (again in 10 min)`, C.dim); return false; });
+				if (ok) {
 					state.stand[ds] = { name: D_.name, level: 0, q: 1, price: D_.price, value: D_.price, at: now, per_unit: true, decoy: true };
 					game_log(`stand: listed 1 ${D_.name} at ${fmt_k(D_.price)} (for Merrit's parcels; nobody will pay that)`, C.dim);
-				}).catch((e) => game_log(`stand: listing the ${D_.name} for Merrit: ${why(e)}`, C.dim));
-				return;
+					return;
+				}
 			}
 		}
 		// new listing

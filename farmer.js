@@ -7793,16 +7793,21 @@ async function stand_tick() {
 		// v25.26 (owner): Merrit gives a parcel only to a stand with a listing (server: market_patron.js hasListing — a
 		// trade slot holding an item with a price > 0). With the owner's list empty, one common item (stand.decoy: a
 		// health potion) is listed at an absurd price nobody pays, so there's always a listing.
+		// (Bought anyway: the sale is logged like any other, at that price, and another potion goes up.) A failed listing
+		// pauses the decoy 10 min and the owner's listings carry on; no potion in the bags is logged once an hour.
 		const D_ = S_.decoy;
-		if (D_?.name && !Object.values(state.stand).some((L) => L.decoy)) {
+		if (D_?.name && !skipped("stand:decoy") && !Object.values(state.stand).some((L) => L.decoy)) {
 			const ds = TRADE_SLOTS.find((t) => !sl[t] && !state.stand[t]), dk = character.items.findIndex((i) => i && i.name === D_.name && !i.l);
-			if (ds && dk >= 0) {
+			if (ds && dk < 0) { skip("stand:decoy", 3_600_000, `no ${D_.name} in the bags`); game_log(`stand: no ${D_.name} in the bags for Merrit's listing`, C.dim); }
+			else if (ds) {
 				await wait_budget(1, RESERVE.errand);
-				await T(trade(dk, ds, D_.price, 1), 5000).then(() => {
+				const ok = await T(trade(dk, ds, D_.price, 1), 5000).then(() => true).catch((e) => {
+					skip("stand:decoy", 600_000, why(e)); game_log(`stand: listing the ${D_.name} for Merrit: ${why(e)} (again in 10 min)`, C.dim); return false; });
+				if (ok) {
 					state.stand[ds] = { name: D_.name, level: 0, q: 1, price: D_.price, value: D_.price, at: now, per_unit: true, decoy: true };
 					game_log(`stand: listed 1 ${D_.name} at ${fmt_k(D_.price)} (for Merrit's parcels; nobody will pay that)`, C.dim);
-				}).catch((e) => game_log(`stand: listing the ${D_.name} for Merrit: ${why(e)}`, C.dim));
-				return;
+					return;
+				}
 			}
 		}
 		// new listing
@@ -8075,8 +8080,8 @@ function facts_merchant__merchant(F, ctx) {
 		const got = hist.ev.filter((e) => e.type === "parcel" && now - e.t < 86_400_000).reduce((a, e) => a + (e.n || 1), 0);
 		F("merrit", "self", `merrit: ${sp ? `spot ${sp.x},${sp.y} (${in_rect(sp.x, sp.y, CFG.merchant.merrit.square) ? "square" : "aisle"})` : "no qualifying spot"} | ${character.stand ? `stand still ${Math.floor(st / 60)}m${st % 60}s${st >= 120 ? " — ready for her" : ""}` : "stand closed"} | parcels 24h: ${got}${state.parcel_at ? `, last ${ago(state.parcel_at)} ago` : ""}${parcel_count() ? ` | holding ${parcel_count()}` : ""}`);
 	}
-	const ls = Object.values(state.stand), sold = hist.ev.filter((e) => e.type === "sold" && now - e.t < 86_400_000);
-	F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
+	const ls = Object.values(state.stand).filter((l) => !l.decoy), dc = Object.values(state.stand).find((l) => l.decoy), sold = hist.ev.filter((e) => e.type === "sold" && now - e.t < 86_400_000);
+	F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""}${dc ? ` + Merrit's ${dc.name}` : CFG.merchant.stand.decoy ? ` | Merrit's listing: ${skipped("stand:decoy") ? `paused (${skip_why["stand:decoy"] || "?"})` : "not up yet"}` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
 	F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
 }
 // =====================================================================

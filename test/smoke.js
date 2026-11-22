@@ -2876,14 +2876,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.trade = (k, slot, price, q) => { tr2.push([character.items[k].name, price, q, slot]); character.slots[slot] = { name: character.items[k].name, q, price }; return Promise.resolve(); };
 			ctx.unequip = (slot) => (uneqs++, delete character.slots[slot], Promise.resolve());
 			character.slots = {}; character.stand = true; character.items[20] = { name: "hpot0", q: 50 };
-			vm.runInContext("state.stand = {}; CFG.merchant.stand.list = []; stand_busy = false; stand_cache = null", ctx);
+			vm.runInContext("state.stand = {}; CFG.merchant.stand.list = []; stand_busy = false; stand_cache = null; state.gear_skip = {}", ctx); // (earlier stand tests had no potion: the decoy paused)
 			await vm.runInContext("stand_tick()", ctx);
 			assert(tr2.length === 1 && tr2[0][0] === "hpot0" && tr2[0][1] === vm.runInContext("CFG.merchant.stand.decoy.price", ctx) && tr2[0][2] === 1,
 				`one health potion listed at the decoy price (${JSON.stringify(tr2)})`);
 			vm.runInContext("for (const s in state.stand) state.stand[s].at = state.stand[s].cut_at = Date.now() - 48 * 3600e3; stand_busy = false", ctx);
 			await vm.runInContext("stand_tick()", ctx); await vm.runInContext("stand_busy = false; stand_tick()", ctx);
-			assert(tr2.length === 1 && uneqs === 0 && vm.runInContext("Object.values(state.stand).filter((l) => l.decoy).length", ctx) === 1,
+			assert(tr2.length === 1 && uneqs === 0 && vm.runInContext("Object.values(state.stand).filter((l) => l.decoy).length", ctx) === 1
+				&& vm.runInContext("Object.values(state.stand).find((l) => l.decoy).price === CFG.merchant.stand.decoy.price", ctx),
 				"the decoy isn't taken down, price-cut or listed twice (it's not on the owner's list)");
+			assert(/\+ Merrit's hpot0/.test(vm.runInContext("report_lines(false).find((l) => /^stand: /.test(l))", ctx)) && !/99\.9B|100B/.test(vm.runInContext("report_lines(false).find((l) => /^stand: /.test(l))", ctx)), "the report names the decoy, not its price in the 'asked' total");
+			// a listing the server refuses: one try, the decoy paused 10 min, and the owner's listing still goes up
+			character.slots = {}; vm.runInContext("state.stand = {}; state.gear_skip = {}; stand_busy = false; CFG.merchant.stand.list = ['goldring']; stand_cache = null", ctx);
+			character.items[21] = { name: "goldring", level: 0 }; let tries = 0;
+			ctx.trade = (k, slot, price, q) => { if (character.items[k].name === "hpot0") { tries++; return Promise.reject({ reason: "invalid" }); } tr2.push([character.items[k].name, price, q, slot]); character.slots[slot] = { name: character.items[k].name, q, price }; return Promise.resolve(); };
+			for (let i = 0; i < 3; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+			assert(tries === 1 && vm.runInContext("skipped('stand:decoy')", ctx) && tr2.some((t) => t[0] === "goldring"), `a refused decoy: one try (${tries}), paused, and the owner's listing still goes up`);
+			character.items[21] = null; vm.runInContext("CFG.merchant.stand.list = []; state.gear_skip = {}", ctx);
 			ctx.trade = trade1; ctx.unequip = uneq1; character.items[20] = null; character.slots = {};
 			vm.runInContext("state.stand = {}", ctx);
 		}
