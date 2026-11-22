@@ -113,7 +113,12 @@ async function task_sell() {
 		const it = character.items[k];
 		if (bag_class(it) !== "sell") continue;
 		await wait_budget(1, RESERVE.bulk);
-		await T(sell(k, it.q || 1)).then(() => n++).catch((e) => game_log("sell: " + why(e)));
+		await T(sell(k, it.q || 1)).then(() => {
+			n++;
+			// v25.33: each sale on the record (the owner allows gear sales by rule now — gear_purge)
+			log_ev("npc_sold", { item: `${it.name}+${it.level || 0}${it.p ? ":" + it.p : ""}`, q: it.q || 1 });
+			if (GEAR.has(G.items[it.name]?.type)) game_log(`sold ${it.name}+${it.level || 0}${(it.q || 1) > 1 ? " x" + it.q : ""} to an NPC`, C.dim);
+		}).catch((e) => game_log("sell: " + why(e)));
 		await sleep_ms(PACE_MS);
 	}
 	if (n) game_log(`Sold ${n} junk item${n === 1 ? "" : "s"}`, C.ok);
