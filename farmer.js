@@ -7783,13 +7783,15 @@ setInterval(() => { if (spent() <= BUDGET.soft) sustain(); }, 250); // potions/r
 setInterval(gap_tick, 250);
 // v25.14: keep the browser from throttling a background tab (Safari's sleeping tabs froze the party at 4:11 AM: no
 // heartbeats, so the tank waited "in town" for members standing next to it). The game's performance_trick() plays a
-// silent looping sound; a second play() would stack another copy, so it is started once and replayed only if it stopped.
-// Browsers may block sound until the tab has been clicked once after a load.
+// silent looping sound (parent.sounds.empty: the game's `var sounds`, js/functions.js). It is called once; after that the
+// loop is replayed only when it stopped and Howler's audio is running — a play() while the browser blocks sound (the tab
+// not clicked since the load) would queue another copy each minute.
+let awake_started = false;
 function keep_awake() {
 	try {
 		const snd = parent.sounds?.empty;
-		if (!snd) { if (typeof performance_trick === "function") performance_trick(); }
-		else if (typeof snd.playing === "function" && !snd.playing()) snd.play();
+		if (!awake_started) { awake_started = true; if (!snd && typeof performance_trick === "function") performance_trick(); return; }
+		if (snd && typeof snd.playing === "function" && !snd.playing() && parent.Howler?.ctx?.state === "running") snd.play();
 	} catch (e) {}
 }
 keep_awake();
