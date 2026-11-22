@@ -69,6 +69,9 @@ function facts_engage(F, ctx) {
 	const { p, d, now } = ctx;
 	if (!(together_now() && partners_any().length)) return;
 	const miss = is_tank_class(character.ctype) ? party_missing() : null, tk = party_tank();
+	// v25.20: the free-for-all
+	const os = is_tank_class(character.ctype) ? oneshot_types() : (leader_hb()?.os || []);
+	if (os.length) F("engage_ffa", "self", `free-for-all: ${os.join(", ")} — the tank kills ${os.length > 1 ? "them" : "it"} in one hit; at its camp everyone starts fights on ${os.length > 1 ? "them" : "it"}${state.os_pick ? ` (our pick: ${parent.entities?.[state.os_pick]?.mtype || "?"})` : ""}`);
 	F("engage", "self", miss ? (miss.length ? `engage: holding — waiting for ${miss.join(", ")} within ${CFG.party.engage_px}px` : "engage: party gathered — the tank may start fights")
 		: tk ? `engage: ${tk.name} (tank) starts every fight; we hit what already targets the party` : "engage: no tank alive — fighting on our own judgement");
 }

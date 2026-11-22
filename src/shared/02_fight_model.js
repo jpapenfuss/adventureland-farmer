@@ -119,10 +119,21 @@ function party_missing() {
 	return unheard.concat(partners_any().filter((q) => q.rip || q.errand || q.recovering || q.map !== character.map ||
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) > CFG.party.engage_px).map((q) => q.name));
 }
+// v25.20 (owner): where the tank kills its targets in one hit, the rule loosens — at the tank's camp, for that monster
+// type, anyone may start a fight (each follower picks its own at random). The tank's heartbeat carries the types it
+// one-shoots (os: its last kills of the type, fighter/3_combat.js oneshot_types).
+function free_for_all(t) {
+	if (!t || t.type !== "monster" || !t.mtype || !in_party_cfg()) return false;
+	const L = leader_hb(), P = state.pack;
+	if (!L || L.rip || !fresh(L) || !Array.isArray(L.os) || !L.os.includes(t.mtype)) return false;
+	if (!P || P.mtype !== t.mtype || P.map !== character.map || !valid_boundary(P.boundary)) return false;
+	const b = P.boundary, pad = CFG.party.ffa_pad ?? 100; // the camp itself (near_pad's 450 px would scatter the party)
+	return t.x >= b[0] - pad && t.x <= b[2] + pad && t.y >= b[1] - pad && t.y <= b[3] + pad;
+}
 function tank_first(t) {
 	if (!t || t.type !== "monster" || t.target) return false;
 	if (!together_now()) return false;
-	if (!is_tank_class(character.ctype)) return true; // not the tank: never the first hit (v24.51: tank alive or not)
+	if (!is_tank_class(character.ctype)) return !free_for_all(t); // not the tank: never the first hit (v24.51), unless the tank one-shoots these (v25.20)
 	return party_missing().length > 0; // the tank: not before everyone's here
 }
 function fight_profile(mtype) {
