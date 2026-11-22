@@ -432,7 +432,8 @@ function end_session() {
 	const s = state.session;
 	state.session = null;
 	if (!s) return;
-	const secs = ((s.end || Date.now()) - s.start) / 1000;
+	// v25.16: less the seconds held for the party (03_history.js): the rate is the camp's, not our waiting
+	const secs = ((s.end || Date.now()) - s.start - (s.lost || 0)) / 1000;
 	if (secs < CFG.measure_min_s) return;
 	// v23.0: the unit score_area estimates in: base xp of the kills made at this spot. The xp we receive is a share of
 	// every party kill anywhere (server), so it can't be used: every party kill counts (kill_credit, sent to each
@@ -448,5 +449,5 @@ function end_session() {
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3
 	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, rate / s.est)) * 0.3));
-	game_log(`${s.key}: ${rate.toFixed(1)} xp/s over ${secs.toFixed(0)}s`, C.dim);
+	game_log(`${s.key}: ${rate.toFixed(1)} xp/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }

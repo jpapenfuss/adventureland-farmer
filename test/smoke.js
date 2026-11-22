@@ -2919,6 +2919,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(Math.abs(vm.runInContext("state.measured['main:5,5,6,6']", ctx) - 10) < 0.01, `1000 xp over the 100s spent there = 10 xp/s, not over 300s (${vm.runInContext("state.measured['main:5,5,6,6']", ctx)})`);
 		vm.runInContext(`state.session = { key: 'main:7,7,8,8', mtype: 'goo', est: 0.01, xp: 0, kx: 0, kc: 100000, kc_n: 1, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.realism <= 3 && Math.abs(state.realism - (0.7 + 5 * 0.3)) < 1e-9", ctx), `a wild sample moves realism by at most 5x its weight (${vm.runInContext("state.realism", ctx)})`);
+		// v25.16: seconds held for the party aren't the camp's: 1000 xp over 200s, 100 of them held → 10 xp/s
+		vm.runInContext(`state.measured = {}; state.realism = 1;
+			state.session = { key: 'main:5,5,6,7', mtype: 'goo', est: 10, xp: 0, kx: 0, kc: 1000, kc_n: 5, start: Date.now() - 200000, lost: 100000 }; end_session()`, ctx);
+		assert(Math.abs(vm.runInContext("state.measured['main:5,5,6,7']", ctx) - 10) < 0.05, `held time left out (${vm.runInContext("state.measured['main:5,5,6,7']", ctx)})`);
+		vm.runInContext(`state.measured = {};
+			state.session = { key: 'main:5,5,6,8', mtype: 'goo', est: 10, xp: 0, kx: 0, kc: 1000, kc_n: 5, start: Date.now() - 120000, lost: 100000 }; end_session()`, ctx);
+		assert(vm.runInContext("state.measured['main:5,5,6,8'] === undefined", ctx), "too little real time left (20s): no measurement");
+		// v25.16: a configured member not heard from (her tab asleep) → the party isn't all here: no session starts
+		{
+			const R = (c) => vm.runInContext(c, ctx);
+			const sv = { name: character.name, ctype: character.ctype, map: character.map, x: character.x, y: character.y };
+			Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 50, y: 50, rip: false });
+			R(`state.session = null; state.errand = null; state.recovering = false; state.pack = { mtype: 'goo', map: 'main', boundary: [0, 0, 100, 100] };
+				state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', map: 'main', x: 60, y: 60, t: Date.now() } }`);
+			R("meas_tick()");
+			assert(R("state.session") === null, "Sanala unheard: no measurement session");
+			R("state.partners.Sanala = { name: 'Sanala', ctype: 'mage', map: 'main', x: 40, y: 40, t: Date.now() }; meas_tick()");
+			assert(R("!!state.session"), "everyone heard and here: the session starts");
+			R("state.session = null; state.pack = null; state.partners = {}"); Object.assign(character, sv);
+		}
 		vm.runInContext("state.measured = {}; state.meas_at = {}; state.realism = 1; state.session = null", ctx);
 		vm.runInContext("state.partners = {}; state.pack = null; hist.ev = []", ctx);
 	}
@@ -3975,9 +3995,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("Object.keys(state.measured).length === 0 && !state.calib.goo && !state.danger.goo && !Object.keys(state.cooldown).length && state.safety_mult === 1 && !state.probe_ok.goo") && R("state.last_town") === 12345, "an old save: spot rates, calibration, penalties, rests, probe verdicts and safety tuning are dropped; the rest loads");
 		R("save_state()");
 		assert(saved && saved.data_v === R("DATA_V"), "the next save carries the marker, so it happens once");
-		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), at: Date.now(), measured: { "main:1,2,3,4": 999 } });
-		R("state.measured = {}; load_state()");
-		assert(R("state.measured['main:1,2,3,4']") === 999, "a save with the marker loads in full");
+		assert(saved.rates_v === R("RATES_V"), "...and the rates marker (v25.16)");
+		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), rates_v: R("RATES_V"), at: Date.now(), measured: { "main:1,2,3,4": 999 }, realism: 0.4 });
+		R("state.measured = {}; state.realism = 1; load_state()");
+		assert(R("state.measured['main:1,2,3,4']") === 999 && R("state.realism") === 0.4, "a save with the markers loads in full");
+		// v25.16: a save from before the rates marker loses its spot rates and realism only
+		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), at: Date.now(), measured: { "main:1,2,3,4": 999 }, realism: 0.4, calib: { goo: { ratio: 3, n: 50 } } });
+		R("state.measured = {}; state.realism = 1; state.calib = {}; load_state()");
+		assert(R("!state.measured['main:1,2,3,4'] && state.realism === 1 && state.calib.goo && state.calib.goo.n === 50"), "a save without the rates marker drops spot rates and realism, keeps calibration");
 		ctx.get = gs; ctx.set = ss; ctx.send_cm = scm; ctx.attack = atk; ctx.parent.entities = ents; ctx.distance = () => 0;
 		R("state.measured = {}; state.partners = {}; state.pack = null");
 	}
