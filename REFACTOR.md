@@ -41,7 +41,7 @@ In the code as of v24.50:
   measured camps by measurement, untried ones by estimate, past switch_margin; a measurement loses weight as the
   party grows. This replaces v24.60's "no re-pick" (the 2-minute re-pick it removed had moved the party 18 times an
   hour).
-- [~] v24.94–v25.5: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
+- [~] v24.94–v25.6: split by role (owner, 2026-11-21: "start the work"). src/common.js, fighter.js, merchant.js, main.js;
   farmer.js is their build. First cut: the merchant's supply runs, stand, Merrit, Ponty, bank purge and donations
   went to merchant.js; following, healing, the hand-off to the merchant, token buys, own projects and collecting
   went to fighter.js. v24.95–v24.98: the fighter's part of tick() (fighter_tick), camp choice and review, danger

@@ -1,4 +1,4 @@
-const VERSION = "25.5"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
+const VERSION = "25.6"; // Adventure Land farmer: src/common.js (every character) + src/fighter.js or src/merchant.js + src/main.js (overview at its bottom).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -2037,7 +2037,7 @@ async function share_gear() {
 		}
 		// v24.7: the merchant hands a piece only to the fighter it helps most (gear_target walks to that one), not to
 		// whoever is near when it serves someone
-		if (to && is_merchant() && best_fighter_for(it)?.name !== to.m.name) to = null;
+		if (to && !merchant_gives_to(it, to.m.name)) to = null; // v25.5+: merchant.js — only to the fighter it helps most
 		if (!to && Mt && CFG.merchant.wear_gear) { const r = gear_gain(it, "merchant", Mt.g); if (r) to = { ...r, m: Mt }; }
 		const key = `${it.name}:${it.level || 0}>${to?.m.name}`;
 		if (!to || now - (state.gear_sent[key] || 0) < 600_000 || !can_spend(1, RESERVE.errand)) continue;
@@ -4641,16 +4641,6 @@ const merchant_hb = () => (!is_merchant() && fresh(state.merchant) && state.merc
 const merchant_recent = () => !is_merchant() && !!state.merchant && state.merchant.name === CFG.merchant?.name &&
 	Date.now() - state.merchant.t < 600_000 && !state.merchant.rip;
 const merchant_does_it = () => merchant_recent();
-// The online fighter a piece helps most: { name, ctype, g, p, gain } or null
-function best_fighter_for(it) {
-	let best = null;
-	for (const m of gear_takers().slice(1)) {
-		if (m.ctype === "merchant" || !fresh(m.p) || m.p.rip) continue;
-		const r = gear_gain(it, m.ctype, m.g);
-		if (r && (!best || r.gain > best.gain)) best = { ...m, gain: r.gain };
-	}
-	return best;
-}
 // ---- Monster tokens (CFG.token_auto) ----
 // Best shop piece by points per token: class gear a member would wear (+0), not already owned (bags or bank)
 // ---- Must-hold items (CFG.hold) ----
@@ -4675,6 +4665,7 @@ setInterval(() => {
 // =====================================================================
 // merchant.js
 function merchant_tick() {}
+function merchant_gives_to() { return true; }
 function merchant_awaits_funds() { return false; }
 function merchant_asks_funds() { return false; }
 function merchant_sells() { return false; }

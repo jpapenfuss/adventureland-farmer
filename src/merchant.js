@@ -685,3 +685,16 @@ function dead_compound(it) {
 	return !!def?.compound && !it.l && !it.b && !it.p && (it.level || 0) > 0 && (it.level || 0) >= cmp_top(it.name) &&
 		!CFG.keep.includes(it.name) && !wanted_by_member(it);
 }
+// ---- share_gear (v25.6): the merchant hands a piece only to the fighter it helps most (v24.7) ----
+function merchant_gives_to(it, name) { return best_fighter_for(it)?.name === name; }
+// ---- moved from common.js (v24.95): used by the merchant only ----
+// The online fighter a piece helps most: { name, ctype, g, p, gain } or null
+function best_fighter_for(it) {
+	let best = null;
+	for (const m of gear_takers().slice(1)) {
+		if (m.ctype === "merchant" || !fresh(m.p) || m.p.rip) continue;
+		const r = gear_gain(it, m.ctype, m.g);
+		if (r && (!best || r.gain > best.gain)) best = { ...m, gain: r.gain };
+	}
+	return best;
+}
