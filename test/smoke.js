@@ -2354,12 +2354,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.partners = {}; state.merchant = null; state.errand = null; smart_depth = 0", ctx);
 		ctx.parent.entities = {};
 		// a death with no damage seen doesn't blame the pack
-		vm.runInContext("pmring.hits = []; state.danger = {}; state.cooldown = {}; state.dead_handled = false; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		vm.runInContext("pmring.hits = []; state.danger = {}; state.cooldown = {}; state.camp_deaths = {}; state.dead_handled = false; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		const d102 = vm.runInContext("hist.ev.filter((e) => e.type === 'death').pop()", ctx);
 		assert(d102 && d102.unexplained === true && !vm.runInContext("state.danger.tortoise", ctx), "death with no damage seen: logged unexplained, no safety cut");
 		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		assert(vm.runInContext("state.danger.tortoise < 1", ctx), "death with damage seen: the safety cut still applies");
-		vm.runInContext("state.danger = {}; state.cooldown = {}; state.pack = null", ctx);
+		// v25.29: each death at the same camp within 24h rests it 4x longer
+		const rest = () => Math.round((vm.runInContext("state.cooldown['main:0,0,10,10']", ctx) - Date.now()) / 60000);
+		const r1 = rest();
+		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		const r2 = rest();
+		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		const r3 = rest();
+		assert(r1 === 30 && r2 === 120 && r3 === 480, `deaths at one camp: rested 30, 120, 480 min (${r1}, ${r2}, ${r3})`);
+		vm.runInContext("state.camp_deaths['main:0,0,10,10'] = [Date.now() - 90000000]; pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		assert(rest() === 30, "a death there over a day ago doesn't count");
+		vm.runInContext("state.danger = {}; state.cooldown = {}; state.camp_deaths = {}; state.pack = null", ctx);
 		// spending categories: the purchase tags the gold that leaves
 		vm.runInContext(`globalThis.__hb3 = hist.buckets; hist.buckets = {}; tag_spend("ponty"); { const b = bucket(); b.spend = 500; b.cats = { ponty: 500 }; }`, ctx);
 		assert(vm.runInContext("my_ledger().cats.ponty === 500 && /ponty 500/.test(cats_text(my_ledger().cats))", ctx), "ledger reports spending by category");
@@ -4509,6 +4519,52 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		delete character.cave; delete ctx.cave_enter; delete ctx.cave_info; delete ctx.cave_reply; delete ctx.cave_buy;
 		ctx.parent.entities = ents; Object.assign(character, sv); R("state.partners = {}; state.cave_visit = null");
 		ctx.G.events = G0;
+	}
+	// v25.29: the cave beat us → leave and wait to be stronger; followers leave with the tank
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const sv = { name: character.name, ctype: character.ctype, level: character.level };
+		let exits = 0; ctx.cave_exit = () => (exits++, Promise.resolve({ exited: true }));
+		Object.assign(character, { name: "Torlis", ctype: "paladin", level: 56 });
+		character.cave = { run: "rz", floor: 0, objectives: [], doors: [] };
+		R("cave_st.run = null; state.cave_block = null; globalThis.__pp = party_power; party_power = () => ({ lv: 56, gs: 500, n: 3 }); globalThis.__ss = save_state; save_state = () => {}");
+		R("cave_died(); cave_died()");
+		assert(exits === 0 && R("state.cave_block") === null, "two deaths in a visit: still in");
+		R("cave_died()");
+		assert(exits === 1 && R("state.cave_block && state.cave_block.lv === 56 && state.cave_block.gs === 500"), "the tank's third death: the party leaves, the cave is on hold");
+		delete character.cave;
+		R("state.cave_visit = { available: true, at: Date.now() }; cave_st.info_at = Date.now()");
+		assert(R("cave_blocked()") === true, "on hold while the party is as strong as when it lost");
+		R("party_power = () => ({ lv: 58, gs: 500, n: 2 })");
+		assert(R("cave_blocked()") === true, "a higher average with a member offline isn't the party stronger");
+		R("party_power = () => ({ lv: 58, gs: 500, n: 3 })");
+		assert(R("cave_blocked()") === false && R("state.cave_block") === null, "two levels stronger: the cave again");
+		R("party_power = globalThis.__pp; save_state = globalThis.__ss");
+		// a follower: the tank's heartbeat shows it outside the cave → leave too
+		Object.assign(character, { name: "Sanala", ctype: "mage" });
+		character.cave = { run: "rz2", floor: 0, objectives: [], doors: [], paused: false };
+		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "main", x: 0, y: 0 });
+		R("cave_st.exiting = false; cave_tick()");
+		assert(exits === 1, "the tank's heartbeat outside on our first tick inside (its old beat): not yet");
+		R("cave_st.out_since = Date.now() - 21000; cave_tick()");
+		assert(exits === 2, "outside for 20 s straight: a follower leaves with the tank");
+		// a later visit: the clock starts again (it was kept across visits)
+		character.cave = { run: "rz3", floor: 0, objectives: [], doors: [], paused: false };
+		R("cave_st.exiting = false; cave_tick()");
+		assert(exits === 2, "a new visit: the tank's old heartbeat on main doesn't make us leave at once");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "zone_rz3_0", x: 0, y: 0 });
+		R("cave_tick()");
+		assert(R("cave_st.out_since") === 0, "...and the tank inside resets the clock");
+		// a cave_exit that throws synchronously: caught, retried, at most 6 tries
+		{
+			let tries = 0; ctx.cave_exit = () => { tries++; throw new Error("not now"); };
+			const st = ctx.setTimeout; let pend = []; ctx.setTimeout = (f) => pend.push(f);
+			R("cave_st.exiting = false; cave_st.exit_tries = 0; cave_leave('test')");
+			for (let i = 0; i < 10; i++) { await new Promise((r) => setImmediate(r)); const f = pend.shift(); if (f) f(); }
+			ctx.setTimeout = st;
+			assert(tries === 6, `a synchronous throw from cave_exit is caught and retried, 6 tries at most (got ${tries})`);
+		}
+		delete character.cave; delete ctx.cave_exit; R("state.partners = {}; state.cave_visit = null; cave_st.exiting = false; cave_st.exit_tries = 0"); Object.assign(character, sv);
 	}
 	// v25.14: keep_awake calls the game's performance_trick only while no loop exists, then replays the loop only when it
 	// stopped and sound is allowed (no stacked or queued copies)
