@@ -4274,6 +4274,53 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_cm = scm;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0, esize: 30 });
 	}
+	// v25.20: the tank's one-hit kills open a free-for-all at its camp, for that type only
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		const sv = { name: character.name, ctype: character.ctype, map: character.map, x: character.x, y: character.y }, ents = ctx.parent.entities;
+		ctx.G.monsters.os150 = { hp: 200, attack: 5, frequency: 1, xp: 10, speed: 10, range: 20, respawn: 10 };
+		ctx.G.monsters.ot150 = { hp: 200, attack: 5, frequency: 1, xp: 10, speed: 10, range: 20, respawn: 10 };
+		// the tank: three kills in one hit → it one-shoots os150; one kill that took two hits → it doesn't
+		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 0, y: 0 });
+		R("for (const k in os_log) delete os_log[k]");
+		for (let i = 0; i < 3; i++) {
+			ctx.parent.entities = { ["m" + i]: { id: "m" + i, type: "monster", mtype: "os150", max_hp: 200, hp: 0, x: 0, y: 0 } };
+			R(`os_note({ kill: true, damage: 250, target: "m${i}" })`);
+		}
+		assert(JSON.stringify(R("oneshot_types()")) === '["os150"]', `the tank one-shoots os150 (${JSON.stringify(R("oneshot_types()"))})`);
+		ctx.parent.entities = { m9: { id: "m9", type: "monster", mtype: "os150", max_hp: 200, hp: 0, x: 0, y: 0 } };
+		R(`os_note({ kill: true, damage: 120, target: "m9" })`);
+		assert(R("oneshot_types().length") === 0, "a kill that took more than one hit ends it");
+		// a follower: the tank's heartbeat says it one-shoots os150; the camp is os150
+		Object.assign(character, { name: "Sanala", ctype: "mage", map: "main", x: 0, y: 0 });
+		hb("Torlis", { ...tor, ctype: "paladin", level: 55, map: "main", x: 10, y: 0, os: ["os150"] });
+		R("globalThis.__tf = CFG.party.tank_first; CFG.party.tank_first = true"); // (an earlier test leaves it off)
+		R("globalThis.__sf = state.safe.os150; state.safe.os150 = { trusted: true, ttk: 1, xp: 10 }"); // our own safety verdict on the type (follower_pick)
+		R("state.pack = { mtype: 'os150', map: 'main', boundary: [-100, -100, 100, 100] }; state.os_pick = null");
+		const mk = (id, mt, x) => ({ id, type: "monster", mtype: mt, visible: true, dead: false, x, y: 0, hp: 200, max_hp: 200, level: 1, attack: 5 });
+		ctx.parent.entities = { a: mk("a", "os150", 20), b: mk("b", "os150", 50), c: mk("c", "os150", 400), d: mk("d", "ot150", 30) };
+		const E = ctx.parent.entities;
+		R("globalThis.__E = parent.entities");
+		assert(R("tank_first(__E.a)") === false && R("free_for_all(__E.a)") === true, "a follower may start on the one-shot type at the camp");
+		assert(R("tank_first(__E.c)") === true, "...not outside the camp");
+		assert(R("tank_first(__E.d)") === true, "...not on another type");
+		const firsts = new Set();
+		for (let i = 0; i < 30; i++) { R("state.os_pick = null"); firsts.add(R("os_pick() && os_pick().id")); }
+		assert(firsts.has("a") && firsts.has("b") && !firsts.has("c") && !firsts.has("d"), `random picks among the camp's untouched os150 (${[...firsts]})`);
+		const p1 = R("os_pick().id"); assert(R("os_pick().id") === p1, "a pick is kept until it's dead or taken");
+		// a pick that takes no damage in 12 s is set aside (2 min) and another is picked; an immune one is never picked
+		R("state.os_pick_at = Date.now() - 13000; state.os_pick_hp = 200");
+		const p2 = R("os_pick().id");
+		assert(p2 !== p1 && R(`(state.bad_ids['${p1}'] || 0) > Date.now()`), `a stalled pick is set aside (${p1} → ${p2})`);
+		R(`delete state.bad_ids['${p1}']`); E.a.immune = true; E.b.immune = true; R("state.os_pick = null");
+		assert(R("os_pick()") === null, "immune monsters aren't picked");
+		delete E.a.immune; delete E.b.immune;
+		hb("Torlis", { ...tor, ctype: "paladin", level: 55, map: "main", x: 10, y: 0, os: ["os150"], errand: "town" });
+		assert(R("free_for_all(__E.a)") === false, "no free-for-all while the tank is on an errand");
+		hb("Torlis", { ...tor, ctype: "paladin", level: 55, map: "main", x: 10, y: 0, os: [] });
+		assert(R("tank_first(__E.a)") === true && R("free_for_all(__E.a)") === false, "the tank stops one-shooting it: back to the tank's first hit");
+		ctx.parent.entities = ents; R("CFG.party.tank_first = globalThis.__tf; if (globalThis.__sf) state.safe.os150 = globalThis.__sf; else delete state.safe.os150; state.pack = null; state.os_pick = null; state.partners = {}; delete globalThis.__E"); Object.assign(character, sv);
+	}
 	// v25.14: keep_awake calls the game's performance_trick only while no loop exists, then replays the loop only when it
 	// stopped and sound is allowed (no stacked or queued copies)
 	{

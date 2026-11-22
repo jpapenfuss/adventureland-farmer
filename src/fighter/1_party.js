@@ -254,7 +254,8 @@ function heartbeat() {
 		worn: CFG.gear_auto ? worn_items() : null, // swap_worn: what's in each slot
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
 		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
-		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing() };
+		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing(),
+		os: oneshot_types() }; // v25.20: types the tank kills in one hit (free-for-all at its camp)
 	if (state.travel_off.length && state.travel_full) Object.assign(msg, state.travel_full); // v24.31: as with everything on
 	const to = CFG.merchant?.name && !others().includes(CFG.merchant.name) ? [...others(), CFG.merchant.name] : others();
 	Promise.resolve(send_cm(to, msg)).catch(() => {});

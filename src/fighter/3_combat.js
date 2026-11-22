@@ -365,3 +365,41 @@ function fight(t, steer = true) {
 	if (hold_for_tank(t)) { if (character.ctype === "priest") party_heal(); return; }
 	if (!class_skills(t) && can_attack(t)) fire("attack", t);
 }
+// ---- v25.20: one-hit kills (the tank) and the followers' free-for-all ----
+// The tank's own kills by type: was the killing hit at least the monster's max HP? The server reports the hit's full
+// damage (def.damage before HP is taken off), so this is "the hit alone kills it from full HP", even when it was already
+// hurt. target_hit fires from the client's 'hit' handler while the entity still exists (it's removed on 'death').
+const os_log = {};
+function os_note(d) {
+	if (!d?.kill || !(d.damage > 0)) return;
+	const e = parent.entities?.[d.target], mt = e?.mtype;
+	if (!mt || !G.monsters[mt]) return;
+	const L = (os_log[mt] = os_log[mt] || []);
+	L.push({ t: Date.now(), one: d.damage >= (e.max_hp || G.monsters[mt].hp || Infinity) });
+	if (L.length > 8) L.shift();
+}
+if (typeof character.on === "function") character.on("target_hit", os_note);
+// Types the tank one-shoots: its last 5 kills of the type in 10 min (at least 3) were all one hit
+function oneshot_types() {
+	if (!is_tank_class(character.ctype)) return [];
+	const now = Date.now();
+	return Object.keys(os_log).filter((mt) => { const L = os_log[mt].filter((x) => now - x.t < 600_000).slice(-5); return L.length >= 3 && L.every((x) => x.one); });
+}
+// A follower's own pick while the tank one-shoots the camp's type: a random untouched monster of that type at the camp
+// (kept until it's dead or taken), so the members spread out instead of all hitting the same one
+function os_pick() {
+	const P = state.pack, now = Date.now();
+	if (!P) return null;
+	const cur = state.os_pick && parent.entities?.[state.os_pick];
+	if (cur && farmable_entity(cur) && (!cur.target || party_names().has(cur.target)) && free_for_all(cur)) {
+		// no damage on it 12 s after the pick (unreachable, out of sight, immune to us): set aside 2 min, pick another
+		// (followers don't run watch_progress, which does this for the tank)
+		if (now - (state.os_pick_at || now) > 12_000 && cur.hp >= (state.os_pick_hp ?? Infinity)) { state.bad_ids[cur.id] = now + 120_000; }
+		else return cur;
+	}
+	const c = Object.values(parent.entities || {}).filter((e) => farmable_entity(e) && !e.target &&
+		e.mtype === P.mtype && free_for_all(e) && !hopeless(e) && live_ok(e));
+	const e = c.length ? c[Math.floor(Math.random() * c.length)] : null;
+	state.os_pick = e ? e.id : null; state.os_pick_at = now; state.os_pick_hp = e ? e.hp : null;
+	return e;
+}

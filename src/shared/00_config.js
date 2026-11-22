@@ -1,4 +1,4 @@
-const VERSION = "25.19"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.20"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -363,6 +363,7 @@ const CFG = {
 		// The tank decides (v24.50): with a tank (CFG.gear_tank) in the party, only it starts a fight, and only once
 		// every online fighter is within engage_px of it. Nobody else touches a monster that has no target.
 		tank_first: true,
+		ffa_pad: 100, // v25.20: px around the camp box where the free-for-all applies (the tank one-shoots its type)
 		// v24.51: one party or nothing. Every member of `members` must be online and alive. If one is offline or dead,
 		// the others use the suicide command (free: no XP loss) and wait at the respawn in town, so the party is
 		// together again. Low HP changes nothing: a fighter neither flees nor suicides. town_px: how close to

@@ -35,13 +35,15 @@ function follower_tick() {
 	// next to untanked monsters — Sanala, 150px from the tank, beside five level 8-9 poisio. follower_pick is still
 	// called for what it keeps up to date (state.safe: which type the party can take), not for its pick.
 	follower_pick(pos);
-	let t = hit_on_me() || caller_target() || leader_t || choose_target(false);
-	if (t && !t.target) t = null;
+	// v25.20: the tank one-shoots the camp's type → our own random pick of it (os_pick), before the tank's call
+	const ffa = !away && !!L.os?.includes(state.pack?.mtype);
+	let t = hit_on_me() || (ffa ? os_pick() : null) || caller_target() || leader_t || choose_target(false);
+	if (t && !t.target && !free_for_all(t)) t = null;
 	announce_target(t);
 	// engaged = a target within wait_radius of the leader: stay on it (close in, then hold position in reach) instead of
 	// drifting back to the leader — melee used to step back to the leader after every swing at a target that wasn't
 	// attacking it, and only hit what wandered into range
-	const engaged = !!t && pos.map === character.map && Math.hypot(t.x - pos.x, t.y - pos.y) <= CFG.party.wait_radius;
+	const engaged = !!t && pos.map === character.map && (Math.hypot(t.x - pos.x, t.y - pos.y) <= CFG.party.wait_radius || free_for_all(t)); // (v25.20: anywhere at the camp)
 	if (t) {
 		if (get_targeted_monster() !== t) change_target(t);
 		if (engaged) break_walk_for(t);
