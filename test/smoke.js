@@ -1115,7 +1115,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const P = "state.upg = { name: 'slimestaff', to: 7, for: 'Torlis', slot: 'mainhand', gain: 10, cost: 80000, own: true }";
 		vm.runInContext(P, ctx);
 		const line = vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx);
-		assert(/slimestaff .* — our own \(a copy in our bags/.test(line || ""), `report marks an own project (${line})`);
+		assert(/slimestaff .* — our own \(the merchant doesn't take it over\)$/.test(line || ""), `report marks an own project (${line})`);
 		vm.runInContext(P.replace("own: true", "own: false"), ctx);
 		assert(!/our own/.test(vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx) || ""), "and not a shared one");
 		vm.runInContext("state.upg = null", ctx);
