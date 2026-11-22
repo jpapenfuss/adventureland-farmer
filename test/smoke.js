@@ -4111,6 +4111,28 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.send_cm = scm;
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", map: "main", x: 0, y: 0, esize: 30 });
 	}
+	// v25.14: keep_awake calls the game's performance_trick only while no loop exists, then replays the loop only when it
+	// stopped and sound is allowed (no stacked or queued copies)
+	{
+		let started = 0, plays = 0, on = false, howl = false;
+		const snd = { playing: () => on, play: () => { plays++; on = true; } };
+		ctx.parent.Howler = { ctx: { state: "suspended" } };
+		ctx.performance_trick = () => { started++; if (howl) { on = true; ctx.parent.sounds = { empty: snd }; } }; // no Howl yet: nothing
+		delete ctx.parent.sounds;
+		vm.runInContext("keep_awake()", ctx);
+		howl = true; vm.runInContext("keep_awake(); keep_awake(); keep_awake()", ctx);
+		assert(started === 2 && plays === 0, `retried until the loop exists, then not again (${started}), not replayed while playing (${plays})`);
+		on = false; vm.runInContext("keep_awake(); keep_awake()", ctx);
+		assert(started === 2 && plays === 0, "stopped while the browser blocks sound: not replayed (it would queue copies)");
+		ctx.parent.Howler.ctx.state = "running"; vm.runInContext("keep_awake(); keep_awake()", ctx);
+		assert(started === 2 && plays === 1, `replayed once when it stopped and sound runs (${plays})`);
+		on = false; delete ctx.parent.Howler.ctx; vm.runInContext("keep_awake()", ctx);
+		assert(plays === 2, "HTML5 audio (no context): replayed when stopped");
+		ctx.performance_trick = () => { throw new Error("no Howl"); }; delete ctx.parent.sounds;
+		let threw = false; try { vm.runInContext("keep_awake()", ctx); } catch (e) { threw = true; }
+		assert(!threw, "a failing performance_trick doesn't throw");
+		delete ctx.parent.Howler; delete ctx.parent.sounds;
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
