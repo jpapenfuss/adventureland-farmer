@@ -3016,7 +3016,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// v25.18: a head start — a +1 that doesn't win as it is, but wins at +3, and nobody sells one: bought to be upgraded
 		{
 			const R = (c) => vm.runInContext(c, ctx);
-			ctx.G.items.scroll0 = { g: 1000, type: "uscroll", grade: 0 };
+			const sc0 = ctx.G.items.scroll0; ctx.G.items.scroll0 = { g: 1000, type: "uscroll", grade: 0 };
 			const g2 = R("gear_gain({ name: 'amulet119', level: 2 }, 'mage', { w: { amulet: 0 }, own: {} }).gain");
 			const parts0 = R("JSON.stringify(state.partners)"); R("state.partners = {}");
 			hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { amulet: g2 + 0.1 }, own: {} } });
@@ -3028,7 +3028,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			character.items[7] = null;
 			R("CFG.secondhand_upgrade_starts = false");
 			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...and not when switched off");
-			R("CFG.secondhand_upgrade_starts = true; sold_c.delete('amulet119')"); delete ctx.G.items.scroll0;
+			R("CFG.secondhand_upgrade_starts = true");
+			// the planner's gates: not for a paused piece, the current project's piece, or over the project budget
+			R("skip('upg:amulet119', 60000, 'test')");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for a piece the planner has paused");
+			R("state.gear_skip = {}; state.upg = { name: 'amulet119', to: 6, for: 'Sanala' }");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for the piece the current project builds");
+			R("state.upg = null; globalThis.__us = CFG.upgrade_spend; CFG.upgrade_spend = 0");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not over the planner's budget");
+			R("CFG.upgrade_spend = globalThis.__us; sold_c.delete('amulet119')");
+			if (sc0) ctx.G.items.scroll0 = sc0; else delete ctx.G.items.scroll0;
 			R(`state.partners = ${parts0}`);
 		}
 		// stand: a partial sale is logged and the listing's quantity follows

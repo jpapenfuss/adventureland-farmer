@@ -7479,8 +7479,10 @@ function secondhand_reason(it, groups) {
 	const fighters = gear_takers().slice(1).filter((x) => x.ctype !== "merchant"), lv = it.level || 0;
 	// someone already has one at this level or better: deliver that instead (v24.7: any copy of the name used to block it).
 	// v25.18: a titled listing (shiny: more stats at the same level) is blocked only by a copy with the same title
+	// (and not while a plain copy at its level in our bags is already an upgrade on its way to a member: one per slot)
 	const held_at = (lvl) => it.p
 		? [...character.items, ...(state.bank_gear || [])].some((b) => b && b.name === it.name && b.p === it.p && (b.level || 0) >= lvl)
+			|| character.items.some((b) => b && b.name === it.name && !b.p && (b.level || 0) >= lvl && wanted_by_member(b))
 		: best_level_held(it.name) >= lvl || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= lvl) || party_holds_level(it.name, lvl);
 	if (!held_at(lv)) for (const x of fighters) {
 		const r = gear_gain(it, x.ctype, x.g);
@@ -7502,12 +7504,18 @@ function secondhand_reason(it, groups) {
 function upgrade_start_reason(it, price, fighters) {
 	const d = G.items[it.name], lv = it.level || 0;
 	if (!d?.upgrade || !GEAR.has(d.type) || it.p || !CFG.upgrade_auto) return null; // (titled copies aren't project inputs)
+	// the planner's own gates (pick_upgrade): a copy it would refuse to take on isn't bought; nor one for the piece the
+	// current project is building (its steps would be paid twice)
+	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name) || state.upg?.name === it.name) return null;
+	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
+	const budget = WP ? Infinity : Math.min(upgrade_gold(), gold_room()) * CFG.upgrade_spend;
 	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name));
 	if (own >= lv) return null; // ours is as far along already
 	let best = null;
 	for (let to = lv + 1; to <= top; to++) {
 		if (best_level_held(it.name) >= to || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= to) || party_holds_level(it.name, to, true)) break;
-		const total = price + Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, lv));
+		const steps = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, lv)), total = price + steps;
+		if (steps > budget) break; // the project from this copy would be over the planner's budget (higher targets cost more)
 		const alt = own >= 0 ? upgrade_expected(it.name, to) - upgrade_expected(it.name, own) : sold_by_npc(it.name) ? upgrade_expected(it.name, to) : Infinity;
 		if (total >= alt) continue;
 		for (const x of fighters) {
