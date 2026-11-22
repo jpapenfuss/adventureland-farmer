@@ -2930,6 +2930,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			for (let i = 0; i < 3; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
 			assert(tries === 1 && vm.runInContext("skipped('stand:decoy')", ctx) && tr2.some((t) => t[0] === "goldring"), `a refused decoy: one try (${tries}), paused, and the owner's listing still goes up`);
 			character.items[21] = null; vm.runInContext("CFG.merchant.stand.list = []; state.gear_skip = {}", ctx);
+			// v25.30: listings we have no record of (DoWhatNow, 22 Nov: all 16 trade slots held old listings with
+			// state.stand empty — nothing took them down and the decoy had no slot): they come down, one per call,
+			// then the decoy goes up; an untracked decoy (its name at its price) is adopted and stays
+			{
+				const un = [];
+				ctx.unequip = (slot) => { un.push(slot); delete character.slots[slot]; return Promise.resolve(); };
+				ctx.trade = (k, slot, price, q) => { tr2.push([character.items[k].name, price, q, slot]); character.slots[slot] = { name: character.items[k].name, q, price }; return Promise.resolve(); };
+				character.slots = {}; for (let i = 1; i <= 16; i++) character.slots["trade" + i] = { name: i % 2 ? "harmor" : "hpamulet", level: 2, price: 293232 };
+				vm.runInContext("state.stand = {}; state.gear_skip = {}; stand_busy = false; stand_cache = null", ctx);
+				const n0 = tr2.length;
+				for (let i = 0; i < 17; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+				assert(un.length === 16 && tr2.length === n0 + 1 && tr2[tr2.length - 1][0] === "hpot0", `16 untracked listings taken down (${un.length}), then the decoy listed (${tr2.length - n0})`);
+				character.slots = { trade3: { name: "hpot0", q: 1, price: vm.runInContext("CFG.merchant.stand.decoy.price", ctx) }, trade4: { name: "hpot0", q: 1, price: 50 } };
+				vm.runInContext("state.stand = {}; stand_busy = false", ctx); un.length = 0;
+				for (let i = 0; i < 3; i++) await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+				assert(vm.runInContext("state.stand.trade3?.decoy", ctx) === true && un.join() === "trade4" && tr2.length === n0 + 1,
+					`an untracked decoy is adopted, not re-listed; a potion at another price comes down (${un})`);
+			}
 			ctx.trade = trade1; ctx.unequip = uneq1; character.items[20] = null; character.slots = {};
 			vm.runInContext("state.stand = {}", ctx);
 		}

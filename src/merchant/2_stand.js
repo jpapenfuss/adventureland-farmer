@@ -137,12 +137,28 @@ async function stand_tick() {
 			await T(open_stand(k), 3000).catch(() => {});
 			return;
 		}
-		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, or taken off the list) comes down
-		for (const slot in state.stand) {
-			if (state.stand[slot].decoy) continue; // v25.26: Merrit's listing stays up
-			const L_ = state.stand[slot];
-			if ((S_.list || []).includes(L_.name)) continue;
-			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
+		// v25.30: the trade slots themselves are the truth, not our record of them. A listing we have no record of (the
+		// record was lost; 16 old listings sat up untracked, so nothing took them down and Merrit's decoy had no slot):
+		// the decoy (its name at its price) is adopted; an item on the owner's list is adopted at its price; anything
+		// else comes down below.
+		const D0 = S_.decoy;
+		for (const slot of TRADE_SLOTS) {
+			const cur = sl[slot];
+			if (!cur || state.stand[slot]) continue;
+			const dec = !!D0?.name && cur.name === D0.name && cur.price === D0.price;
+			if (!dec && !(S_.list || []).includes(cur.name)) continue;
+			const v = dec ? D0.price : unit_value(cur);
+			state.stand[slot] = { name: cur.name, level: cur.level || 0, q: cur.q || 1, price: cur.price, value: v, at: now, per_unit: true, ...(dec ? { decoy: true } : {}) };
+		}
+		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, taken off the list, or untracked)
+		// comes down — one per call
+		for (const slot of TRADE_SLOTS) {
+			const L_ = state.stand[slot], cur = sl[slot];
+			if (L_?.decoy) continue; // v25.26: Merrit's listing stays up
+			if (!cur) { if (L_ && !(S_.list || []).includes(L_.name)) delete state.stand[slot]; continue; }
+			if ((S_.list || []).includes(cur.name)) continue;
+			await T(unequip(slot), 5000).then(() => game_log(`stand: took ${cur.name}+${cur.level || 0} down — not on the owner's stand list`, C.dim))
+				.catch((e) => game_log(`stand: taking ${cur.name} down: ${why(e)}`, C.dim));
 			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried next tick
 			return;
 		}
