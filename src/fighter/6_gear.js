@@ -1,5 +1,6 @@
 // =====================================================================
-// fighter/6_gear.js — fighters only (src/manifest.json): tokens, own upgrade projects, worn-gear swaps, stat scrolls
+// fighter/6_gear.js — fighters only (src/manifest.json): tokens, own upgrade projects (only while the merchant is away:
+// v25.17), worn-gear swaps, stat scrolls
 // =====================================================================
 // Tokens set aside for our own missing must-hold items that the bank can't supply
 const token_reserve = () => hold_missing().filter((n) => !(state.bank_seen[n] > 0)).reduce((a, n) => a + (hold_price(n) || 0), 0);

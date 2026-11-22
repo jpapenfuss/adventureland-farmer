@@ -103,87 +103,82 @@ tick();
 
 // =====================================================================
 // OVERVIEW
-// Adventure Land farmer. Source in src/ (v24.94; manifest.json: shared/ for every character, fighter/ or
-// merchant/, main.js), built into farmer.js; VERSION (first line of shared/00_config.js) is the only
-// version number, and report() prints it. What changed between versions is in the git history, not here.
+// Adventure Land farmer. Source in src/ (manifest.json: shared/ for every character, then fighter/ or merchant/, then
+// main.js); built into farmer.js. VERSION (first line of shared/00_config.js) is the only version number, and
+// report() prints it. What changed between versions is in the git history and REFACTOR.md, not here.
 //
-// Each tick, first match wins:
-//   1. Dead → respawn as soon as the server allows (rip_time).
-//   2. The merchant, HP < flee_hp → cancel any walk, teleport to town, fight back only if hit, resume at
-//      recover_hp/recover_mp. Fighters never flee; a member dead or offline → the others suicide and wait in town.
-//   3. park() was called → finish the current errand, stand in town until resume().
-//   4. Town run, when something is due: Daisy (hunt, tokens) → quest crafts (Cole etc.) → Progression Guide steps →
-//      compound → upgrade project → exchange → elixir → sell → potions → bank (→ compound what the bank visit
-//      fetched). Needs HP > town_hp and no attacker; with <= 3 free slots, HP > town_hp_critical and attackers are
-//      ignored. A member already in town relaxes the thresholds (sync_factor) to share the trip. Together (v24.28), a
-//      trip is announced: the others come along when they have town work or their spot isn't safe without the leavers
-//      (CFG.party.town_together); all wait in town for each other and walk back together. Runs start with the town
-//      teleport when this map's spawn is nearer town (town_hop). With the merchant
-//      online, fighters go only at <= fighter_min_free slots / fighter_pot_min potions, and for guide steps alone at
-//      most every guide_gap_ms.
-//   5. Merchant → supply runs, secondhands, donations, stand (see Merchant).
-//   6. Party follower → stay with the leader; hit the tank's target, else the leader's, else its own pick of the
-//      leader's pack type within wait_radius of the leader, staying engaged until the kill; heal (priests),
-//      energize the lowest-mana member (mages).
-//   7. Leader (the tank) → a live boss we can survive, else fight at the chosen pack.
-//   (Before 5-7: a live server event in CFG.events — Goo Brawl, Giga Crab — that we can survive: join and fight it.)
+// Each tick (main.js tick()), first match wins:
+//   1. Dead → respawn as soon as the server allows (in the cave: the cave's own revive vote).
+//   2. Inside the Cave of Many Dreams → its own loop (fighter/9_cave.js); none of the steps below.
+//   3. The party isn't whole (a member dead or offline) → the others use the suicide command and wait in town
+//      (party_break_tick). Nobody suicides for any other reason; fighters never flee.
+//   4. The merchant, HP < flee_hp → walk to town, fight back only if hit, resume when recovered (flee_tick).
+//   5. park() was called → finish the current errand, stand in town until resume().
+//   6. Town work, when something is due (the tank starts a party trip; followers only join it): Daisy (hunt, tokens)
+//      → quest crafts → compound → upgrade project → stat scrolls → exchange → elixir → sell → potions → bank. With
+//      the merchant online, fighters leave compounds and upgrade projects to it and go only when bags or potions
+//      run low; work that can wait is deferred to the next trip (fighter_defers_town).
+//   7. The role's own tick (role_tick): the merchant's merchant_tick, or the fighter's fighter_tick:
+//      - Follower → stay with the tank; heal (priest); hit what already targets the party, the tank's target first.
+//        Exception (v25.20): where the tank kills its targets in one hit, each follower picks its own random
+//        untouched monster of that type at the tank's camp.
+//      - The tank → once a day the cave (below); a live boss we can survive; else the chosen camp.
 //
-// Where to fight (the party leader):
-//   live boss > own monster hunt > own-quest materials > guide-quest materials > guide farm row (skipped when
-//   outlevelled) > best xp/s pack (CFG.goal_w). In a party the leader merges every member's weighted goals: a monster
-//   on 2+ lists whose goals finish within mutual_max_h wins (more members, quicker first); otherwise members take
-//   turn_min-minute turns.
+// The tank decides. Only it starts a fight on an untouched monster, and only with every member within engage_px
+//   (tank_first, enforced in fire()), except the one-hit free-for-all above. Hopeless monsters are never attacked.
 //
-// Probing (CFG.probe): every every_min the leader may try, for `minutes`, the best-xp spot just past the safety limit,
-//   aborted when a member drops below probe.abort_hp; calibration learns from it, so the safe frontier can move.
-// Safety: fight_math follows the server's damage formula on live monster stats; nearby members' damage and a nearby
-//   priest's heals count only while they're near. Tank first: with a paladin/warrior near, it picks the targets and
-//   announces them; the others hold fire on untouched monsters until it has aggro, and risk is judged on the tank's
-//   HP/armour (not for aggressive monsters). Each monster's safety multiplier = calibration (actual ÷ predicted
-//   damage per fight, after 20 fights: x0.4-1.5) × incidents (death x0.6, flee x0.8, fading 10%/h).
-//   Bosses (cooperative: shared xp/loot) are judged on surviving boss.tank_s seconds of their damage.
-//   Class skills: priest heal/partyheal/curse/absorb/darkblessing, mage energize/burst/cburst, paladin
-//   selfheal/smash/mshield/purify, ranger mark/supershot, merchant mluck/massproduction.
+// Where to fight (the tank): live boss > monster hunt > own-quest materials > best xp/s camp (CFG.goal_w); the party's
+//   goals are merged (a monster on two lists wins; otherwise members take turns). An own Cole quest whose output is
+//   gear counts only while that piece is an upgrade for the member and no copy is owned (v25.15). The camp is
+//   reviewed every 30 min (10 once the party is stronger). A camp's xp/s is measured only on time the party is all
+//   there and ready (v25.16: held, unheard-member and frozen-tab seconds are left out).
+//
+// Safety: fight_math follows the server's damage formula on live monster stats, with the party's damage and a near
+//   priest's heals; per-monster multiplier = calibration (actual ÷ predicted damage) × incidents. Probing is off.
+//
+// Cave of Many Dreams (fighter/9_cave.js; CFG.cave): once a day (cave_info) the tank leads the party to Dorr (main
+//   816,1200) and enters (cave_enter). Inside, for up to 24 min: the floor's camps (each at most 5 min), its floor
+//   keeper, its guard camp, then the stairs; a goal with no progress for 45 s, or one the party died at twice, is
+//   given up for the visit. Every character votes by cave_policy (never the wolves or a shadow; rewards that cost
+//   nothing; revive where we fell when the purse has the Amber). A cave merchant's item is bought with the purse.
 //
 // Bags — every item is KEEP, SELL or BANK; acted on when free slots drop below bag_min_free:
-//   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, copies the guide/quests/upgrade project need, compound
-//         sets, stand stock (merchant), anything fetched from the bank in the last hour.
-//   SELL: CFG.sell names; +0 plain gear only if auto_sell_gear or the bank is full; the merchant's bank purge.
+//   KEEP: locked, potions/scrolls/tools/computer, CFG.keep, what quests and the upgrade project need, compound sets,
+//         stand stock the owner listed (merchant), anything fetched from the bank in the last hour.
+//   SELL: only what the owner lists (CFG.sell_plain, and sell_junk for the merchant's purges/dead compounds; both off).
 //   BANK: everything else. Needed items, gear upgrades and compound copies in the bank are fetched back.
 //
-// Gear: items are scored per class: primary stats by the class's lstats (G.classes, the game's data docs), the rest
-//   by CFG.gear_w (tanks weigh defence double), plus class weapon/offhand modifiers and set bonuses. Every 5s wear the best
-//   bag upgrade, drink the best elixir, else hand a spare to a nearby member it upgrades (send_item). Travel gear: worn
-//   pieces that cost speed come off for long walks and go back on at the destination or when something attacks. The bank is
-//   account-wide, so upgrades seen there are fetched for whoever they fit. Slots the guide equipped are left to it
-//   for gear_guide_respect_h. Compounding: three spare copies at one level (bags + bank) up to +compound_max_level
-//   behind the server's preview, up to compound_per_run sets per trip; done only by the merchant while it's online.
-//   Upgrade projects: the NPC-sold piece whose upgraded copy beats a member's worn piece most per gold. Monster
-//   tokens buy shop class gear for a member; non-quest recipes whose output a member would wear are crafted from
-//   spare materials (craft_power); weapon-slot upgrade projects may go to +9 with scroll2 (upgrade_high), funded by
-//   the fighters when the merchant runs them; exchangeables (boxes, gems) are opened. Must-hold items (CFG.hold: the
-//   Tracktrix) are kept by every character and re-acquired when missing: from the bank, else for tokens (reserved
-//   ahead of gear); one fighter buys the merchant's copy and hands it over.
+// Gear: items are scored per class (primary stats by G.classes lstats, the rest by CFG.gear_w, class weapon/offhand
+//   modifiers, set bonuses; item titles via the game's own stat calc). Every 5s wear the best bag upgrade, drink the
+//   best elixir, else hand a spare to a nearby member it upgrades. The bank is account-wide: upgrades seen there are
+//   fetched for whoever they fit. Must-hold items (CFG.hold) are kept by every character.
+//   Upgrades and compounds are the merchant's while it's online (v25.17: the fighters' own pieces too — they're banked
+//   or handed over and it upgrades them from the copy). A project is the piece (NPC-sold, or a copy we own) whose
+//   upgraded copy beats a member's worn piece most per gold, aimed no higher than the run will go (v25.19: base odds,
+//   the next scroll's boost, the floor — 80%, 60% with a spare copy, 20% for shop pieces); weapons go to +7 with no
+//   budget (upgrade_weapon). Stat scrolls only on +7 pieces or higher. Tokens buy class gear for a member; recipes
+//   whose output a member would wear are crafted; exchangeables are opened.
 //
-// Party (CFG.party): the tank leads; members talk via send_cm every beat_ms (heartbeats), invite each
-//   other without splitting a party, and balance gold (the richest sends 15% to the poorest below 10% of its gold,
-//   at most every 3h). The watchdog (every 30s) catches frozen, no-progress and lost-follower stalls.
+// Party (CFG.party): the tank leads; members talk via send_cm heartbeats every beat_ms, invite each other without
+//   splitting a party; fighters near the merchant hand it all gold above merchant.fund_keep (500k). The watchdog
+//   catches frozen, no-progress and lost-follower stalls. keep_awake() plays the game's silent loop
+//   (performance_trick) so a background tab isn't throttled — click each tab once after a reload.
 //
 // Merchant (CFG.merchant): not a party member. Carries potions to fighters low on potions or bag space and collects
-//   their loot; casts mluck; fetches bank upgrades for them; does all compounding and upgrade projects while online;
-//   checks Ponty's secondhands for upgrades / compound completions; levels by donating gold (no kill XP) up to
-//   donate.to_level; idle at home it runs a stand (3x value, -10% per 12h, floor 1.5x); with the bank nearly full it
-//   pulls low-value items to sell or list. The richest fighter nearby keeps its gold at float. Its idle spot is a
-//   stand position that qualifies for Merrit's Market Parcels (square/aisle, spacing rules, 2 minutes still);
-//   routine supply trips wait until the stand has stood min_stay_ms.
+//   their loot; casts mluck; fetches bank upgrades for them; runs every compound and upgrade project; every 10 min
+//   checks Ponty: a piece that's an upgrade as listed (≤ secondhand_gold_per_pt), a head start for an upgrade (cheaper
+//   than building it), a shiny copy over a plain one, compound-route copies, quest materials; levels by donating;
+//   idle at home it opens its stand but lists only what the owner names (stand.list, empty — so Merrit, who needs a
+//   listing, gives no parcels).
 //
-// Install: paste loader.js (once) into each character's CODE slot. It fetches this file from the public GitHub repo
-//   (cached copy if GitHub is down); a release reaches a character when its code restarts (reload_farmer()).
+// Install: paste loader.js (once) into each character's CODE slot. Loader v4 fetches the newest commit's
+//   src/manifest.json and runs only that character's files (cached copy if GitHub is down); reload_farmer() restarts
+//   it. Releases can also be restarted remotely through the game's MCP API (browser_code_reload).
 //
 // Diagnostics (CODE console, copyable text box): report() — this character at once, then the whole party in one
-//   box (same server; stored copies otherwise); report(6) adds 6h history each; party_report() re-opens it;
-//   history(hours) (party; history(h, "solo") just us), deaths(n), why_not("monster"); gear_check() (every slot: worn vs best owned); selftest() (checks the client: functions, data, events, storage,
-//   cm round trips); park()/resume(); forget().
+//   box; report(6) adds 6h history each; report("solo") just us; party_report() re-opens it; history(hours)
+//   (history(h, "solo") just us), deaths(n), why_not("monster"); gear_check(); selftest(); park()/resume();
+//   unpause() (lifts town:* pauses); forget() (clears learned data); ui() (log size; off by default).
 //
 // Server behaviour relied on (checked against kaansoral/adventureland):
 //   - call cost: > 200 per rolling 4s disconnects; move 2.5, equip 4, unequip 7; cm 1-2; character.cc = server total.
