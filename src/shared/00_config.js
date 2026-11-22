@@ -1,4 +1,4 @@
-const VERSION = "25.27"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.28"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -344,7 +344,10 @@ const CFG = {
 		// stands, > stand_vgap px vertically from a stand within stand_gap px sideways. A routine supply trip waits
 		// until the stand has stood min_stay_ms (urgent ones don't: a fighter under urgent_free slots / urgent_pots).
 		merrit: { enabled: true, square: [-240, -120, 240, 144], aisle: [-88, 144, 88, 360], npc_gap: 40, stand_gap: 10,
-			stand_vgap: 15, step: 16, min_stay_ms: 150_000, urgent_free: 4, urgent_pots: 30 },
+			stand_vgap: 15, step: 16, min_stay_ms: 150_000, urgent_free: 4, urgent_pots: 30,
+			// v25.28 (owner): a spot is chosen 80 px from other players' stands (the server only needs 10) and kept until one
+			// comes within 40; in a crowded square, the farthest valid spot, re-checked for a clear one every 2.5 min
+			keep_px: 80, keep_hold_px: 40, rescan_ms: 150_000 },
 		// v25.15: the stand lists only item names in `list` (owner: nothing is sold unless the owner lists it). Empty: the
 		// stand opens, lists none of our gear and holds no bag slots. Merrit wants a listing (market_patron.js hasListing; a
 		// parcel is worth 1 Shell): that's the decoy below (v25.26). Before, any piece worth min_value, gear at +3 or

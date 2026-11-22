@@ -14,14 +14,17 @@ function fixed_npcs() {
 	return out;
 }
 // Can a stand stand here? Region, NPC and stand spacing, and walkable straight from (0,0) (Merrit's centre)
-function spot_ok(x, y) {
+// keep: px to stay away from other players' stands (default keep_px; 0 = only the server's rule)
+function spot_ok(x, y, keep = CFG.merchant.merrit.keep_px || 0) {
 	const M = CFG.merchant.merrit;
 	if (!in_rect(x, y, M.square) && !in_rect(x, y, M.aisle)) return false;
 	if (fixed_npcs().some(([nx, ny]) => Math.hypot(nx - x, ny - y) <= M.npc_gap)) return false;
 	for (const e of Object.values(parent.entities || {})) {
 		if (!e || e.type !== "character" || !e.stand || e.name === character.name || e.map && e.map !== "main") continue;
-		const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y);
-		if (Math.hypot(dx, dy) <= M.stand_gap || (dx <= M.stand_gap && dy <= M.stand_vgap)) return false;
+		const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y), d = Math.hypot(dx, dy);
+		if (d <= M.stand_gap || (dx <= M.stand_gap && dy <= M.stand_vgap)) return false;
+		// v25.28 (owner): keep our distance from other merchants' stands, well past the server's 10 px rule
+		if (keep && d < keep) return false;
 	}
 	if (typeof can_move === "function") {
 		try { if (!can_move({ map: "main", x: 0, y: 0, going_x: x, going_y: y, base: character.base || { h: 8, v: 7, vn: 2 } })) return false; } catch (e) {}
@@ -29,15 +32,29 @@ function spot_ok(x, y) {
 	return true;
 }
 // Our spot: the saved one while it still qualifies, else the qualifying grid point nearest (0,0)
+// v25.28: a spot is chosen keep_px (80) clear of other stands and kept until one comes within keep_hold_px (40), so a
+// stand opening at 79 px doesn't move us (every move closes the stand, walks, and restarts Merrit's 2 minutes). With no
+// spot keep_px clear (a crowded square), the valid spot farthest from every other stand — kept while it stays valid,
+// and a clear spot looked for again only every rescan_ms (the full grid is ~700 points; this runs every idle tick).
 function merrit_spot() {
-	const M = CFG.merchant.merrit;
-	if (state.mspot && spot_ok(state.mspot.x, state.mspot.y)) return state.mspot;
+	const M = CFG.merchant.merrit, now = Date.now(), cur = state.mspot;
+	if (cur && (cur.fb ? spot_ok(cur.x, cur.y, 0) && now - (cur.at || 0) < M.rescan_ms : spot_ok(cur.x, cur.y, M.keep_hold_px || 0))) return cur;
+	if (!cur && now - (merrit_spot.failed_at || 0) < M.rescan_ms) return null; // no valid spot at the last scan: not every tick
 	const pts = [];
 	for (const r of [M.square, M.aisle]) for (let x = r[0]; x <= r[2]; x += M.step) for (let y = r[1]; y <= r[3]; y += M.step) pts.push([x, y]);
 	pts.sort((a, b) => Math.hypot(a[0], a[1]) - Math.hypot(b[0], b[1]));
-	const p = pts.find(([x, y]) => spot_ok(x, y));
-	state.mspot = p ? { x: p[0], y: p[1] } : null;
-	if (p) game_log(`merrit: stand spot ${p[0]},${p[1]}`, C.dim);
+	let p = pts.find(([x, y]) => spot_ok(x, y)), fb = false;
+	if (!p && cur?.fb && spot_ok(cur.x, cur.y, 0)) { cur.at = now; return cur; } // still crowded: stay put
+	if (!p) {
+		fb = true;
+		const stands = Object.values(parent.entities || {}).filter((e) => e?.type === "character" && e.stand && e.name !== character.name && (!e.map || e.map === "main"));
+		const gap = ([x, y]) => (stands.length ? Math.min(...stands.map((e) => Math.hypot(e.x - x, e.y - y))) : 0);
+		p = pts.filter(([x, y]) => spot_ok(x, y, 0)).sort((a, b) => gap(b) - gap(a))[0];
+	}
+	const changed = !cur || !p || cur.x !== p[0] || cur.y !== p[1];
+	state.mspot = p ? { x: p[0], y: p[1], fb, at: now } : null;
+	merrit_spot.failed_at = p ? 0 : now;
+	if (p && changed) game_log(`merrit: stand spot ${p[0]},${p[1]}${fb ? " (the square is crowded: the farthest from other stands)" : ""}`, C.dim);
 	return state.mspot;
 }
 function merrit_on() { return is_merchant() && !!CFG.merchant.merrit?.enabled; }

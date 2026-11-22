@@ -26,7 +26,7 @@ bot does is at the bottom of `src/main.js`.
 
 ## Changes
 Every change goes on a branch with a pull request, bumps `VERSION`, passes the three test suites, and is reviewed
-before it's merged (a Claude Haiku review; it may approve merges). After a merge the characters are restarted once
+before it's merged (a Claude Fable review, posted on the PR; it may approve merges). After a merge the characters are restarted once
 GitHub serves the new version.
 
 ## Layout

@@ -1831,6 +1831,33 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.entities.rival.x = sp78b.x; ctx.parent.entities.rival.y = sp78b.y + 12; // within 10px sideways, 12px vertically
 	assert(!vm.runInContext(`spot_ok(${sp78b.x}, ${sp78b.y})`, ctx), "too close in front/behind another stand is refused");
 	delete ctx.parent.entities.rival;
+	// v25.28 (owner): no spot within keep_px (80) of another player's stand; with none left, the farthest valid one
+	ctx.parent.entities.rival = { id: "rival", name: "Rival", type: "character", stand: true, map: "main", x: 0, y: 100 };
+	assert(!vm.runInContext("spot_ok(40, 100)", ctx) && vm.runInContext("spot_ok(40, 100, 0)", ctx), "40 px from another stand: refused (keep_px), though the server would allow it");
+	const sp78c = vm.runInContext("state.mspot = null; merrit_spot()", ctx);
+	assert(sp78c && Math.hypot(sp78c.x - 0, sp78c.y - 100) >= 80, `the spot keeps 80 px from the other stand (${JSON.stringify(sp78c)})`);
+	// hysteresis: a stand opening 60 px from our spot (inside keep_px, outside keep_hold_px) doesn't move us
+	ctx.parent.entities.rival2 = { id: "rival2", name: "Rival2", type: "character", stand: true, map: "main", x: sp78c.x + 60, y: sp78c.y };
+	const sp78h = vm.runInContext("merrit_spot()", ctx);
+	assert(sp78h.x === sp78c.x && sp78h.y === sp78c.y, `a stand 60 px away doesn't move us (kept until 40) (${JSON.stringify(sp78h)})`);
+	delete ctx.parent.entities.rival2;
+	vm.runInContext("globalThis.__kp = CFG.merchant.merrit.keep_px; CFG.merchant.merrit.keep_px = 5000; state.mspot = null", ctx);
+	const sp78d = vm.runInContext("merrit_spot()", ctx);
+	const pts78 = vm.runInContext("(() => { const M = CFG.merchant.merrit, o = []; for (const r of [M.square, M.aisle]) for (let x = r[0]; x <= r[2]; x += M.step) for (let y = r[1]; y <= r[3]; y += M.step) if (spot_ok(x, y, 0)) o.push(Math.hypot(x, y - 100)); return Math.max(...o); })()", ctx);
+	assert(sp78d && sp78d.fb && vm.runInContext(`spot_ok(${sp78d.x}, ${sp78d.y}, 0)`, ctx) && Math.abs(Math.hypot(sp78d.x, sp78d.y - 100) - pts78) < 0.01, `nowhere far enough: the valid spot farthest from the stand (${JSON.stringify(sp78d)})`);
+	// ...and kept on the next calls: no rescan, no log line, until rescan_ms
+	let calls78 = 0; const so78 = vm.runInContext("spot_ok", ctx); ctx.spot_ok = (...a) => (calls78++, so78(...a));
+	const logs78 = log.length;
+	vm.runInContext("merrit_spot(); merrit_spot(); merrit_spot()", ctx);
+	assert(calls78 === 3 && log.length === logs78, `a fallback spot is kept: one check per call (${calls78}), no log lines (${log.length - logs78})`);
+	// no valid spot at all: the failed scan isn't repeated every tick (rescan_ms)
+	vm.runInContext("state.mspot = null; merrit_spot.failed_at = Date.now()", ctx); calls78 = 0;
+	vm.runInContext("merrit_spot(); merrit_spot()", ctx);
+	assert(calls78 === 0 && vm.runInContext("state.mspot", ctx) === null, `after a scan that found nothing, no rescan until rescan_ms (${calls78} checks)`);
+	vm.runInContext("merrit_spot.failed_at = 0", ctx);
+	ctx.spot_ok = so78;
+	vm.runInContext("CFG.merchant.merrit.keep_px = globalThis.__kp; state.mspot = null", ctx);
+	delete ctx.parent.entities.rival;
 	// routine trip waits while the stand settles; an urgent one goes
 	Object.assign(character, { x: sp78b.x, y: sp78b.y, stand: true });
 	vm.runInContext(`state.mspot = { x: ${sp78b.x}, y: ${sp78b.y} }; state.stand_since = Date.now() - 30000; merchant_trip_at = 0; state.errand = null; smart_depth = 0`, ctx);
@@ -4379,7 +4406,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const calls = [], sv = { map: character.map, x: character.x, y: character.y };
 		Object.assign(character, { map: "halloween", x: 0, y: 0 });
 		R("globalThis.__gr = go_raw; globalThis.__rp = route_plan; globalThis.__rpl = route_plain; globalThis.__tc = CFG.travel.safe_routes; CFG.travel.safe_routes = true");
-		const hd = ctx.G.maps.halloween; ctx.G.maps.halloween = ctx.G.maps.halloween || { doors: [[1, 1, 10, 10, "spookytown", 0]] };
+		// (Copilot, PR #14: undo only what this test adds to a shared halloween map)
+		const hd = ctx.G.maps.halloween, hd_doors = hd ? hd.doors : undefined;
+		ctx.G.maps.halloween = hd || {};
 		if (!ctx.G.maps.halloween.doors) ctx.G.maps.halloween.doors = [[1, 1, 10, 10, "spookytown", 0]];
 		ctx.__calls = calls;
 		R(`route_plan = route_plain = () => ({ d: 100, around: "prat @ level1", legs: [{ kind: "door", map: "halloween", fx: 0, fy: 0, x: 300, y: 40, to: "spookytown", s: 2, fs: 3, tx: 5, ty: 6 }] });
@@ -4398,7 +4427,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await R("go_route({ map: 'spookytown', x: 50, y: 60 }, 5000)");
 		assert(calls[1] === "walk spookytown 5,6", `no path to the door's point: the old way (${calls})`);
 		R("go_raw = globalThis.__gr; route_plan = globalThis.__rp; route_plain = globalThis.__rpl; CFG.travel.safe_routes = globalThis.__tc");
-		ctx.transport = tp0; if (hd) ctx.G.maps.halloween = hd; else delete ctx.G.maps.halloween; delete ctx.__calls;
+		ctx.transport = tp0; if (hd) { if (hd_doors === undefined) delete hd.doors; else hd.doors = hd_doors; } else delete ctx.G.maps.halloween; delete ctx.__calls;
 		Object.assign(character, sv);
 	}
 	// v25.22: the Cave of Many Dreams
