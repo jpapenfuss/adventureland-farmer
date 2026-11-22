@@ -155,11 +155,11 @@ function fighter_tick() {
 			// v24.61: every monster here has levelled past what the party takes on: leave now, not after the idle time
 			game_log(`${pack.mtype}: all ${camp_overgrown(pack)} here are levelled past the limit; resting this camp`, C.warn);
 			log_ev("overgrown", { mtype: pack.mtype, n: camp_overgrown(pack) });
-			state.cooldown[pack_key(pack)] = Date.now() + CFG.pack_cooldown_ms;
+			rest_camp(pack_key(pack), CFG.pack_cooldown_ms);
 			pick_pack();
 		} else if (Date.now() - state.last_target_at > Math.max(CFG.idle_giveup_ms, Math.min(CFG.max_respawn, G.monsters[pack.mtype]?.respawn || 0) * 1000 + 5000)) {
 			game_log(`Idle at ${pack.mtype}; cooling down this pack`, C.dim);
-			state.cooldown[pack_key(pack)] = Date.now() + CFG.pack_cooldown_ms;
+			rest_camp(pack_key(pack), CFG.pack_cooldown_ms);
 			pick_pack();
 		} else patrol();
 	}

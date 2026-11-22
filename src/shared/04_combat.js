@@ -100,7 +100,7 @@ async function travel(dest) {
 			// v24.54: no safe way to our own camp — whoever chose it: rest it 30 min and pick again, don't stand and retry
 			const P_ = state.pack;
 			if (e?.reason === "deadly_route" && P_ && !is_follower() && dest?.map === P_.map) {
-				state.cooldown[pack_key(P_)] = Date.now() + 1_800_000;
+				rest_camp(pack_key(P_), 1_800_000);
 				if (state.probe?.mtype === P_.mtype) { skip("probe:" + P_.mtype, 6 * 3600_000, "no safe way there"); state.probe = null; }
 				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
 				state.pack = null; state.last_pick = 0;

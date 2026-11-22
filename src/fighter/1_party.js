@@ -226,7 +226,12 @@ function apply_verdict(v, from) {
 	if (!v || !G.monsters[v.mtype]) return;
 	if (v.kind === "incident" && v.mult > 0 && v.mult < 1) {
 		incident(v.mtype, v.mult);
-		if (v.key && v.cd > Date.now()) state.cooldown[v.key] = Math.max(state.cooldown[v.key] || 0, Math.min(v.cd, Date.now() + 3600_000));
+		// v25.31: a member's death at a camp counts here as our own (the tank picks the camps: a follower's death
+		// rested it 1 h at most on the tank, and the 4x escalation never reached it); any other shared rest: 1 h at most
+		// (v.at is the sender's clock: only for staleness, either way, since tabs on other machines can run ahead)
+		const now = Date.now();
+		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) camp_death(v.key);
+		else if (v.key && v.cd > now) rest_camp(v.key, Math.min(v.cd - now, 3600_000), now);
 		if (v.death) delete state.probe_ok[v.mtype];
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {

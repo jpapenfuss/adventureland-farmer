@@ -72,7 +72,7 @@ function keep_away(e) {
 		state.keep_log.push({ t: now, key, mt: e.mtype });
 		log_ev("keep_away", { mtype: e.mtype, pack: P?.mtype || null });
 		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 4) {
-			state.cooldown[key] = now + CFG.pack_cooldown_ms;
+			rest_camp(key, CFG.pack_cooldown_ms, now);
 			state.keep_log = [];
 			state.last_pick = 0;
 			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);
@@ -262,7 +262,7 @@ function pick_pack() {
 	// near the limit flipped with every small change in the party's stats, and the leader walked between two spots
 	// (72 changes in an hour, cgoo ↔ booboo, through the door between them).
 	if (cur && !cur.boss && !cur.probe && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
-		state.cooldown[pack_key(cur)] = Math.max(state.cooldown[pack_key(cur)] || 0, now + 300_000);
+		rest_camp(pack_key(cur), 300_000, now);
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
 }
 // Patrol route: a 3x3 grid snaking through the area at 15%, 50% and 85% of its width/height, so the server shows us
