@@ -3398,8 +3398,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.window = { frameElement: fe }; ctx.document = { getElementById: (id) => (id === "gg" ? gg : null) };
 			els["farmer-ui"] = undefined; delete els["farmer-ui"]; ctx.parent.document = { getElementById: (id) => els[id] || null, createElement: () => mk(""), head: { appendChild: (e) => (els[e.id || "farmer-ui"] = e) } };
 			vm.runInContext("apply_ui()", ctx);
-			assert(fe.style.width === vm.runInContext("CFG.ui.status_box.w", ctx) + "px" && fe.style.height === vm.runInContext("CFG.ui.status_box.h", ctx) + "px" && gg.style.whiteSpace === "normal",
-				`the status box is enlarged (${fe.style.width} x ${fe.style.height}), its text wraps`);
+			assert(!fe.style.width && fe.style.height === vm.runInContext("CFG.ui.status_box.h", ctx) + "px" && gg.style.whiteSpace === "normal",
+				`the status box grows taller only (width kept: ${fe.style.width || "game's"}, height ${fe.style.height}), its text wraps`);
+			const fe1 = { style: {}, offsetWidth: 1 }; ctx.window = { frameElement: fe1 };
+			assert(vm.runInContext("apply_status_box()", ctx) === false && !fe1.style.height, "a 1px runner frame (no status box) is left alone");
+			ctx.window = { frameElement: fe };
 			assert(!els["farmer-ui"], "...and the log isn't touched (CFG.ui.enabled stays off)");
 			vm.runInContext("CFG.ui.status_box.enabled = false", ctx); fe.style = {};
 			vm.runInContext("apply_status_box()", ctx);

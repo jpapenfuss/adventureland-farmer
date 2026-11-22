@@ -242,8 +242,9 @@ const CFG = {
 	// ui(w, h, font) in the console sets the log's size and font.
 	// v24.21: off — enlarging the log in place pushed it under the DOCS panel and moved the tutorial/level bars
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,
-		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text); it grows left and up
-		status_box: { enabled: true, w: 300, h: 60 } },
+		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text): taller (it grows up) and its
+		// text wraps; w: 0 keeps the game's width — a wider box would widen the corner and shift the bars and log
+		status_box: { enabled: true, w: 0, h: 90 } },
 	town_soft_gap_ms: 3_600_000, // a trip only for deferrable work (guide, fetches, upgrades, crafting...) waits 60 min (v24.71: was 20 — the party sits at its camp)
 	                           //   after the last run FINISHED, and never turns a walk to the pack around (v18.2)
 	town_topup: 0.6,           // v18.2: in town anyway → top potions up to pot_buy once below 60% of it, and bank
@@ -4176,16 +4177,18 @@ quiet_logs();
 // A style rule in the game page for the log (size, font, a resize handle) and our own iframe's size for the status box.
 // A size dragged with the log's handle is saved (shared by every character in this browser) and reapplied on reload.
 // v25.21 (owner): the status box under CODE alone — our iframe, which the game makes 128x60 and which cut off
-// set_message's text ("gscorpion (xp" ...). It sits in the right-aligned row above the tutorial bar and the log
-// (#bottomrightcorner > #iframelist), so a wider box grows left and a taller one grows up: the log and the bars below
-// stay where the game puts them (v24.20 resized the log too, which broke the layout; that part stays off).
+// set_message's text ("gscorpion (xp" ...). It sits in the bottom-aligned top row of #bottomrightcorner (position:
+// fixed, bottom/right 0, no width: its widest row sets its width) above the tutorial bar and the log. So only its
+// height grows (upward: nothing is above it) and its text wraps; a wider box would widen the whole corner and pull the
+// left-aligned bars and log with it — v24.20 resized the log and broke the layout. status_box.w: 0 keeps the game's.
 function apply_status_box() {
 	const S = CFG.ui?.status_box;
 	if (!S?.enabled || typeof window === "undefined") return false;
 	try {
 		const fe = window.frameElement;
 		if (!fe || !fe.style || !(fe.offsetWidth > 2)) return false; // no box (a CODE runner without one, or the tests)
-		fe.style.width = S.w + "px"; fe.style.height = S.h + "px";
+		if (S.w > 0) fe.style.width = S.w + "px";
+		fe.style.height = S.h + "px";
 		const gg = typeof document !== "undefined" && document.getElementById ? document.getElementById("gg") : null;
 		if (gg) { gg.style.whiteSpace = "normal"; gg.style.overflowWrap = "anywhere"; gg.style.lineHeight = "1.2"; }
 		return true;
