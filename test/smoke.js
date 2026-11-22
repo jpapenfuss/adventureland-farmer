@@ -712,7 +712,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.items.spores = { type: "material" }; ctx.G.items.mushcap = { type: "material" };
 	ctx.G.drops = { monsters: { minimush: [[1 / 60, "spores"], [0.01, "mushcap"]] } };
 	ctx.G.craft = { mushhat: { items: [[5, "mushcap"]], cost: 0, quest: "mcollector" } };
-	ctx.G.items.mushhat = { type: "helmet" };
+	ctx.G.items.mushhat = { type: "helmet", armor: 60, resistance: 60, int: 20, str: 20, dex: 20, vit: 20 }; // v25.15: a quest counts only for an upgrade
 	vm.runInContext(`state.turn = null; state.crafted = {}; state.gear_skip = {}; state.guide_ignore = {}; state.bank_seen = {}; state.goals_cache = null;
 		state.guide_farm = { monster: "goo", map: "main", boundary: [-100,-100,100,100], count: 5, reason: "guide hunt_farm", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
 	character.items = Array(42).fill(null); character.s = {};
@@ -741,12 +741,28 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.maps.main.monsters.push({ type: "crab", count: 8, boundary: [500, 500, 700, 700] }, { type: "armadillo", count: 6, boundary: [700, 700, 900, 900] });
 	ctx.G.drops = { monsters: { crab: [[0.001, "crabclaw"]], armadillo: [[0.002, "ascale"]] } }; // v24.6: drops split across the party; 0.0008 now took us >3h
 	ctx.G.craft = { wattire: { items: [[200, "crabclaw"]], cost: 0, quest: "mcollector" }, orbg: { items: [[1, "ascale"]], cost: 0, quest: "mcollector" } };
-	ctx.G.items.wattire = { type: "chest" }; ctx.G.items.orbg = { type: "orb" };
+	ctx.G.items.wattire = { type: "chest", armor: 80, resistance: 80, int: 20, str: 20, dex: 20, vit: 20 }; ctx.G.items.orbg = { type: "orb", int: 20, str: 20, dex: 20, vit: 20 }; // v25.15: upgrades
 	vm.runInContext("state.turn = null; state.goals_cache = null; state.crafted = {}; state.guide_farm = null; state.measured = {}; state.realism = 1", ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 		goals: [{ monster: "crab", w: 2, reason: "wattire: crabclaw 0/200", eta_h: 150 }, { monster: "armadillo", w: 2, reason: "resistancering: ascale 4/5", eta_h: 0.8 }] } });
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'armadillo' && state.directive.mutual", ctx), `feasible mutual goal (armadillo) beats the 150h one (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	// v25.15: an own quest whose output wouldn't be worn, or that we already hold (bags/bank), isn't worked on; an owner's
+	// list of ids is
+	{
+		const R = (c) => vm.runInContext(c, ctx);
+		ctx.G.items.junkhat = { type: "helmet" }; ctx.G.craft.junkhat = { items: [[5, "crabclaw"]], cost: 0, quest: "mcollector" };
+		R("qskip_cache.at = 0; state.bank_seen = {}");
+		assert(!R("quest_recipes()").includes("junkhat") && R("quest_skip_why('junkhat')") === "not an upgrade for us", "a quest for a piece we wouldn't wear is skipped");
+		assert(R("quest_recipes()").includes("wattire"), "an upgrade's quest stays");
+		R("state.bank_seen = { wattire: 1 }; qskip_cache.at = 0");
+		assert(!R("quest_recipes()").includes("wattire") && /bank/.test(R("quest_skip_why('wattire')")), "...unless a copy is in the bank");
+		const lines = R("report_lines(false)").filter((l) => /^quests skipped: /.test(l));
+		assert(lines.length === 1 && /junkhat \(not an upgrade for us\)/.test(lines[0]) && /wattire \(a copy is in our bags or the bank\)/.test(lines[0]), `report names them (${lines})`);
+		R("CFG.quest_crafts = ['junkhat']; qskip_cache.at = 0");
+		assert(R("quest_recipes()").includes("junkhat"), "a quest the owner lists is kept");
+		R("CFG.quest_crafts = 'materials'; state.bank_seen = {}; qskip_cache.at = 0"); delete ctx.G.craft.junkhat;
+	}
 
 	// 40) no fetch loop: needed wcap, bank holds wcap+3 → fetch once; with the +3 in the bag, nothing more to fetch
 	ctx.G.items.wcap = { type: "helmet", upgrade: {} };
@@ -1407,6 +1423,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.items = Array(42).fill(null); character.slots = {};
 	character.items[3] = { name: "goldring", level: 0 }; character.items[4] = { name: "cheapthing", q: 5 };
 	vm.runInContext("state.stand = {}; state.partners = {}; state.needs = new Map(); state.gear_skip = {}; stand_cache = null; cmp_cache = null; state.errand = null", ctx);
+	vm.runInContext("CFG.merchant.stand.list = []", ctx);
+	assert(vm.runInContext("bag_class(character.items[3])", ctx) !== "keep", "v25.15: a piece the owner hasn't listed isn't held for the stand");
+	vm.runInContext("CFG.merchant.stand.list = ['goldring', 'cheapthing']; stand_cache = null", ctx);
 	assert(vm.runInContext("bag_class(character.items[3])", ctx) === "keep" && vm.runInContext("bag_class(character.items[4])", ctx) !== "keep", "valuable spare held for the stand, cheap junk isn't");
 	const buys63 = []; ctx.buy = (n, q) => { buys63.push(n); character.items[0] = { name: n }; return Promise.resolve({ success: true }); };
 	ctx.find_npc = () => ({ map: "main", x: 0, y: 0 }); ctx.G.npcs.standmerchant = { items: ["stand0"] };
@@ -2831,10 +2850,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.stand = true; character.items[5] = { name: "gem117", q: 5 };
 		const tr = []; const trade0 = ctx.trade;
 		ctx.trade = (k, slot, price, q) => { tr.push([character.items[k].name, price, q]); character.slots[slot] = { ...character.items[k], price }; character.items[k] = null; return Promise.resolve(); };
-		vm.runInContext("state.stand = {}; state.needs = new Map(); stand_cache = null; cmp_cache = null", ctx);
+		vm.runInContext("state.stand = {}; state.needs = new Map(); stand_cache = null; cmp_cache = null; CFG.merchant.stand.list = ['gem117']", ctx); // v25.15: listed by the owner
 		await vm.runInContext("stand_tick()", ctx);
 		const one = vm.runInContext("Math.ceil(unit_value({ name: 'gem117', q: 1 }) * CFG.merchant.stand.markup)", ctx);
 		assert(tr.length === 1 && tr[0][0] === "gem117" && tr[0][2] === 5 && tr[0][1] === one, `5 gems listed at ${one} each, not x5 (${JSON.stringify(tr)})`);
+		// v25.15: a saved listing of an item the owner hasn't listed comes down (and isn't price-cut or re-listed)
+		{
+			const un = []; const uneq0 = ctx.unequip;
+			ctx.unequip = (slot) => { un.push(slot); delete character.slots[slot]; return Promise.resolve(); };
+			character.slots.trade9 = { name: "mace", level: 7, price: 999999 };
+			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now() - 20 * 3600e3, per_unit: true }", ctx);
+			await vm.runInContext("stand_tick()", ctx);
+			assert(un.includes("trade9") && !vm.runInContext("'trade9' in state.stand", ctx), `an unlisted saved listing is taken down (${un})`);
+			ctx.unequip = () => Promise.reject({ reason: "busy" });
+			character.slots.trade9 = { name: "mace", level: 7, price: 999999 };
+			vm.runInContext("state.stand.trade9 = { name: 'mace', level: 7, q: 1, price: 999999, value: 300000, at: Date.now(), per_unit: true }", ctx);
+			await vm.runInContext("stand_tick()", ctx);
+			assert(vm.runInContext("'trade9' in state.stand", ctx), "a failed take-down keeps the listing (retried next tick)");
+			delete character.slots.trade9; vm.runInContext("delete state.stand.trade9", ctx);
+			ctx.unequip = uneq0;
+		}
 		ctx.trade = trade0; character.stand = false; character.slots = {}; character.items = Array(42).fill(null); vm.runInContext("state.stand = {}", ctx);
 		// a project stopped by its odds: remembered, and a re-pick aims no higher
 		vm.runInContext("state.upg_caps = {}; upg_cap('helm117', 6)", ctx);
@@ -2942,7 +2977,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.bank_gear = []", ctx);
 		// stand: a partial sale is logged and the listing's quantity follows
 		character.stand = true; character.slots = { trade1: { name: "gem119", q: 3, price: 100 } };
-		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false", ctx);
+		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false; CFG.merchant.stand.list = ['gem119']", ctx);
 		await vm.runInContext("stand_tick()", ctx);
 		assert(vm.runInContext("state.stand.trade1 && state.stand.trade1.q === 3 && hist.ev.some((e) => e.type === 'sold' && e.q === 2 && e.price === 200)", ctx), "2 of 5 sold: logged for 200, listing now x3");
 		character.stand = false; character.slots = {}; vm.runInContext("state.stand = {}; hist.ev = []", ctx);

@@ -60,6 +60,7 @@ const unit_value = (it) => {
 function stand_worthy(it, k, needed, cmp) {
 	const d = it && G.items[it.name], S_ = CFG.merchant.stand;
 	if (!d || it.l || it.b || needed.has(k) || cmp.has(k) || CFG.keep.includes(it.name) || !tradeable(it.name) || gear_wanted_by(it)) return false;
+	if (!(S_.list || []).includes(it.name)) return false; // v25.15: only what the owner lists
 	return unit_value(it) >= S_.min_value || (GEAR.has(d.type) && (it.level || 0) >= 3) || item_grade(it) >= 1 || !!it.p;
 }
 // Bag slots held back for the stand: the most valuable candidates, as many as there are free trade slots
@@ -115,6 +116,14 @@ async function stand_tick() {
 				return;
 			}
 			await T(open_stand(k), 3000).catch(() => {});
+			return;
+		}
+		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, or taken off the list) comes down
+		for (const slot in state.stand) {
+			const L_ = state.stand[slot];
+			if ((S_.list || []).includes(L_.name)) continue;
+			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
+			if (!(character.slots || {})[slot]) delete state.stand[slot]; // still up (unequip failed): retried next tick
 			return;
 		}
 		// v19.7: a listed piece that's now an upgrade for one of us comes off the stand

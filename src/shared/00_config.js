@@ -1,4 +1,4 @@
-const VERSION = "25.14"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.15"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -334,7 +334,10 @@ const CFG = {
 		// until the stand has stood min_stay_ms (urgent ones don't: a fighter under urgent_free slots / urgent_pots).
 		merrit: { enabled: true, square: [-240, -120, 240, 144], aisle: [-88, 144, 88, 360], npc_gap: 40, stand_gap: 10,
 			stand_vgap: 15, step: 16, min_stay_ms: 150_000, urgent_free: 4, urgent_pots: 30 },
-		stand: { enabled: true, min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
+		// v25.15: the stand lists only item names in `list` (owner: nothing is sold unless the owner lists it). Empty: the
+		// stand still opens (Merrit's parcels) and holds no bag slots. Before, any piece worth min_value, gear at +3 or
+		// better, high-grade or titled went up at 3x value — 16 slots held (mace+7, frankypants...) with 7 bag slots free.
+		stand: { enabled: true, list: [], min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
 		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
 		// stand gives 1% of a level per 3h, negligible). Levels 1→40 take ~3M XP, i.e. ~0.7-1M gold.
 		donate: {
