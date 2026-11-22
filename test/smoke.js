@@ -2870,6 +2870,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			delete character.slots.trade9; vm.runInContext("delete state.stand.trade9", ctx);
 			ctx.unequip = uneq0;
 		}
+		// v25.26: Merrit's decoy — one health potion listed at the server's maximum price, once, and left alone
+		{
+			const tr2 = [], trade1 = ctx.trade, uneq1 = ctx.unequip; let uneqs = 0;
+			ctx.trade = (k, slot, price, q) => { tr2.push([character.items[k].name, price, q, slot]); character.slots[slot] = { name: character.items[k].name, q, price }; return Promise.resolve(); };
+			ctx.unequip = (slot) => (uneqs++, delete character.slots[slot], Promise.resolve());
+			character.slots = {}; character.stand = true; character.items[20] = { name: "hpot0", q: 50 };
+			vm.runInContext("state.stand = {}; CFG.merchant.stand.list = []; stand_busy = false; stand_cache = null", ctx);
+			await vm.runInContext("stand_tick()", ctx);
+			assert(tr2.length === 1 && tr2[0][0] === "hpot0" && tr2[0][1] === vm.runInContext("CFG.merchant.stand.decoy.price", ctx) && tr2[0][2] === 1,
+				`one health potion listed at the decoy price (${JSON.stringify(tr2)})`);
+			vm.runInContext("for (const s in state.stand) state.stand[s].at = state.stand[s].cut_at = Date.now() - 48 * 3600e3; stand_busy = false", ctx);
+			await vm.runInContext("stand_tick()", ctx); await vm.runInContext("stand_busy = false; stand_tick()", ctx);
+			assert(tr2.length === 1 && uneqs === 0 && vm.runInContext("Object.values(state.stand).filter((l) => l.decoy).length", ctx) === 1,
+				"the decoy isn't taken down, price-cut or listed twice (it's not on the owner's list)");
+			ctx.trade = trade1; ctx.unequip = uneq1; character.items[20] = null; character.slots = {};
+			vm.runInContext("state.stand = {}", ctx);
+		}
 		ctx.trade = trade0; character.stand = false; character.slots = {}; character.items = Array(42).fill(null); vm.runInContext("state.stand = {}", ctx);
 		// a project stopped by its odds: remembered, and a re-pick aims no higher
 		vm.runInContext("state.upg_caps = {}; upg_cap('helm117', 6)", ctx);

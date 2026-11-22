@@ -1,4 +1,4 @@
-const VERSION = "25.25"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.26"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -328,8 +328,9 @@ const CFG = {
 		dump_gold: true,
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
 		// Stand: while idle at home the merchant opens its stand (16 trade slots) and lists only the item names in
-		// stand.list (owner's rule: nothing is sold unless the owner lists it; empty by default, so nothing is listed),
-		// at markup x item value, cutting the price by cut every cut_every_h unsold, never below floor x value. A
+		// stand.list (owner's rule: nothing is sold unless the owner lists it; empty by default) — plus Merrit's decoy,
+		// one health potion at an absurd price (stand.decoy). Listed items go up at markup x item value, cutting the
+		// price by cut every cut_every_h unsold, never below floor x value. A
 		// listed copy must also be worth listing: value >= min_value, gear at +3 or more, a higher grade, or titled.
 		// The stand is closed before every walk (speed 10 while open).
 		// Bank housekeeping (only with sell_junk, off): when the bank's free slots drop below purge_below of its size,
@@ -345,10 +346,13 @@ const CFG = {
 		merrit: { enabled: true, square: [-240, -120, 240, 144], aisle: [-88, 144, 88, 360], npc_gap: 40, stand_gap: 10,
 			stand_vgap: 15, step: 16, min_stay_ms: 150_000, urgent_free: 4, urgent_pots: 30 },
 		// v25.15: the stand lists only item names in `list` (owner: nothing is sold unless the owner lists it). Empty: the
-		// stand opens but lists nothing and holds no bag slots — and Merrit gives no parcel (the server wants a listing:
-		// market_patron_runtime.js hasListing; a parcel is worth 1 Shell). Before, any piece worth min_value, gear at +3 or
+		// stand opens, lists none of our gear and holds no bag slots. Merrit wants a listing (market_patron.js hasListing; a
+		// parcel is worth 1 Shell): that's the decoy below (v25.26). Before, any piece worth min_value, gear at +3 or
 		// better, high-grade or titled went up at 3x value — 16 slots held (mace+7, frankypants...) with 7 bag slots free.
-		stand: { enabled: true, list: [], min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0" },
+		stand: { enabled: true, list: [], min_value: 20_000, markup: 3, floor: 1.5, cut: 0.1, cut_every_h: 12, item: "stand0",
+			// v25.26 (owner): one common item always listed at an absurd price (the server's maximum), so Merrit — who
+			// needs a listing — gives her parcels (1 Shell each). null: no decoy.
+			decoy: { name: "hpot0", price: 99_999_999_999 } },
 		// Merchants get no XP from kills; the server's donation handler gives them 3.2-4.8 XP per gold donated (an open
 		// stand gives 1% of a level per 3h, negligible). Levels 1→40 take ~3M XP, i.e. ~0.7-1M gold.
 		donate: {

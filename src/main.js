@@ -171,8 +171,8 @@ tick();
 //   their loot; casts mluck; fetches bank upgrades for them; runs every compound and upgrade project; every 10 min
 //   checks Ponty: a piece that's an upgrade as listed (≤ secondhand_gold_per_pt), a head start for an upgrade (cheaper
 //   than building it), a shiny copy over a plain one, compound-route copies, quest materials; levels by donating;
-//   idle at home it opens its stand but lists only what the owner names (stand.list, empty — so Merrit, who needs a
-//   listing, gives no parcels).
+//   idle at home it opens its stand and lists only what the owner names (stand.list, empty) plus Merrit's decoy: one
+//   health potion at the server's maximum price, so Merrit (she needs a listing) gives her parcels.
 //
 // Install: paste loader.js (once) into each character's CODE slot. Loader v4 fetches the newest commit's
 //   src/manifest.json and runs only that character's files (cached copy if GitHub is down); reload_farmer() restarts

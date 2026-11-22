@@ -1,6 +1,7 @@
 // =====================================================================
 // merchant/2_stand.js — merchant only (src/manifest.json): the stand (it lists only what the owner names in
-// CFG.merchant.stand.list), Merrit's parcels (they need a listing), what the merchant sells (only with sell_junk)
+// CFG.merchant.stand.list, plus Merrit's decoy: one health potion at an absurd price), Merrit's parcels (they need a
+// listing), what the merchant sells (only with sell_junk)
 // =====================================================================
 // Fixed NPCs on Mainland (roamers — citizens, ones with a boundary or a loop — don't count)
 function fixed_npcs() {
@@ -121,6 +122,7 @@ async function stand_tick() {
 		}
 		// v25.15: a listing of an item the owner hasn't listed (from before stand.list, or taken off the list) comes down
 		for (const slot in state.stand) {
+			if (state.stand[slot].decoy) continue; // v25.26: Merrit's listing stays up
 			const L_ = state.stand[slot];
 			if ((S_.list || []).includes(L_.name)) continue;
 			if (sl[slot]) await T(unequip(slot), 5000).then(() => game_log(`stand: took ${L_.name}+${L_.level || 0} down — not on the owner's stand list`, C.dim)).catch(() => {});
@@ -138,6 +140,7 @@ async function stand_tick() {
 		// price cuts: re-list at the lower price
 		for (const slot in state.stand) {
 			const L_ = state.stand[slot];
+			if (L_.decoy) continue; // v25.26: Merrit's listing keeps its price
 			// v24.5: the server's price is per unit (a buyer pays price x q); stacks were listed at q times their value.
 			// A stack listed before (no per_unit) is re-listed at once at the per-unit price.
 			const old = L_.q > 1 && !L_.per_unit;
@@ -152,6 +155,21 @@ async function stand_tick() {
 			await T(trade(k, slot, next, L_.q), 5000).then(() => { L_.price = next; L_.per_unit = true; game_log(`stand: ${L_.name} now ${fmt_k(next)}${L_.q > 1 ? " each" : ""}`, C.dim); })
 				.catch(() => delete state.stand[slot]);
 			return;
+		}
+		// v25.26 (owner): Merrit gives a parcel only to a stand with a listing (server: market_patron.js hasListing — a
+		// trade slot holding an item with a price > 0). With the owner's list empty, one common item (stand.decoy: a
+		// health potion) is listed at an absurd price nobody pays, so there's always a listing.
+		const D_ = S_.decoy;
+		if (D_?.name && !Object.values(state.stand).some((L) => L.decoy)) {
+			const ds = TRADE_SLOTS.find((t) => !sl[t] && !state.stand[t]), dk = character.items.findIndex((i) => i && i.name === D_.name && !i.l);
+			if (ds && dk >= 0) {
+				await wait_budget(1, RESERVE.errand);
+				await T(trade(dk, ds, D_.price, 1), 5000).then(() => {
+					state.stand[ds] = { name: D_.name, level: 0, q: 1, price: D_.price, value: D_.price, at: now, per_unit: true, decoy: true };
+					game_log(`stand: listed 1 ${D_.name} at ${fmt_k(D_.price)} (for Merrit's parcels; nobody will pay that)`, C.dim);
+				}).catch((e) => game_log(`stand: listing the ${D_.name} for Merrit: ${why(e)}`, C.dim));
+				return;
+			}
 		}
 		// new listing
 		const slot = TRADE_SLOTS.find((t) => !sl[t] && !state.stand[t]);

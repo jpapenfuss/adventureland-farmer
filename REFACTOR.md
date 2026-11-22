@@ -74,7 +74,8 @@ the watchdog and the tank's group hold each steer on their own (step 4b).
   are then restarted remotely (the game's MCP API) once GitHub serves the new version.
 - **The merchant runs every upgrade and compound** (v25.17), the fighters' own pieces too; projects aim only as
   high as the run will go (v25.19). Nothing is sold unless the owner lists it: the stand lists only
-  `CFG.merchant.stand.list` (v25.15). With that list empty, Merrit gives no parcels (she needs a listing).
+  `CFG.merchant.stand.list` (v25.15). Merrit needs a listing for her parcels, so one health potion is always listed
+  at the server's maximum price (v25.26, `stand.decoy`).
 - **Ponty** is checked every 10 min; head starts for upgrades and shiny copies are bought (v25.18).
 - **Quests** only for outputs that are an upgrade and not already owned (v25.15).
 - **Measured rates** count only time the party is all there and ready; learned rates were reset once (v25.16).
