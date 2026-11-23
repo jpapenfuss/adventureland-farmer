@@ -1602,6 +1602,73 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(n67 === 10 && !got67.includes(0) && !got67.includes(1), `pulls 10 low-value items, not quest/exchange ones (${got67})`);
 	const k67 = character.items.findIndex((i) => i && i.name === "cheapthing");
 	assert(vm.runInContext(`bag_class(character.items[${k67}])`, ctx) === "sell", "purged junk is classed sell");
+	// v25.33 (owner): surplus gear goes with sell_junk off — none of a piece nobody would wear, the best 3 (6 for a
+	// ring) of a useful one, +3 failure stock when no NPC sells it; titled, recipe-level, wanted and project copies
+	// stay; nothing while a fighter's heartbeat (with its gear) is missing. The real usefulness test runs on gear
+	// heartbeats built by my_gear().
+	{
+		const R = (c) => vm.runInContext(c, ctx), I0 = { ...ctx.G.items }, sv = { name: character.name, ctype: character.ctype, level: character.level };
+		Object.assign(ctx.G.items, {
+			basehelm: { type: "helmet", armor: 40 }, basering: { type: "ring", armor: 20 }, basepants: { type: "pants", armor: 40 }, basechest: { type: "chest", armor: 40 },
+			junkhelm: { type: "helmet", g: 100, armor: 1, upgrade: { armor: 1 } }, okhelm: { type: "helmet", g: 100, armor: 10, upgrade: { armor: 5 } },
+			setpants: { type: "pants", g: 9000, armor: 10, upgrade: { armor: 5 } }, okring: { type: "ring", g: 100, armor: 10, upgrade: { armor: 6 } }, // (not compoundable: a set to combine would be kept)
+			rcoat: { type: "chest", g: 100, armor: 1, upgrade: { armor: 1 } }, goodhelm: { type: "helmet", g: 100, armor: 90, upgrade: { armor: 5 } } });
+		// one fighter wearing base pieces (the party is configured with one member here); its heartbeat carries my_gear()
+		const mk = () => { Object.assign(character, { name: "Torlis", ctype: "paladin", level: 50 }); character.slots = { helmet: { name: "basehelm" }, ring1: { name: "basering" }, ring2: { name: "basering" }, pants: { name: "basepants" }, chest: { name: "basechest" } };
+			R("my_gear_cache = null"); const g = JSON.parse(R("JSON.stringify(my_gear())")); Object.assign(character, sv); character.slots = {}; R("my_gear_cache = null"); return g; };
+		ctx.__tg = mk();
+		R("globalThis.__pm = CFG.party.members; CFG.party.members = ['Torlis']; state.partners = { Torlis: { name: 'Torlis', ctype: 'paladin', t: Date.now(), gear: __tg, map: 'main', x: 0, y: 0 } }");
+		assert(R("gear_useful('okhelm', 7, purge_takers())") && !R("gear_useful('junkhelm', 7, purge_takers())"), "the real test: a helmet that beats the worn one once upgraded is useful, one that never does isn't");
+		const pack = Array(60).fill(null), put = (it, n) => { for (let i = 0; i < n; i++) pack[pack.indexOf(null)] = { ...it }; };
+		put({ name: "junkhelm", level: 3 }, 5); put({ name: "junkhelm", level: 0, p: "shiny" }, 1);
+		for (const l of [6, 5, 5, 4, 3, 2]) put({ name: "okhelm", level: l }, 1);
+		for (const l of [5, 4, 3, 2, 1, 0, 0, 0]) put({ name: "setpants", level: l }, 1);
+		put({ name: "okring", level: 0 }, 8); put({ name: "rcoat", level: 5 }, 2); put({ name: "rcoat", level: 3 }, 2); put({ name: "goodhelm", level: 0 }, 5);
+		character.bank = { items0: pack }; character.items = Array(42).fill(null);
+		R("CFG.sell_junk = false; state.purge = {}; state.needs = new Map(); state.upg = null; cmp_cache = null; recipe_lv = null; G.craft = { rc: { items: [[1, 'rcoat', 5]] } }");
+		R("for (const n of ['junkhelm', 'okhelm', 'okring', 'rcoat', 'goodhelm', 'basehelm', 'basering', 'basepants', 'basechest']) sold_c.set(n, true); sold_c.set('setpants', false)");
+		R("state.bank_free = { free: 1, total: 60, at: Date.now() }");
+		const ex = () => JSON.parse(R("JSON.stringify(Object.fromEntries(gear_excess(character.bank.items0.filter(Boolean), purge_takers())))"));
+		const e1 = ex();
+		assert(e1["junkhelm:3"] === 5 && !e1["junkhelm:0:shiny"], `nobody's piece: every copy but the titled one (${JSON.stringify(e1)})`);
+		assert(e1["okhelm:4"] === 1 && e1["okhelm:3"] === 1 && e1["okhelm:2"] === 1 && !e1["okhelm:5"] && !e1["okhelm:6"], `a useful helmet: the best 3 (+6, +5, +5) kept, the rest go (${JSON.stringify(e1)})`);
+		assert(e1["okring:0"] === 2, `8 rings at one level: 6 kept, 2 go (${e1["okring:0"]})`);
+		assert(e1["setpants:0"] === 2 && !e1["setpants:1"], `no NPC sells it: 3 + 3 failure stock of 8 kept, 2 go (${JSON.stringify(e1)})`);
+		assert(e1["rcoat:3"] === 2 && !e1["rcoat:5"], "a recipe's level (+5) kept, the +3s sold");
+		assert(!e1["goodhelm:0"], "5 copies of a helmet a fighter would wear now: none sold (past the cap of 3)");
+		R("state.upg = { name: 'okhelm', to: 7 }");
+		assert(!ex()["okhelm:2"], "the current project's piece: none sold");
+		R("state.upg = null");
+		// a fighter not heard from: nothing decided, nothing pulled or sold
+		R("state.partners.Torlis.t = Date.now() - 60000");
+		const pk = vm.runInContext("purge_key", ctx);
+		const got = []; ctx.bank_retrieve = (p, n) => { got.push(pk(character.bank[p][n])); const k = character.items.findIndex((i) => !i); character.items[k] = character.bank[p][n]; character.bank[p][n] = null; return Promise.resolve(); };
+		assert(await R("bank_purge()") === 0 && got.length === 0 && R("purge_takers()") === null, "a fighter's heartbeat 60 s old: nothing pulled");
+		R("state.partners.Torlis.t = Date.now(); globalThis.__g = state.partners.Torlis.gear; state.partners.Torlis.gear = null");
+		assert(await R("bank_purge()") === 0 && got.length === 0, "a fresh heartbeat without its gear: nothing pulled");
+		R("state.partners.Torlis.gear = __g");
+		// locked copies share the surplus's key: the unlocked ones are pulled, never the locked
+		pack[pack.indexOf(null)] = { name: "okhelm", level: 2, l: "l" }; pack[pack.indexOf(null)] = { name: "okhelm", level: 2, l: "l" };
+		// a dead fighter still counts (it still wears its gear)
+		R("state.partners.Torlis.t = Date.now(); state.partners.Torlis.rip = true");
+		const n = await R("bank_purge()");
+		assert(n === 10 && got.length === 10, `a dead fighter's gear still counts; purge_n (10) a visit (${n}: ${got})`);
+		assert(!character.items.some((i) => i?.name === "okhelm" && i.l), "no locked copy pulled");
+		R("state.bank_gear = character.bank.items0.filter(Boolean).map((i) => ({ name: i.name, level: i.level || 0, p: i.p }))");
+		const cls = (it) => R(`bag_class(character.items[${character.items.indexOf(it)}])`);
+		const pulled = character.items.filter(Boolean);
+		assert(pulled.every((it) => cls(it) === "sell"), `pulled surplus is classed sell with sell_junk off (${pulled.map((i) => i.name + "+" + (i.level || 0) + ":" + cls(i))})`);
+		// re-counted at the shop: a kept copy at the same level (an okring beyond the 6) — after the bank lost copies, the
+		// ring in the bags is no longer surplus
+		const ring = pulled.find((i) => i.name === "okring");
+		if (ring) { R("state.bank_gear = state.bank_gear.filter((i) => i.name !== 'okring')"); assert(cls(ring) !== "sell", "re-counted at the shop: with the bank's rings gone, a pulled ring isn't surplus any more"); }
+		R("state.partners.Torlis.t = Date.now() - 60000");
+		assert(pulled.every((it) => cls(it) !== "sell"), "a fighter gone quiet before the sale: nothing sold");
+		R("state.partners.Torlis.t = Date.now(); state.bank_free = { free: 50, total: 60, at: Date.now() }");
+		assert(await R("bank_purge()") === 0, "with room in the bank: nothing pulled");
+		R("CFG.party.members = __pm; state.partners = {}; for (const n of ['junkhelm', 'okhelm', 'okring', 'rcoat', 'setpants', 'goodhelm', 'basehelm', 'basering', 'basepants', 'basechest']) sold_c.delete(n); CFG.sell_junk = true; G.craft = {}; recipe_lv = null; state.bank_gear = []; my_gear_cache = null");
+		ctx.G.items = I0;
+	}
 	character.bank = undefined; character.items = Array(42).fill(null);
 	vm.runInContext("state.purge = {}; state.bank_free = null; recipe_inputs = null", ctx);
 	// 68) party report: report() asks everyone, replies are combined in order, stale ids ignored, stored copies fill gaps
