@@ -6,10 +6,10 @@
 // =====================================================================
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
-	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
+	if (state.fund_need > 0 && upg_gold_ok(state.fund_need) && !state.upg) state.fund_need = 0;
 	const msg = { k: "mhb", v: VERSION, b: BUILD, worn: CFG.gear_auto ? worn_items() : null, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
-		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0,
+		fund: state.fund_need && !upg_gold_ok(state.fund_need) ? state.fund_need : 0, // v25.46: upgrade_keep()
 		// (collect mode: every piece; else only those for fighters we can't safely walk to — the party comes for those)
 		...(() => { const cr = CFG.merchant.collect ? null : cant_reach(); return { cant_reach: cr, give: CFG.merchant.collect ? gear_to_give() : cr.length ? gear_to_give().filter((g) => cr.includes(g.to)) : null }; })(),
 		// v25.39: the worn piece our upgrade project needs, until it arrives

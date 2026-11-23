@@ -1131,14 +1131,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked — the best piece an NPC sells, though one nobody sells scores higher (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
 	// v25.46: recent earnings no longer cap a project — gold_room() spent out, the project is still picked; only the
 	// gold above upgrade_keep counts, and the steps need nothing else
-	{ vm.runInContext("globalThis.__gr46 = gold_room; gold_room = () => -1e9; state.upg = null; state.gear_skip = {}; cmp_cache = null", ctx);
+	{ vm.runInContext("globalThis.__gr46 = gold_room; globalThis.__up46 = state.upg; gold_room = () => -1e9; state.upg = null; state.gear_skip = {}; cmp_cache = null", ctx);
 		const p46 = vm.runInContext("JSON.stringify(pick_upgrade())", ctx);
 		assert(/"name":"nhelm"/.test(p46), `v25.46: a project with recent earnings spent out (${p46})`);
-		assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 1e6, `v25.46: the budget is the gold above upgrade_keep (${vm.runInContext("upgrade_gold()", ctx)})`);
-		assert(vm.runInContext("upg_gold_ok(4e6) && !upg_gold_ok(4e6 + 1)", ctx), "v25.46: a step needs only gold above upgrade_keep");
-		vm.runInContext("globalThis.__uk46 = CFG.upgrade_keep; CFG.upgrade_keep = 5e6; state.gear_skip = {}; cmp_cache = null", ctx);
-		assert(vm.runInContext("pick_upgrade()", ctx) === null, "v25.46: no gold above upgrade_keep: no project");
-		vm.runInContext("CFG.upgrade_keep = __uk46; gold_room = __gr46", ctx); }
+		assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 50_000, `v25.46: a fighter's budget is its gold above gold_reserve (${vm.runInContext("upgrade_gold()", ctx)})`);
+		assert(vm.runInContext("upg_gold_ok(5e6 - 50000) && !upg_gold_ok(5e6 - 49999)", ctx), "v25.46: a step needs only gold above the reserve");
+		{ const nm = character.name, ct = character.ctype; Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
+			assert(vm.runInContext("upgrade_keep()", ctx) === 1e6, `v25.46: the merchant keeps upgrade_keep (1M) (${vm.runInContext("upgrade_keep()", ctx)})`);
+			Object.assign(character, { name: nm, ctype: ct }); }
+		vm.runInContext("globalThis.__uk46 = CFG.gold_reserve; CFG.gold_reserve = 5e6; state.gear_skip = {}; cmp_cache = null", ctx);
+		assert(vm.runInContext("pick_upgrade()", ctx) === null, "v25.46: no gold above the floor: no project");
+		vm.runInContext("CFG.gold_reserve = __uk46; gold_room = __gr46; state.upg = __up46; state.gear_skip = {}; cmp_cache = null", ctx); }
 	// v24.86: a shop weapon a fighter would hold goes to +7 first, with no budget
 	ctx.G.items.nmace = { type: "weapon", wtype: "mace", attack: 20, upgrade: { attack: 4 }, g: 3700 };
 	ctx.G.npcs.armorer.items.push("nmace");
@@ -1896,12 +1899,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(threw75 && threw75.reason === "low_chance", "without an offering a 40% scroll2 step is refused");
 	ctx.item_grade = ig_save; ctx.find_npc = fn75;
 	// merchant funding: a project step beyond its gold → fund request in the heartbeat; the richest fighter near sends it
-	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 302000, map: "main", x: 0, y: 0, esize: 30 }); // 2k spare < the 6k first step
+	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 1002000, map: "main", x: 0, y: 0, esize: 30 }); // 2k over upgrade_keep (1M) < the 6k first step
 	character.items = Array(42).fill(null);
+	// v25.46: nobody can fund the step (no fighter above fund_keep): the project is dropped for 30 min, not waited on
+	vm.runInContext("state.partners = {}; state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
+	await vm.runInContext("task_upgrade()", ctx);
+	assert(vm.runInContext("state.upg === null && state.fund_need === 0 && skipped('upg:wbow')", ctx), "v25.46: no gold anywhere for the step: project dropped for 30 min");
+	hb("Aspernari", { ...asp, x: 0, y: 0, gold: 7.7e6 });
 	vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
 	const fund75 = vm.runInContext("state.fund_need", ctx);
 	assert(fund75 > 0 && !vm.runInContext("upgrade_due()", ctx), `merchant waits for funding (${fund75})`);
+	assert(vm.runInContext("merchant_awaits_funds()", ctx), "v25.46: merchant_awaits_funds agrees (against upgrade_keep)");
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", gold: 7.7e6, x: 0, y: 0 });
 	vm.runInContext(`state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 40, y: 0, esize: 30, gold: 2e6, fund: ${fund75} }; state.fund_sent_at = 0; state.partners = {}; handoff_busy = false; merchant_gold_at = Date.now(); state.hold_for = {}`, ctx);
 	const g75 = []; ctx.send_gold = (to, g) => (g75.push([to, g]), Promise.resolve());

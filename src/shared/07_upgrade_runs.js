@@ -127,7 +127,7 @@ async function run_upgrade(a, row) {
 	let off = null;
 	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
-		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !(shop_for(a.name) && !G.items[a.name]?.cash) && gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
+		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !(shop_for(a.name) && !G.items[a.name]?.cash) && upg_gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
 			await ensure_scroll(hs);
 			if (!has_computer()) await go("upgrade");
 			await wait_budget(1, RESERVE.errand);

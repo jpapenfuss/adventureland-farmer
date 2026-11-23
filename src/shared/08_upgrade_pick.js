@@ -14,8 +14,9 @@ function upgrade_target(name, high = false) {
 	}
 	return to;
 }
-// v25.46: the gold an upgrade or compound never spends: the role's reserve, and at least CFG.upgrade_keep
-const upgrade_keep = () => Math.max(gold_keep(), CFG.upgrade_keep); // gold_keep(): role function (v25.11)
+// v25.46: the gold an upgrade or compound never spends: the role's reserve (gold_keep(), a role function), and for the
+// merchant at least CFG.upgrade_keep (a fighter holds ~fund_keep; a 1M floor would stop its own projects)
+const upgrade_keep = () => (is_merchant() ? Math.max(gold_keep(), CFG.upgrade_keep) : gold_keep());
 // A step's gold is there: ours minus the step stays at or above upgrade_keep() (v25.46: no earnings test)
 const upg_gold_ok = (cost) => character.gold - (cost || 0) >= upgrade_keep();
 // Gold a project may draw on: our own above upgrade_keep(); the merchant also counts fighters' gold above fund_keep
@@ -292,6 +293,12 @@ async function task_upgrade() {
 			break;
 		}
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
+		// v25.46: no gold for the step anywhere (ours above upgrade_keep plus what the fighters can send): the project is
+		// dropped for 30 min rather than waiting on funds forever and holding every other project back (a weapon's too)
+		if (character.gold - upgrade_keep() + fund_pool() < step) {
+			town_reason.upgrade = `gold: next step ${fmt_k(step)}, none to fund it (have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())})`;
+			skip("upg:" + P.name, 1_800_000, "no gold for the next step"); state.upg = null; state.fund_need = 0; break;
+		}
 		if (merchant_asks_funds(P, step)) break; // v25.5: merchant/ — the fighters fund the step
 		if (!upg_gold_ok(step)) { town_reason.upgrade = `gold: next step ${fmt_k(step)}, have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())}`; break; }
 		state.fund_need = 0;

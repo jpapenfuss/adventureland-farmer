@@ -196,7 +196,7 @@ function merchant_fetch_sale(fetch) {
 // ---- project funding (v25.5): the merchant's projects are paid by the fighters (merchant.fund_keep) ----
 // waiting for gold asked for earlier
 function merchant_awaits_funds() {
-	return state.fund_need > 0 && character.gold - CFG.merchant.donate.keep < state.fund_need;
+	return state.fund_need > 0 && !upg_gold_ok(state.fund_need); // v25.46: upgrade_keep(), as merchant_asks_funds
 }
 // the next step (P: an upgrade project; null: a craft costing `step`) is beyond our gold: ask the fighters. true = asked
 function merchant_asks_funds(P, step) {
