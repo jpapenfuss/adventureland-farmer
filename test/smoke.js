@@ -3943,6 +3943,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 0 }; state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.gear_skip = {}");
 					await R("task_upgrade()");
 					assert(R("!!state.upg && skipped('upg:mmg137') && state.bank_gear.length === 1"), "a failed bank visit pauses the project, keeps the copy on record");
+					// v25.37: a failed step destroys the copy mid-run → the bank's next copy is fetched and the run goes on
+					calls.length = 0;
+					ctx.task_bank = async (f) => { calls.push("bank:" + f.map((x) => x.key).join()); character.items[5] = { name: "mmg137", level: 3 }; R("state.bank_gear = []"); return 1; };
+					let rolls = 0;
+					ctx.run_upgrade = async (a) => { rolls++; calls.push("upgrade@" + R("best_level_held('mmg137')")); if (rolls === 1) { character.items[5] = null; return { success: false }; } character.items[5].level++; return 1; };
+					character.items[5] = { name: "mmg137", level: 4 };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 4, spent: 0 }; state.bank_gear = [{ name: 'mmg137', level: 3 }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(calls[0] === "upgrade@4" && calls[1] === "bank:upgin:mmg137" && calls[2] === "upgrade@3", `the +4 lost: the bank's +3 fetched and upgraded in the same run (${calls})`);
+					// no copy anywhere: ended, paused 10 min (not a day)
+					character.items[5] = null;
+					ctx.run_upgrade = async () => { throw { reason: "input_missing" }; };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, spent: 0 }; state.bank_gear = []; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(R("state.upg === null && skipped('upg:mmg137') && state.gear_skip['upg:mmg137'] - Date.now() <= 600000"), "no copy left: project ended, paused 10 min, not 24 h");
+					character.items[5] = null;
 					ctx.task_bank = tb; ctx.run_upgrade = ru; R("sold_c.delete('mmg137')");
 				}
 				Object.assign(character, sv);

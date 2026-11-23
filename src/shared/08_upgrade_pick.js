@@ -223,6 +223,11 @@ async function task_upgrade() {
 		const P = state.upg;
 		if (!P) break;
 		if (merchant_does_it()) { game_log(`upgrade project ${P.name} handed to the merchant`, C.dim); state.upg = null; break; } // v25.17: it came online
+		// v25.37: a failed step destroyed the copy in the bags — the next best is fetched from the bank before the next step.
+		// (The fetch ran only at the start of a run, so the next step found no copy: input_missing ended the shield project
+		// with a shield+3 and a +0 in the bank, and paused it a day — 7:29 PM report.)
+		if (best_level_held(P.name) < 0 && (state.bank_gear || []).some((i) => i.name === P.name && !i.p && (i.level || 0) < P.to) && !(await upg_fetch_copy(P))) break;
+		if (!state.upg) break;
 		const top = best_level_held(P.name);
 		if (top >= P.to) {
 			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
@@ -263,6 +268,9 @@ async function task_upgrade() {
 			// v24.7: a transient error (walk/call timeout, distance...) pauses the project, it doesn't end it: ending it freed the
 			// copy (banked, never a project input again), and the re-pick rebought from +0 with the abort budget reset
 			if (TRANSIENT.has(why(e))) { skip("upg:" + P.name, pause_ms(e, 600_000), why(e)); game_log(`upgrade ${P.name}: ${why(e)}; retrying in 10 min`, C.dim); break; }
+			// v25.37: no copy to work on (none in the bags or the bank, none to buy): the project ends without a day's pause —
+			// a copy arriving (a drop, Ponty, a share) makes it a candidate again at once
+			if (why(e) === "input_missing") { skip("upg:" + P.name, 600_000, why(e)); game_log(`upgrade ${P.name}: no copy left to work on; project ended`, C.dim); state.upg = null; break; }
 			// v24.5: refused for its odds, the next step will be refused again: remember the level reached, so the project
 			// isn't re-picked a day later to rebuild a copy at that level from +0 (and stopped there again, every day)
 			if (e?.chance !== undefined) upg_cap(P.name, Math.max(0, P.max ?? top));
