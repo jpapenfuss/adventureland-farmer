@@ -4944,6 +4944,20 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(exits === 0 && R("state.cave_block") === null, "two deaths in a visit: still in");
 		R("cave_died()");
 		assert(exits === 1 && R("state.cave_block && state.cave_block.lv === 56 && state.cave_block.gs === 500"), "the tank's third death: the party leaves, the cave is on hold");
+		// v25.40: the members' deaths count too (each once): the followers dying in the cave make the party leave
+		{
+			character.cave = { run: "rz_f", floor: 0, objectives: [], doors: [] };
+			R("cave_st.exiting = false; state.cave_block = null; cave_run_check(character.cave)");
+			const ex0 = exits, hbr = (n, rip) => hb(n, { ...(n === "Aspernari" ? asp : san), map: "zone_rz_f_0", x: 0, y: 0, rip });
+			hbr("Aspernari", true); R("cave_watch_deaths(); cave_watch_deaths()");
+			assert(R("cave_st.visit_deaths") === 1, "a follower dead: one death, counted once however many ticks see it");
+			hbr("Aspernari", false); R("cave_watch_deaths()"); hbr("Aspernari", true); R("cave_watch_deaths()");
+			assert(R("cave_st.visit_deaths") === 2 && exits === ex0, "she lives, dies again: two; still in");
+			hbr("Sanala", true); R("cave_watch_deaths()");
+			assert(exits === ex0 + 1 && R("state.cave_block?.deaths") === 3 && R("cave_st.death_by.Aspernari === 2 && cave_st.death_by.Sanala === 1"), `three deaths in the party: the party leaves, the cave on hold (${R("JSON.stringify(cave_st.death_by)")})`);
+			hbr("Aspernari", false); hbr("Sanala", false);
+			exits = ex0; R("state.cave_block = { at: Date.now(), lv: 56, gs: 500, n: 3, deaths: 3 }"); character.cave = { run: "rz", floor: 0, objectives: [], doors: [] }; // (as the block before left it)
+		}
 		delete character.cave;
 		R("state.cave_visit = { available: true, at: Date.now() }; cave_st.info_at = Date.now()");
 		assert(R("cave_blocked()") === true, "on hold while the party is as strong as when it lost");

@@ -1,4 +1,4 @@
-const VERSION = "25.39"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.40"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -257,7 +257,7 @@ const CFG = {
 	// v25.22: the Cave of Many Dreams (fighter/9_cave.js): once a day the tank takes the party in (Dorr, main 816,1200)
 	cave: { enabled: true, info_every_ms: 600_000, engage_px: 260, arrive_px: 120, max_deaths_per_room: 2,
 		stuck_ms: 45_000, camp_max_ms: 300_000, wait_party_ms: 120_000, // progress watchdog; a camp at most 5 min; the party at Dorr 2 min
-		// v25.29: the tank dying give_up_deaths times in a visit → the party leaves, and doesn't go back until it's
+		// v25.29: give_up_deaths deaths in a visit (v25.40: any member's — they were the tank's only) → the party leaves, and doesn't go back until it's
 		// stronger: average level + retry_levels or gear points x retry_gear (the first visit: 4 deaths in 2 min to the
 		// first camp's 6 rats + 2 spiders, no XP)
 		give_up_deaths: 3, retry_levels: 2, retry_gear: 1.1 },
