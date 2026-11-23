@@ -29,8 +29,11 @@ function secondhand_reason(it, groups) {
 	if (head) return head;
 	// v25.47: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
 	const S = CFG.ponty_stock?.[it.name];
-	if (S && lv === 0 && !it.p && price <= S.max_price) {
-		const have = held(it.name, 0) + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
+	// v25.48: only while compounding runs and a fighter would wear the result (+compound_max_level) — else the stock
+	// grows with nothing turning it into anything; and only plain, unlocked copies count (what compounding uses)
+	const useful = S && CFG.compound_auto && fighters.some((x) => gear_gain_min({ name: it.name, level: CFG.compound_max_level }, x.ctype, x.g));
+	if (useful && lv === 0 && !it.p && price <= S.max_price) {
+		const have = character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
 		if (have < S.n) return `stock for compounding (${have + 1}/${S.n})`;
 	}
 	const g = G.items[it.name].compound && (it.level || 0) < CFG.compound_max_level &&

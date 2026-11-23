@@ -809,6 +809,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.errand = null; state.gear_skip = {}; state.town_runs = Array(6).fill(Date.now()); state.last_town = 0; state.last_town_did = 3", ctx);
 		vm.runInContext("town_check()", ctx);
 		assert(vm.runInContext("!skipped('town:loop')", ctx), "merchant: 6 runs in 10 min that each did work → no loop brake");
+		// v25.48 (owner): never the merchant — runs that did nothing included
+		vm.runInContext("state.errand = null; state.gear_skip = {}; state.town_runs = Array(9).fill(Date.now()); state.last_town = 0; state.last_town_did = 0", ctx);
+		vm.runInContext("town_check()", ctx);
+		assert(vm.runInContext("!skipped('town:loop')", ctx), "v25.48: merchant: 9 idle runs in 10 min → still no loop brake");
 		vm.runInContext("state.errand = null; state.gear_skip = {}; state.last_town_did = 0", ctx);
 		Object.assign(character, { name: nm, ctype: ct });
 	}
@@ -1904,7 +1908,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// v25.46: nobody can fund the step (no fighter above fund_keep): the project is dropped for 30 min, not waited on
 	vm.runInContext("state.partners = {}; state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
+	assert(vm.runInContext("state.upg !== null && !skipped('upg:wbow')", ctx), "v25.48: members not heard from: not dropped (a stale heartbeat isn't 'no gold')");
+	for (const n of ["Aspernari", "Torlis", "Sanala"]) hb(n, { ...(n === "Torlis" ? tor : asp), x: 0, y: 0, gold: 100_000 });
+	vm.runInContext("state.fund_need = 0; state.gear_skip = {}", ctx);
+	await vm.runInContext("task_upgrade()", ctx);
 	assert(vm.runInContext("state.upg === null && state.fund_need === 0 && skipped('upg:wbow')", ctx), "v25.46: no gold anywhere for the step: project dropped for 30 min");
+	vm.runInContext("state.partners = {}", ctx);
 	hb("Aspernari", { ...asp, x: 0, y: 0, gold: 7.7e6 });
 	vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
@@ -1916,6 +1925,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.fund_at = __fa47; globalThis.__pp47 = state.partners; state.partners = {}", ctx);
 	assert(!vm.runInContext("merchant_awaits_funds()", ctx), "v25.47: ...or when no fighter can send any");
 	vm.runInContext("state.partners = __pp47", ctx);
+	// v25.48: a wait ends once the step itself is paid for, though the ask was for 3 steps
+	vm.runInContext("globalThis.__fs48 = state.fund_step; state.fund_step = 1", ctx);
+	assert(!vm.runInContext("merchant_awaits_funds()", ctx), "v25.48: the step is affordable: no more waiting");
+	vm.runInContext("state.fund_step = __fs48", ctx);
+	// v25.48: a second ask during a wait doesn't restart its 10 min
+	vm.runInContext("state.fund_at = Date.now() - 300_000; merchant_asks_funds(null, 1e9)", ctx);
+	assert(vm.runInContext("Date.now() - state.fund_at >= 300_000", ctx), "v25.48: fund_at kept through a second ask");
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", gold: 7.7e6, x: 0, y: 0 });
 	vm.runInContext(`state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 40, y: 0, esize: 30, gold: 2e6, fund: ${fund75} }; state.fund_sent_at = 0; state.partners = {}; handoff_busy = false; merchant_gold_at = Date.now(); state.hold_for = {}`, ctx);
 	const g75 = []; ctx.send_gold = (to, g) => (g75.push([to, g]), Promise.resolve());
@@ -2349,7 +2365,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.calculate_item_value = () => 100;
 	assert(/upgrade for Torlis/.test(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) || ""), "a cheap upgrade for a fighter is bought");
 	// v25.47: CFG.ponty_stock — plain +0 ringsj bought up to 9 held (bags + bank), at up to max_price
-	{ const rj0 = ctx.G.items.ringsj; ctx.G.items.ringsj = { type: "ring", compound: {}, g: 1000 };
+	{ const rj0 = ctx.G.items.ringsj; ctx.G.items.ringsj = { type: "ring", compound: { attack: 20 }, g: 1000 }; // +0: no stats; +3: a gain
 		const SR = (x) => vm.runInContext(`secondhand_reason(${JSON.stringify(x)}, {}) || ''`, ctx);
 		vm.runInContext("state.bank_gear = []", ctx);
 		assert(/stock for compounding \(1\/9\)/.test(SR({ name: "ringsj", level: 0 })), `v25.47: ringsj +0 stocked (${SR({ name: "ringsj", level: 0 })})`);
@@ -3389,6 +3405,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await R("give_elixir(state.partners.Sanala)");
 		ctx.send_item = si0;
 		assert(sent.length === 1 && sent[0][1] === "pumpkinspice" && sent[0][2] === 3333, `a fighter holding none gets 3,333 lattes (${JSON.stringify(sent)})`);
+		// v25.48: a fighter holding none is a trip of its own (merchant_job), at most one per 10 min
+		R("globalThis.__mro = merchant_reach_ok; merchant_reach_ok = () => true; elixir_trip_at = 0; state.partners.Sanala.elx = 0");
+		assert(R("merchant_job()?.name") === "Sanala", `v25.48: an elixir-less fighter is a merchant trip (${R("merchant_job()?.name")})`);
+		R("elixir_trip_at = Date.now()");
+		assert(!R("elixir_target()"), "v25.48: ...not again within 10 min");
+		R("merchant_reach_ok = __mro; elixir_trip_at = 0");
 		R("state.partners.Sanala.elx = 3333"); ctx.send_item = (to, k, q) => { sent.push([to, q]); return Promise.resolve(); }; await R("give_elixir(state.partners.Sanala)"); ctx.send_item = si0;
 		assert(sent.length === 1, "...and none again while it holds some");
 		R("state.partners = {}"); delete ctx.G.items.pumpkinspice; Object.assign(character, sv);

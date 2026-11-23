@@ -213,6 +213,8 @@ function upg_drop_if_stale() {
 	return true;
 }
 // Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
+// v25.48: every party member heard from (fresh heartbeat) — their gear and gold are known
+const party_heard = () => (CFG.party.members || []).every((n) => n === character.name || fresh(state.partners[n]));
 function upgrade_due() {
 	if (!CFG.upgrade_auto) return false;
 	upg_drop_if_stale(); // v24.91
@@ -228,6 +230,9 @@ function upgrade_due() {
 	if (!state.upg && now - (state.upg_pick_at || 0) > 600_000) {
 		state.upg_pick_at = now;
 		state.upg = pick_upgrade();
+		// v25.48: nothing found while a party member's heartbeat (its worn gear) is missing — right after a reload —
+		// is retried in 1 min, not 10: the 2:57 report showed "no project" beside an eligible vgloves+3
+		if (!state.upg && !party_heard()) state.upg_pick_at = now - 540_000;
 		if (state.upg) game_log(`upgrade project: ${state.upg.name} → +${state.upg.to} for ${state.upg.for}'s ${state.upg.slot} (+${state.upg.gain} pts, ~${Math.round(state.upg.cost / 1000)}k)`, C.info);
 	}
 	if (merchant_awaits_funds()) return false; // v25.5: merchant/
@@ -295,7 +300,8 @@ async function task_upgrade() {
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
 		// v25.46: no gold for the step anywhere (ours above upgrade_keep plus what the fighters can send): the project is
 		// dropped for 30 min rather than waiting on funds forever and holding every other project back (a weapon's too)
-		if (character.gold - upgrade_keep() + fund_pool() < step) {
+		// (v25.48: only with every member heard from — a stale heartbeat reads as no gold to send)
+		if (character.gold - upgrade_keep() + fund_pool() < step && party_heard()) {
 			town_reason.upgrade = `gold: next step ${fmt_k(step)}, none to fund it (have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())})`;
 			skip("upg:" + P.name, 1_800_000, "no gold for the next step"); state.upg = null; state.fund_need = 0; break;
 		}
