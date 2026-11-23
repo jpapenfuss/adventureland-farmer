@@ -1,4 +1,4 @@
-const VERSION = "25.49"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.50"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -211,10 +211,13 @@ const CFG = {
 	// checks every secondhand_every_ms and buys anything a fighter would wear as an upgrade, or that completes a compound
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
-	secondhand_every_ms: 600_000, // v25.18: was 30 min (owner: watch Ponty more closely)
+	// v25.50 (owner: "monitor Ponty for updates, and buy our target items aggressively"): every minute (was 10 min)
+	secondhand_every_ms: 60_000,
 	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
 	secondhand_upgrade_starts: true,
-	secondhand_max_price: 500_000,     // v18.6: was 2M (it paid 936k for +0 pants)
+	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);
+	// each reason's own price test and upg_gold_ok (gold above upgrade_keep) bound a buy
+	secondhand_max_price: Infinity,
 	// v24.81: Ponty routes — copies bought there (with ours) to compound into a piece a fighter would wear, up to +2 (the
 	// server's base odds: +1 99%, +2 75%, +3 40%); a route may cost this per gear point, weighed by its odds
 	ponty_routes: true,
@@ -225,7 +228,7 @@ const CFG = {
 	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
 	upgrade_boost_max: 50_000,
-	secondhand_gold_per_pt: 100_000, // v25.38: was 15k
+	secondhand_gold_per_pt: 300_000, // v25.50: = upgrade_gold_per_pt — a point bought is worth what a point built is (was 100k)
 	// v25.47 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying
 	// more from Ponty?"): a stock of +0 copies kept for compounding — bought whenever Ponty lists one at up to max_price,
 	// until n are held (bags + bank). The compounding turns them into +1 → +2 → +3 (the +3 is a worn upgrade). Judged
