@@ -1911,6 +1911,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	const fund75 = vm.runInContext("state.fund_need", ctx);
 	assert(fund75 > 0 && !vm.runInContext("upgrade_due()", ctx), `merchant waits for funding (${fund75})`);
 	assert(vm.runInContext("merchant_awaits_funds()", ctx), "v25.46: merchant_awaits_funds agrees (against upgrade_keep)");
+	vm.runInContext("globalThis.__fa47 = state.fund_at; state.fund_at = Date.now() - 600_001", ctx);
+	assert(!vm.runInContext("merchant_awaits_funds()", ctx), "v25.47: the wait for funds ends after 10 min");
+	vm.runInContext("state.fund_at = __fa47; globalThis.__pp47 = state.partners; state.partners = {}", ctx);
+	assert(!vm.runInContext("merchant_awaits_funds()", ctx), "v25.47: ...or when no fighter can send any");
+	vm.runInContext("state.partners = __pp47", ctx);
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", gold: 7.7e6, x: 0, y: 0 });
 	vm.runInContext(`state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 40, y: 0, esize: 30, gold: 2e6, fund: ${fund75} }; state.fund_sent_at = 0; state.partners = {}; handoff_busy = false; merchant_gold_at = Date.now(); state.hold_for = {}`, ctx);
 	const g75 = []; ctx.send_gold = (to, g) => (g75.push([to, g]), Promise.resolve());
@@ -2343,6 +2348,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) === null, "an upgrade priced far above its points isn't bought");
 	ctx.calculate_item_value = () => 100;
 	assert(/upgrade for Torlis/.test(vm.runInContext("secondhand_reason({ name: 'gpants', level: 0 }, {})", ctx) || ""), "a cheap upgrade for a fighter is bought");
+	// v25.47: CFG.ponty_stock — plain +0 ringsj bought up to 9 held (bags + bank), at up to max_price
+	{ const rj0 = ctx.G.items.ringsj; ctx.G.items.ringsj = { type: "ring", compound: {}, g: 1000 };
+		const SR = (x) => vm.runInContext(`secondhand_reason(${JSON.stringify(x)}, {}) || ''`, ctx);
+		vm.runInContext("state.bank_gear = []", ctx);
+		assert(/stock for compounding \(1\/9\)/.test(SR({ name: "ringsj", level: 0 })), `v25.47: ringsj +0 stocked (${SR({ name: "ringsj", level: 0 })})`);
+		assert(!/stock/.test(SR({ name: "ringsj", level: 1 })) && !/stock/.test(SR({ name: "ringsj", level: 0, p: "shiny" })), "v25.47: only plain +0 copies are stock");
+		ctx.calculate_item_value = () => 20_000;
+		assert(!/stock/.test(SR({ name: "ringsj", level: 0 })), "v25.47: not over max_price (40k here)");
+		ctx.calculate_item_value = () => 100;
+		character.items[5] = { name: "ringsj", level: 0 };
+		vm.runInContext("state.bank_gear = Array.from({ length: 7 }, () => ({ name: 'ringsj', level: 0 })).concat([{ name: 'ringsj', level: 2 }])", ctx);
+		assert(/\(9\/9\)/.test(SR({ name: "ringsj", level: 0 })), `v25.47: 8 held (bags + bank, the +2 not counted): the 9th bought (${SR({ name: "ringsj", level: 0 })})`);
+		vm.runInContext("state.bank_gear.push({ name: 'ringsj', level: 0 })", ctx);
+		assert(!/stock/.test(SR({ name: "ringsj", level: 0 })), "v25.47: 9 held: no more");
+		character.items[5] = null; vm.runInContext("state.bank_gear = []", ctx); ctx.G.items.ringsj = rj0; if (rj0 === undefined) delete ctx.G.items.ringsj; }
 	// v24.81: a route through Ponty — two +0 copies there plus our one make a +1 a fighter would wear
 	ctx.G.items.rngp = { type: "ring", attack: 30, compound: { attack: 10 }, g: 1000 }; ctx.G.items.cscroll0 = ctx.G.items.cscroll0 || { type: "cscroll", g: 1000 };
 	{
