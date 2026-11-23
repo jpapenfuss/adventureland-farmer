@@ -235,8 +235,7 @@ const TRADE_SLOTS = Array.from({ length: 16 }, (_, i) => "trade" + (i + 1));
 // ---- bag_class's merchant sells (v25.5): pieces pulled from the bank by a purge, dead compound pieces (sell_junk only) ----
 function merchant_sells(item) {
 	const marked = Date.now() - (state.purge[purge_key(item)] || 0) < 86_400_000;
-	// v25.33: surplus gear (gear_purge) is sold with sell_junk off; still never a copy that became protected since
-	if (!CFG.sell_junk) return marked && !!CFG.merchant.gear_purge?.enabled && GEAR.has(G.items[item.name]?.type) && !gear_protected(item);
+	if (!CFG.sell_junk) return marked && gear_sell_ok(item); // v25.33: re-checked and re-counted at the shop
 	if (marked) return true;
 	return !!(CFG.merchant.sell_dead_compounds && dead_compound(item)); // v24.15
 }
