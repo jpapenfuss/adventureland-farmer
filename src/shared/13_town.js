@@ -211,7 +211,8 @@ function town_check() {
 	// Loop brake: more than 6 runs in 10 minutes means something keeps coming back due — pause non-critical runs
 	state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
 	// (v24.92: not the merchant while its runs get work done — 6 runs of upgrades in 10 min paused it 15 min, idle with 12M)
-	if (state.town_runs.length >= 6 && !critical && !(is_merchant() && (state.last_town_did || 0) > 0)) {
+	// (v25.48, owner: "The merchant should never be rate limited in town trips; he lives there": never the merchant)
+	if (state.town_runs.length >= 6 && !critical && !is_merchant()) {
 		if (!skipped("town:loop")) {
 			skip("town:loop", 900_000, `${state.town_runs.length} runs in 10 min; last due: ${what.join("+")}`);
 			game_log(`Town: ${state.town_runs.length} trips in 10 min (${what.join("+")} keeps coming back) — pausing town trips 15 min. Send report().`, C.bad);

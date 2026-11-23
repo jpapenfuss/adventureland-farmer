@@ -23,7 +23,7 @@ function merchant_job() {
 	const urgent = partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
 		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0];
 	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
-	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || worn_target() || gear_target();
+	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || elixir_target() || token_target() || worn_target() || gear_target(); // (v25.48: elixir)
 }
 // v25.43 (owner: "If the route is unsafe for the merchant, the fighters can make the trip to town"): can we walk to this
 // fighter? route_plan from here to it, judged for us (we don't fight); 30 s per fighter. The ones we can't reach are

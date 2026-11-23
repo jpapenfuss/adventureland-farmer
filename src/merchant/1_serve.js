@@ -32,6 +32,14 @@ function gear_target() {
 	}
 	return null;
 }
+// v25.48 (owner: the lattes weren't handed over): a fighter holding none of merchant.elixir_supply is a trip of its
+// own — give_elixir only rode on trips for potions or gear, and none went out (1 merchant trip in 6h)
+let elixir_trip_at = 0;
+function elixir_target() {
+	const E = CFG.merchant.elixir_supply;
+	if (!E || !is_merchant() || held_any(E.name) <= 0 || Date.now() - elixir_trip_at < 600_000) return null;
+	return partners().find((p) => p.ctype !== "merchant" && p.elx === 0 && merchant_reach_ok(p)) || null;
+}
 // Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
 let token_trip_at = 0;
 const token_target = () => (is_merchant() && held_any("monstertoken") > 0 && Date.now() - token_trip_at > 1_800_000 ?
@@ -126,6 +134,7 @@ async function serve(f) {
 	// for a lull (it hands over only with nothing on the party) — up to worn_wait_ms
 	const Wn = state.upg?.worn, for_worn = !!Wn && !Wn.got && Wn.who === f.name;
 	if (for_worn) worn_trip_at = Date.now();
+	if (f.elx === 0) elixir_trip_at = Date.now(); // v25.48: elixir_target's 10-min slot
 	state.serving = f.name;
 	// v24.7: only the pieces for this fighter (marking every piece paused deliveries to everyone else for 20 min)
 	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type) && best_fighter_for(it)?.name === f.name) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
@@ -198,12 +207,16 @@ function merchant_fetch_sale(fetch) {
 function merchant_awaits_funds() {
 	// v25.47: not past 10 min, nor with no fighter able to send any: the wait was for 3x the step (or a weapon's
 	// remainder) and held every upgrade until all of it came, even with the next step already paid for
-	return state.fund_need > 0 && !upg_gold_ok(state.fund_need) && fund_pool() > 0 && Date.now() - (state.fund_at || 0) < 600_000;
+	// v25.48: and not once the step itself is paid for (state.fund_step): the ask is for up to 3 steps
+	return state.fund_need > 0 && !upg_gold_ok(state.fund_need) && !upg_gold_ok(state.fund_step || 0) && fund_pool() > 0 && Date.now() - (state.fund_at || 0) < 600_000;
 }
 // the next step (P: an upgrade project; null: a craft costing `step`) is beyond our gold: ask the fighters. true = asked
 function merchant_asks_funds(P, step) {
 	if (upg_gold_ok(step)) return false; // v25.46: against upgrade_keep()
-	state.fund_at = Date.now(); // v25.47: merchant_awaits_funds times out from here
+	// v25.47: merchant_awaits_funds times out from here. v25.48: stamped when a wait starts, not on every ask (a craft's
+	// ask kept an upgrade's wait open), so a wait really ends after 10 min
+	if (!merchant_awaits_funds()) state.fund_at = Date.now();
+	state.fund_step = step;
 	if (!P) { state.fund_need = step; return true; }
 	state.fund_need = P.weapon ? Math.max(step * 3, (P.cost || 0) - (P.spent || 0)) : Math.min(P.cost, step * 3); // v24.86: a weapon asks for what's left
 	game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
