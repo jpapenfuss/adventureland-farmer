@@ -123,6 +123,7 @@ async function run_upgrade(a, row) {
 	// expensive copies: never a coin flip — a scroll2 step, and (v25.32) any step past upgrade_max_level (+8 on scroll1
 	// was 15%: with the 10% floors a +7 weapon became a +8 project)
 	if (scroll === "scroll2" || from >= CFG.upgrade_max_level) floor = Math.max(floor, CFG.upgrade_high.min_chance);
+	if (a.min_chance) floor = Math.max(floor, a.min_chance); // v25.39: a worn piece's project (upgrade_worn.min_chance)
 	let off = null;
 	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;

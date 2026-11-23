@@ -38,6 +38,20 @@ async function merchant_handoff() {
 			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
+		// v25.39: the merchant's upgrade project wants a piece we wear: off and over — in main town only, nothing on us
+		const WW = M.want_worn;
+		if (WW && WW.to === character.name && character.map === "main" && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name)) {
+			const w = character.slots?.[WW.slot];
+			if (w && w.name === WW.name && (w.level || 0) === WW.level && !w.p && !w.l && !w.b && character.esize >= 1 && can_spend(2, RESERVE.errand)) {
+				await T(unequip(WW.slot), 5000).catch(() => {});
+				await until(() => character.items.some((i) => i && i.name === WW.name && (i.level || 0) === WW.level), 2000);
+				const k = character.items.findIndex((i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.l);
+				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (not back on while on its way; the result is another level)
+				if (k >= 0) await T(send_item(M.name, k, 1)).then(() => { game_log(`merchant: handed over our ${WW.name}+${WW.level} (${WW.slot}) to be upgraded`, C.ok); log_ev("give", { to: M.name, item: `${WW.name}+${WW.level}`, worn: true }); })
+					.catch((er) => game_log(`merchant: handing over ${WW.name}: ${why(er)}`, C.dim));
+				return;
+			}
+		}
 		// a must-hold item we bought for the merchant: hand it over (we keep our own copy)
 		for (const n in state.hold_for) {
 			if (!(M.need || []).includes(n)) { if (held_any(n) < 2 || Date.now() - state.hold_for[n].at > 86_400_000) delete state.hold_for[n]; continue; }

@@ -126,6 +126,29 @@ function pick_upgrade() {
 			}
 		}
 	}
+	// v25.39 (owner: the easy, reliable upgrades must happen): a fighter's WORN piece, when we have no spare copy of it —
+	// Aspernari's mpgloves/mppants +0 → +3 at 97%/94% for ~140k (+7.2 pts each) were never done, only because projects
+	// never touched worn gear. Only steps whose base odds are at least upgrade_worn.min_chance (a failure destroys what
+	// the fighter wears); the fighter hands the piece over in town (want_worn in our heartbeat), we upgrade it, and the
+	// result goes back as a delivery (it beats what's in that slot then).
+	const W = CFG.upgrade_worn;
+	if (W?.enabled && is_merchant()) for (const m of takers) for (const [slot, it] of Object.entries(m.p?.worn || {})) {
+		const def = it && G.items[it.name];
+		if (!def?.upgrade || !GEAR.has(def.type) || def.cash || it.p || it.l || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name)) continue;
+		if (owned_level(it.name) >= 0 || state.upg?.name === it.name) continue; // a spare copy: the normal project (above)
+		const lw = it.level || 0, weapon = def.type === "weapon";
+		const T = Math.min(Math.max(upgrade_target(it.name), CFG.upgrade_high?.enabled ? upgrade_target(it.name, true) : 0), upg_cap_level(it.name), weapon ? CFG.upgrade_weapon?.to ?? 7 : Infinity);
+		for (let L = lw + 1; L <= T; L++) {
+			if (upg_odds(it.name, L) < W.min_chance) break;
+			const cost = Math.max(0, upgrade_expected(it.name, L) - upgrade_expected(it.name, lw));
+			if (cost > budget) break;
+			const r = gear_gain({ name: it.name, level: L }, m.ctype, m.g);
+			if (!r) continue;
+			const v = r.gain * CFG.upgrade_gold_per_pt - cost;
+			if (v > 0 && (!best || (!best.weapon && v > best.v)))
+				best = { name: it.name, to: L, for: m.name, slot, gain: Math.round(r.gain), cost, v, high: L > upgrade_target(it.name), weapon: false, worn: { who: m.name, slot, level: lw, at: Date.now() } };
+		}
+	}
 	return best;
 }
 // Why there's no project (report): our own pieces that would win once upgraded, and the best shop pieces with what
@@ -199,6 +222,7 @@ function upgrade_due() {
 		if (state.upg) game_log(`upgrade project: ${state.upg.name} → +${state.upg.to} for ${state.upg.for}'s ${state.upg.slot} (+${state.upg.gain} pts, ~${Math.round(state.upg.cost / 1000)}k)`, C.info);
 	}
 	if (merchant_awaits_funds()) return false; // v25.5: merchant/
+	if (worn_waiting()) return false; // v25.39: the fighter hasn't handed its piece over yet
 	return !!state.upg && !skipped("upg:" + state.upg.name) && best_level_held(state.upg.name) < state.upg.to;
 }
 // v25.17: the project's best copy lies in the bank (a piece we own: the bank step comes after this one in a town run,
@@ -220,6 +244,20 @@ async function upg_fetch_copy(P) {
 	state.upg = null; state.upg_pick_at = 0;
 	return false;
 }
+// v25.39: a worn-piece project waiting for its hand-over (true), received (got set), or given up after wait_ms
+function worn_waiting() {
+	const P = state.upg, W = P?.worn;
+	if (!W || W.got) return false;
+	if (best_level_held(P.name) >= W.level) { W.got = Date.now(); game_log(`upgrade: ${W.who} handed over its ${P.name}+${W.level}`, C.info); return false; }
+	if (Date.now() - (W.at || 0) > (CFG.upgrade_worn?.wait_ms || 1_800_000)) {
+		game_log(`upgrade project ${P.name}: ${W.who} didn't hand its piece over in time; dropped`, C.dim);
+		skip("upg:" + P.name, 3600_000, "worn piece not handed over");
+		state.upg = null; state.upg_pick_at = 0;
+		return false;
+	}
+	town_reason.upgrade = `waiting for ${W.who} to hand over its ${P.name}+${W.level} (in town)`;
+	return true;
+}
 async function task_upgrade() {
 	let n = 0;
 	if (state.upg && merchant_does_it()) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; return 0; }
@@ -237,6 +275,7 @@ async function task_upgrade() {
 		// while the bank has the +3)
 		if ((state.bank_gear || []).some((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > best_level_held(P.name)) && !(await upg_fetch_copy(P))) break;
 		if (!state.upg) break;
+		if (worn_waiting()) break; // v25.39
 		const top = best_level_held(P.name);
 		if (top >= P.to) {
 			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
@@ -267,7 +306,7 @@ async function task_upgrade() {
 		}
 		const g0 = character.gold;
 		try {
-			await run_upgrade({ name: P.name }, { request: { name: P.name, level: P.to } });
+			await run_upgrade({ name: P.name, ...(P.worn ? { min_chance: CFG.upgrade_worn.min_chance } : {}) }, { request: { name: P.name, level: P.to } });
 			// v24.85: at most what the step can cost (a scroll, a copy if one was bought). The gold delta alone counted a
 			// transfer to the merchant made meanwhile: Torlis's shoes1 project "cost 2.5x its estimate" at +1 and stopped.
 			P.spent += Math.min(Math.max(0, g0 - character.gold), upg_step_cost(P.name, top));

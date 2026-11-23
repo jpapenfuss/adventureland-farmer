@@ -3195,6 +3195,55 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R(`CFG.upgrade_gold_per_pt = ${gp0}; state.partners = {}; state.bank_gear = []; sold_c.delete('setp138'); state.upg = null; state.gear_skip = {}; my_gear_cache = null`);
 		delete ctx.G.items.setp138; delete ctx.G.items.basep138; ctx.item_grade = ig; Object.assign(character, sv);
 	}
+	// v25.39 (owner: the easy, reliable upgrades must happen): a fighter's worn piece, with no spare copy, is the merchant's
+	// project for the steps at 90%+; the fighter hands it over in town; the project waits for it, then gives up
+	{
+		const R = (c) => vm.runInContext(c, ctx), sv = { name: character.name, ctype: character.ctype, level: character.level, items: character.items, slots: character.slots, gold: character.gold, map: character.map, x: character.x, y: character.y };
+		Object.assign(ctx.G.items, { mpg139: { type: "gloves", g: 68000, int: 5, upgrade: { int: 3 } } });
+		Object.assign(character, { name: "Aspernari", ctype: "priest", level: 60 }); character.slots = { gloves: { name: "mpg139", level: 0 } }; R("my_gear_cache = null");
+		const g = JSON.parse(R("JSON.stringify(my_gear())")), worn = JSON.parse(R("JSON.stringify(worn_items())"));
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {}, gold: 20e6 });
+		ctx.__g139 = g; ctx.__w139 = worn;
+		R("state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g139, worn: __w139 } }; state.merchant = null; state.upg = null; state.upg_caps = {}; state.gear_skip = {}; state.bank_gear = []; sold_c.set('mpg139', false); my_gear_cache = null");
+		R("for (const n in G.items) if (n !== 'mpg139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test')");
+		const pk = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
+		const odds = [1, 2, 3, 4].map((L) => R(`upg_odds('mpg139', ${L})`));
+		const last = odds.findIndex((o) => o < 0.9); // the first step under 90%
+		assert(pk && pk.name === "mpg139" && pk.worn?.who === "Aspernari" && pk.worn.slot === "gloves" && pk.to === last, `the worn gloves: a project up to the last 90%+ step (+${pk && pk.to}; odds ${odds.map((o) => Math.round(o * 100)).join("/")})`);
+		R("state.upg = pick_upgrade()");
+		assert(R("worn_waiting()") === true && R("upgrade_due()") === false, "waiting for the hand-over: no town trip for it");
+		// the fighter's side: the merchant's heartbeat asks; in main town with nothing on it, it hands the gloves over
+		const want = { to: "Aspernari", name: "mpg139", level: 0, slot: "gloves" };
+		Object.assign(character, { name: "Aspernari", ctype: "priest", level: 60, items: Array(42).fill(null), slots: { gloves: { name: "mpg139", level: 0 } }, map: "main", x: 0, y: 0, esize: 40 });
+		R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 10, y: 0, esize: 30, gold: 1e6, want_worn: ${JSON.stringify(want)} }`);
+		const sent = [], ue0 = ctx.unequip, si0 = ctx.send_item;
+		ctx.unequip = (slot) => { const it = character.slots[slot]; delete character.slots[slot]; character.items[character.items.indexOf(null)] = it; return Promise.resolve(); };
+		ctx.send_item = (to, k) => { sent.push([to, character.items[k].name]); character.items[k] = null; return Promise.resolve(); };
+		R("handoff_busy = false; state.owe = 0; state.dump_at = Date.now()");
+		await R("merchant_handoff()");
+		assert(sent.length === 1 && sent[0][1] === "mpg139" && !character.slots.gloves && R("equip_paused({ name: 'mpg139', level: 0 })"), `in main town: unequipped and handed over (${JSON.stringify(sent)})`);
+		// not in the field, not with a monster on us
+		character.slots = { gloves: { name: "mpg139", level: 0 } }; sent.length = 0; character.map = "desertland";
+		R("state.merchant.map = 'desertland'; handoff_busy = false"); await R("merchant_handoff()");
+		assert(!sent.some((x) => x[1] === "mpg139") && character.slots.gloves, "in the field: kept on");
+		character.map = "main"; R("state.merchant.map = 'main'; handoff_busy = false"); ctx.parent.entities.m139 = { type: "monster", target: "Aspernari", x: 0, y: 0 };
+		await R("merchant_handoff()");
+		assert(!sent.some((x) => x[1] === "mpg139") && character.slots.gloves, "a monster on us: kept on");
+		delete ctx.parent.entities.m139; ctx.unequip = ue0; ctx.send_item = si0;
+		// back on the merchant: the piece arrives → received; a project never handed over is dropped after wait_ms
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {} });
+		character.items[3] = { name: "mpg139", level: 0 };
+		assert(R("worn_waiting()") === false && !!R("state.upg.worn.got"), "the piece arrived: received, the project runs");
+		character.items[3] = null;
+		R("state.upg.worn.got = 0; state.upg.worn.at = Date.now() - 2 * 3600e3");
+		assert(R("worn_waiting()") === false && R("state.upg") === null && R("skipped('upg:mpg139')"), "never handed over: dropped after wait_ms, paused an hour");
+		// a spare copy in the bank: the normal project, not the worn piece
+		R("state.gear_skip = {}; for (const n in G.items) if (n !== 'mpg139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test'); state.bank_gear = [{ name: 'mpg139', level: 0 }]");
+		const pk2 = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
+		assert(pk2 && pk2.name === "mpg139" && !pk2.worn && pk2.from_copy === 0, "with a spare copy owned: the spare is the project, the worn one is left alone");
+		R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; state.gear_skip = {}; sold_c.delete('mpg139'); my_gear_cache = null");
+		delete ctx.G.items.mpg139; Object.assign(character, sv);
+	}
 	// 118) v24.6 party review fixes: deaths and probe results are shared; no calibration under tank cover;
 	// a measurement covers only time at the spot; realism clamped
 	{
