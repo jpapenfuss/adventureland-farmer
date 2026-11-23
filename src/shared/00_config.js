@@ -1,4 +1,4 @@
-const VERSION = "25.54"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.55"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -115,7 +115,10 @@ const CFG = {
 	// listed here. Defensive stats count x gear_tank_mult for tank classes. xp: xp_weight (gear_xp_value).
 	gear_w: { attack: 1, main_stat: 1.2, hp: 0.05, mp: 0.02, armor: 0.3, resistance: 0.3,
 		frequency: 2.5, crit: 2, critdamage: 0.3, apiercing: 0.4, rpiercing: 0.4, evasion: 1.5, avoidance: 1.5,
-		reflection: 1, lifesteal: 2, manasteal: 1, dreturn: 0.5, speed: 0.5, range: 0.1, luck: 0.15, gold: 0.15, output: 3 },
+		reflection: 1, lifesteal: 2, manasteal: 1, mp_cost: -0.2, dreturn: 0.5, speed: 0.5, range: 0.1, luck: 0.15, gold: 0.15, output: 3 },
+	// v25.55: mp_cost (MP per attack; items add it flat, server a_mp_cost; floor 1) was not scored — an Ornament Staff's
+	// -40 counted for nothing. One point less is worth 0.2: manasteal 1 (weight 1) returns ~1% of a ~400-damage hit,
+	// about 4 MP an attack, so 1 MP an attack saved ≈ 0.25 of it. Wand modifiers (mage: -18) count too.
 	// v24.80: attack and attack speed on a piece are valued together, as the damage per second they add for the wearer
 	// (server: attack += item attack x main stat / 20; frequency adds; damage = attack x frequency) — not by the two
 	// flat weights above. With those, +0.40 attacks/s on a wand outscored a staff with three times its damage plus an

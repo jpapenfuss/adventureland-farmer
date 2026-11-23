@@ -387,7 +387,20 @@ const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const 
 // those began with the party hitting the ent (it was "a monster on a party member", so everyone shot it). Since
 // v24.44 nobody attacks a monster the party can't kill, and an ent left alone leaves room to walk past (owner).
 // Listing it closed the only way to level2s and the walk from its door.
-const no_go = (t, v) => !!G.monsters[t] && aggressive(t) && !state.safe[t] && chase_speed(t) >= v;
+const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(t) && !state.safe[t] && chase_speed(t) >= v);
+// v25.55: the merchant (no fighting, ~2k HP) died walking to the gscorpion camp past desertland's fire spirits: aggro
+// 0.2 (under the 0.5 above) and slower than it, but range 280 and 320 magical a hit — 2,749 damage in the 10 s it
+// spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
+// rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed).
+function merchant_threat(t, v) {
+	const m = G.monsters[t];
+	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
+	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
+	const magic = m.damage_type === "magical";
+	const hit = (m.attack || 0) * dm(((magic ? character.resistance : character.armor) || 0) - ((magic ? m.rpiercing : m.apiercing) || 0));
+	const exposed_s = (2 * (m.range || 0) + 100) / Math.max(v, 10);
+	return hit * (m.frequency || 0) * exposed_s >= (character.max_hp || 1) / 2;
+}
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }
 function travel_s(map, boundary) {

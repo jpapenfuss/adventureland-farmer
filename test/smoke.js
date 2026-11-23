@@ -4028,6 +4028,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("rt_cache.clear(); dz_cache.clear()", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
+	// v25.55: the merchant walks no spawn where anything that may attack it (any aggro) deals half its HP while it
+	// crosses that monster's reach — desertland's fire spirits (aggro 0.2, slow, range 280) killed it on the way to camp.
+	// Fighters keep the old rule (they walk past them). Ornament Staff: mp_cost scores.
+	{
+		const sv = { ...character }, maps0 = ctx.G.maps, mons0 = ctx.G.monsters;
+		ctx.G.monsters = { ...mons0, fire555: { hp: 84000, attack: 320, damage_type: "magical", speed: 24, range: 280, frequency: 1.2, aggro: 0.2, rpiercing: 320 },
+			scorp555: { hp: 32000, attack: 120, damage_type: "physical", speed: 24, range: 32, frequency: 0.8, aggro: 0.3 } };
+		ctx.G.maps = { dz555: { doors: [], spawns: [[0, 0]], monsters: [{ type: "fire555", count: 4, boundary: [91, -952, 353, -702] }, { type: "scorp555", count: 6, boundary: [220, -1569, 561, -1275] }] } };
+		const R = (c) => vm.runInContext(c, ctx);
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", max_hp: 1945, hp: 1945, resistance: 81, armor: 31, speed: 55, stand: false, map: "dz555", x: 0, y: 0 });
+		R("rt_cache.clear(); dz_cache.clear(); state.safe = {}");
+		const dz = R("deadly_areas('dz555').map((z) => z.t).join()");
+		assert(dz === "fire555", `merchant: fire spirits are no place to walk, the scorpions it visits are (${dz})`);
+		assert(/fire555/.test(R("seg_danger('dz555', 0, 0, 0, -800) || ''")), "merchant: a walk through the fire spirits is dangerous");
+		Object.assign(character, { name: "Torlis", ctype: "paladin", max_hp: 9515, hp: 9515 });
+		R("dz_cache.clear()");
+		assert(R("deadly_areas('dz555').length") === 0, "a fighter walks past them as before");
+		ctx.G.items.orn555 = { type: "weapon", wtype: "staff", mp_cost: -40 };
+		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 8, `mp_cost -40 scores 8 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
+		delete ctx.G.items.orn555; ctx.G.maps = maps0; ctx.G.monsters = mons0;
+		R("rt_cache.clear(); dz_cache.clear()");
+		Object.assign(character, sv);
+	}
 	// 131) v24.20: bigger game panels (log size/font/resize handle, the status box) and ui(); no picks in jail / unreachable
 	{
 		const els = {}, pd0 = ctx.parent.document;
