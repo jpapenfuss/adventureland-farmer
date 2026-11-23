@@ -1028,7 +1028,7 @@ function route_to(to_map, tx, ty, from = { map: character.map, x: character.x, y
 // smart_move's own) and how close they come to those spawns.
 const dz_cache = new Map();
 function deadly_areas(map) {
-	const v = character.speed || 55, now = Date.now(), c = dz_cache.get(map);
+	const v = walk_speed(), now = Date.now(), c = dz_cache.get(map);
 	if (c && now - c.at < 60_000 && c.v === v) return c.list;
 	const list = [];
 	for (const [pk, a] of map_areas(map)) { const t = pk.type; if (valid_boundary(a.boundary) && no_go(t, v)) list.push({ t, b: a.boundary }); }
@@ -1120,6 +1120,13 @@ function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x,
 	const s = route_to(to_map, tx, ty, from, true);
 	return s ? { d: s.d, legs: s.legs, danger: null, around: why } : { d: r.d, legs: null, danger: why, around: null };
 }
+// v25.43: the speed we walk at — a merchant with its stand open moves at 10, which made every aggressive monster look
+// faster than us (Fable: from the stall every camp read "no safe way"); judged with the last speed seen while walking
+let walk_v = 0;
+function walk_speed() {
+	if (!character.stand && character.speed > 0) walk_v = character.speed;
+	return walk_v || (character.stand ? 55 : character.speed) || 55;
+}
 // ---- Dangerous neighbours (v24.10) ----
 // Aggressive monsters (aggro or rage >= 0.5: they come at anyone near) that we can't take on. In the first v24.9 run,
 // boars and dark hounds next to winterland's iceroamers and vampire rats on the way through level1 killed Torlis 4 times
@@ -1137,7 +1144,7 @@ const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro |
 function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }
 function travel_s(map, boundary) {
 	if (!map || !valid_boundary(boundary)) return 0;
-	const cx = (boundary[0] + boundary[2]) / 2, cy = (boundary[1] + boundary[3]) / 2, v = Math.max(character.speed || 55, 10);
+	const cx = (boundary[0] + boundary[2]) / 2, cy = (boundary[1] + boundary[3]) / 2, v = Math.max(walk_speed(), 10);
 	if (map === character.map) return (Math.hypot(cx - character.x, cy - character.y) / v) * 1.3;
 	if (G.maps[character.map]?.doors) { const r = route_plan(map, cx, cy); return r ? (r.d / v) * 1.3 : Infinity; } // v24.16; v24.17: the way actually walked
 	const sp = G.maps[map]?.spawns?.[0] || [0, 0];
@@ -7644,11 +7651,14 @@ function merchant_reach_ok(p) {
 	if (c && Date.now() - c.at < 30_000) return c.ok;
 	const pos = partner_pos(p);
 	const pl = pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) < 400 ? { danger: null } : route_plan(pos.map, pos.x, pos.y);
-	const ok = !!pl && !pl.danger;
-	reach_c[p.name] = { at: Date.now(), ok, why: pl?.danger || (pl ? null : "no way there") };
+	const ok = !!pl && !pl.danger, now = Date.now();
+	reach_c[p.name] = { at: now, ok, why: pl?.danger || (pl ? null : "no way there"), bad_since: ok ? 0 : c?.bad_since || now };
 	return ok;
 }
-const cant_reach = () => partners().filter((p) => fresh(p) && !p.rip && !merchant_reach_ok(p)).map((p) => p.name);
+// (named only after the verdict has held a minute — one heartbeat starts a party trip — and not for "no way there":
+// a fighter in the bank has no route graph entry)
+const cant_reach = () => partners().filter((p) => fresh(p) && !p.rip && !merchant_reach_ok(p) && reach_c[p.name].why !== "no way there" &&
+	Date.now() - reach_c[p.name].bad_since >= 60_000).map((p) => p.name);
 // v25.43: our upgrade project waits for a fighter's worn piece → walk out to it (serve waits by it; the fighter hands the
 // piece over at the camp, between fights). One trip per 10 min.
 let worn_trip_at = 0;

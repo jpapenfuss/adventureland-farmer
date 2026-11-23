@@ -34,11 +34,14 @@ function merchant_reach_ok(p) {
 	if (c && Date.now() - c.at < 30_000) return c.ok;
 	const pos = partner_pos(p);
 	const pl = pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) < 400 ? { danger: null } : route_plan(pos.map, pos.x, pos.y);
-	const ok = !!pl && !pl.danger;
-	reach_c[p.name] = { at: Date.now(), ok, why: pl?.danger || (pl ? null : "no way there") };
+	const ok = !!pl && !pl.danger, now = Date.now();
+	reach_c[p.name] = { at: now, ok, why: pl?.danger || (pl ? null : "no way there"), bad_since: ok ? 0 : c?.bad_since || now };
 	return ok;
 }
-const cant_reach = () => partners().filter((p) => fresh(p) && !p.rip && !merchant_reach_ok(p)).map((p) => p.name);
+// (named only after the verdict has held a minute — one heartbeat starts a party trip — and not for "no way there":
+// a fighter in the bank has no route graph entry)
+const cant_reach = () => partners().filter((p) => fresh(p) && !p.rip && !merchant_reach_ok(p) && reach_c[p.name].why !== "no way there" &&
+	Date.now() - reach_c[p.name].bad_since >= 60_000).map((p) => p.name);
 // v25.43: our upgrade project waits for a fighter's worn piece → walk out to it (serve waits by it; the fighter hands the
 // piece over at the camp, between fights). One trip per 10 min.
 let worn_trip_at = 0;

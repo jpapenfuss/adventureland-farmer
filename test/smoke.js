@@ -3225,8 +3225,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.partners.Aspernari.t = Date.now(); worn_trip_at = 0");
 		// v25.43 (owner): no safe way for the merchant → it doesn't walk; it names the fighter (cant_reach) and the
 		// tank takes the party to town instead
-		R("reach_c.Aspernari = { at: Date.now(), ok: false, why: 'test' }");
-		assert(R("worn_target()") === null && R("cant_reach().includes('Aspernari')"), "no safe way to Aspernari: the merchant doesn't walk out; she's named in cant_reach");
+		R("reach_c.Aspernari = { at: Date.now(), ok: false, why: 'test', bad_since: Date.now() }");
+		assert(R("worn_target()") === null && !R("cant_reach().includes('Aspernari')"), "no safe way to Aspernari: the merchant doesn't walk out; not named until it has held a minute");
+		R("reach_c.Aspernari.bad_since = Date.now() - 61000");
+		assert(R("cant_reach().includes('Aspernari')"), "...after a minute: named in cant_reach");
+		R("reach_c.Aspernari = { at: Date.now(), ok: false, why: 'no way there', bad_since: Date.now() - 600000 }");
+		assert(!R("cant_reach().includes('Aspernari')"), "...not for 'no way there' (in the bank)");
+		// the speed we walk at, not the stall's 10
+		{ const sp0 = character.speed, st0 = character.stand;
+			Object.assign(character, { speed: 60, stand: false }); R("walk_speed()");
+			Object.assign(character, { speed: 10, stand: true });
+			assert(R("walk_speed()") === 60, `with the stand open (speed 10): judged at the walking speed (${R("walk_speed()")})`);
+			Object.assign(character, { speed: sp0, stand: st0 }); }
 		R("delete reach_c.Aspernari");
 		// the fighter's side: the merchant's heartbeat asks; in main town with nothing on it, it hands the gloves over
 		const want = { to: "Aspernari", name: "mpg139", level: 0, slot: "gloves" };
