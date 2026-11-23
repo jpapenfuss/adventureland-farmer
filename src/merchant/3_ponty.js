@@ -52,7 +52,7 @@ function upgrade_start_reason(it, price, fighters) {
 		return price < skips ? `skips the project's steps: +${Math.max(0, have)} → +${to} for ${P.for} (~${fmt_k(skips)} of steps, ${fmt_k(price)} here)` : null;
 	}
 	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
-	const budget = WP ? Infinity : Math.min(upgrade_gold(), gold_room()) * CFG.upgrade_spend;
+	const budget = WP ? Infinity : upgrade_gold(); // v25.46: the planner's budget
 	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name), upg_reach(it.name));
 	if (own >= lv) return null; // ours is as far along already
 	let best = null;

@@ -285,7 +285,7 @@ async function task_compound() {
 		const floor = tight_ok(g, g.bags.slice(0, 3)) ? 0 : Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
 			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance, wanted ? CFG.compound_min_chance_wanted : 1);
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
-		if (!gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
+		if (!upg_gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
 		try {
 			// resources: the exact spare slots, so run_compound never grabs a guide-needed copy of the same item
 			const before = g.bags.slice(0, 3).map((k) => character.items[k]);
