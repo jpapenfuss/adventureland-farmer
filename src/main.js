@@ -49,6 +49,7 @@ function tick() {
 		if (spent() > BUDGET.soft) wait = 500;
 		else if (character.rip) {
 			if (character.cave && !state.dead_handled) cave_died(); // v25.22 (role function)
+			if (character.cave) cave_watch_deaths(); // v25.41: the members' deaths count while we're dead too (role function)
 			probe_check(); // v24.3: a probe ends as failed when the leader dies, not "held" after respawning
 			on_death();
 			if (Date.now() >= next_respawn && can_spend(1, RESERVE.potion)) {
