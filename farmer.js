@@ -1556,7 +1556,7 @@ function gold_room() {
 	// v24.82: "other" (gold that left with no tag: the owner's own purchases, trades) isn't the script's spending —
 	// 4.5M of it had the budget at zero for six hours and every upgrade waiting
 	// v25.38: plus the merchant's stockpile above spend.stock_keep (ours, or its last heartbeat's)
-	const stock = Math.max(0, (is_merchant() ? character.gold : state.merchant?.gold || 0) - (CFG.spend.stock_keep ?? Infinity));
+	const stock = Math.max(0, (is_merchant() ? character.gold : merchant_hb()?.gold || 0) - (CFG.spend.stock_keep ?? Infinity)); // (Fable #25: a fresh heartbeat)
 	return Math.floor(CFG.spend.share * L.earn - (L.spend - (L.cats?.other || 0)) + stock);
 }
 // The merchant's optional spending (Ponty, compound scrolls, crafting, upgrade steps) also has to leave it
@@ -2782,10 +2782,12 @@ function pick_upgrade() {
 	const W = CFG.upgrade_worn;
 	if (W?.enabled && is_merchant()) for (const m of takers) for (const [slot, it] of Object.entries(m.p?.worn || {})) {
 		const def = it && G.items[it.name];
+		// (never a weapon or offhand: the fighter would fight without it until the party is back in town — Fable)
+		if (slot === "mainhand" || slot === "offhand" || def?.type === "weapon") continue;
 		if (!def?.upgrade || !GEAR.has(def.type) || def.cash || it.p || it.l || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name)) continue;
 		if (owned_level(it.name) >= 0 || state.upg?.name === it.name) continue; // a spare copy: the normal project (above)
-		const lw = it.level || 0, weapon = def.type === "weapon";
-		const T = Math.min(Math.max(upgrade_target(it.name), CFG.upgrade_high?.enabled ? upgrade_target(it.name, true) : 0), upg_cap_level(it.name), weapon ? CFG.upgrade_weapon?.to ?? 7 : Infinity);
+		const lw = it.level || 0;
+		const T = Math.min(Math.max(upgrade_target(it.name), CFG.upgrade_high?.enabled ? upgrade_target(it.name, true) : 0), upg_cap_level(it.name));
 		for (let L = lw + 1; L <= T; L++) {
 			if (upg_odds(it.name, L) < W.min_chance) break;
 			const cost = Math.max(0, upgrade_expected(it.name, L) - upgrade_expected(it.name, lw));
@@ -2794,7 +2796,8 @@ function pick_upgrade() {
 			if (!r) continue;
 			const v = r.gain * CFG.upgrade_gold_per_pt - cost;
 			if (v > 0 && (!best || (!best.weapon && v > best.v)))
-				best = { name: it.name, to: L, for: m.name, slot, gain: Math.round(r.gain), cost, v, high: L > upgrade_target(it.name), weapon: false, worn: { who: m.name, slot, level: lw, at: Date.now() } };
+				best = { name: it.name, to: L, for: m.name, slot, gain: Math.round(r.gain), cost, v, high: L > upgrade_target(it.name), weapon: false, from_copy: lw,
+					worn: { who: m.name, slot, level: lw, stat_type: it.stat_type || null, at: Date.now() } };
 		}
 	}
 	return best;
@@ -3701,6 +3704,9 @@ function needed_slots() {
 	const P = state.upg; // the upgrade project's copies below its target stay put (not equipped/sent/banked/compounded)
 	if (P) character.items.forEach((i, k) => { if (i && i.name === P.name && (i.level || 0) < P.to) keep.add(k); });
 	if (state.travel_off.length) for (const k of travel_slots_held()) keep.add(k); // v24.27: worn pieces off for a walk
+	// v25.39: a piece the merchant's project asked us for (worn_for_me: role function) stays put until it's sent
+	const WW = worn_for_me();
+	if (WW) character.items.forEach((i, k) => { if (i && i.name === WW.name && (i.level || 0) === WW.level && !i.p) keep.add(k); });
 	character.items.forEach((i, k) => { if (i && state.needs.has(i.name)) (by[i.name] = by[i.name] || []).push(k); });
 	for (const n in by) {
 		if (G.items[n]?.s) { by[n].forEach((k) => keep.add(k)); continue; }
@@ -4042,6 +4048,7 @@ async function town_body(due) {
 		let did = 0;
 		const town_t0 = Date.now();
 		if (collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
+		if (worn_for_me()) did += (await step("handover", task_worn_handover)) || 0; // v25.39
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
@@ -5246,17 +5253,21 @@ async function merchant_handoff() {
 			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
-		// v25.39: the merchant's upgrade project wants a piece we wear: off and over — in main town only, nothing on us
-		const WW = M.want_worn;
-		if (WW && WW.to === character.name && character.map === "main" && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name)) {
+		// v25.39: the merchant's upgrade project wants a piece we wear: off and over — in town only (in_town: not just the
+		// main map, Fable), nothing on us; if it's already off (a failed send), from the bags
+		const WW = worn_for_me();
+		if (WW && in_town() && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
+			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b && (i.stat_type || null) === (WW.stat_type || null);
 			const w = character.slots?.[WW.slot];
-			if (w && w.name === WW.name && (w.level || 0) === WW.level && !w.p && !w.l && !w.b && character.esize >= 1 && can_spend(2, RESERVE.errand)) {
+			if (is_it(w) && character.esize >= 1) {
+				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (before the unequip: equip_upgrades runs every 5 s)
 				await T(unequip(WW.slot), 5000).catch(() => {});
-				await until(() => character.items.some((i) => i && i.name === WW.name && (i.level || 0) === WW.level), 2000);
-				const k = character.items.findIndex((i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.l);
-				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (not back on while on its way; the result is another level)
-				if (k >= 0) await T(send_item(M.name, k, 1)).then(() => { game_log(`merchant: handed over our ${WW.name}+${WW.level} (${WW.slot}) to be upgraded`, C.ok); log_ev("give", { to: M.name, item: `${WW.name}+${WW.level}`, worn: true }); })
-					.catch((er) => game_log(`merchant: handing over ${WW.name}: ${why(er)}`, C.dim));
+				await until(() => character.items.some(is_it), 2000);
+			}
+			const k = character.items.findIndex(is_it);
+			if (k >= 0) {
+				await T(send_item(M.name, k, 1)).then(() => { game_log(`merchant: handed over our ${WW.name}+${WW.level} (${WW.slot}) to be upgraded`, C.ok); log_ev("give", { to: M.name, item: `${WW.name}+${WW.level}`, worn: true }); })
+					.catch((er) => { delete state.gear_skip[`equip:${WW.name}:${WW.level}`]; game_log(`merchant: handing over ${WW.name}: ${why(er)} (it can go back on)`, C.dim); });
 				return;
 			}
 		}
@@ -5521,6 +5532,8 @@ function suicide(why_) {
 // ---- role functions (v25.11): the merchant's own versions are in merchant/0_loop.js ----
 // The merchant's last heartbeat while it's fresh (null if none)
 function merchant_hb__fighter() { return fresh(state.merchant) && state.merchant.name === CFG.merchant?.name ? state.merchant : null; }
+// v25.39: the worn piece the merchant's upgrade project asks us for, if it's us
+function worn_for_me__fighter() { const W = merchant_hb()?.want_worn; return W && W.to === character.name ? W : null; }
 // Who does the shared work (compounding, upgrade/craft projects, town thresholds) must not flip with a single missed
 // heartbeat (the merchant skips beats when its call budget is tight): "merchant online" = heard within 10 minutes
 function merchant_recent__fighter() {
@@ -6623,6 +6636,16 @@ function collect_due__fighter() {
 	const now = Date.now(), T_ = CFG.merchant.collect_retry_min * 60_000;
 	return collect_list().filter((g) => now - ((state.collect_try || {})[collect_key(g)] || 0) > T_);
 }
+// v25.39: on a town run, the worn piece the merchant's project asked us for: walk to it and wait while it's handed over
+// (merchant_handoff does that within 300px, in town)
+async function task_worn_handover__fighter() {
+	const W = worn_for_me(), M = merchant_hb();
+	if (!W || !M) return 0;
+	await go({ map: M.map, x: M.x, y: M.y });
+	const t0 = Date.now(), has = () => Object.values(character.slots || {}).concat(character.items).some((i) => i && i.name === W.name && (i.level || 0) === W.level);
+	while (Date.now() - t0 < CFG.merchant.collect_wait_s * 1000 && has() && worn_for_me()) { state.errand_at = Date.now(); set_message(`town: handing ${W.name} to ${M.name} to upgrade`); await sleep_ms(1000); }
+	return has() ? 0 : 1;
+}
 // On a town run: walk to the merchant and wait for our piece (its share_gear hands it over within gear_share_range)
 async function task_collect__fighter() {
 	const mine = collect_list(true);
@@ -6762,6 +6785,10 @@ function party_trip_check__fighter(due, what) {
 	// v24.75: the merchant holds an upgrade for one of us → the party goes to town for it, ahead of deferrable work
 	const coll = is_follower() ? [] : collect_due();
 	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
+	// v25.39: the merchant's project waits for a member's worn piece → the party goes to town to hand it over (one try
+	// per collect_retry_min)
+	const WW = !is_follower() && merchant_hb()?.want_worn;
+	if (WW && (CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000) { asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade`); state.worn_try_at = Date.now(); }
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
 		if (walking()) { halt("town_check"); return true; }
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
@@ -7550,7 +7577,7 @@ function merchant_beat() {
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0,
 		give: CFG.merchant.collect ? gear_to_give() : null,
 		// v25.39: the worn piece our upgrade project needs, until it arrives
-		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot } : null };
+		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
@@ -8555,6 +8582,8 @@ function collect_list__merchant() { return []; }
 function collect_due__merchant() { return []; }
 function collect_key__merchant() { return ""; }
 async function task_collect__merchant() { return 0; }
+async function task_worn_handover__merchant() { return 0; } // v25.39: fighters only
+function worn_for_me__merchant() { return null; }
 function set_piece_plan__merchant() { return null; }
 function set_piece_fetch__merchant() { return []; }
 function set_piece_start__merchant() {}
@@ -8640,9 +8669,11 @@ function swap_worn(...a) { return (is_merchant() ? swap_worn__merchant : swap_wo
 function tank_cover(...a) { return (is_merchant() ? tank_cover__merchant : tank_cover__fighter).apply(this, a); }
 function task_collect(...a) { return (is_merchant() ? task_collect__merchant : task_collect__fighter).apply(this, a); }
 function task_tokens(...a) { return (is_merchant() ? task_tokens__merchant : task_tokens__fighter).apply(this, a); }
+function task_worn_handover(...a) { return (is_merchant() ? task_worn_handover__merchant : task_worn_handover__fighter).apply(this, a); }
 function token_pick(...a) { return (is_merchant() ? token_pick__merchant : token_pick__fighter).apply(this, a); }
 function upgrade_steps(...a) { return (is_merchant() ? upgrade_steps__merchant : upgrade_steps__fighter).apply(this, a); }
 function why_not_fighter(...a) { return (is_merchant() ? why_not_fighter__merchant : why_not_fighter__fighter).apply(this, a); }
+function worn_for_me(...a) { return (is_merchant() ? worn_for_me__merchant : worn_for_me__fighter).apply(this, a); }
 // =====================================================================
 // main.js — loaded last by every character: death handling, the main loop (tick) and start-up, the overview.
 // =====================================================================

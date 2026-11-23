@@ -134,10 +134,12 @@ function pick_upgrade() {
 	const W = CFG.upgrade_worn;
 	if (W?.enabled && is_merchant()) for (const m of takers) for (const [slot, it] of Object.entries(m.p?.worn || {})) {
 		const def = it && G.items[it.name];
+		// (never a weapon or offhand: the fighter would fight without it until the party is back in town — Fable)
+		if (slot === "mainhand" || slot === "offhand" || def?.type === "weapon") continue;
 		if (!def?.upgrade || !GEAR.has(def.type) || def.cash || it.p || it.l || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name)) continue;
 		if (owned_level(it.name) >= 0 || state.upg?.name === it.name) continue; // a spare copy: the normal project (above)
-		const lw = it.level || 0, weapon = def.type === "weapon";
-		const T = Math.min(Math.max(upgrade_target(it.name), CFG.upgrade_high?.enabled ? upgrade_target(it.name, true) : 0), upg_cap_level(it.name), weapon ? CFG.upgrade_weapon?.to ?? 7 : Infinity);
+		const lw = it.level || 0;
+		const T = Math.min(Math.max(upgrade_target(it.name), CFG.upgrade_high?.enabled ? upgrade_target(it.name, true) : 0), upg_cap_level(it.name));
 		for (let L = lw + 1; L <= T; L++) {
 			if (upg_odds(it.name, L) < W.min_chance) break;
 			const cost = Math.max(0, upgrade_expected(it.name, L) - upgrade_expected(it.name, lw));
@@ -146,7 +148,8 @@ function pick_upgrade() {
 			if (!r) continue;
 			const v = r.gain * CFG.upgrade_gold_per_pt - cost;
 			if (v > 0 && (!best || (!best.weapon && v > best.v)))
-				best = { name: it.name, to: L, for: m.name, slot, gain: Math.round(r.gain), cost, v, high: L > upgrade_target(it.name), weapon: false, worn: { who: m.name, slot, level: lw, at: Date.now() } };
+				best = { name: it.name, to: L, for: m.name, slot, gain: Math.round(r.gain), cost, v, high: L > upgrade_target(it.name), weapon: false, from_copy: lw,
+					worn: { who: m.name, slot, level: lw, stat_type: it.stat_type || null, at: Date.now() } };
 		}
 	}
 	return best;

@@ -95,6 +95,7 @@ async function town_body(due) {
 		let did = 0;
 		const town_t0 = Date.now();
 		if (collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
+		if (worn_for_me()) did += (await step("handover", task_worn_handover)) || 0; // v25.39
 		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
 		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
