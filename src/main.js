@@ -171,7 +171,7 @@ tick();
 //   (performance_trick) so a background tab isn't throttled — click each tab once after a reload.
 //
 // Merchant (CFG.merchant): not a party member. Carries potions to fighters low on potions or bag space and collects
-//   their loot; casts mluck; fetches bank upgrades for them; runs every compound and upgrade project; every 10 min
+//   their loot; casts mluck; fetches bank upgrades for them; runs every compound and upgrade project; every minute
 //   checks Ponty: a piece that's an upgrade as listed (≤ secondhand_gold_per_pt), a head start for an upgrade (cheaper
 //   than building it), a shiny copy over a plain one, compound-route copies, quest materials; levels by donating;
 //   idle at home it opens its stand and lists only what the owner names (stand.list, empty) plus Merrit's decoy: one
