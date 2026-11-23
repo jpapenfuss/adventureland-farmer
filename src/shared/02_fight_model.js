@@ -217,7 +217,7 @@ function route_graph(map, x, y, safe = false) {
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
-	const in_danger_here = safe && deadly_areas(map).some((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < CFG.danger_px);
+	const in_danger_here = safe && deadly_areas(map).some((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -279,7 +279,14 @@ function deadly_areas(map) {
 	const v = walk_speed(), now = Date.now(), c = dz_cache.get(map);
 	if (c && now - c.at < 60_000 && c.v === v) return c.list;
 	const list = [];
-	for (const [pk, a] of map_areas(map)) { const t = pk.type; if (valid_boundary(a.boundary) && no_go(t, v)) list.push({ t, b: a.boundary }); }
+	// v25.55: an empty spawn (count 0: an event boss's, winterland's icegolem) isn't there; a spawn listed only as a
+	// merchant threat (slow, it can't chase) reaches as far as its attack range plus a step, not danger_px
+	for (const [pk, a] of map_areas(map)) {
+		const t = pk.type;
+		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
+		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
+		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 120 }); // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
+	}
 	dz_cache.set(map, { at: now, v, list });
 	return list;
 }
@@ -338,14 +345,14 @@ function seg_danger(map, x1, y1, x2, y2) {
 	// only where a detour could matter: a spawn within danger_px of the stretch's box grown by 500px (the walk bends
 	// round cliffs and water, but not across the map); elsewhere the straight line will do, and costs nothing
 	const lo_x = Math.min(x1, x2) - 500, hi_x = Math.max(x1, x2) + 500, lo_y = Math.min(y1, y2) - 500, hi_y = Math.max(y1, y2) + 500;
-	const close = zs.some((z) => Math.hypot(Math.max(0, z.b[0] - hi_x, lo_x - z.b[2]), Math.max(0, z.b[1] - hi_y, lo_y - z.b[3])) < CFG.danger_px);
+	const close = zs.some((z) => Math.hypot(Math.max(0, z.b[0] - hi_x, lo_x - z.b[2]), Math.max(0, z.b[1] - hi_y, lo_y - z.b[3])) < z.px);
 	let pts = close ? walk_path(map, x1, y1, x2, y2) : null;
 	if (!pts) {
 		const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 40));
 		pts = Array.from({ length: n + 1 }, (_, i) => [x1 + ((x2 - x1) * i) / n, y1 + ((y2 - y1) * i) / n]);
 	}
 	for (const z of zs) for (const [x, y] of pts)
-		if (Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < CFG.danger_px) return `${z.t} @ ${map}`;
+		if (Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px) return `${z.t} @ ${map}`;
 	return null;
 }
 // The way smart_move would walk, or if that passes deadly spawns, the shortest way around them: { d, legs, danger,
@@ -387,7 +394,21 @@ const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const 
 // those began with the party hitting the ent (it was "a monster on a party member", so everyone shot it). Since
 // v24.44 nobody attacks a monster the party can't kill, and an ent left alone leaves room to walk past (owner).
 // Listing it closed the only way to level2s and the walk from its door.
-const no_go = (t, v) => !!G.monsters[t] && aggressive(t) && !state.safe[t] && chase_speed(t) >= v;
+const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(t) && !state.safe[t] && chase_speed(t) >= v);
+// v25.55: the merchant (no fighting, ~2k HP) died walking to the gscorpion camp past desertland's fire spirits: aggro
+// 0.2 (under the 0.5 above) and slower than it, but range 280 and 320 magical a hit — 2,749 damage in the 10 s it
+// spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
+// rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed). Such a
+// monster can't chase us, so deadly_areas keeps the walk out of its range (+120 px), not danger_px.
+function merchant_threat(t, v) {
+	const m = G.monsters[t];
+	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
+	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
+	const magic = m.damage_type === "magical";
+	const hit = (m.attack || 0) * dm(((magic ? character.resistance : character.armor) || 0) - ((magic ? m.rpiercing : m.apiercing) || 0));
+	const exposed_s = (2 * (m.range || 0) + 100) / Math.max(v, 10);
+	return hit * (m.frequency || 0) * exposed_s >= (character.max_hp || 1) / 2;
+}
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }
 function travel_s(map, boundary) {

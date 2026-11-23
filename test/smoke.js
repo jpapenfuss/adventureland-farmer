@@ -4028,6 +4028,51 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("rt_cache.clear(); dz_cache.clear()", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, speed: 55 });
 	}
+	// v25.55: the merchant walks no spawn where anything that may attack it (any aggro) deals half its HP while it
+	// crosses that monster's reach — desertland's fire spirits (aggro 0.2, slow, range 280) killed it on the way to camp.
+	// Fighters keep the old rule (they walk past them). Ornament Staff: mp_cost scores.
+	{
+		const sv = { ...character }, maps0 = ctx.G.maps, mons0 = ctx.G.monsters;
+		ctx.G.monsters = { ...mons0, fire555: { hp: 84000, attack: 320, damage_type: "magical", speed: 24, range: 280, frequency: 1.2, aggro: 0.2, rpiercing: 320 },
+			scorp555: { hp: 32000, attack: 120, damage_type: "physical", speed: 24, range: 32, frequency: 0.8, aggro: 0.3 } };
+		ctx.G.maps = { dz555: { doors: [], spawns: [[0, 0]], monsters: [{ type: "fire555", count: 4, boundary: [91, -952, 353, -702] }, { type: "scorp555", count: 6, boundary: [220, -1569, 561, -1275] }] } };
+		const R = (c) => vm.runInContext(c, ctx);
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", max_hp: 1945, hp: 1945, resistance: 81, armor: 31, speed: 55, stand: false, map: "dz555", x: 0, y: 0 });
+		R("rt_cache.clear(); dz_cache.clear(); state.safe = {}");
+		const dz = R("deadly_areas('dz555').map((z) => z.t).join()");
+		assert(dz === "fire555", `merchant: fire spirits are no place to walk, the scorpions it visits are (${dz})`);
+		assert(/fire555/.test(R("seg_danger('dz555', 0, 0, 0, -800) || ''")), "merchant: a walk through the fire spirits is dangerous");
+		assert(R("seg_danger('dz555', -330, 0, -330, -800)") === null && /fire555/.test(R("seg_danger('dz555', -290, 0, -290, -800) || ''")),
+			"merchant: out of their range (280 + 120 px) is fine, inside it is not — not the 400 px of a monster that chases");
+		ctx.G.maps.dz555.monsters.push({ type: "fire555", count: 0, boundary: [2000, 2000, 2200, 2200] });
+		R("dz_cache.clear()");
+		assert(R("seg_danger('dz555', 2100, 1500, 2100, 2500)") === null, "an empty spawn (count 0: an event boss's) isn't there");
+		// no safe way home: teleport
+		const f0 = ctx.use_skill, g0 = ctx.go, used = [];
+		ctx.use_skill = (n) => { used.push(n); return Promise.resolve(); };
+		ctx.go = () => Promise.reject({ reason: "deadly_route", why: "fire555 @ dz555" });
+		R("state.travel_block_until = 0; state.pack = null");
+		await vm.runInContext("travel({ map: 'main', x: 0, y: 0 })", ctx);
+		ctx.use_skill = f0; ctx.go = g0;
+		assert(used.includes("use_town"), `merchant with no safe way home teleports (${JSON.stringify(used)})`);
+		Object.assign(character, { x: 0, y: 0 });
+		Object.assign(character, { name: "Torlis", ctype: "paladin", max_hp: 9515, hp: 9515 });
+		R("dz_cache.clear()");
+		assert(R("deadly_areas('dz555').length") === 0, "a fighter walks past them as before");
+		ctx.G.items.orn555 = { type: "weapon", wtype: "staff", mp_cost: -40 };
+		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 8, `mp_cost -40 scores 8 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
+		const cl0 = ctx.G.classes.priest; ctx.G.classes.priest = { ...(cl0 || {}), mp_cost: 2 }; character.level = 60;
+		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 2.6, `...only down to the floor of 1: class 2 x (1 + 60/10) = 14, saving 13 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
+		// the merchant scores the priest's piece at the priest's level, not its own
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", level: 30 });
+		R("state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, t: Date.now(), v: VERSION } }");
+		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 2.6, `the merchant: at the priest's level 60 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
+		R("state.partners = {}");
+		if (cl0) ctx.G.classes.priest = cl0; else delete ctx.G.classes.priest;
+		delete ctx.G.items.orn555; ctx.G.maps = maps0; ctx.G.monsters = mons0;
+		R("rt_cache.clear(); dz_cache.clear()");
+		Object.assign(character, sv);
+	}
 	// 131) v24.20: bigger game panels (log size/font/resize handle, the status box) and ui(); no picks in jail / unreachable
 	{
 		const els = {}, pd0 = ctx.parent.document;
