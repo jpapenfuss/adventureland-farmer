@@ -1,4 +1,4 @@
-const VERSION = "25.43"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.44"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -187,6 +187,9 @@ const CFG = {
 	elixir_auto: true,
 	elixir_buy: "elixirluck",  // Liquid Luck: 240k for 12h of +16 luck (the only elixir an NPC sells)
 	elixir_buy_min_gold: 500_000, // v24.86: was 5M — fighters now keep only merchant.fund_keep; the rest funds upgrades
+	// v25.44 (owner: 9999 Pumpkin Spice Lattes on the merchant — "enable the party using them"): drunk before any other
+	// elixir held (crit +5, reflection +2, max MP -400, 8 h); the merchant hands each fighter a stack (merchant.elixir_supply)
+	elixir_prefer: ["pumpkinspice"],
 	// World bosses / events on this server (parent.S: snowman, pinkgoo, wabbit, dragold, mrpumpkin, franky...). They're
 	// "cooperative" (every attacker shares xp and loot by damage), so they're judged on survival, not kill time: the
 	// party (tank first) must take tank_s seconds of the boss's damage within the safety budget, and one hit may not
@@ -334,6 +337,7 @@ const CFG = {
 		self_pots: 20,         // potions of each kind the merchant keeps for itself
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
 		worn_wait_ms: 120_000, // v25.43: ...or up to this long for the worn piece our project came for (a lull between fights)
+		elixir_supply: { name: "pumpkinspice", give: 3333 }, // v25.44 (owner): 3,333 to each fighter that holds none, when we meet
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free

@@ -58,9 +58,11 @@ const elixir_active = () => { const e = character.slots?.elixir; return !!e && !
 const elixir_ok = (name) => { const d = G.items[name]; return !!d && d.type === "elixir" && !!d.duration && !d.withdrawal; };
 function best_elixir() {
 	let best = null;
+	const pref = CFG.elixir_prefer || [];
 	character.items.forEach((it, k) => {
 		if (!it || it.l || !elixir_ok(it.name)) return;
-		const sc = gear_score({ name: it.name, level: 0 });
+		// v25.44: a preferred elixir (elixir_prefer, in order) before any scored one
+		const pi = pref.indexOf(it.name), sc = pi >= 0 ? 1e9 - pi : gear_score({ name: it.name, level: 0 });
 		if (!best || sc > best.score) best = { k, name: it.name, score: sc };
 	});
 	return best;

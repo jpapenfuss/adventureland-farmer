@@ -3332,6 +3332,28 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("fight_mates().map((p) => p.name).join()") === "Aspernari", "a member on its own errand doesn't");
 		R("state.partners = {}"); Object.assign(character, sv);
 	}
+	// v25.44 (owner): the merchant's 9999 Pumpkin Spice Lattes — drunk before other elixirs, handed out, no Luck bought
+	{
+		const R = (c) => vm.runInContext(c, ctx), sv = { name: character.name, ctype: character.ctype, items: character.items, slots: character.slots, gold: character.gold };
+		Object.assign(ctx.G.items, { pumpkinspice: { type: "elixir", mp: -400, crit: 5, reflection: 2, duration: 8, g: 200, s: 9999 }, elixirluck: ctx.G.items.elixirluck || { type: "elixir", luck: 16, duration: 12, g: 240000 } });
+		Object.assign(character, { name: "Sanala", ctype: "mage", items: Array(42).fill(null), slots: {}, gold: 2e6 });
+		character.items[3] = { name: "elixirluck", q: 1 }; character.items[4] = { name: "pumpkinspice", q: 2 };
+		assert(R("best_elixir()?.name") === "pumpkinspice", "the latte is drunk before Liquid Luck");
+		{ const hbm = []; const sc0 = ctx.send_cm; ctx.send_cm = (to, m) => (m.k === "hb" && hbm.push(m), Promise.resolve()); R("heartbeat()"); ctx.send_cm = sc0;
+			assert(hbm.length === 1 && hbm[0].h1 !== undefined && hbm[0].rates !== undefined && hbm[0].elx !== undefined, `the heartbeat still carries h1 and rates beside elx (${Object.keys(hbm[0]).filter((k) => ["h1", "rates", "elx"].includes(k))})`); }
+		character.items[3] = character.items[4] = null;
+		// the merchant's side
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null) });
+		character.items[5] = { name: "pumpkinspice", q: 9999 };
+		R("state.merchant = null; state.partners = { Sanala: { name: 'Sanala', ctype: 'mage', t: Date.now(), map: 'main', x: 0, y: 0, esize: 30, pots: { hp: 999, mp: 999 }, elx: 0 } }");
+		const si0 = ctx.send_item, sent = []; ctx.send_item = (to, k, q) => { sent.push([to, character.items[k].name, q]); return Promise.resolve(); };
+		await R("give_elixir(state.partners.Sanala)");
+		ctx.send_item = si0;
+		assert(sent.length === 1 && sent[0][1] === "pumpkinspice" && sent[0][2] === 3333, `a fighter holding none gets 3,333 lattes (${JSON.stringify(sent)})`);
+		R("state.partners.Sanala.elx = 3333"); ctx.send_item = (to, k, q) => { sent.push([to, q]); return Promise.resolve(); }; await R("give_elixir(state.partners.Sanala)"); ctx.send_item = si0;
+		assert(sent.length === 1, "...and none again while it holds some");
+		R("state.partners = {}"); delete ctx.G.items.pumpkinspice; Object.assign(character, sv);
+	}
 	// 118) v24.6 party review fixes: deaths and probe results are shared; no calibration under tank cover;
 	// a measurement covers only time at the spot; realism clamped
 	{

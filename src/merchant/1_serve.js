@@ -46,6 +46,15 @@ function pot_slot(kind) {
 	});
 	return best;
 }
+// v25.44 (owner): a fighter holding none of the supply elixir gets merchant.elixir_supply.give of it (the owner's stock: no bill)
+async function give_elixir(f) {
+	const E = CFG.merchant.elixir_supply, k = E ? character.items.findIndex((i) => i && i.name === E.name && !i.l) : -1;
+	if (!E || f.elx !== 0 || k < 0) return;
+	const q = Math.min(E.give || 1, character.items[k].q || 1);
+	await wait_budget(1, RESERVE.errand);
+	await T(send_item(f.name, k, q)).then(() => { f.elx = q; game_log(`merchant: ${q} ${E.name} → ${f.name}`, C.ok); log_ev("give", { to: f.name, item: E.name, q }); })
+		.catch((e) => game_log(`merchant: ${E.name} to ${f.name}: ${why(e)}`, C.dim));
+}
 async function give_pots(f) {
 	for (const kind of ["hp", "mp"]) {
 		const want = CFG.pot_buy - (f.pots?.[kind] ?? CFG.pot_buy);
@@ -134,7 +143,7 @@ async function serve(f) {
 			if (pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) < 150) break;
 			await go({ map: pos.map, x: pos.x, y: pos.y });
 		}
-		for (const p of partners_near(350)) await give_pots(p);
+		for (const p of partners_near(350)) { await give_pots(p); await give_elixir(p); }
 		await give_tokens();
 		token_trip_at = Date.now();
 		const end = Date.now() + M.wait_ms, end_w = Date.now() + (M.worn_wait_ms || 120_000);
