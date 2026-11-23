@@ -328,7 +328,9 @@ function gold_room() {
 	if (L.s < CFG.spend.min_data_h * 3600 * L.who.length) return Infinity;
 	// v24.82: "other" (gold that left with no tag: the owner's own purchases, trades) isn't the script's spending —
 	// 4.5M of it had the budget at zero for six hours and every upgrade waiting
-	return Math.floor(CFG.spend.share * L.earn - (L.spend - (L.cats?.other || 0)));
+	// v25.38: plus the merchant's stockpile above spend.stock_keep (ours, or its last heartbeat's)
+	const stock = Math.max(0, (is_merchant() ? character.gold : state.merchant?.gold || 0) - (CFG.spend.stock_keep ?? Infinity));
+	return Math.floor(CFG.spend.share * L.earn - (L.spend - (L.cats?.other || 0)) + stock);
 }
 // The merchant's optional spending (Ponty, compound scrolls, crafting, upgrade steps) also has to leave it
 // merchant.donate.keep (its potion float); nobody refills it, so when it's below that it simply stops buying extras

@@ -1,4 +1,4 @@
-const VERSION = "25.37"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.38"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -157,19 +157,23 @@ const CFG = {
 	// where gain x upgrade_gold_per_pt most exceeds its EXPECTED cost — the copy and scrolls, counting the copies lost
 	// to failed steps at the server's base odds (+4 70%, +5 60%, +6 40%, +7 25%). A wand: +5 ≈ 136k, +6 ≈ 340k,
 	// +7 ≈ 1.4M. Steps are then taken down to the floors below (10% since v25.32; past +7, upgrade_high.min_chance).
-	upgrade_gold_per_pt: 40_000,
+	// v25.38 (owner: "We cannot progress in this game without equipment upgrades. It must happen."): 300k (was 40k). At 40k
+	// nothing past +3 paid for itself and 17M sat idle; at 300k frankypants/vgloves +3 for Torlis (~280k/pt) qualify,
+	// gphelmet +3 (~460k/pt) doesn't. The party earns ~2M/h.
+	upgrade_gold_per_pt: 300_000,
 	// v24.86 (owner: weapon upgrades are sorely needed): a shop weapon a fighter would hold is taken to +weapon_to with
 	// no budget — no gold-per-point test, no spending cap, no give-up after failures — and weapons come before every
 	// other project. Steps still need the server's odds over min_chance_rebuyable (10%; +7 is 25%).
 	upgrade_weapon: { enabled: true, to: 7 },
-	upgrade_spend: 0.2,        // a project may cost at most 20% of the gold above gold_reserve (estimate without failures)
+	upgrade_spend: 0.5,        // a project may cost at most 50% of the gold it may draw on (v25.38: was 20%; the expected cost)
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
 	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)
 	merchant_upgrade_steps: 60, // v24.92: the merchant's — it lives in town; 8 a run made it start a run every minute
 	// High upgrades: weapon-slot projects may go past the scroll0/1 levels with scroll2 (1.6M each), up to max_level.
 	// A failure destroys the copy, so each such step needs the server's preview >= min_chance (a Primling offering in
 	// the bags is used when it lifts the odds over it), and a project may cost at most spend of the party's spare gold.
-	upgrade_high: { enabled: true, max_level: 9, slots: ["mainhand", "offhand"], min_chance: 0.55, spend: 0.25, offerings: ["offeringp"] },
+	// (v25.38: scroll2 levels for every slot, judged like any other level — slots and spend no longer used)
+	upgrade_high: { enabled: true, max_level: 9, min_chance: 0.55, offerings: ["offeringp"] },
 	// Crafting for power (craft_power): craft a non-quest recipe whose output a member would wear as an upgrade, when
 	// its inputs are plain materials we have (bags + bank; never quest/guide materials) and its gold cost fits
 	// craft_spend of the spare gold. Done by the merchant while it's online.
@@ -214,7 +218,7 @@ const CFG = {
 	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
 	upgrade_boost_max: 50_000,
-	secondhand_gold_per_pt: 15_000,    // ...and an upgrade may cost at most this per gear point it adds
+	secondhand_gold_per_pt: 100_000, // v25.38: was 15k    // ...and an upgrade may cost at most this per gear point it adds
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
 	exchange_auto: true,
@@ -233,7 +237,9 @@ const CFG = {
 	// v18.7 gold budget: optional spending (upgrade projects, guide buys/upgrades, compounds, crafting, Ponty, elixirs,
 	// donations) only while the party's spending over the last window_h stays under share × what it earned (loot,
 	// sales). Potions and other necessities are never held back, but they count as spending.
-	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1 },
+	// v25.38: stock_keep — the merchant's gold above this counts as room too (17M sat idle while the 6-hour earnings
+	// rule allowed ~1M a project)
+	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1, stock_keep: 3_000_000 },
 	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
 	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
 	hunt_min_xp: 0,            // v24.88 (owner: pivot to hunts and quests for upgrades): any hunt is chased (was 0.7 of the best xp/s)          // v23.5: 70% (was off since v18.8, when measured rates still included time lost to town
