@@ -3288,6 +3288,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; state.gear_skip = {}; sold_c.delete('mpg139'); my_gear_cache = null");
 		delete ctx.G.items.mpg139; Object.assign(character, sv);
 	}
+	// v25.42: members on the party's town trip still count in the fight model (the camp was judged alone during one)
+	{
+		const R = (c) => vm.runInContext(c, ctx), sv = { name: character.name, ctype: character.ctype };
+		Object.assign(character, { name: "Torlis", ctype: "paladin" });
+		hb("Aspernari", { ...asp, map: "main", x: 0, y: 0, errand: "town", pt: { id: "t1", done: false } });
+		hb("Sanala", { ...san, ctype: "mage", map: "main", x: 0, y: 0, errand: "town", pt: { id: "t1", done: false } });
+		assert(R("fight_mates().length") === 2, "on the party's town trip: both members still count");
+		hb("Sanala", { ...san, ctype: "mage", map: "main", x: 0, y: 0, errand: "bank", pt: null });
+		assert(R("fight_mates().map((p) => p.name).join()") === "Aspernari", "a member on its own errand doesn't");
+		R("state.partners = {}"); Object.assign(character, sv);
+	}
 	// 118) v24.6 party review fixes: deaths and probe results are shared; no calibration under tank cover;
 	// a measurement covers only time at the spot; realism clamped
 	{

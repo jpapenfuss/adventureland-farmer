@@ -24,7 +24,9 @@ function farmable_type(mtype) {
 // team: who the fight is judged with. "party" (v24.35, the default): the members travelling with us wherever they are
 // right now (not on an errand) — nobody fights alone. "all" (v23.1): every online member wherever it is — planning
 // something the whole party gathers for (a boss). Outside a party (the merchant): whoever is near.
-const fight_mates = (team = "party") => (team === "all" ? partners() : in_party_cfg() ? partners().filter((p) => !p.errand && !p.recovering) : partners_near());
+// v25.42: a member on the party's own town trip (its heartbeat's pt) is still the party — the camp was judged during
+// one with "0 with us, no priest": gscorpion (1083 measured) failed x3.45 and the party went to cgoo (658)
+const fight_mates = (team = "party") => (team === "all" ? partners() : in_party_cfg() ? partners().filter((p) => (!p.errand || p.pt) && !p.recovering) : partners_near());
 // v25.34: a spawn with a rage box (server rage_logic, every 4.2 s: the first player found inside the box is targeted by
 // every monster of that spawn, so for one party the whole spawn lands on one member): booboo at spookytown, 5 at once. The model counted one, and Torlis died twice there to
 // 10.3k damage in 10 s against 1.5k predicted (2026-11-22). Per monster type: the largest such spawn.
