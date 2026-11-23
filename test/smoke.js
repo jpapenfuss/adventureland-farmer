@@ -3491,6 +3491,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(!R("gold_target()"), "v25.53: ...nor with our own gold well above upgrade_keep and no funds wait");
 			character.gold = 425_000; R("gold_trip_at = Date.now()");
 			assert(!R("gold_target()"), "v25.53: ...nor within 15 min of the last");
+			R("gold_trip_at = Date.now() - 1_000_000; gold_trip_fails = 1");
+			assert(!R("gold_target()"), "v25.54: after a fruitless trip the gap doubles (30 min)");
+			R("gold_trip_at = Date.now() - 1_900_000");
+			assert(R("gold_target()?.name") === "Sanala", "v25.54: ...and the trip comes again after it");
+			R("gold_trip_fails = 0");
 			R("gold_trip_at = 0; elixir_trip_at = 0; delete state.partners.Sanala.gold"); character.gold = g0; }
 		R("merchant_reach_ok = __mro; elixir_trip_at = 0");
 		R("state.partners.Sanala.elx = 3333"); ctx.send_item = (to, k, q) => { sent.push([to, q]); return Promise.resolve(); }; await R("give_elixir(state.partners.Sanala)"); ctx.send_item = si0;
