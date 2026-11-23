@@ -57,5 +57,6 @@ function set_piece_fetch() { return []; }
 function set_piece_start() {}
 function cave_tick() { return 250; }
 function cave_died() {}
+function cave_watch_deaths() {} // v25.41: fighters only
 function facts_cave() {}
 function cave_entry_tick() { return false; }

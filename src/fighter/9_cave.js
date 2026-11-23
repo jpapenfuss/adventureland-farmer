@@ -16,7 +16,7 @@ const cave_st = { entering: false, entered_at: 0, info_at: 0, voted: {}, bought:
 function cave_run_check(st) {
 	if (!st || st.run === cave_st.run) return;
 	cave_st.run = st.run; cave_st.bought = {}; cave_st.deaths = {}; cave_st.stuck = {}; cave_st.prog = null; cave_st.last_obj = null; cave_st.walk = null;
-	cave_st.visit_deaths = 0; cave_st.exiting = false; cave_st.out_since = 0; cave_st.exit_tries = 0; cave_st.rip_seen = {}; cave_st.death_by = {};
+	cave_st.visit_deaths = 0; cave_st.exiting = false; cave_st.out_since = 0; cave_st.exit_tries = 0; cave_st.rip_seen = {}; cave_st.death_by = {}; cave_st.revived = false;
 }
 // ---- the daily visit (the tank) ----
 async function cave_refresh_info() {
@@ -110,7 +110,9 @@ function cave_option_score(choice, o, st) {
 	const def = cave_option_def(choice, o.id) || { effect: "leave" }, eff = def.effect;
 	const cost = (o.cost || 0) / 4000 + (o.amber || 0) * 1.5;
 	const fight_score = (f) => (!f ? 0 : f[0] === "cave_wolf" ? -100 : f[0] === "cave_guard" || f[0] === "cave_rat" || f[0] === "cave_crab" ? 0.5 : -1);
-	if (eff === "revive_here") return (st?.amber || 0) >= (o.amber || 1) ? 10 : -Infinity;
+	// v25.41: the landing, always: reviving where we fell put Aspernari back in the same fight 20 times in three minutes
+	// (23 Nov). (Only after a death this visit, first: the vote arrives before the heartbeat that shows the death — Fable.)
+	if (eff === "revive_here") return (st?.amber || 0) < (o.amber || 1) ? -Infinity : 1;
 	if (eff === "revive_landing") return 5;
 	if (eff === "venture") {
 		const outs = def.outcomes || [], w = outs.reduce((s, x) => s + (x.weight || 1), 0) || 1;
@@ -225,6 +227,18 @@ function cave_tick() {
 		if (!out) cave_st.out_since = 0;
 		else if (!cave_st.out_since) cave_st.out_since = Date.now();
 		else if (Date.now() - cave_st.out_since > 20_000) { cave_leave(`${L.name} has left the cave`); return 400; }
+		// v25.41: back from the dead (revived at the landing): stay there until our HP is back to cave.rejoin_hp — we heal
+		// (a priest: the party too) and hit only what hits us; not walking back into the fight (Fable: only after our
+		// own death, not any follower under 70% mid-fight)
+		if (cave_st.revived) {
+			if (character.hp >= character.max_hp * (CFG.cave.rejoin_hp || 0.7)) cave_st.revived = false;
+			else {
+				if (typeof party_heal === "function") party_heal();
+				const a = hit_on_me(); if (a) fight(a, false);
+				set_message(`cave: recovering (${Math.round(character.hp / character.max_hp * 100)}%)`);
+				return 300;
+			}
+		}
 		// the tank on another floor or far away: walk after it (smart_move takes the cave's doors)
 		if (L && !L.rip && (L.map !== character.map || Math.hypot(partner_pos(L).x - character.x, partner_pos(L).y - character.y) > CFG.party.follow_far)) {
 			const a = hit_on_me(); if (a) fight(a, false);
@@ -254,7 +268,8 @@ function cave_died() {
 	if (!character.cave) return;
 	cave_run_check(character.cave);
 	if (cave_st.last_obj) cave_st.deaths[cave_st.last_obj] = (cave_st.deaths[cave_st.last_obj] || 0) + 1;
-	if (!is_follower() && is_tank_class(character.ctype)) cave_party_death(character.name);
+	cave_party_death(character.name); // (v25.41: every member counts the visit's deaths; only the tank leaves on them)
+	cave_st.revived = true; // v25.41: back from the dead — recover before rejoining (a follower)
 }
 // v25.29: give_up_deaths deaths in one visit: this cave is beyond us for now — leave, and wait to be stronger.
 // v25.40: any member's death counts, not only the tank's (11 PM, 23 Nov: Aspernari died 20 times and Sanala 6 in three
@@ -262,6 +277,7 @@ function cave_died() {
 function cave_party_death(who) {
 	const n = ++cave_st.visit_deaths;
 	cave_st.death_by = cave_st.death_by || {}; cave_st.death_by[who] = (cave_st.death_by[who] || 0) + 1;
+	if (is_follower() || !is_tank_class(character.ctype)) return; // the tank decides
 	if (n < CFG.cave.give_up_deaths || cave_st.exiting) return;
 	const pw = party_power();
 	state.cave_block = { at: Date.now(), lv: pw?.lv || character.level, gs: pw?.gs || 0, n: pw?.n || 1, deaths: n };
@@ -270,9 +286,9 @@ function cave_party_death(who) {
 }
 // The tank: a member's heartbeat turning to dead inside the cave is one death (each counted once, until it lives again)
 function cave_watch_deaths() {
-	if (is_follower() || !is_tank_class(character.ctype)) return;
 	cave_st.rip_seen = cave_st.rip_seen || {};
-	for (const p of partners_any()) {
+	// (members in the cave only — Fable #27: one outside, seeing a death, would count again)
+	for (const p of partners_any().filter((q) => /^zone_/.test(q.map || ""))) {
 		if (p.rip && !cave_st.rip_seen[p.name]) { cave_st.rip_seen[p.name] = true; cave_party_death(p.name); }
 		else if (!p.rip) cave_st.rip_seen[p.name] = false;
 	}

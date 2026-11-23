@@ -2894,7 +2894,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("lead_lost()", ctx);
 		assert(vm.runInContext("leader_name() === 'Torlis' && !state.probe && hist.ev.some((e) => e.type === 'probe' && e.result === 'dropped')", ctx), "not leading: the probe is dropped, not later closed as held");
 		// #2: the leader's death ends a probe as failed
-		assert(/else if \(character\.rip\) \{\s*(?:if \(character\.cave[^\n]*\n\s*)?probe_check\(\);/.test(src), "the death branch runs probe_check");
+		assert(/else if \(character\.rip\) \{\s*(?:if \(character\.cave[^\n]*\n\s*)*probe_check\(\);/.test(src), "the death branch runs probe_check");
 		vm.runInContext(`state.recovering = false; const S = globalThis.__s115; mt_xps = S.mt_xps; quest_recipes = S.quest_recipes; recipe_open = S.recipe_open;
 			drop_sources = S.drop_sources; kills_per_s = S.kills_per_s; CFG.hunt_min_xp = S.hmx; CFG.quest_crafts = S.qc; delete G.craft.qx115;
 			state.partners = {}; state.goals_cache = null; hist.ev = []`, ctx);
@@ -4870,7 +4870,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(pol(ch("shadow", ["e17_0", "e17_4", "e17_5"])) === "e17_4", "never a shadow of our strongest; the careful reward");
 		assert(pol(ch("toll", ["e27_0", "e27_1", "e27_3", "e27_5"])) === "e27_1", "a toll: three guards (easy, XP) over paying or losing time");
 		assert(pol(ch("toll", ["e27_0", "e27_3"], { e27_0: { unavailable: "purse_short" } })) === "e27_3", "an option the purse can't pay isn't taken");
-		assert(pol({ id: "r", kind: "revival", options: [{ id: "here", amber: 2 }, { id: "landing" }] }, { amber: 3 }) === "here", "revive where we fell when the purse has the Amber");
+		assert(pol({ id: "r", kind: "revival", options: [{ id: "here", amber: 2 }, { id: "landing" }] }, { amber: 3 }) === "landing", "v25.41: revive at the landing even when the purse has the Amber (where we fell put us back in the same fight)");
 		assert(pol({ id: "r", kind: "revival", options: [{ id: "here", amber: 2 }, { id: "landing" }] }, { amber: 1 }) === "landing", "...at the doorway when it doesn't");
 		// goals: camps first, the guard camp last, then the stairs; a room died at twice is left
 		const st = { floor: 0, objectives: [{ id: "a", floor: 0, kind: "fight", required: true, done: false, x: 1, y: 1 }, { id: "b", floor: 0, kind: "boss", required: true, done: false, x: 2, y: 2 },
@@ -4956,6 +4956,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			hbr("Sanala", true); R("cave_watch_deaths()");
 			assert(exits === ex0 + 1 && R("state.cave_block?.deaths") === 3 && R("cave_st.death_by.Aspernari === 2 && cave_st.death_by.Sanala === 1"), `three deaths in the party: the party leaves, the cave on hold (${R("JSON.stringify(cave_st.death_by)")})`);
 			hbr("Aspernari", false); hbr("Sanala", false);
+			// v25.41: after a death this visit, the revive vote goes to the landing; a member outside the cave isn't counted
+			const rv = { kind: "revive", options: [{ id: "here", amber: 1 }, { id: "landing" }] };
+			assert(R(`cave_option_score(${JSON.stringify(rv)}, { id: "here", amber: 1 }, { amber: 5 }) < cave_option_score(${JSON.stringify(rv)}, { id: "landing" }, { amber: 5 })`), "the revive vote: the landing, away from the fight (the Amber in the purse or not)");
+			R("cave_st.visit_deaths = 0; cave_st.rip_seen = {}"); hb("Sanala", { ...san, map: "main", x: 0, y: 0, rip: true }); R("cave_watch_deaths()");
+			assert(R("cave_st.visit_deaths") === 0, "a member outside the cave, dead: not a cave death");
+			hb("Sanala", { ...san, map: "main", x: 0, y: 0, rip: false });
 			exits = ex0; R("state.cave_block = { at: Date.now(), lv: 56, gs: 500, n: 3, deaths: 3 }"); character.cave = { run: "rz", floor: 0, objectives: [], doors: [] }; // (as the block before left it)
 		}
 		delete character.cave;
@@ -4981,6 +4987,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "zone_rz3_0", x: 0, y: 0 });
 		R("cave_tick()");
 		assert(R("cave_st.out_since") === 0, "...and the tank inside resets the clock");
+		// v25.41: a revived follower stays out of the fight until it's back to cave.rejoin_hp
+		{
+			let ft = 0; R("globalThis.__ft = follower_tick; follower_tick = () => { globalThis.__ftn = (globalThis.__ftn || 0) + 1; }; globalThis.__ftn = 0");
+			const hp0 = character.hp, mhp0 = character.max_hp;
+			Object.assign(character, { hp: 600, max_hp: 1000, map: "zone_rz3_0", x: 0, y: 0 });
+			R("cave_st.revived = false; cave_tick()");
+			assert(R("globalThis.__ftn") === 1, "never died, at 60% mid-fight: keeps fighting (and healing)");
+			let heals = 0; R("globalThis.__ph = typeof party_heal === 'function' ? party_heal : null; party_heal = () => { globalThis.__phn = (globalThis.__phn || 0) + 1; }; globalThis.__phn = 0");
+			character.hp = 200; R("cave_st.revived = true; cave_tick()"); ft = R("globalThis.__ftn"); heals = R("globalThis.__phn");
+			assert(ft === 1 && heals === 1, `revived at 20% HP: out of the fight, still healing (${ft}, ${heals})`);
+			character.hp = 900; R("cave_tick()");
+			assert(R("globalThis.__ftn") === 2 && R("cave_st.revived") === false, "at 90%: back into the fight, the hold cleared");
+			R("if (__ph) party_heal = __ph");
+			R("follower_tick = __ft"); Object.assign(character, { hp: hp0, max_hp: mhp0 });
+		}
 		// a cave_exit that throws synchronously: caught, retried, at most 6 tries
 		{
 			let tries = 0; ctx.cave_exit = () => { tries++; throw new Error("not now"); };
