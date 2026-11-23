@@ -90,7 +90,7 @@ function entity_profile(e) {
 	const def = G.monsters[e.mtype];
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = def && fight_math({ ...def, ...live, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
+	const f = def && fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
 	const ok = safe_enough(f, e.mtype);
 	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
 	live_cache.set(e.id, out);
@@ -137,7 +137,7 @@ function grown_ok(e) {
 	if (!def) return false;
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = fight_math({ ...def, ...live, hp: e.max_hp || def.hp });
+	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
 	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
 }
 function choose_target(local_ok, keep_cur = false) {

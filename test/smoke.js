@@ -3117,6 +3117,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.upg_caps = {}; state.partners = {}; my_gear_cache = null", ctx);
 		delete ctx.G.items.helm117; delete ctx.G.items.gem117;
 	}
+	// v25.34: pure damage ignores armour; a spawn with a rage box counts every monster of it (booboo: 5 at once)
+	{
+		const R = (c) => vm.runInContext(c, ctx), sv = { armor: character.armor, resistance: character.resistance, name: character.name, ctype: character.ctype };
+		Object.assign(character, { armor: 600, resistance: 600 });
+		ctx.G.monsters.purex = { hp: 1000, xp: 10, attack: 100, frequency: 1, damage_type: "pure", range: 20, speed: 10 };
+		ctx.G.monsters.physx = { hp: 1000, xp: 10, attack: 100, frequency: 1, damage_type: "physical", range: 20, speed: 10 };
+		ctx.G.monsters.ragex = { hp: 1000, xp: 10, attack: 100, frequency: 1, damage_type: "pure", range: 20, speed: 10 };
+		ctx.G.maps.ragemap = { monsters: [{ type: "ragex", count: 5, boundary: [0, 0, 100, 100], rage: [0, 0, 100, 100] }, { type: "ragex", count: 3, boundary: [200, 0, 300, 100], rage: [200, 0, 300, 100] }], npcs: [] };
+		R("rage_c = null; def_name = null; state.partners = {}");
+		const d = (t) => R(`fight_math(G.monsters.${t}, false).their_dps`);
+		assert(Math.abs(d("purex") - 100) < 1e-6 && d("physx") < 100, `pure damage ignores armour (${d("purex")} vs ${d("physx").toFixed(1)} through 600 armour)`);
+		assert(Math.abs(d("ragex") - 500) < 1e-6 && R("rage_n('purex')") === 1, `a rage spawn of 5: five attackers (${d("ragex")})`);
+		assert(Math.abs(R("fight_math({ ...G.monsters.ragex, mtype: 'ragex', hp: 900 }, false).their_dps") - 500) < 1e-6, "...also for a live copy carrying its mtype");
+		delete ctx.G.maps.ragemap; delete ctx.G.monsters.purex; delete ctx.G.monsters.physx; delete ctx.G.monsters.ragex;
+		R("rage_c = null; def_name = null"); Object.assign(character, sv);
+	}
 	// 118) v24.6 party review fixes: deaths and probe results are shared; no calibration under tank cover;
 	// a measurement covers only time at the spot; realism clamped
 	{
