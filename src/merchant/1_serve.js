@@ -151,7 +151,8 @@ async function serve(f) {
 	const Wn = state.upg?.worn, for_worn = !!Wn && !Wn.got && Wn.who === f.name;
 	if (for_worn) worn_trip_at = Date.now();
 	if (f.elx === 0) elixir_trip_at = Date.now(); // v25.48: elixir_target's 10-min slot
-	const for_gold = gold_target()?.name === f.name, gold0 = character.gold;
+	const for_gold = gold_target()?.name === f.name;
+	let gold0 = character.gold;
 	if (for_gold) gold_trip_at = Date.now(); // v25.53: gold_target's slot
 	state.serving = f.name;
 	// v24.7: only the pieces for this fighter (marking every piece paused deliveries to everyone else for 20 min)
@@ -162,6 +163,7 @@ async function serve(f) {
 		const short = (k) => partners().reduce((t, p) => t + Math.max(0, CFG.pot_buy - (p.pots?.[k] ?? CFG.pot_buy)), 0);
 		const carry = Math.min(M.pot_carry, Math.max(short("hp"), short("mp"), 100)) + M.self_pots;
 		await task_restock(carry, carry).catch((e) => game_log(`merchant: potions: ${why(e)}`, C.dim));
+		gold0 = character.gold; // (v25.54, Fable: measured after the restock — only what the fighters send counts)
 		for (let i = 0; i < 4; i++) {
 			if (state.errand) state.errand_at = Date.now(); // each re-aimed walk is progress
 			const q = state.partners[f.name];
@@ -181,11 +183,14 @@ async function serve(f) {
 			if (pos && pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) > 200) move_to_as("serve", pos.x, pos.y, 500);
 			await sleep_ms(1000);
 		}
-		// v25.54: a gold trip that brought less than half of gold_trip_min counts as fruitless (back-off in gold_target)
-		if (for_gold) gold_trip_fails = character.gold - gold0 >= (M.gold_trip_min || 0) / 2 ? 0 : gold_trip_fails + 1;
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
 		log_ev("serve", { who: f.name, secs: Math.round((Date.now() - serve_t0) / 1000), free: character.esize });
-	} finally { state.serving = null; }
+	} finally {
+		state.serving = null;
+		// v25.54: a gold trip that brought less than half of gold_trip_min counts as fruitless (back-off in gold_target) —
+		// in finally, so an aborted one (a failed walk) counts too
+		if (for_gold) gold_trip_fails = character.gold - gold0 >= (CFG.merchant.gold_trip_min || 0) / 2 ? 0 : gold_trip_fails + 1;
+	}
 }
 // ---- bag_plan's merchant parts (v25.0): bank fetches only the merchant makes, added to `fetch` in bag_plan's order ----
 // a must-hold item a fighter lacks (the merchant hands it over)
