@@ -81,6 +81,9 @@ function gear_stats(item, ctype) {
 	const mod = !cls || !d ? null : d.type === "weapon" ? cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype]
 		: OFFHAND_TYPES.has(d.type) ? cls.offhand?.[d.wtype] || cls.offhand?.[d.type] : null;
 	for (const [k, v] of Object.entries(mod || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
+	// v25.55: the server floors MP per attack at 1 — a saving counts only down to there: the class's own cost at our
+	// level (calculate_player_stats: mp_cost x (1 + level/10), the item's a_mp_cost added flat), less 1
+	if (p.mp_cost < 0 && cls?.mp_cost > 0) p.mp_cost = Math.max(p.mp_cost, 1 - cls.mp_cost * (1 + Math.min(character.level || 1, 80) / 10));
 	return p;
 }
 // Points per xp stat point for a class (v23.4): its attack (ours, or a partner's from its heartbeat) x value

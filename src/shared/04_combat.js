@@ -105,6 +105,8 @@ async function travel(dest) {
 				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
 				state.pack = null; state.last_pick = 0;
 			}
+			// v25.55: the merchant with no safe way home (it walks no spawn that could kill it): teleport to town
+			if (e?.reason === "deadly_route" && is_merchant() && dest?.map === "main" && character.map !== "main" && !character.stand) fire("use_town");
 			// v24.8: an unreachable waypoint is skipped (it was retried forever, and each failure counted as activity, so
 			// the idle give-up never fired)
 			const W = state.waypoints, w = W.length ? W[state.wp % W.length] : null;
