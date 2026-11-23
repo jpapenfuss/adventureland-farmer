@@ -3,7 +3,7 @@
 // =====================================================================
 // ---- Own upgrading (CFG.upgrade_auto) ----
 // Highest level ≤ upgrade_max_level reachable with scroll0/scroll1 (0 = none)
-// high: also scroll2 levels, up to upgrade_high.max_level (weapon slots only, decided by the caller)
+// high: also scroll2 levels, up to upgrade_high.max_level (any slot since v25.38; a weapon stops at upgrade_weapon.to)
 function upgrade_target(name, high = false) {
 	let to = 0;
 	const max = high ? CFG.upgrade_high.max_level : CFG.upgrade_max_level;
@@ -93,8 +93,13 @@ function pick_upgrade() {
 		const targets = [];
 		const WP = CFG.upgrade_weapon?.enabled && def.type === "weapon" ? Math.min(CFG.upgrade_weapon.to, upgrade_target(name)) : 0;
 		if (WP) targets.push([WP, Infinity, false, true]); // v24.86: a weapon goes straight to +7, no budget
-		else for (let L = 1, T = upgrade_target(name); L <= T; L++) targets.push([L, budget, false]); // v24.82: every level, by expected cost
-		if (H?.enabled) targets.push([upgrade_target(name, true), gold * H.spend, true]);
+		// v24.82: every level, by expected cost. v25.38 (owner: "We cannot progress in this game without equipment upgrades.
+		// It must happen."): scroll2 levels too, for every slot, judged like the rest — expected cost (failures counted)
+		// against gain x upgrade_gold_per_pt. Before, a scroll2 project was weapon/offhand only, costed without failures,
+		// and only when nothing else was worth doing: the set pieces at grade 2 from +0 (gphelmet, frankypants, vgloves)
+		// were never projects. A weapon still stops at +7 (owner).
+		const T0 = upgrade_target(name), TH = H?.enabled ? Math.max(T0, Math.min(upgrade_target(name, true), def.type === "weapon" ? CFG.upgrade_weapon?.to ?? 7 : Infinity)) : T0;
+		for (let L = 1; L <= TH; L++) if (!(WP && L <= WP)) targets.push([L, budget, L > T0]);
 		const capL = Math.min(upg_cap_level(name), upg_reach(name)); // v25.19: and no higher than the run will go
 		for (let [to, cap, high, weapon] of targets) {
 			if (to > capL) to = capL; // v24.5: no higher than a past project of it reached before its odds/failures stopped it
@@ -102,8 +107,7 @@ function pick_upgrade() {
 			if (own_lv >= to) continue;
 			// v25.17: from our copy, only the steps above its level (a lost copy of a piece no NPC sells can't be rebought:
 			// the project ends there)
-			const cost = own_lv >= 0 ? Math.max(0, (high ? upgrade_cost(name, to) - upgrade_cost(name, own_lv) : upgrade_expected(name, to) - upgrade_expected(name, own_lv)))
-				: high ? upgrade_cost(name, to) : upgrade_expected(name, to);
+			const cost = own_lv >= 0 ? Math.max(0, upgrade_expected(name, to) - upgrade_expected(name, own_lv)) : upgrade_expected(name, to);
 			if (cost > cap) continue;
 			// a copy at the target level already exists: ours, the bank's, or (v23.2) in another member's bags or worn
 			// (v24.74: a copy another member WEARS no longer counts — a wand+7 on one caster blocked the other's for good)
@@ -114,10 +118,10 @@ function pick_upgrade() {
 			if (character.items.some(ready) || (state.bank_gear || []).some(ready)) continue;
 			for (const m of takers) {
 				const r = gear_gain({ name, level: to }, m.ctype, m.g);
-				if (!r || (high && !H.slots.includes(r.slot))) continue;
-				// worth (gain x gold per point) less the expected cost; a scroll2 project only when nothing else is worth doing
-				const v = weapon ? 1e12 + r.gain : high ? -1e12 + r.gain / cost : r.gain * CFG.upgrade_gold_per_pt - cost;
-				if (!high && !weapon && v <= 0) continue;
+				if (!r) continue;
+				// worth (gain x gold per point) less the expected cost
+				const v = weapon ? 1e12 + r.gain : r.gain * CFG.upgrade_gold_per_pt - cost;
+				if (!weapon && v <= 0) continue;
 				if (!best || v > best.v) best = { name, to, for: m.name, slot: r.slot, gain: Math.round(r.gain), cost, v, high, weapon: !!weapon, ...(own_lv >= 0 ? { from_copy: own_lv } : {}) };
 			}
 		}
@@ -142,7 +146,7 @@ function upgrade_why() {
 			const own_lv = owned_level(name);
 			if (!def.upgrade || !GEAR.has(def.type) || def.cash || (!sold_by_npc(name) && own_lv < 0)) continue;
 			let g = null, to = 0, cost = 0;
-			for (let L = Math.max(1, own_lv + 1), T = Math.min(upgrade_target(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
+			for (let L = Math.max(1, own_lv + 1), T = Math.min(CFG.upgrade_high?.enabled ? Math.max(upgrade_target(name), upgrade_target(name, true)) : upgrade_target(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
 				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = own_lv >= 0 ? Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, own_lv)) : upgrade_expected(name, L);
 				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
 			}

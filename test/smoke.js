@@ -2308,6 +2308,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("gold_room() < 0 && !gold_ok(1)", ctx), "spending over 90% of income: optional spending stops");
 	hb("Torlis", { ...tor, ledger: { earn: 2000000, spend: 0, s: 7200 } });
 	assert(vm.runInContext("gold_room()", ctx) === Math.floor(0.9 * 3000000 - 950000), "the party's ledger counts (heartbeats)");
+	// v25.38: the merchant's stockpile above spend.stock_keep counts as room
+	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now(), gold: 10e6 }", ctx);
+	assert(vm.runInContext("gold_room()", ctx) === Math.floor(0.9 * 3000000 - 950000) + 7e6, `the merchant's 10M stockpile adds 7M above the 3M kept (${vm.runInContext("gold_room()", ctx)})`);
+	vm.runInContext("state.merchant = null", ctx);
 	vm.runInContext("hist.buckets = {}; bucket().ls = 60; state.partners = {}", ctx);
 	assert(vm.runInContext("gold_room() === Infinity", ctx), "under an hour of records: no limit yet");
 	vm.runInContext("hist.buckets = globalThis.__hb; state.partners = {}", ctx);
@@ -3170,6 +3174,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		}
 		delete ctx.G.maps.ragemap; delete ctx.G.monsters.purex; delete ctx.G.monsters.physx; delete ctx.G.monsters.ragex;
 		R("rage_c = null; def_name = null"); Object.assign(character, sv);
+	}
+	// v25.38 (owner: upgrades must happen): a set piece at grade 2 from +0 (scroll2 every step) in a non-weapon slot is a
+	// project when its gain pays for the expected cost at upgrade_gold_per_pt; at the old 40k it wasn't
+	{
+		const R = (c) => vm.runInContext(c, ctx), sv = { name: character.name, ctype: character.ctype, level: character.level, items: character.items, slots: character.slots, gold: character.gold };
+		const ig = ctx.item_grade; ctx.item_grade = (it) => (it?.name === "setp138" ? 2 : ig ? ig(it) : 0);
+		Object.assign(ctx.G.items, { setp138: { type: "pants", g: 50000, armor: 30, upgrade: { armor: 12 } }, basep138: { type: "pants", armor: 30 }, scroll2: ctx.G.items.scroll2 || { type: "uscroll", g: 1600000 } });
+		Object.assign(character, { name: "Torlis", ctype: "paladin", level: 58 }); character.slots = { pants: { name: "basep138" } }; R("my_gear_cache = null");
+		const g = JSON.parse(R("JSON.stringify(my_gear())"));
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {}, gold: 20e6 });
+		ctx.__g138 = g;
+		R("state.partners = { Torlis: { name: 'Torlis', ctype: 'paladin', level: 58, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g138 } }; state.merchant = null; state.upg = null; state.upg_caps = {}; state.gear_skip = {}; state.bank_gear = [{ name: 'setp138', level: 0 }]; sold_c.set('setp138', false); my_gear_cache = null");
+		const gp0 = R("CFG.upgrade_gold_per_pt");
+		R("for (const n in G.items) if (n !== 'setp138' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test')"); // (only this piece in play)
+		const pk = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
+		assert(pk && pk.name === "setp138" && pk.high && pk.slot === "pants" && pk.to >= 1, `a grade-2 pants piece (scroll2 steps) for Torlis is a project at ${gp0 / 1000}k/pt (${JSON.stringify(pk)})`);
+		R("CFG.upgrade_gold_per_pt = 40000");
+		assert(!/setp138/.test(R("JSON.stringify(pick_upgrade())") || ""), "...and wasn't at the old 40k/pt");
+		R(`CFG.upgrade_gold_per_pt = ${gp0}; state.partners = {}; state.bank_gear = []; sold_c.delete('setp138'); state.upg = null; state.gear_skip = {}; my_gear_cache = null`);
+		delete ctx.G.items.setp138; delete ctx.G.items.basep138; ctx.item_grade = ig; Object.assign(character, sv);
 	}
 	// 118) v24.6 party review fixes: deaths and probe results are shared; no calibration under tank cover;
 	// a measurement covers only time at the spot; realism clamped
