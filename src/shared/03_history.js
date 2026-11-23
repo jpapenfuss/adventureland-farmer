@@ -2,6 +2,14 @@
 function rest_camp(k, ms, now = Date.now()) {
 	if (k) state.cooldown[k] = Math.max(state.cooldown[k] || 0, now + ms);
 }
+// v25.56: a rest that belongs to the place, not the monster (something keeps coming there, no safe way there): every
+// type sharing the box (pack keys carry the type now)
+function rest_place(p, ms, now = Date.now()) {
+	if (!p || !valid_boundary(p.boundary)) return;
+	const box = p.boundary.join(",");
+	rest_camp(pack_key(p), ms, now);
+	for (const pk of G.maps[p.map]?.monsters || []) if (pk.boundary && pk.boundary.join(",") === box) rest_camp(pack_key({ map: p.map, boundary: p.boundary, mtype: pk.type }), ms, now);
+}
 // v25.29/v25.31: a death at a camp: each one there within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day).
 // Every fighter records every member's death (its own in on_death, the others' from their verdict), so the tank —
 // which picks the camps — counts and rests them all. A death within 60 s of one already counted, own or shared, is

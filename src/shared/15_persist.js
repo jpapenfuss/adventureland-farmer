@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -19,6 +19,33 @@ function save_state() {
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
+}
+// v25.56: pack keys gained the monster type ("map:box" → "map:box#type"). A saved key's type is the first farmable
+// type of that box in map order that the pick would farm (its own filter: grow, or respawn <= max_respawn and count >=
+// min_count) — the one it claimed the box for, so the one a rate, a rest or a death was booked to (Fable: winterland's
+// stompy and halloween's fvampire come before wolf and ghost in their boxes); else the first farmable type.
+// A key whose box isn't in G.maps (any more) is kept as it was: nothing looks it up.
+function migrate_pack_keys(d) {
+	const type_of = new Map(), first = new Map();
+	each_area((pack, area) => {
+		const k = `${area.map}:${area.boundary.join(",")}`, t = pack.type;
+		if (!farmable_type(t)) return;
+		if (!first.has(k)) first.set(k, t);
+		if (!type_of.has(k) && (pack.grow || (expected_respawn(t, pack) <= CFG.max_respawn && pack.count >= CFG.min_count))) type_of.set(k, t);
+	});
+	for (const [k, t] of first) if (!type_of.has(k)) type_of.set(k, t);
+	const conv = (k) => (k.includes("#") || !type_of.has(k) ? k : `${k}#${type_of.get(k)}`);
+	const remap = (o, pre = /^/) => {
+		if (!o || typeof o !== "object") return o;
+		const out = {};
+		for (const [k, v] of Object.entries(o)) {
+			const m = k.match(pre), head = m ? m[0] : "";
+			out[head + conv(k.slice(head.length))] = v;
+		}
+		return out;
+	};
+	for (const f of ["measured", "measured_gold", "cooldown", "camp_deaths"]) d[f] = remap(d[f]);
+	d.meas_at = remap(d.meas_at, /^(gp:|gw:|p:|w:)/);
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
@@ -40,6 +67,7 @@ function load_state() {
 		for (const k of ["measured", "measured_gold", "meas_at", "realism"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned spot rates and realism cleared once (measured while held for missing members) — re-measuring`, C.warn);
 	}
+	if ((d.key_v || 1) < 2) migrate_pack_keys(d);
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
 	// v23.0: measurements are now in one unit (base xp of kills at the spot); older ones mixed received xp (a share of
 	// every party kill) with own kills, so they're dropped once and re-measured

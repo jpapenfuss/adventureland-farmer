@@ -72,7 +72,7 @@ function keep_away(e) {
 		state.keep_log.push({ t: now, key, mt: e.mtype });
 		log_ev("keep_away", { mtype: e.mtype, pack: P?.mtype || null });
 		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 4) {
-			rest_camp(key, CFG.pack_cooldown_ms, now);
+			rest_place(P, CFG.pack_cooldown_ms, now);
 			state.keep_log = [];
 			state.last_pick = 0;
 			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);
@@ -245,7 +245,7 @@ function pick_pack() {
 	if (d && d.until > now && d.boss)
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
 	if (d && d.until > now && state.safe[d.monster]) {
-		const area = { map: d.map, boundary: d.boundary, count: d.count };
+		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
 		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
