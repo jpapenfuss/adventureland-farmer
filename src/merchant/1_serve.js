@@ -46,10 +46,12 @@ function elixir_target() {
 // 300 px (merchant_handoff, dump_gold), and they hadn't been to town for 94 min — so we go to them. When we're short
 // (a funds wait, or under upgrade_keep + gold_trip_min) and a fighter we can reach has gold_trip_min above fund_keep:
 // a trip to the richest, at most one per gold_trip_ms.
-let gold_trip_at = 0;
+let gold_trip_at = 0, gold_trip_fails = 0;
 function gold_target() {
 	const M = CFG.merchant, min = M.gold_trip_min || 0;
-	if (!is_merchant() || !min || Date.now() - gold_trip_at < (M.gold_trip_ms || 900_000)) return null;
+	// (v25.54, Fable: a trip that brought nothing doubles the gap, up to 4h; one that brought gold resets it)
+	const gap = Math.min(4 * 3600_000, (M.gold_trip_ms || 900_000) * Math.pow(2, gold_trip_fails));
+	if (!is_merchant() || !min || Date.now() - gold_trip_at < gap) return null;
 	if (!(state.fund_need > 0 || character.gold < upgrade_keep() + min)) return null;
 	const spare = (p) => (p.gold || 0) - M.fund_keep;
 	return partners().filter((p) => p.ctype !== "merchant" && spare(p) >= min && merchant_reach_ok(p)).sort((a, b) => spare(b) - spare(a))[0] || null;
@@ -149,7 +151,8 @@ async function serve(f) {
 	const Wn = state.upg?.worn, for_worn = !!Wn && !Wn.got && Wn.who === f.name;
 	if (for_worn) worn_trip_at = Date.now();
 	if (f.elx === 0) elixir_trip_at = Date.now(); // v25.48: elixir_target's 10-min slot
-	if (gold_target()?.name === f.name) gold_trip_at = Date.now(); // v25.53: gold_target's slot
+	const for_gold = gold_target()?.name === f.name, gold0 = character.gold;
+	if (for_gold) gold_trip_at = Date.now(); // v25.53: gold_target's slot
 	state.serving = f.name;
 	// v24.7: only the pieces for this fighter (marking every piece paused deliveries to everyone else for 20 min)
 	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type) && best_fighter_for(it)?.name === f.name) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
@@ -178,6 +181,8 @@ async function serve(f) {
 			if (pos && pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) > 200) move_to_as("serve", pos.x, pos.y, 500);
 			await sleep_ms(1000);
 		}
+		// v25.54: a gold trip that brought less than half of gold_trip_min counts as fruitless (back-off in gold_target)
+		if (for_gold) gold_trip_fails = character.gold - gold0 >= (M.gold_trip_min || 0) / 2 ? 0 : gold_trip_fails + 1;
 		game_log(`merchant: served ${f.name} (${character.esize} slots free)`, C.dim);
 		log_ev("serve", { who: f.name, secs: Math.round((Date.now() - serve_t0) / 1000), free: character.esize });
 	} finally { state.serving = null; }
