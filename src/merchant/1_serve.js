@@ -37,7 +37,8 @@ function gear_target() {
 let elixir_trip_at = 0;
 function elixir_target() {
 	const E = CFG.merchant.elixir_supply;
-	if (!E || !is_merchant() || held_any(E.name) <= 0 || Date.now() - elixir_trip_at < 600_000) return null;
+	// (v25.49, Fable: an unlocked stack — give_elixir sends only from one; a locked one walked out every 10 min for nothing)
+	if (!E || !is_merchant() || !character.items.some((i) => i && i.name === E.name && !i.l) || Date.now() - elixir_trip_at < 600_000) return null;
 	return partners().find((p) => p.ctype !== "merchant" && p.elx === 0 && merchant_reach_ok(p)) || null;
 }
 // Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min

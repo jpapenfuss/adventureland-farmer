@@ -214,7 +214,13 @@ function upg_drop_if_stale() {
 }
 // Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
 // v25.48: every party member heard from (fresh heartbeat) — their gear and gold are known
-const party_heard = () => (CFG.party.members || []).every((n) => n === character.name || fresh(state.partners[n]));
+// (v25.49, Fable: per member, for 3 min — after our load for one never heard from, after its last beat for one that
+// went quiet (a fighter's reload); a member offline for long mustn't keep an unfundable project or a pick every
+// minute going forever)
+const party_heard = () => (CFG.party.members || []).every((n) => {
+	const p = state.partners[n];
+	return n === character.name || fresh(p) || Date.now() - (p ? p.t : seen.since) > 180_000;
+});
 function upgrade_due() {
 	if (!CFG.upgrade_auto) return false;
 	upg_drop_if_stale(); // v24.91
