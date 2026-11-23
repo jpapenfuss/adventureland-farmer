@@ -4,7 +4,8 @@
 // Fighters: what the merchant (in town) holds for us / for anyone, from its heartbeat
 function collect_list(mine = false) {
 	const M = merchant_hb();
-	if (!CFG.merchant?.collect || !M || !Array.isArray(M.give) || M.map !== "main" || Math.hypot(M.x, M.y) > CFG.party.town_px) return [];
+	// (v25.43: with collect off, the merchant lists only pieces for fighters it can't safely walk to)
+	if (!M || !Array.isArray(M.give) || M.map !== "main" || Math.hypot(M.x, M.y) > CFG.party.town_px) return [];
 	return M.give.filter((g) => (CFG.party.members || []).includes(g.to) && (!mine || g.to === character.name));
 }
 function collect_key(g) { return `${g.to}:${g.name}:${g.level}`; }
@@ -162,12 +163,19 @@ function party_trip_check(due, what) {
 	// v24.75: the merchant holds an upgrade for one of us → the party goes to town for it, ahead of deferrable work
 	const coll = is_follower() ? [] : collect_due();
 	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
+	// v25.43: a worn piece the merchant can't safely come for (cant_reach) → the party takes it to town (one try per
+	// collect_retry_min, spent when the trip starts)
+	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
+	const worn_ask = !!WW && (MM.cant_reach || []).includes(WW.to) && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
+		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
+	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade (no safe way for it)`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
 		if (walking()) { halt("town_check"); return true; }
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
 		if (state.town_runs.length < 6) {
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
 			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
+			if (worn_ask) state.worn_try_at = Date.now();
 			game_log(`Town: the party goes — ${asks.join(", ")}${what.length ? `; ours: ${what.join("+")}` : ""}`, C.dim);
 			if (town_run(due)) ptown_start(what.length ? what : ["a member's needs"]);
 			return true;

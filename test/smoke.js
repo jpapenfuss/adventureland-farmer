@@ -3223,6 +3223,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.upg.worn.got = 0; state.partners.Aspernari.t = Date.now() - 60000");
 		assert(R("worn_target()") === null, "...nor to a fighter not heard from");
 		R("state.partners.Aspernari.t = Date.now(); worn_trip_at = 0");
+		// v25.43 (owner): no safe way for the merchant → it doesn't walk; it names the fighter (cant_reach) and the
+		// tank takes the party to town instead
+		R("reach_c.Aspernari = { at: Date.now(), ok: false, why: 'test' }");
+		assert(R("worn_target()") === null && R("cant_reach().includes('Aspernari')"), "no safe way to Aspernari: the merchant doesn't walk out; she's named in cant_reach");
+		R("delete reach_c.Aspernari");
 		// the fighter's side: the merchant's heartbeat asks; in main town with nothing on it, it hands the gloves over
 		const want = { to: "Aspernari", name: "mpg139", level: 0, slot: "gloves" };
 		Object.assign(character, { name: "Aspernari", ctype: "priest", level: 60, items: Array(42).fill(null), slots: { gloves: { name: "mpg139", level: 0 } }, map: "main", x: 0, y: 0, esize: 40 });
@@ -3261,6 +3266,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("party_trip_check(town_due(), [])");
 		R("town_run = __tr; state.upg = __up"); // (one test state: the fighter's town_due drops the merchant's project)
 		assert(!/mpg139/.test(R("state.town_trig") || ""), "v25.43: no party trip for a hand-over (the merchant comes to us)");
+		// ...unless the merchant can't safely come: then the tank takes the party to town for it
+		R("state.merchant.cant_reach = ['Aspernari']; state.merchant.map = 'main'; state.merchant.x = 10; state.merchant.y = 0; state.worn_try_at = 0; state.town_runs = []; state.town_trig = null; globalThis.__up = state.upg; globalThis.__tr = town_run; town_run = () => false");
+		R("party_trip_check(town_due(), [])");
+		R("town_run = __tr; state.upg = __up");
+		assert(/hand mpg139\+0 to the merchant to upgrade \(no safe way/.test(R("state.town_trig") || ""), `no safe way for the merchant: the party goes to town for the hand-over (${R("state.town_trig")})`);
+		R("state.merchant.give = [{ to: 'Sanala', name: 'gpz', level: 0, gain: 9 }]");
+		assert(R("collect_list().length") === 1, "...and for a piece the merchant lists (collect off, a fighter it can't reach)");
+		R("state.merchant.cant_reach = []; state.merchant.give = null");
 		ctx.unequip = ue0; ctx.send_item = si0;
 		// back on the merchant: the piece arrives → received; a project never handed over is dropped after wait_ms
 		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {} });

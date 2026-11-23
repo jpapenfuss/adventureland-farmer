@@ -6636,7 +6636,8 @@ function live_guide_farm() {
 // Fighters: what the merchant (in town) holds for us / for anyone, from its heartbeat
 function collect_list__fighter(mine = false) {
 	const M = merchant_hb();
-	if (!CFG.merchant?.collect || !M || !Array.isArray(M.give) || M.map !== "main" || Math.hypot(M.x, M.y) > CFG.party.town_px) return [];
+	// (v25.43: with collect off, the merchant lists only pieces for fighters it can't safely walk to)
+	if (!M || !Array.isArray(M.give) || M.map !== "main" || Math.hypot(M.x, M.y) > CFG.party.town_px) return [];
 	return M.give.filter((g) => (CFG.party.members || []).includes(g.to) && (!mine || g.to === character.name));
 }
 function collect_key__fighter(g) { return `${g.to}:${g.name}:${g.level}`; }
@@ -6794,12 +6795,19 @@ function party_trip_check__fighter(due, what) {
 	// v24.75: the merchant holds an upgrade for one of us → the party goes to town for it, ahead of deferrable work
 	const coll = is_follower() ? [] : collect_due();
 	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
+	// v25.43: a worn piece the merchant can't safely come for (cant_reach) → the party takes it to town (one try per
+	// collect_retry_min, spent when the trip starts)
+	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
+	const worn_ask = !!WW && (MM.cant_reach || []).includes(WW.to) && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
+		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
+	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade (no safe way for it)`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
 		if (walking()) { halt("town_check"); return true; }
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
 		if (state.town_runs.length < 6) {
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
 			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
+			if (worn_ask) state.worn_try_at = Date.now();
 			game_log(`Town: the party goes — ${asks.join(", ")}${what.length ? `; ours: ${what.join("+")}` : ""}`, C.dim);
 			if (town_run(due)) ptown_start(what.length ? what : ["a member's needs"]);
 			return true;
@@ -7612,7 +7620,8 @@ function merchant_beat() {
 	const msg = { k: "mhb", v: VERSION, b: BUILD, worn: CFG.gear_auto ? worn_items() : null, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0,
-		give: CFG.merchant.collect ? gear_to_give() : null,
+		// (collect mode: every piece; else only those for fighters we can't safely walk to — the party comes for those)
+		...(() => { const cr = CFG.merchant.collect ? null : cant_reach(); return { cant_reach: cr, give: CFG.merchant.collect ? gear_to_give() : cr.length ? gear_to_give().filter((g) => cr.includes(g.to)) : null }; })(),
 		// v25.39: the worn piece our upgrade project needs, until it arrives
 		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
@@ -7626,6 +7635,20 @@ function merchant_job__merchant() {
 	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
 	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || worn_target() || gear_target();
 }
+// v25.43 (owner: "If the route is unsafe for the merchant, the fighters can make the trip to town"): can we walk to this
+// fighter? route_plan from here to it, judged for us (we don't fight); 30 s per fighter. The ones we can't reach are
+// named in our heartbeat (cant_reach): for them the tank takes the party to town instead.
+const reach_c = {};
+function merchant_reach_ok(p) {
+	const c = reach_c[p.name];
+	if (c && Date.now() - c.at < 30_000) return c.ok;
+	const pos = partner_pos(p);
+	const pl = pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) < 400 ? { danger: null } : route_plan(pos.map, pos.x, pos.y);
+	const ok = !!pl && !pl.danger;
+	reach_c[p.name] = { at: Date.now(), ok, why: pl?.danger || (pl ? null : "no way there") };
+	return ok;
+}
+const cant_reach = () => partners().filter((p) => fresh(p) && !p.rip && !merchant_reach_ok(p)).map((p) => p.name);
 // v25.43: our upgrade project waits for a fighter's worn piece → walk out to it (serve waits by it; the fighter hands the
 // piece over at the camp, between fights). One trip per 10 min.
 let worn_trip_at = 0;
@@ -7633,7 +7656,7 @@ function worn_target() {
 	const W = state.upg?.worn;
 	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
 	const p = state.partners[W.who];
-	if (!p || !fresh(p) || p.rip) return null;
+	if (!p || !fresh(p) || p.rip || !merchant_reach_ok(p)) return null; // (an unsafe way: the party comes to town for it)
 	return p; // (pure: the slot is stamped when serve() starts the walk — merchant_job is asked every tick and by report())
 }
 // Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
@@ -7791,7 +7814,7 @@ function gear_target() {
 		const key = `${it.name}:${it.level || 0}`, k = character.items.indexOf(it);
 		if (now - (gear_trip_at[key] || 0) < 1_200_000 || needed.has(k) || cmp.has(k) || st.has(k)) continue;
 		const to = best_fighter_for(it); // v24.7: the fighter it helps most (was: the first in config order with any gain)
-		if (to) return to.p; // serve() marks the pieces it carries
+		if (to && merchant_reach_ok(to.p)) return to.p; // serve() marks the pieces it carries (v25.43: a safe way there, else the party comes)
 	}
 	return null;
 }

@@ -28,7 +28,7 @@ function gear_target() {
 		const key = `${it.name}:${it.level || 0}`, k = character.items.indexOf(it);
 		if (now - (gear_trip_at[key] || 0) < 1_200_000 || needed.has(k) || cmp.has(k) || st.has(k)) continue;
 		const to = best_fighter_for(it); // v24.7: the fighter it helps most (was: the first in config order with any gain)
-		if (to) return to.p; // serve() marks the pieces it carries
+		if (to && merchant_reach_ok(to.p)) return to.p; // serve() marks the pieces it carries (v25.43: a safe way there, else the party comes)
 	}
 	return null;
 }
