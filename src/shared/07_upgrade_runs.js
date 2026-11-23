@@ -280,7 +280,7 @@ async function task_compound() {
 		const g = compound_groups().find((x) => x.bags.length >= 3);
 		if (!g) break;
 		// rebuyable odds only when the three copies are cheap: a +L copy embodies 3^L base copies (v23.1)
-		const wanted = gear_takers().filter((m) => m.ctype !== "merchant").some((m) => gear_gain({ name: g.name, level: g.level + 1 }, m.ctype, m.g));
+		const wanted = gear_takers().filter((m) => m.ctype !== "merchant").some((m) => gear_gain_min({ name: g.name, level: g.level + 1 }, m.ctype, m.g)); // (v25.36)
 		const floor = tight_ok(g, g.bags.slice(0, 3)) ? 0 : Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
 			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance, wanted ? CFG.compound_min_chance_wanted : 1);
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;

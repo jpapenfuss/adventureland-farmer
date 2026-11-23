@@ -240,6 +240,10 @@ function gear_gain(item, ctype, g) {
 	}
 	return best;
 }
+// v25.36 (Fable, #22): worth spending on — gear_gain, but an empty slot's piece too must clear gear_min_gain. Filling
+// an empty slot with what we already hold is free; paying for it (a Ponty compound copy up to 500k, a craft, a token,
+// a lower compound odds floor) is only for a real gain.
+const gear_gain_min = (item, ctype, g) => { const r = gear_gain(item, ctype, g); return r && r.gain >= CFG.gear_min_gain ? r : null; };
 // Members that could use an item more than what they wear (us first); version-matched partners only
 function gear_takers() {
 	const out = [{ name: character.name, ctype: character.ctype, g: my_gear() }];

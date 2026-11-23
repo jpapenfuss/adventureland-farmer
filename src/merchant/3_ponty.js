@@ -31,16 +31,26 @@ function secondhand_reason(it, groups) {
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
-	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
+	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
 	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
 	return null;
 }
 function upgrade_start_reason(it, price, fighters) {
 	const d = G.items[it.name], lv = it.level || 0;
 	if (!d?.upgrade || !GEAR.has(d.type) || it.p || !CFG.upgrade_auto) return null; // (titled copies aren't project inputs)
-	// the planner's own gates (pick_upgrade): a copy it would refuse to take on isn't bought; nor one for the piece the
-	// current project is building (its steps would be paid twice)
-	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name) || state.upg?.name === it.name) return null;
+	// the planner's own gates (pick_upgrade): a copy it would refuse to take on isn't bought
+	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name)) return null;
+	// v25.36 (owner: too many exceptions): a copy of the piece the current project builds is bought when it's already
+	// above the project's best copy (bags or bank) and cheaper than the expected steps it skips — at the project's
+	// target or above, it ends the project. (Before, every copy of it was refused: "its steps would be paid twice".)
+	// (with no copy held of a piece no NPC sells — the only one was lost to a failed step — there are no steps to price
+	// it against: it goes through the head-start rule below, bounded by gold per point)
+	if (state.upg?.name === it.name && (owned_level(it.name) >= 0 || sold_by_npc(it.name))) {
+		const P = state.upg, have = owned_level(it.name), to = Math.min(lv, P.to);
+		if (lv <= have) return null;
+		const skips = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, Math.max(0, have))) + (have < 0 ? G.items[it.name].g || 0 : 0);
+		return price < skips ? `skips the project's steps: +${Math.max(0, have)} → +${to} for ${P.for} (~${fmt_k(skips)} of steps, ${fmt_k(price)} here)` : null;
+	}
 	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
 	const budget = WP ? Infinity : Math.min(upgrade_gold(), gold_room()) * CFG.upgrade_spend;
 	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name), upg_reach(it.name));
@@ -78,7 +88,7 @@ function ponty_routes(list, groups) {
 		for (const to of [1, 2, 3]) { // (v24.87: +3 too, at compound_min_chance_wanted — the result is one a fighter would wear)
 			if (to > CFG.compound_max_level || cmp_odds(name, to) < Math.min(CFG.compound_min_chance, CFG.compound_min_chance_wanted) || to > cmp_top(name)) continue;
 			let best = null;
-			for (const m of takers) { const r = gear_gain({ name, level: to }, m.ctype, m.g); if (r && (!best || r.gain > best.gain)) best = { gain: r.gain, who: m.name }; }
+			for (const m of takers) { const r = gear_gain_min({ name, level: to }, m.ctype, m.g); /* (v25.36: a route spends) */ if (r && (!best || r.gain > best.gain)) best = { gain: r.gain, who: m.name }; }
 			if (!best) continue;
 			// units of level to-1: ours, Ponty's, and (for to = 2) ones made from three +0s
 			const need = 3 - have(to - 1);
