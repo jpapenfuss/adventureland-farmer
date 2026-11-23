@@ -418,20 +418,21 @@ function resolve_area(monster, map, boundary, count) {
 // and how fast the area refills (count / respawn). A measured rate replaces the estimate; unmeasured estimates are
 // scaled by `realism` (how far off estimates have been elsewhere).
 function score_area(t, pack, area) {
-	const f = state.safe[t];
-	const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-	return { est, score: meas_aged(pack_key(area), est * state.realism) };
+	const f = state.safe[t], kps = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+	const est = kill_value(t, f) * kps;
+	// xp: the spot's xp/s whatever the mode (v25.51: goals, hunts and quests weigh xp — state.best_xp)
+	return { est, score: meas_aged(pack_key(area), est * state.realism), xp: meas_aged(pack_key(area), (f.xp || 0) * kps * state.realism, "xp") };
 }
 // v24.3: a measurement's weight halves every CFG.meas_half_h hours since it was taken, the rest going to the estimate.
 // Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
 // spot out of every pick for good, since it was never visited again to re-measure it.
-function meas_aged(key, est) {
-	const v = meas()[key];
+function meas_aged(key, est, kind = farm_kind()) {
+	const v = meas(kind)[key], pre = kind === "gold" ? "g" : "";
 	if (v === undefined) return est;
-	const at = state.meas_at["p:" + key];
+	const at = state.meas_at[pre + "p:" + key];
 	let w = at && CFG.meas_half_h > 0 ? Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000)) : 1;
 	// v24.84: and as the party has grown stronger since it was measured
-	const p0 = state.meas_at["w:" + key];
+	const p0 = state.meas_at[pre + "w:" + key];
 	if (p0 && p0.lv > 0) {
 		const pw = party_power();
 		if (pw && CFG.meas_level_half > 0) w *= Math.pow(0.5, Math.max(0, pw.lv - p0.lv) / CFG.meas_level_half);
@@ -451,8 +452,17 @@ function party_power() {
 	pw_cache = { at: Date.now(), v };
 	return v;
 }
-// Measured xp/s per spot with the party there: base xp of the party's kills at it (kill_credit)
-const meas = () => state.measured;
+// Measured rate per spot with the party there: base xp (or, v25.51, base gold) of the party's kills at it (kill_credit)
+// v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is chosen for. Both rates are measured
+// at every camp all the time (state.measured / state.measured_gold), so switching modes starts with data. The unit
+// is the monster's base value per kill (G.monsters[].xp or .gold): the same for every camp, as base xp is.
+const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
+const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
+// Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)
+const monster_gold = (t) => G.monster_gold?.[t] || 0;
+// a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set)
+const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? monster_gold(t) : f?.xp ?? G.monsters[t]?.xp ?? 0);
+const rate_unit = () => (farm_kind() === "gold" ? "gold/s" : "xp/s");
 
 // xp/s measurement per pack (feeds the picker)
 let xp_prev = { level: character.level, xp: character.xp };
@@ -478,13 +488,19 @@ function end_session() {
 	let rate;
 	if (s.kc_n > 0) rate = s.kc / secs;
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
-	const tab = meas(), prev = tab[s.key];
-	// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
-	tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate) * 0.5 + rate * 0.5;
-	state.meas_at["p:" + s.key] = Date.now();
-	{ const pw = party_power(); if (pw) state.meas_at["w:" + s.key] = { lv: pw.lv, gs: pw.gs }; } // v24.84
-	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), secs: Math.round(secs) });
-	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3
-	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, rate / s.est)) * 0.3));
-	game_log(`${s.key}: ${rate.toFixed(1)} xp/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
+	const grate = (s.kg || 0) / secs; // v25.51: base gold/s, measured beside xp/s whatever the mode
+	const pw = party_power();
+	for (const [kind, r] of [["xp", rate], ["gold", grate]]) {
+		const tab = meas(kind), prev = tab[s.key], pre = kind === "gold" ? "g" : "";
+		// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
+		tab[s.key] = prev === undefined ? r : meas_aged(s.key, r, kind) * 0.5 + r * 0.5;
+		state.meas_at[pre + "p:" + s.key] = Date.now();
+		if (pw) state.meas_at[pre + "w:" + s.key] = { lv: pw.lv, gs: pw.gs }; // v24.84
+	}
+	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), secs: Math.round(secs) });
+	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3.
+	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
+	const r_est = s.kind === "gold" ? grate : rate;
+	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
+	game_log(`${s.key}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }

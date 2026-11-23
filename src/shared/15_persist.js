@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -29,7 +29,7 @@ function load_state() {
 	// into fights one by one — none of it describes this party farming a camp together. Each character drops it once,
 	// the first time it loads this version; quests, bank, gear and town state are kept.
 	if (d.data_v !== DATA_V) {
-		for (const k of ["measured", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
+		for (const k of ["measured", "measured_gold", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
 	}
 	// v25.16: the owner (2026-11-22): the time estimates were far off — the rates had been measured with the party held
@@ -37,7 +37,7 @@ function load_state() {
 	// and realism scaled every estimate down with it. Spot xp/s and realism are dropped once (calibration, safety and
 	// everything else are kept), and re-measured on the seconds the camp itself is responsible for.
 	if ((d.rates_v || 1) !== RATES_V) {
-		for (const k of ["measured", "meas_at", "realism"]) delete d[k];
+		for (const k of ["measured", "measured_gold", "meas_at", "realism"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned spot rates and realism cleared once (measured while held for missing members) — re-measuring`, C.warn);
 	}
 	const now = Date.now(), live = (o) => Object.fromEntries(Object.entries(o || {}).filter(([, t]) => t > now));
@@ -47,6 +47,12 @@ function load_state() {
 		Object.assign(state.measured, d.measured || {});
 		// measurements saved before v24.3 have no time: they start ageing now
 		const t0 = Date.now();
+		// v25.51: gold rates (their times: meas_at "gp:"/"gw:"). gold_v 1: base gold from G.monster_gold — the first
+		// v25.51 build read a field that doesn't exist and saved 0 for every camp; those are dropped once
+		if (d.gold_v === 1) {
+			Object.assign(state.measured_gold, d.measured_gold || {});
+			for (const k in state.measured_gold) { state.meas_at["gp:" + k] = d.meas_at?.["gp:" + k] || t0; if (d.meas_at?.["gw:" + k]) state.meas_at["gw:" + k] = d.meas_at["gw:" + k]; }
+		}
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
@@ -133,4 +139,4 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }

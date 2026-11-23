@@ -109,7 +109,7 @@ function camp_review() {
 	const moved = !!state.pack && pack_key(state.pack) !== before;
 	const other = (state.pick_table || []).filter((c) => !c.out && c.key !== before).sort((a, b) => (b.score || 0) - (a.score || 0))[0];
 	state.review_last = { at: now, why: goal_changed ? (dir ? `goal: ${state.directive.reason}` : "the goal ended") : stronger ? "the party is stronger" : `${CFG.camp_review_min} min at the camp`, moved,
-		text: moved ? `moved to ${state.pack.mtype}@${state.pack.map}` : `kept ${cur.mtype}@${cur.map}${other ? ` (next best ${other.mtype}@${other.map} ${Math.round(other.score)}${other.m ? " measured" : " est"})` : ""}` };
+		text: moved ? `moved to ${state.pack.mtype}@${state.pack.map}` : `kept ${cur.mtype}@${cur.map}${other ? ` (next best ${other.mtype}@${other.map} ${Math.round(other.score)} ${rate_unit()}${other.m ? " measured" : " est"})` : ""}` };
 	log_ev("review", { moved, to: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: state.review_last.why });
 	return moved;
 }
@@ -120,7 +120,7 @@ function camp_review() {
 function set_pack(p, label) {
 	if (!state.pack || !p || pack_key(state.pack) !== pack_key(p)) {
 		if (p) game_log(label, C.info);
-		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || "best xp/s" });
+		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || `best ${rate_unit()}` });
 		state.waypoints = p ? make_waypoints(p.boundary) : [];
 		state.wp = 0;
 		state.camp_at = Date.now(); // v24.84: the review clock
@@ -166,7 +166,7 @@ function probe_pick() {
 			if (area_danger(area, mt) || party_route_danger(area.map)) return;
 			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
-			const raw = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
+			const raw = kill_value(mt, null) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
 			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
 			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
@@ -220,7 +220,8 @@ function pick_pack() {
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
 	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
-	state.best_score = best ? best.rate : 0;
+	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
+	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
 	if (probe_ready()) {
 		state.probe_at = now;
@@ -233,7 +234,7 @@ function pick_pack() {
 			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
 			state.probe_none = null;
 			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.raw, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
-				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s`);
+				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} ${rate_unit()}`);
 		}
 	}
 
@@ -263,7 +264,7 @@ function pick_pack() {
 	// (72 changes in an hour, cgoo ↔ booboo, through the door between them).
 	if (cur && !cur.boss && !cur.probe && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
 		rest_camp(pack_key(cur), 300_000, now);
-	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
+	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} ${rate_unit()}${meas()[pack_key(best)] ? " measured" : " est"})`);
 }
 // Patrol route: a 3x3 grid snaking through the area at 15%, 50% and 85% of its width/height, so the server shows us
 // every part of the pack (it only sends entities near us) without hugging the edges
@@ -319,7 +320,7 @@ function probe_check() {
 }
 // ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Best normal spot's xp/s, without being there (for a member that doesn't pick)
-function best_score() {
+function best_score(kind = farm_kind()) { // (v25.51: kind — "xp" for best_known_xps)
 	const prof = {};
 	let best = 0;
 	each_area((pack, area) => {
@@ -327,8 +328,8 @@ function best_score() {
 		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
 		const f = prof[t];
 		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
-		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-		best = Math.max(best, meas_aged(pack_key(area), est * state.realism));
+		const est = kill_value(t, f, kind) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+		best = Math.max(best, meas_aged(pack_key(area), est * state.realism, kind));
 	});
 	return best;
 }

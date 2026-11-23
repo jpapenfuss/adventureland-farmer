@@ -86,7 +86,7 @@ function facts_picks(F, ctx) {
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
 			(RL ? ` | last ${ago(RL.at)} ago (${RL.why}): ${RL.text}` : ""));
 	}
-	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: base gold/s" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 		(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 }
 

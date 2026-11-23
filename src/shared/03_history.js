@@ -397,7 +397,7 @@ function meas_tick() {
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, xp: 0, kx: 0, kc: 0, kc_n: 0, start: Date.now() };
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, start: Date.now() }; // (v25.51: kind: est's unit)
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event
 	// goo's full xp: one put realism at 42), until the 180s close

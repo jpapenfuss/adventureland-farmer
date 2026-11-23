@@ -168,6 +168,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 13) fight model
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("!!state.safe.goo", ctx), "level-1 goo is safe");
+	// v25.51: the farm mode picks the camp — a twin of goo with less xp and more gold wins only in gold mode
+	{ ctx.G.monsters.richgoo = { ...ctx.G.monsters.goo, xp: 5 }; ctx.G.monster_gold = { goo: 2, richgoo: 50 }; // (base gold: G.monster_gold, as in the game's data)
+		ctx.G.maps.main.monsters.push({ type: "richgoo", count: 5, boundary: [500, 100, 800, 400] });
+		vm.runInContext("state.measured = {}; state.measured_gold = {}; state.cooldown = {}; CFG.farm_mode = 'xp'; pick_pack()", ctx);
+		const px = vm.runInContext("state.pack && state.pack.mtype", ctx);
+		vm.runInContext("CFG.farm_mode = 'gold'; state.last_pick = 0; pick_pack()", ctx);
+		const pg = vm.runInContext("state.pack && state.pack.mtype", ctx);
+		vm.runInContext("CFG.farm_mode = 'xp'", ctx);
+		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; delete ctx.G.monster_gold;
+		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
+		assert(px === "goo" && pg === "richgoo", `v25.51: xp mode picks goo, gold mode the gold-rich twin (${px} / ${pg})`); }
 	const elite = { id: "e1", type: "monster", mtype: "goo", level: 12, hp: 650, max_hp: 650, attack: 450, frequency: 0.8, speed: 15, xp: 1200 };
 	assert(!vm.runInContext("live_ok", ctx)(elite), "levelled goo with 450 attack rejected by live check");
 	const normal = { id: "n1", type: "monster", mtype: "goo", hp: 100, max_hp: 100, attack: 5, speed: 6, xp: 10 };
@@ -273,9 +284,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("quest_directive()", ctx) === null, "recipe too slow to finish is skipped");
 	vm.runInContext("CFG.quest_farm_max_h = 3", ctx);
 	// outlevelled: best pack gives 100x the bee pack's xp/s → no quest farming
-	vm.runInContext("(state.best_score = 1e6, state.best_at = Date.now())", ctx);
+	vm.runInContext("(state.best_xp = 1e6, state.best_at = Date.now())", ctx);
 	assert(vm.runInContext("quest_directive()", ctx) === null, "outlevelled material farm skipped (opportunity cost)");
-	vm.runInContext("state.best_score = 0", ctx);
+	vm.runInContext("state.best_xp = 0", ctx);
 	// stall: count doesn't move for quest_stall_min → recipe shelved
 	vm.runInContext("quest_directive(); state.qprog.t -= CFG.quest_stall_min * 60000 + 1", ctx);
 	assert(vm.runInContext("quest_directive()", ctx) === null && vm.runInContext(`state.gear_skip["qc:wcap"] > Date.now()`, ctx), "stalled recipe shelved");
@@ -311,9 +322,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("CFG.hunt_min_xp = globalThis.__hmx", ctx);
 	delete character.s.monsterhunt;
 	// outlevelled guide row skipped
-	vm.runInContext(`state.guide_farm.monster = "goo"; (state.best_score = 1e9, state.best_at = Date.now()); state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
+	vm.runInContext(`state.guide_farm.monster = "goo"; (state.best_xp = 1e9, state.best_at = Date.now()); state.directive = null; state.goals_cache = null; refresh_directive()`, ctx);
 	assert(vm.runInContext(`!state.directive && !goals_list().some((g) => /guide/.test(g.reason))`, ctx), "outlevelled guide farm row skipped (not shared either)");
-	vm.runInContext(`state.best_score = 0`, ctx);
+	vm.runInContext(`state.best_xp = 0`, ctx);
 	if (hunt_save) character.s.monsterhunt = hunt_save;
 	vm.runInContext(`CFG.quest_farm = true; state.goals_cache = null`, ctx);
 	vm.runInContext(`state.guide_farm = null; state.guide_ignore = {}; state.gprog = null`, ctx);
@@ -326,11 +337,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.guide_quests = {}; state.crafted = {}", ctx);
 	vm.runInContext("guide_refresh()", ctx);
 	assert(vm.runInContext(`is_guide_quest("wcap")`, ctx), "guide row naming wcap marks it a guide quest");
-	vm.runInContext("(state.best_score = 1e6, state.best_at = Date.now()); CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
+	vm.runInContext("(state.best_xp = 1e6, state.best_at = Date.now()); CFG.quest_farm_max_h = 0.0001; state.qprog = null", ctx);
 	const g16 = vm.runInContext("quest_directive(true)", ctx);
 	assert(g16 && /guide quest wcap/.test(g16.reason), "guide quest farmed even when outlevelled and slow");
 	assert(vm.runInContext("quest_directive(false)", ctx) === null, "same recipe not offered as an own-choice quest");
-	vm.runInContext("state.best_score = 0; CFG.quest_farm_max_h = 3", ctx);
+	vm.runInContext("state.best_xp = 0; CFG.quest_farm_max_h = 3", ctx);
 
 	// persistence: guide quests and stall timers survive; offline time doesn't count against the timer
 	vm.runInContext(`state.qprog = { key: "wcap:beewings", have: 20, t: Date.now() - 600000 }; save_state()`, ctx);
@@ -345,6 +356,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		state.measured = {}; state.danger = {}; state.cooldown = {}; load_state();`, ctx);
 	assert(vm.runInContext(`state.measured["main:1,2,3,4"] === 12.5 && state.danger.bee === 0.6 && state.cooldown.x > 0 && !("old" in state.cooldown)`, ctx),
 		"learned state survives reload; expired cooldowns dropped");
+	// v25.51: gold rates and their times survive a reload; a save without gold_v (the first build's zeros) drops them once
+	vm.runInContext(`state.measured_gold["main:1,2,3,4"] = 3.5; state.meas_at["gp:main:1,2,3,4"] = Date.now() - 3600000; state.meas_at["gw:main:1,2,3,4"] = { lv: 50, gs: 400 }; save_state();
+		state.measured_gold = {}; state.meas_at = {}; load_state();`, ctx);
+	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === 3.5 && Date.now() - state.meas_at["gp:main:1,2,3,4"] >= 3600000 && state.meas_at["gw:main:1,2,3,4"].lv === 50`, ctx),
+		"v25.51: gold rates and their times (gp:/gw:) survive a reload");
+	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); delete d.gold_v; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
+		vm.runInContext("globalThis.__g51 = get; get = (k) => (k === SAVE_KEY ? __d51 : __g51(k)); load_state(); get = __g51", ctx);
+		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.51: a save from before gold_v: its gold rates dropped, xp rates kept"); }
+	vm.runInContext(`state.measured_gold = { x: 1 }; globalThis.__ss51 = save_state; save_state = () => {}; forget(); save_state = __ss51`, ctx);
+	assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.51: forget() clears the gold rates too");
+	vm.runInContext(`state.measured = { "main:1,2,3,4": 12.5 }; state.danger.bee = 0.6`, ctx);
 
 	// 18) park: goes to town, then stays put
 	const moves18 = [];
@@ -2358,17 +2380,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(ctx.parent.add_log === add94, "quiet_logs = [] restores the game's own add_log");
 	// 95) v18.6: an unfinishable hunt is ignored; Ponty buys cap price per point; the merchant delivers held gear
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
-	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05; globalThis.__ms = state.measured; state.measured = {}; state.best_score = 0", ctx); // 3 kills/min
+	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05; globalThis.__ms = state.measured; state.measured = {}; state.best_xp = 0", ctx); // 3 kills/min
 	assert(vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__h95 = !hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 }); CFG.hunt_min_xp = 0.7; globalThis.__h95", ctx),
 		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept (xp floor off: this is about expiry)");
 	// v18.7: a hunt monster far below the best xp/s we know isn't chased
-	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_score = 800, state.best_at = Date.now())", ctx);
+	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_xp = 800, state.best_at = Date.now())", ctx);
 	assert(!vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v23.5: hunt_min_xp 70% by default — a bee hunt at 300 vs best 800 isn't chased");
 	vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__ok0 = hunt_feasible({ id: 'bee', c: 10 }); CFG.hunt_min_xp = 0.6", ctx);
 	assert(vm.runInContext("globalThis.__ok0", ctx), "hunt_min_xp 0: chased");
 	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "hunt_min_xp 0.6: bee hunt at 300 xp/s vs best 800 not chased; croc chased");
 	vm.runInContext("CFG.hunt_min_xp = 0.7", ctx); // back to the default
-	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_score = 0", ctx);
+	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_xp = 0", ctx);
 	// v18.7 gold budget: party spending held under 90% of income
 	vm.runInContext(`globalThis.__hb = hist.buckets; hist.buckets = {}; state.partners = {}; state.merchant = null;
 		const b = bucket(); b.earn = 1000000; b.spend = 800000; b.ls = 7200;`, ctx);
@@ -2687,6 +2709,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, start: Date.now() - 100000 };
 			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
 		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
+		// v25.51: base gold/s measured beside it, whatever the farm mode
+		{ ctx.G.monster_gold = { goo: 20 };
+			vm.runInContext(`state.measured_gold = {}; state.session = { key: "main:1,1,9,7", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, start: Date.now() - 100000 };
+				for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
+			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 2 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.51: 10 kills x 20 gold / 100s = 2 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
+			assert(vm.runInContext("meas()['main:1,1,9,7'] === state.measured['main:1,1,9,7'] && (CFG.farm_mode = 'gold', meas()['main:1,1,9,7'] === state.measured_gold['main:1,1,9,7'])", ctx), "v25.51: meas() follows the farm mode");
+			vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
+			delete ctx.G.monster_gold; }
 		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:1,1,9,8'] === undefined", ctx), "together with no kill_credit in the session: not measured");
 		vm.runInContext("state.measured = {}", ctx);
@@ -2929,13 +2959,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
 		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
 		// side goals compare with this pick's best, not the best rate ever measured
-		vm.runInContext("(state.best_score = 400, state.best_at = Date.now()); state.measured = { 'main:0,0,1,1': 2000 }", ctx);
+		vm.runInContext("(state.best_xp = 400, state.best_at = Date.now()); state.measured = { 'main:0,0,1,1': 2000 }", ctx);
 		assert(vm.runInContext("best_known_xps()", ctx) === 400, "a picker: its current best (400), not an old 2000 measurement");
-		vm.runInContext("state.best_score = 0; state.best_ref = null", ctx);
+		vm.runInContext("CFG.farm_mode = 'gold'; state.best_score = 7", ctx);
+		assert(vm.runInContext("best_known_xps()", ctx) === 400, "v25.51: in gold mode the goals still weigh xp/s (best_xp), not the gold best");
+		vm.runInContext("CFG.farm_mode = 'xp'", ctx);
+		vm.runInContext("state.best_xp = 0; state.best_ref = null", ctx);
 		assert(vm.runInContext("best_known_xps() === best_score() && best_known_xps() !== 400", ctx), "no fresh pick of our own (a follower): the best spot, computed");
-		vm.runInContext("(state.best_score = 400, state.best_at = Date.now() - 700000); state.best_ref = null", ctx);
+		vm.runInContext("(state.best_xp = 400, state.best_at = Date.now() - 700000); state.best_ref = null", ctx);
 		assert(vm.runInContext("best_known_xps() !== 400", ctx), "...nor one over 10 min old");
-		vm.runInContext("state.measured = {}; state.best_score = 0", ctx);
+		vm.runInContext("state.measured = {}; state.best_xp = 0", ctx);
 	}
 	// 114) v24.2: builds are compared by version and, when both know it, commit
 	{
@@ -2954,7 +2987,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			CFG.quest_crafts = true; quest_recipes = () => ["qx115"]; recipe_open = () => true; drop_sources = () => [["goo", 0.5]]; kills_per_s = () => 1;
 			G.craft.qx115 = { items: [[5, "spores115", 0]] };`, ctx);
 		// #1: the leader's shared pick uses members' goal lists, so the floor applies there too
-		vm.runInContext("(state.best_score = 1000, state.best_at = Date.now()); mt_xps = () => 100; state.goals_cache = null", ctx);
+		vm.runInContext("(state.best_xp = 1000, state.best_at = Date.now()); mt_xps = () => 100; state.goals_cache = null", ctx);
 		assert(vm.runInContext("!goals_list().some((g) => /qx115/.test(g.reason))", ctx), "a quest monster at 10% of the best xp/s isn't on the goal list");
 		vm.runInContext("mt_xps = () => 800; state.goals_cache = null", ctx);
 		assert(vm.runInContext("goals_list().some((g) => /qx115/.test(g.reason))", ctx), "at 80% it is");
