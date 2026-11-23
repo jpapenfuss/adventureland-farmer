@@ -337,8 +337,8 @@ const CFG = {
 		                       // to reach pot_buy, so one trip tops everyone up; was a fixed 400)
 		self_pots: 20,         // potions of each kind the merchant keeps for itself
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
-		worn_wait_ms: 120_000,
-		elixir_supply: { name: "pumpkinspice", give: 3333 }, // v25.44 (owner): 3,333 to each fighter that holds none, when we meet // v25.43: ...or up to this long for the worn piece our project came for (a lull between fights)
+		worn_wait_ms: 120_000, // v25.43: ...or up to this long for the worn piece our project came for (a lull between fights)
+		elixir_supply: { name: "pumpkinspice", give: 3333 }, // v25.44 (owner): 3,333 to each fighter that holds none, when we meet
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
@@ -5513,7 +5513,8 @@ function heartbeat__fighter() {
 		gear: CFG.gear_auto ? my_gear() : null, esize: character.esize, // hand-me-downs (share_gear)
 		worn: CFG.gear_auto ? worn_items() : null, // swap_worn: what's in each slot
 		armor: character.armor, resistance: character.resistance, // tank_first fight model
-		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, elx: CFG.merchant.elixir_supply ? held_any(CFG.merchant.elixir_supply.name) : null, // v25.44 rates: rates(), h1: last_hour(), // merchant service, report
+		pots: { hp: pot_count("hp"), mp: pot_count("mp") }, rates: rates(), h1: last_hour(), // merchant service, report
+		elx: CFG.merchant.elixir_supply ? held_any(CFG.merchant.elixir_supply.name) : null, // v25.44: the supply elixir held
 		mp: character.mp, max_mp: character.max_mp, tokens: held_any("monstertoken"), need: hold_missing(),
 		os: oneshot_types() }; // v25.20: types the tank kills in one hit (free-for-all at its camp)
 	if (state.travel_off.length && state.travel_full) Object.assign(msg, state.travel_full); // v24.31: as with everything on

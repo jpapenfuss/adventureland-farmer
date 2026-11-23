@@ -3339,6 +3339,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		Object.assign(character, { name: "Sanala", ctype: "mage", items: Array(42).fill(null), slots: {}, gold: 2e6 });
 		character.items[3] = { name: "elixirluck", q: 1 }; character.items[4] = { name: "pumpkinspice", q: 2 };
 		assert(R("best_elixir()?.name") === "pumpkinspice", "the latte is drunk before Liquid Luck");
+		{ const hbm = []; const sc0 = ctx.send_cm; ctx.send_cm = (to, m) => (m.k === "hb" && hbm.push(m), Promise.resolve()); R("heartbeat()"); ctx.send_cm = sc0;
+			assert(hbm.length === 1 && hbm[0].h1 !== undefined && hbm[0].rates !== undefined && hbm[0].elx !== undefined, `the heartbeat still carries h1 and rates beside elx (${Object.keys(hbm[0]).filter((k) => ["h1", "rates", "elx"].includes(k))})`); }
 		character.items[3] = character.items[4] = null;
 		// the merchant's side
 		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null) });
