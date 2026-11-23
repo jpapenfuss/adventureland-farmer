@@ -179,6 +179,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; delete ctx.G.monster_gold;
 		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
 		assert(px === "goo" && pg === "richgoo", `v25.51: xp mode picks goo, gold mode the gold-rich twin (${px} / ${pg})`); }
+	// v25.56: two types sharing a box (main's squigs and squigtoads) are two camps — the first type seen no longer
+	// claims the box; each type's rates, rests and deaths have their own key; an old save's keys are migrated
+	{ const B = [100, 100, 400, 400];
+		ctx.G.monsters.toad56 = { ...ctx.G.monsters.goo, xp: 500 };
+		ctx.G.maps.main.monsters.push({ type: "toad56", count: 5, boundary: B });
+		vm.runInContext("state.measured = {}; state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx);
+		const p56 = vm.runInContext("state.pack && state.pack.mtype", ctx);
+		const keys = vm.runInContext("state.pick_table.map((c) => c.key).join(' | ')", ctx);
+		assert(p56 === "toad56" && /#goo/.test(keys) && /#toad56/.test(keys), `the better type in a shared box is picked; both are candidates (${p56}: ${keys})`);
+		vm.runInContext("rest_camp(pack_key({ map: 'main', boundary: [100, 100, 400, 400], mtype: 'toad56' }), 600000); state.last_pick = 0; state.pack = null; pick_pack()", ctx);
+		assert(vm.runInContext("state.pack && state.pack.mtype", ctx) === "goo", "resting the toads' camp leaves the goos in the same box free");
+		// migration: an old save's "map:box" keys go to the box's first farmable type (goo comes first in map order)
+		const d56 = { measured: { "main:100,100,400,400": 7, "main:9,9,9,9": 3 }, measured_gold: {}, cooldown: { "main:100,100,400,400": 5 },
+			camp_deaths: { "main:100,100,400,400": [1] }, meas_at: { "p:main:100,100,400,400": 11, "gw:main:100,100,400,400": 12, "w:main:9,9,9,9": 13 } };
+		ctx.__d56 = d56; vm.runInContext("migrate_pack_keys(__d56)", ctx);
+		assert(JSON.stringify(d56) === JSON.stringify({ measured: { "main:100,100,400,400#goo": 7, "main:9,9,9,9": 3 }, measured_gold: {}, cooldown: { "main:100,100,400,400#goo": 5 },
+			camp_deaths: { "main:100,100,400,400#goo": [1] }, meas_at: { "p:main:100,100,400,400#goo": 11, "gw:main:100,100,400,400#goo": 12, "w:main:9,9,9,9": 13 } }),
+			`old keys migrated to the box's first type, unknown boxes kept, prefixes kept (${JSON.stringify(d56)})`);
+		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.toad56; delete ctx.__d56;
+		vm.runInContext("state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx); }
 	// v25.52: the report's units follow the mode
 	vm.runInContext("CFG.farm_mode = 'gold'", ctx);
 	{ const out = []; ctx.__F52 = (k, w, t) => out.push(t);
@@ -2603,9 +2623,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		assert(vm.runInContext("state.danger.tortoise < 1", ctx), "death with damage seen: the safety cut still applies");
 		// v25.29: each death at the same camp within 24h rests it 4x longer
-		const rest = () => Math.round((vm.runInContext("state.cooldown['main:0,0,10,10']", ctx) - Date.now()) / 60000);
+		const rest = () => Math.round((vm.runInContext("state.cooldown['main:0,0,10,10#tortoise']", ctx) - Date.now()) / 60000);
 		const r1 = rest();
-		const age = () => vm.runInContext("state.camp_deaths['main:0,0,10,10'] = state.camp_deaths['main:0,0,10,10'].map((t) => t - 120000)", ctx);
+		const age = () => vm.runInContext("state.camp_deaths['main:0,0,10,10#tortoise'] = state.camp_deaths['main:0,0,10,10#tortoise'].map((t) => t - 120000)", ctx);
 		age();
 		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		const r2 = rest();
@@ -2613,27 +2633,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		const r3 = rest();
 		assert(r1 === 30 && r2 === 120 && r3 === 480, `deaths at one camp: rested 30, 120, 480 min (${r1}, ${r2}, ${r3})`);
-		vm.runInContext("state.cooldown = {}; state.camp_deaths['main:0,0,10,10'] = [Date.now() - 90000000]; pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
+		vm.runInContext("state.cooldown = {}; state.camp_deaths['main:0,0,10,10#tortoise'] = [Date.now() - 90000000]; pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
 		assert(rest() === 30, "a death there over a day ago doesn't count");
 		// v25.31: a member's death reaches the tank's count (it picks the camps); the same wipe twice counts once;
 		// a shorter rest never shortens a longer one
 		vm.runInContext("state.cooldown = {}; state.camp_deaths = {}", ctx);
-		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() - 5000 }, 'Sanala')", ctx);
-		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() - 5000 }, 'Aspernari')", ctx);
-		assert(rest() === 30 && vm.runInContext("state.camp_deaths['main:0,0,10,10'].length", ctx) === 1, `a member's death: counted once, rested 30 min (${rest()})`);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10#tortoise', cd: Date.now() + 1800000, death: true, at: Date.now() - 5000 }, 'Sanala')", ctx);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10#tortoise', cd: Date.now() + 1800000, death: true, at: Date.now() - 5000 }, 'Aspernari')", ctx);
+		assert(rest() === 30 && vm.runInContext("state.camp_deaths['main:0,0,10,10#tortoise'].length", ctx) === 1, `a member's death: counted once, rested 30 min (${rest()})`);
 		// the same wipe: a second verdict 5 s later, then our own death — still one
-		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() }, 'Aspernari')", ctx);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10#tortoise', cd: Date.now() + 1800000, death: true, at: Date.now() }, 'Aspernari')", ctx);
 		vm.runInContext("pmring.hits = [{ t: Date.now(), mtype: 'tortoise', dmg: 900 }]; state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false", ctx);
-		assert(rest() === 30 && vm.runInContext("state.camp_deaths['main:0,0,10,10'].length", ctx) === 1, `one wipe (verdicts seconds apart, then our own death): one death, 30 min (${rest()})`);
+		assert(rest() === 30 && vm.runInContext("state.camp_deaths['main:0,0,10,10#tortoise'].length", ctx) === 1, `one wipe (verdicts seconds apart, then our own death): one death, 30 min (${rest()})`);
 		age();
-		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() }, 'Sanala')", ctx);
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10#tortoise', cd: Date.now() + 1800000, death: true, at: Date.now() }, 'Sanala')", ctx);
 		assert(rest() === 120, `a second member death there: 120 min on the tank, not capped at 60 (${rest()})`);
-		vm.runInContext("rest_camp('main:0,0,10,10', 300000)", ctx);
+		vm.runInContext("rest_camp('main:0,0,10,10#tortoise', 300000)", ctx);
 		assert(rest() === 120, "a 5-min rest doesn't shorten a 2-hour one");
-		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10', cd: Date.now() + 1800000, death: true, at: Date.now() - 3600000 }, 'Sanala')", ctx);
-		assert(vm.runInContext("state.camp_deaths['main:0,0,10,10'].length", ctx) === 2, "a stale death verdict (an hour old) isn't counted");
-		vm.runInContext("globalThis.age_n = state.camp_deaths['main:0,0,10,10'].length; suicide_at = Date.now(); state.camp_deaths['main:0,0,10,10'] = state.camp_deaths['main:0,0,10,10'].map((t) => t - 120000); state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false; suicide_at = 0", ctx);
-		assert(vm.runInContext("state.camp_deaths['main:0,0,10,10'].length === age_n", ctx), "our own suicide doesn't count as a camp death");
+		vm.runInContext("apply_verdict({ kind: 'incident', mtype: 'tortoise', mult: 0.6, key: 'main:0,0,10,10#tortoise', cd: Date.now() + 1800000, death: true, at: Date.now() - 3600000 }, 'Sanala')", ctx);
+		assert(vm.runInContext("state.camp_deaths['main:0,0,10,10#tortoise'].length", ctx) === 2, "a stale death verdict (an hour old) isn't counted");
+		vm.runInContext("globalThis.age_n = state.camp_deaths['main:0,0,10,10#tortoise'].length; suicide_at = Date.now(); state.camp_deaths['main:0,0,10,10#tortoise'] = state.camp_deaths['main:0,0,10,10#tortoise'].map((t) => t - 120000); state.pack = { mtype: 'tortoise', map: 'main', boundary: [0,0,10,10] }; on_death(); state.dead_handled = false; suicide_at = 0", ctx);
+		assert(vm.runInContext("state.camp_deaths['main:0,0,10,10#tortoise'].length === age_n", ctx), "our own suicide doesn't count as a camp death");
 		vm.runInContext("state.danger = {}; state.cooldown = {}; state.camp_deaths = {}; state.pack = null", ctx);
 		// spending categories: the purchase tags the gold that leaves
 		vm.runInContext(`globalThis.__hb3 = hist.buckets; hist.buckets = {}; tag_spend("ponty"); { const b = bucket(); b.spend = 500; b.cats = { ponty: 500 }; }`, ctx);
@@ -3508,8 +3528,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, hp: 1000, max_hp: 1000, map: "main", x: 0, y: 0, rip: false });
 		vm.runInContext("state.partners = {}; state.danger = {}; state.cooldown = {}; state.probe_ok = {}; state.calib = {}; hist.ev = []", ctx);
 		hb("Torlis", { ...tor, level: 60, x: 30, y: 0 });
-		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "incident", mtype: "goo", mult: 0.6, key: "main:100,100,400,400", cd: Date.now() + 1800000, death: true } });
-		assert(vm.runInContext("Math.abs(state.danger.goo - 0.6) < 1e-9 && state.cooldown['main:100,100,400,400'] > Date.now() + 1700000", ctx),
+		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "incident", mtype: "goo", mult: 0.6, key: "main:100,100,400,400#goo", cd: Date.now() + 1800000, death: true } });
+		assert(vm.runInContext("Math.abs(state.danger.goo - 0.6) < 1e-9 && state.cooldown['main:100,100,400,400#goo'] > Date.now() + 1700000", ctx),
 			"a partner's death at a pack: we take its incident and the pack's cooldown");
 		handlers.cm({ name: "Torlis", message: { k: "verdict", kind: "probe_ok", mtype: "goo", mult: 1.5 } });
 		assert(vm.runInContext("state.probe_ok.goo && state.probe_ok.goo.mult === 1.5", ctx), "a probe that held is shared");
@@ -3522,7 +3542,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const sent118 = []; const scm = ctx.send_cm; ctx.send_cm = (to, m) => { sent118.push([to, m]); return Promise.resolve(); };
 		vm.runInContext(`state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.dead_handled = false;
 			pmring.hits.push({ t: Date.now(), mtype: 'goo', dmg: 500 }); on_death(); pmring.hits.length = 0; state.dead_handled = false`, ctx);
-		assert(sent118.some(([to, m]) => m.k === "verdict" && m.kind === "incident" && m.death && m.key === "main:100,100,400,400" && to.includes("Torlis")), "our death is sent to the party");
+		assert(sent118.some(([to, m]) => m.k === "verdict" && m.kind === "incident" && m.death && m.key === "main:100,100,400,400#goo" && to.includes("Torlis")), "our death is sent to the party");
 		// a probe that held is recorded and sent
 		sent118.length = 0;
 		vm.runInContext("state.probe = { mtype: 'goo', start: Date.now() - 700000, until: Date.now() - 1, ratio: 1.4 }; state.recovering = false; probe_check()", ctx);
@@ -3850,7 +3870,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Sanala", { ...san, level: 60, x: 1200, y: 1250 }); hb("Aspernari", { ...asp, level: 58, x: 200, y: 200 });
 		assert(vm.runInContext(`group_hold(${P}, true)`, ctx) === "Aspernari", "arrived; Aspernari still on the way: no pull yet");
 		hb("Aspernari", { ...asp, level: 58, x: 1210, y: 1190 });
-		assert(vm.runInContext(`group_hold(${P}, true) === null && state.group_ok === 'main:1000,1000,1400,1400'`, ctx), "all there: assembled");
+		assert(vm.runInContext(`group_hold(${P}, true) === null && state.group_ok === 'main:1000,1000,1400,1400#goo'`, ctx), "all there: assembled");
 		hb("Aspernari", { ...asp, level: 58, x: 200, y: 200 });
 		assert(vm.runInContext(`group_hold(${P}, true)`, ctx) === null, "assembled at this spot: people moving around in the fight don't stop it");
 		// a stuck straggler: wait_s, then go on for go_s
@@ -3900,7 +3920,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.pack.mtype = 'goo'", ctx);
 		// the same spot three times in 5 min: it cools down
 		vm.runInContext("for (let i = 0; i < 3; i++) { state.keep_at = 0; keep_away(parent.entities.e125); }", ctx);
-		assert(vm.runInContext("state.cooldown['main:-100,-100,100,100'] > Date.now()", ctx), "an ent that keeps coming: the spot cools down");
+		assert(vm.runInContext("state.cooldown['main:-100,-100,100,100#goo'] > Date.now()", ctx), "an ent that keeps coming: the spot cools down");
 		for (const k of ["e125", "c125"]) delete ctx.parent.entities[k];
 		ctx.G.monsters = mons0; ctx.distance = dist0; ctx.move = mv0;
 		vm.runInContext("state.pack = null; state.cooldown = {}; state.keep_log = []; hist.ev = []; for (const k in deadly_c) delete deadly_c[k]", ctx);
@@ -3974,7 +3994,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a roamer's kill doesn't cool the spot down
 		vm.runInContext(`state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }; state.cooldown = {}; state.dead_handled = false; state.danger = {};
 			pmring.hits.push({ t: Date.now(), mtype: 'boar', dmg: 5000 }); G.monsters.boar = G.monsters.boar || { xp: 1, hp: 1, attack: 1 }; on_death(); pmring.hits.length = 0`, ctx);
-		assert(vm.runInContext("!state.cooldown['main:100,100,400,400'] && state.danger.boar < 1", ctx), "killed by a roamer (not the spot's monster): the roamer is blamed, the spot isn't cooled");
+		assert(vm.runInContext("!state.cooldown['main:100,100,400,400#goo'] && state.danger.boar < 1", ctx), "killed by a roamer (not the spot's monster): the roamer is blamed, the spot isn't cooled");
 		assert(/const lm = !walking\(\) && in_area \? looming\(\) : null/.test(src) && /length >= 4\) \{/.test(src), "keep-away only at the spot, not mid-walk; a spot cools after 4 episodes");
 		vm.runInContext("state.pack = null; state.cooldown = {}; state.danger = {}; state.dead_handled = false; state.safety_mult = 1", ctx);
 		Object.assign(character, { name: "Sanala", ...san, ctype: "mage", level: 51, map: "main", x: 0, y: 0, hp: 1000, max_hp: 1000 });

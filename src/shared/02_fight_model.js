@@ -1,7 +1,10 @@
 // =====================================================================
 // Monster data & the fight model
 // =====================================================================
-const pack_key = (p) => `${p.map}:${p.boundary.join(",")}`; // identifies a spawn area across reloads
+// identifies a spawn area across reloads: map, box and monster type. v25.56: the type too — spawns that share a box
+// (main: 6 squigs and 2 squigtoads) had one key, so the first type seen claimed it at the pick: squig (268 xp/s est)
+// hid squigtoad (~3,900 est) for good. "map:box" stays the front ("map" = key.split(":")[0]).
+const pack_key = (p) => `${p.map}:${p.boundary.join(",")}${p.mtype ? "#" + p.mtype : ""}`;
 // A spawn area is [x1, y1, x2, y2] with finite numbers and positive size (bad data would crash everything using it)
 function valid_boundary(b) {
 	return Array.isArray(b) && b.length >= 4 && b.slice(0, 4).every(Number.isFinite) && b[2] > b[0] && b[3] > b[1];
@@ -174,8 +177,8 @@ function expected_respawn(mtype, pack) {
 // monster count split evenly between them
 function pack_areas(name, pack) {
 	let areas = [];
-	if (pack.boundary) areas = [{ map: name, boundary: pack.boundary, count: pack.count }];
-	else if (pack.boundaries) areas = pack.boundaries.map((b) => ({ map: b[0], boundary: b.slice(1, 5), count: pack.count / pack.boundaries.length }));
+	if (pack.boundary) areas = [{ map: name, boundary: pack.boundary, count: pack.count, mtype: pack.type }];
+	else if (pack.boundaries) areas = pack.boundaries.map((b) => ({ map: b[0], boundary: b.slice(1, 5), count: pack.count / pack.boundaries.length, mtype: pack.type }));
 	return areas.filter((a) => valid_boundary(a.boundary) && map_ok(a.map));
 }
 function each_area(fn) {
@@ -420,12 +423,12 @@ function travel_s(map, boundary) {
 	return CFG.travel.cross_map_s * map_hops(character.map, map) + (Math.hypot(cx - sp[0], cy - sp[1]) / v) * 1.3;
 }
 function resolve_area(monster, map, boundary, count) {
-	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1 };
+	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1, mtype: monster };
 	// v19.1: already at a spawn of this monster → stay (a hunt for the snakes we were farming on main sent the party
 	// across maps to halloween's bigger spawn)
 	const cur = state.pack;
 	if (cur && cur.mtype === monster && (!map || cur.map === map) && valid_boundary(cur.boundary) && G.maps[cur.map])
-		return { map: cur.map, boundary: cur.boundary.slice(0, 4), count: cur.count || 1 };
+		return { map: cur.map, boundary: cur.boundary.slice(0, 4), count: cur.count || 1, mtype: monster };
 	let best = null;
 	each_area((pack, area) => {
 		if (pack.type !== monster) return;
@@ -433,7 +436,7 @@ function resolve_area(monster, map, boundary, count) {
 		const rank = (area.map === map ? 1e6 : 0) + area.count / (1 + travel_s(area.map, area.boundary) / 60);
 		if (!best || rank > best.rank) best = { ...area, rank };
 	});
-	return best && { map: best.map, boundary: best.boundary, count: best.count };
+	return best && { map: best.map, boundary: best.boundary, count: best.count, mtype: monster };
 }
 // Estimated xp/s at an area: xp per kill × kills/s, where kills/s is the lower of how fast we kill (ttk + walking)
 // and how fast the area refills (count / respawn). A measured rate replaces the estimate; unmeasured estimates are
