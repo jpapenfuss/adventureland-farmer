@@ -505,7 +505,8 @@ const state = {
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
 	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
 	last_target_at: Date.now(), // last time we had something to fight (idle detection)
-	best_score: 0,           // best free-choice pack's xp/s (reference for quest opportunity cost)
+	best_score: 0,           // best free-choice pack's rate in the farm mode's unit (the probe's reference)
+	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
 	measured_gold: {},       // v25.51: pack key -> measured base gold/s, the same way (saved; CFG.farm_mode "gold")

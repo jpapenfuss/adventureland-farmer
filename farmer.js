@@ -506,7 +506,8 @@ const state = {
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
 	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
 	last_target_at: Date.now(), // last time we had something to fight (idle detection)
-	best_score: 0,           // best free-choice pack's xp/s (reference for quest opportunity cost)
+	best_score: 0,           // best free-choice pack's rate in the farm mode's unit (the probe's reference)
+	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
 	measured_gold: {},       // v25.51: pack key -> measured base gold/s, the same way (saved; CFG.farm_mode "gold")
@@ -617,7 +618,7 @@ function meter_socket() {
 function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
-	const gold = (d?.mtype && G.monsters[d.mtype]?.gold) || 0; // v25.51: base gold, for the gold farm mode's rates
+	const gold = (d?.mtype && G.monster_gold?.[d.mtype]) || 0; // v25.51: base gold, for the gold farm mode's rates
 	if (state.session) { state.session.kc = (state.session.kc || 0) + xp; state.session.kg = (state.session.kg || 0) + gold; state.session.kc_n = (state.session.kc_n || 0) + 1; }
 }
 function spent() {
@@ -1185,9 +1186,10 @@ function resolve_area(monster, map, boundary, count) {
 // and how fast the area refills (count / respawn). A measured rate replaces the estimate; unmeasured estimates are
 // scaled by `realism` (how far off estimates have been elsewhere).
 function score_area(t, pack, area) {
-	const f = state.safe[t];
-	const est = kill_value(t, f) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-	return { est, score: meas_aged(pack_key(area), est * state.realism) };
+	const f = state.safe[t], kps = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+	const est = kill_value(t, f) * kps;
+	// xp: the spot's xp/s whatever the mode (v25.51: goals, hunts and quests weigh xp — state.best_xp)
+	return { est, score: meas_aged(pack_key(area), est * state.realism), xp: meas_aged(pack_key(area), (f.xp || 0) * kps * state.realism, "xp") };
 }
 // v24.3: a measurement's weight halves every CFG.meas_half_h hours since it was taken, the rest going to the estimate.
 // Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
@@ -1224,8 +1226,10 @@ function party_power() {
 // is the monster's base value per kill (G.monsters[].xp or .gold): the same for every camp, as base xp is.
 const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
 const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
+// Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)
+const monster_gold = (t) => G.monster_gold?.[t] || 0;
 // a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set)
-const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? G.monsters[t]?.gold || 0 : f?.xp ?? G.monsters[t]?.xp ?? 0);
+const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? monster_gold(t) : f?.xp ?? G.monsters[t]?.xp ?? 0);
 const rate_unit = () => (farm_kind() === "gold" ? "gold/s" : "xp/s");
 
 // xp/s measurement per pack (feeds the picker)
@@ -4293,7 +4297,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, measured_gold: state.measured_gold, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -4329,9 +4333,14 @@ function load_state() {
 	// every party kill) with own kills, so they're dropped once and re-measured
 	if (d.meas_v === 3) {
 		Object.assign(state.measured, d.measured || {});
-		Object.assign(state.measured_gold, d.measured_gold || {}); // v25.51 (its times are meas_at "gp:"/"gw:")
 		// measurements saved before v24.3 have no time: they start ageing now
 		const t0 = Date.now();
+		// v25.51: gold rates (their times: meas_at "gp:"/"gw:"). gold_v 1: base gold from G.monster_gold — the first
+		// v25.51 build read a field that doesn't exist and saved 0 for every camp; those are dropped once
+		if (d.gold_v === 1) {
+			Object.assign(state.measured_gold, d.measured_gold || {});
+			for (const k in state.measured_gold) { state.meas_at["gp:" + k] = d.meas_at?.["gp:" + k] || t0; if (d.meas_at?.["gw:" + k]) state.meas_at["gw:" + k] = d.meas_at["gw:" + k]; }
+		}
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
@@ -4418,7 +4427,7 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
 // =====================================================================
@@ -5721,7 +5730,7 @@ function camp_review() {
 	const moved = !!state.pack && pack_key(state.pack) !== before;
 	const other = (state.pick_table || []).filter((c) => !c.out && c.key !== before).sort((a, b) => (b.score || 0) - (a.score || 0))[0];
 	state.review_last = { at: now, why: goal_changed ? (dir ? `goal: ${state.directive.reason}` : "the goal ended") : stronger ? "the party is stronger" : `${CFG.camp_review_min} min at the camp`, moved,
-		text: moved ? `moved to ${state.pack.mtype}@${state.pack.map}` : `kept ${cur.mtype}@${cur.map}${other ? ` (next best ${other.mtype}@${other.map} ${Math.round(other.score)}${other.m ? " measured" : " est"})` : ""}` };
+		text: moved ? `moved to ${state.pack.mtype}@${state.pack.map}` : `kept ${cur.mtype}@${cur.map}${other ? ` (next best ${other.mtype}@${other.map} ${Math.round(other.score)} ${rate_unit()}${other.m ? " measured" : " est"})` : ""}` };
 	log_ev("review", { moved, to: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: state.review_last.why });
 	return moved;
 }
@@ -5732,7 +5741,7 @@ function camp_review() {
 function set_pack(p, label) {
 	if (!state.pack || !p || pack_key(state.pack) !== pack_key(p)) {
 		if (p) game_log(label, C.info);
-		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || "best xp/s" });
+		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || `best ${rate_unit()}` });
 		state.waypoints = p ? make_waypoints(p.boundary) : [];
 		state.wp = 0;
 		state.camp_at = Date.now(); // v24.84: the review clock
@@ -5832,7 +5841,8 @@ function pick_pack() {
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
 	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
-	state.best_score = best ? best.rate : 0;
+	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
+	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
 	if (probe_ready()) {
 		state.probe_at = now;
@@ -5875,7 +5885,7 @@ function pick_pack() {
 	// (72 changes in an hour, cgoo ↔ booboo, through the door between them).
 	if (cur && !cur.boss && !cur.probe && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
 		rest_camp(pack_key(cur), 300_000, now);
-	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} xp/s${meas()[pack_key(best)] ? " measured" : " est"})`);
+	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} ${rate_unit()}${meas()[pack_key(best)] ? " measured" : " est"})`);
 }
 // Patrol route: a 3x3 grid snaking through the area at 15%, 50% and 85% of its width/height, so the server shows us
 // every part of the pack (it only sends entities near us) without hugging the edges
@@ -5931,7 +5941,7 @@ function probe_check__fighter() {
 }
 // ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Best normal spot's xp/s, without being there (for a member that doesn't pick)
-function best_score() {
+function best_score(kind = farm_kind()) { // (v25.51: kind — "xp" for best_known_xps)
 	const prof = {};
 	let best = 0;
 	each_area((pack, area) => {
@@ -5939,8 +5949,8 @@ function best_score() {
 		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
 		const f = prof[t];
 		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
-		const est = kill_value(t, f) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-		best = Math.max(best, meas_aged(pack_key(area), est * state.realism));
+		const est = kill_value(t, f, kind) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+		best = Math.max(best, meas_aged(pack_key(area), est * state.realism, kind));
 	});
 	return best;
 }
@@ -6398,7 +6408,7 @@ function quest_directive(guide_only) {
 		if (!pickm || (!guided && total_s > CFG.quest_farm_max_h * 3600)) continue;
 		const f = fight_profile(pickm.monster);
 		// xp/s at that pack (items/s ÷ chance per kill = kills/s; × xp per kill); 1e-9 avoids dividing by zero
-		const qxp = meas_aged(pack_key(pickm), f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
+		const qxp = meas_aged(pack_key(pickm), f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0, "xp"); // (v25.51: xp)
 		const bk = best_known_xps();
 		if (!guided && bk > 0 && qxp < CFG.quest_farm_min_xp * bk) continue;
 		const sk = id + ":" + pickm.item, now = Date.now();
@@ -6602,13 +6612,13 @@ function event_tick__fighter() {
 // xp/s we'd get at a monster's best area (measured if we've been there, else estimated)
 function mt_xps(mt) {
 	let best = 0;
-	const tab = meas();
+	const tab = meas("xp"); // v25.51: xp rates whatever the farm mode
 	const fa = fight_profile(mt);
 	// v24.6: aged like spot picks (meas_aged)
 	each_area((pack, area) => {
 		if (pack.type !== mt || tab[pack_key(area)] === undefined) return;
 		const est = fa ? fa.xp * Math.min(1 / (fa.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism : tab[pack_key(area)];
-		best = Math.max(best, meas_aged(pack_key(area), est));
+		best = Math.max(best, meas_aged(pack_key(area), est, "xp"));
 	});
 	if (best) return best;
 	const f = fa;
@@ -6621,10 +6631,11 @@ function mt_xps(mt) {
 // best spot, computed (cached 60s).
 const best_known_xps = () => {
 	const now = Date.now();
-	if (state.best_score > 0 && now - (state.best_at || 0) < 600_000) return state.best_score;
+	// (v25.51: state.best_xp — xp/s at the pick in either farm mode; best_score is the mode's unit)
+	if (state.best_xp > 0 && now - (state.best_at || 0) < 600_000) return state.best_xp;
 	const c = state.best_ref;
 	if (c && now - c.at < 60_000) return c.v;
-	const v = best_score() || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
+	const v = best_score("xp") || Math.max(0, ...Object.values(meas("xp") || {}).filter(Number.isFinite));
 	state.best_ref = { at: now, v };
 	return v;
 };
@@ -6647,7 +6658,7 @@ function kills_per_s(mt) {
 	each_area((pack, area) => {
 		if (pack.type !== mt) return;
 		const est = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-		const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp)) / Math.max(1, f.xp); // v24.6: aged
+		const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp), "xp") / Math.max(1, f.xp); // v24.6: aged (v25.51: xp)
 		best = Math.max(best, kps);
 	});
 	return best;

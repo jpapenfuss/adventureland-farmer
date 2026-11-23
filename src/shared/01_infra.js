@@ -51,7 +51,7 @@ function meter_socket() {
 function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
-	const gold = (d?.mtype && G.monsters[d.mtype]?.gold) || 0; // v25.51: base gold, for the gold farm mode's rates
+	const gold = (d?.mtype && G.monster_gold?.[d.mtype]) || 0; // v25.51: base gold, for the gold farm mode's rates
 	if (state.session) { state.session.kc = (state.session.kc || 0) + xp; state.session.kg = (state.session.kg || 0) + gold; state.session.kc_n = (state.session.kc_n || 0) + 1; }
 }
 function spent() {

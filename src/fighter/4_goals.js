@@ -47,7 +47,7 @@ function quest_directive(guide_only) {
 		if (!pickm || (!guided && total_s > CFG.quest_farm_max_h * 3600)) continue;
 		const f = fight_profile(pickm.monster);
 		// xp/s at that pack (items/s ÷ chance per kill = kills/s; × xp per kill); 1e-9 avoids dividing by zero
-		const qxp = meas_aged(pack_key(pickm), f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0);
+		const qxp = meas_aged(pack_key(pickm), f ? f.xp * pickm.ips * party_n() / Math.max(1e-9, drop_rate(pickm.monster, pickm.item)) : 0, "xp"); // (v25.51: xp)
 		const bk = best_known_xps();
 		if (!guided && bk > 0 && qxp < CFG.quest_farm_min_xp * bk) continue;
 		const sk = id + ":" + pickm.item, now = Date.now();
@@ -251,13 +251,13 @@ function event_tick() {
 // xp/s we'd get at a monster's best area (measured if we've been there, else estimated)
 function mt_xps(mt) {
 	let best = 0;
-	const tab = meas();
+	const tab = meas("xp"); // v25.51: xp rates whatever the farm mode
 	const fa = fight_profile(mt);
 	// v24.6: aged like spot picks (meas_aged)
 	each_area((pack, area) => {
 		if (pack.type !== mt || tab[pack_key(area)] === undefined) return;
 		const est = fa ? fa.xp * Math.min(1 / (fa.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism : tab[pack_key(area)];
-		best = Math.max(best, meas_aged(pack_key(area), est));
+		best = Math.max(best, meas_aged(pack_key(area), est, "xp"));
 	});
 	if (best) return best;
 	const f = fa;
@@ -270,10 +270,11 @@ function mt_xps(mt) {
 // best spot, computed (cached 60s).
 const best_known_xps = () => {
 	const now = Date.now();
-	if (state.best_score > 0 && now - (state.best_at || 0) < 600_000) return state.best_score;
+	// (v25.51: state.best_xp — xp/s at the pick in either farm mode; best_score is the mode's unit)
+	if (state.best_xp > 0 && now - (state.best_at || 0) < 600_000) return state.best_xp;
 	const c = state.best_ref;
 	if (c && now - c.at < 60_000) return c.v;
-	const v = best_score() || Math.max(0, ...Object.values(meas() || {}).filter(Number.isFinite));
+	const v = best_score("xp") || Math.max(0, ...Object.values(meas("xp") || {}).filter(Number.isFinite));
 	state.best_ref = { at: now, v };
 	return v;
 };
@@ -296,7 +297,7 @@ function kills_per_s(mt) {
 	each_area((pack, area) => {
 		if (pack.type !== mt) return;
 		const est = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-		const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp)) / Math.max(1, f.xp); // v24.6: aged
+		const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp), "xp") / Math.max(1, f.xp); // v24.6: aged (v25.51: xp)
 		best = Math.max(best, kps);
 	});
 	return best;

@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, measured_gold: state.measured_gold, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -45,9 +45,14 @@ function load_state() {
 	// every party kill) with own kills, so they're dropped once and re-measured
 	if (d.meas_v === 3) {
 		Object.assign(state.measured, d.measured || {});
-		Object.assign(state.measured_gold, d.measured_gold || {}); // v25.51 (its times are meas_at "gp:"/"gw:")
 		// measurements saved before v24.3 have no time: they start ageing now
 		const t0 = Date.now();
+		// v25.51: gold rates (their times: meas_at "gp:"/"gw:"). gold_v 1: base gold from G.monster_gold — the first
+		// v25.51 build read a field that doesn't exist and saved 0 for every camp; those are dropped once
+		if (d.gold_v === 1) {
+			Object.assign(state.measured_gold, d.measured_gold || {});
+			for (const k in state.measured_gold) { state.meas_at["gp:" + k] = d.meas_at?.["gp:" + k] || t0; if (d.meas_at?.["gw:" + k]) state.meas_at["gw:" + k] = d.meas_at["gw:" + k]; }
+		}
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
@@ -134,4 +139,4 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }

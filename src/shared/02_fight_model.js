@@ -418,9 +418,10 @@ function resolve_area(monster, map, boundary, count) {
 // and how fast the area refills (count / respawn). A measured rate replaces the estimate; unmeasured estimates are
 // scaled by `realism` (how far off estimates have been elsewhere).
 function score_area(t, pack, area) {
-	const f = state.safe[t];
-	const est = kill_value(t, f) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
-	return { est, score: meas_aged(pack_key(area), est * state.realism) };
+	const f = state.safe[t], kps = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+	const est = kill_value(t, f) * kps;
+	// xp: the spot's xp/s whatever the mode (v25.51: goals, hunts and quests weigh xp — state.best_xp)
+	return { est, score: meas_aged(pack_key(area), est * state.realism), xp: meas_aged(pack_key(area), (f.xp || 0) * kps * state.realism, "xp") };
 }
 // v24.3: a measurement's weight halves every CFG.meas_half_h hours since it was taken, the rest going to the estimate.
 // Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
@@ -457,8 +458,10 @@ function party_power() {
 // is the monster's base value per kill (G.monsters[].xp or .gold): the same for every camp, as base xp is.
 const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
 const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
+// Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)
+const monster_gold = (t) => G.monster_gold?.[t] || 0;
 // a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set)
-const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? G.monsters[t]?.gold || 0 : f?.xp ?? G.monsters[t]?.xp ?? 0);
+const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? monster_gold(t) : f?.xp ?? G.monsters[t]?.xp ?? 0);
 const rate_unit = () => (farm_kind() === "gold" ? "gold/s" : "xp/s");
 
 // xp/s measurement per pack (feeds the picker)
