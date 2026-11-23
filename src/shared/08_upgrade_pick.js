@@ -205,10 +205,13 @@ async function upg_fetch_copy(P) {
 	const b = CFG.bank && (state.bank_gear || []).filter((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > have).sort((x, y) => (y.level || 0) - (x.level || 0))[0];
 	if (!b) return true;
 	// a failed bank visit pauses the project 10 min (any reason: an unknown one mustn't end it and forget the copy)
-	try { await task_bank([{ name: P.name, level: b.level || 0, exact: true, key: `upgin:${P.name}` }]); }
+	try { await task_bank([{ name: P.name, level: b.level || 0, exact: true, ...(b.stat_type ? { stat_type: b.stat_type } : {}), key: `upgin:${P.name}` }]); }
 	catch (e) { skip("upg:" + P.name, 600_000, "bank: " + why(e)); game_log(`upgrade ${P.name}: fetching its copy from the bank: ${why(e)}; retrying in 10 min`, C.dim); return false; }
-	if (best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
-	state.bank_gear = (state.bank_gear || []).filter((i) => i !== b);
+	// v25.37 (Fable): the copy didn't arrive — drop it from the record by name and level (remember_bank rebuilt the
+	// array, so the identity filter missed it), or every failed step walked to the bank for it again
+	const got = best_level_held(P.name) > have;
+	if (!got) state.bank_gear = (state.bank_gear || []).filter((i) => !(i.name === P.name && (i.level || 0) === (b.level || 0) && !i.p));
+	if (got || best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
 	game_log(`upgrade ${P.name}: the copy isn't in the bank any more, and no NPC sells one — project ended`, C.dim);
 	state.upg = null; state.upg_pick_at = 0;
 	return false;
@@ -223,6 +226,13 @@ async function task_upgrade() {
 		const P = state.upg;
 		if (!P) break;
 		if (merchant_does_it()) { game_log(`upgrade project ${P.name} handed to the merchant`, C.dim); state.upg = null; break; } // v25.17: it came online
+		// v25.37: a failed step destroyed the copy in the bags — the next best is fetched from the bank before the next step.
+		// (The fetch ran only at the start of a run, so the next step found no copy: input_missing ended the shield project
+		// with a shield+3 and a +0 in the bank, and paused it a day — 7:29 PM report.)
+		// (and whenever the bank holds a better copy below the target than the bags: a +0 left in the bags isn't rolled
+		// while the bank has the +3)
+		if ((state.bank_gear || []).some((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > best_level_held(P.name)) && !(await upg_fetch_copy(P))) break;
+		if (!state.upg) break;
 		const top = best_level_held(P.name);
 		if (top >= P.to) {
 			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
@@ -263,6 +273,9 @@ async function task_upgrade() {
 			// v24.7: a transient error (walk/call timeout, distance...) pauses the project, it doesn't end it: ending it freed the
 			// copy (banked, never a project input again), and the re-pick rebought from +0 with the abort budget reset
 			if (TRANSIENT.has(why(e))) { skip("upg:" + P.name, pause_ms(e, 600_000), why(e)); game_log(`upgrade ${P.name}: ${why(e)}; retrying in 10 min`, C.dim); break; }
+			// v25.37: no copy to work on (none in the bags or the bank, none to buy): the project ends without a day's pause —
+			// a copy arriving (a drop, Ponty, a share) makes it a candidate again at once
+			if (why(e) === "input_missing") { skip("upg:" + P.name, 600_000, why(e)); game_log(`upgrade ${P.name}: no copy left to work on; project ended`, C.dim); state.upg = null; break; }
 			// v24.5: refused for its odds, the next step will be refused again: remember the level reached, so the project
 			// isn't re-picked a day later to rebuild a copy at that level from +0 (and stopped there again, every day)
 			if (e?.chance !== undefined) upg_cap(P.name, Math.max(0, P.max ?? top));
