@@ -3325,7 +3325,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("skip('upg:amulet119', 60000, 'test')");
 			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for a piece the planner has paused");
 			R("state.gear_skip = {}; state.upg = { name: 'amulet119', to: 6, for: 'Sanala' }");
-			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for the piece the current project builds");
+			// (v25.36: the current project's piece is no longer refused outright — with no copy held and no NPC selling it,
+			// it goes through this head-start rule and its bound, not priced as skipped steps)
+			assert(!/skips the project/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...the project's piece with no copy held: the head-start rule, not 'skips the project's steps'");
 			// v25.36: a copy of the project's piece above our best one, cheaper than the steps it skips, is bought
 			{
 				const k0 = character.items.findIndex((i) => !i); character.items[k0] = { name: "amulet119", level: 0 };
@@ -3336,6 +3338,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				assert(/skips the project's steps: \+0 → \+3/.test(ctx.__sp(cheap)), `a +3 of the project's piece at half the steps' cost: bought (${ctx.__sp(cheap)})`);
 				assert(!/skips/.test(ctx.__sp({ ...cheap, price: steps * 2 })), "...not at twice the steps' cost");
 				assert(!/skips/.test(ctx.__sp({ name: "amulet119", level: 0, price: 1 })), "...nor one no better than ours");
+				character.items[k0] = null; R("sold_c.set('amulet119', false)");
+				assert(!/skips/.test(ctx.__sp({ name: "amulet119", level: 0, price: 480000 })), "no copy held, no NPC sells it: not priced as skipped steps (the head-start rule's bound applies)");
+				R("sold_c.delete('amulet119')"); character.items[k0] = { name: "amulet119", level: 0 };
 				ctx.calculate_item_value = civ0; if (civ0 === undefined) delete ctx.calculate_item_value; character.items[k0] = null;
 			}
 			R("state.upg = null; globalThis.__us = CFG.upgrade_spend; CFG.upgrade_spend = 0");
