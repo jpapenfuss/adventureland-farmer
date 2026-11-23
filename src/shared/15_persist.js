@@ -21,11 +21,19 @@ function save_state() {
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 // v25.56: pack keys gained the monster type ("map:box" → "map:box#type"). A saved key's type is the first farmable
-// type of that box in map order — the one the pick saw first, so the one a rate, a rest or a death was booked to.
+// type of that box in map order that the pick would farm (its own filter: grow, or respawn <= max_respawn and count >=
+// min_count) — the one it claimed the box for, so the one a rate, a rest or a death was booked to (Fable: winterland's
+// stompy and halloween's fvampire come before wolf and ghost in their boxes); else the first farmable type.
 // A key whose box isn't in G.maps (any more) is kept as it was: nothing looks it up.
 function migrate_pack_keys(d) {
-	const type_of = new Map();
-	each_area((pack, area) => { const k = `${area.map}:${area.boundary.join(",")}`; if (!type_of.has(k) && farmable_type(pack.type)) type_of.set(k, pack.type); });
+	const type_of = new Map(), first = new Map();
+	each_area((pack, area) => {
+		const k = `${area.map}:${area.boundary.join(",")}`, t = pack.type;
+		if (!farmable_type(t)) return;
+		if (!first.has(k)) first.set(k, t);
+		if (!type_of.has(k) && (pack.grow || (expected_respawn(t, pack) <= CFG.max_respawn && pack.count >= CFG.min_count))) type_of.set(k, t);
+	});
+	for (const [k, t] of first) if (!type_of.has(k)) type_of.set(k, t);
 	const conv = (k) => (k.includes("#") || !type_of.has(k) ? k : `${k}#${type_of.get(k)}`);
 	const remap = (o, pre = /^/) => {
 		if (!o || typeof o !== "object") return o;

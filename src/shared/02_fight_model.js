@@ -526,5 +526,5 @@ function end_session() {
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
 	const r_est = s.kind === "gold" ? grate : rate;
 	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
-	game_log(`${s.key}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
+	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }

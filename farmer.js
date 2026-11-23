@@ -1302,11 +1302,19 @@ function end_session() {
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
 	const r_est = s.kind === "gold" ? grate : rate;
 	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
-	game_log(`${s.key}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
+	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }
 // v25.31: a camp's rest only ever lengthens (a 30-min rest written over an 8-hour death rest shortened it)
 function rest_camp(k, ms, now = Date.now()) {
 	if (k) state.cooldown[k] = Math.max(state.cooldown[k] || 0, now + ms);
+}
+// v25.56: a rest that belongs to the place, not the monster (something keeps coming there, no safe way there): every
+// type sharing the box (pack keys carry the type now)
+function rest_place(p, ms, now = Date.now()) {
+	if (!p || !valid_boundary(p.boundary)) return;
+	const box = p.boundary.join(",");
+	rest_camp(pack_key(p), ms, now);
+	for (const pk of G.maps[p.map]?.monsters || []) if (pk.boundary && pk.boundary.join(",") === box) rest_camp(pack_key({ map: p.map, boundary: p.boundary, mtype: pk.type }), ms, now);
 }
 // v25.29/v25.31: a death at a camp: each one there within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day).
 // Every fighter records every member's death (its own in on_death, the others' from their verdict), so the tank —
@@ -1827,7 +1835,7 @@ async function travel(dest) {
 			// v24.54: no safe way to our own camp — whoever chose it: rest it 30 min and pick again, don't stand and retry
 			const P_ = state.pack;
 			if (e?.reason === "deadly_route" && P_ && !is_follower() && dest?.map === P_.map) {
-				rest_camp(pack_key(P_), 1_800_000);
+				rest_place(P_, 1_800_000);
 				if (state.probe?.mtype === P_.mtype) { skip("probe:" + P_.mtype, 6 * 3600_000, "no safe way there"); state.probe = null; }
 				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
 				state.pack = null; state.last_pick = 0;
@@ -4349,11 +4357,19 @@ function save_state() {
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 // v25.56: pack keys gained the monster type ("map:box" → "map:box#type"). A saved key's type is the first farmable
-// type of that box in map order — the one the pick saw first, so the one a rate, a rest or a death was booked to.
+// type of that box in map order that the pick would farm (its own filter: grow, or respawn <= max_respawn and count >=
+// min_count) — the one it claimed the box for, so the one a rate, a rest or a death was booked to (Fable: winterland's
+// stompy and halloween's fvampire come before wolf and ghost in their boxes); else the first farmable type.
 // A key whose box isn't in G.maps (any more) is kept as it was: nothing looks it up.
 function migrate_pack_keys(d) {
-	const type_of = new Map();
-	each_area((pack, area) => { const k = `${area.map}:${area.boundary.join(",")}`; if (!type_of.has(k) && farmable_type(pack.type)) type_of.set(k, pack.type); });
+	const type_of = new Map(), first = new Map();
+	each_area((pack, area) => {
+		const k = `${area.map}:${area.boundary.join(",")}`, t = pack.type;
+		if (!farmable_type(t)) return;
+		if (!first.has(k)) first.set(k, t);
+		if (!type_of.has(k) && (pack.grow || (expected_respawn(t, pack) <= CFG.max_respawn && pack.count >= CFG.min_count))) type_of.set(k, t);
+	});
+	for (const [k, t] of first) if (!type_of.has(k)) type_of.set(k, t);
 	const conv = (k) => (k.includes("#") || !type_of.has(k) ? k : `${k}#${type_of.get(k)}`);
 	const remap = (o, pre = /^/) => {
 		if (!o || typeof o !== "object") return o;
@@ -5753,7 +5769,7 @@ function keep_away(e) {
 		state.keep_log.push({ t: now, key, mt: e.mtype });
 		log_ev("keep_away", { mtype: e.mtype, pack: P?.mtype || null });
 		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 4) {
-			rest_camp(key, CFG.pack_cooldown_ms, now);
+			rest_place(P, CFG.pack_cooldown_ms, now);
 			state.keep_log = [];
 			state.last_pick = 0;
 			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);
@@ -7400,7 +7416,7 @@ function why_not_fighter__fighter(mtype) {
 		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
 	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
 	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
-	if (sk.length) L(`  skipped as dangerous at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split(":")[0]} (${w})`).join("; ")}`);
+	if (sk.length) L(`  skipped as dangerous at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split("#")[1] ? k.split("#")[1] + "@" : ""}${k.split(":")[0]} (${w})`).join("; ")}`);
 	const areas = [];
 	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
 	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);

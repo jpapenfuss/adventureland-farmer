@@ -72,7 +72,7 @@ function keep_away(e) {
 		state.keep_log.push({ t: now, key, mt: e.mtype });
 		log_ev("keep_away", { mtype: e.mtype, pack: P?.mtype || null });
 		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 4) {
-			rest_camp(key, CFG.pack_cooldown_ms, now);
+			rest_place(P, CFG.pack_cooldown_ms, now);
 			state.keep_log = [];
 			state.last_pick = 0;
 			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);

@@ -197,6 +197,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(JSON.stringify(d56) === JSON.stringify({ measured: { "main:100,100,400,400#goo": 7, "main:9,9,9,9": 3 }, measured_gold: {}, cooldown: { "main:100,100,400,400#goo": 5 },
 			camp_deaths: { "main:100,100,400,400#goo": [1] }, meas_at: { "p:main:100,100,400,400#goo": 11, "gw:main:100,100,400,400#goo": 12, "w:main:9,9,9,9": 13 } }),
 			`old keys migrated to the box's first type, unknown boxes kept, prefixes kept (${JSON.stringify(d56)})`);
+		// the claiming type: a lone slow-respawn type listed first (winterland's stompy before the wolves) didn't claim it
+		ctx.G.monsters.boss56 = { ...ctx.G.monsters.goo, respawn: 2000 };
+		ctx.G.maps.main.monsters.push({ type: "boss56", count: 1, boundary: [700, 700, 900, 900] }, { type: "goo", count: 5, grow: true, boundary: [700, 700, 900, 900] });
+		const d56b = { measured: { "main:700,700,900,900": 4 } }; ctx.__d56 = d56b; vm.runInContext("migrate_pack_keys(__d56)", ctx);
+		assert(JSON.stringify(d56b.measured) === '{"main:700,700,900,900#goo":4}', `the type the pick farmed claims the box, not a lone boss listed first (${JSON.stringify(d56b.measured)})`);
+		// a rest for the place (no safe way there, something keeps coming) rests every type of the box
+		vm.runInContext("state.cooldown = {}; rest_place({ map: 'main', boundary: [700, 700, 900, 900], mtype: 'goo' }, 600000)", ctx);
+		assert(vm.runInContext("state.cooldown['main:700,700,900,900#goo'] > Date.now() && state.cooldown['main:700,700,900,900#boss56'] > Date.now()", ctx), "a place rest covers every type in the box");
+		ctx.G.maps.main.monsters.splice(-2, 2); delete ctx.G.monsters.boss56;
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.toad56; delete ctx.__d56;
 		vm.runInContext("state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx); }
 	// v25.52: the report's units follow the mode
