@@ -3481,6 +3481,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("elixir_trip_at = 0"); character.items[5].l = "l";
 		assert(!R("elixir_target()"), "v25.49: a locked latte stack isn't a trip (nothing could be sent)");
 		delete character.items[5].l;
+		// v25.53: short of gold, the merchant walks to a fighter that holds gold_trip_min above fund_keep (dump_gold)
+		{ const g0 = character.gold; R("elixir_trip_at = Date.now(); gold_trip_at = 0; state.fund_need = 0; state.partners.Sanala.gold = 1.2e6");
+			character.gold = 425_000;
+			assert(R("merchant_job()?.name") === "Sanala", `v25.53: at 425k, a fighter with 700k spare is a gold trip (${R("merchant_job()?.name")})`);
+			R("state.partners.Sanala.gold = 600_000");
+			assert(!R("gold_target()"), "v25.53: ...not for 100k spare (under gold_trip_min)");
+			R("state.partners.Sanala.gold = 1.2e6"); character.gold = 5e6;
+			assert(!R("gold_target()"), "v25.53: ...nor with our own gold well above upgrade_keep and no funds wait");
+			character.gold = 425_000; R("gold_trip_at = Date.now()");
+			assert(!R("gold_target()"), "v25.53: ...nor within 15 min of the last");
+			R("gold_trip_at = 0; elixir_trip_at = 0; delete state.partners.Sanala.gold"); character.gold = g0; }
 		R("merchant_reach_ok = __mro; elixir_trip_at = 0");
 		R("state.partners.Sanala.elx = 3333"); ctx.send_item = (to, k, q) => { sent.push([to, q]); return Promise.resolve(); }; await R("give_elixir(state.partners.Sanala)"); ctx.send_item = si0;
 		assert(sent.length === 1, "...and none again while it holds some");

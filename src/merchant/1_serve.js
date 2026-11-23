@@ -41,6 +41,19 @@ function elixir_target() {
 	if (!E || !is_merchant() || !character.items.some((i) => i && i.name === E.name && !i.l) || Date.now() - elixir_trip_at < 600_000) return null;
 	return partners().find((p) => p.ctype !== "merchant" && p.elx === 0 && merchant_reach_ok(p)) || null;
 }
+// v25.53 (5:26 AM report: the merchant at 425k, a project "waiting for 1.1M gold" and compounds paused on a 6k
+// scroll, while the fighters held 1.0-1.2M each): fighters hand over their gold above fund_keep only with us within
+// 300 px (merchant_handoff, dump_gold), and they hadn't been to town for 94 min — so we go to them. When we're short
+// (a funds wait, or under upgrade_keep + gold_trip_min) and a fighter we can reach has gold_trip_min above fund_keep:
+// a trip to the richest, at most one per gold_trip_ms.
+let gold_trip_at = 0;
+function gold_target() {
+	const M = CFG.merchant, min = M.gold_trip_min || 0;
+	if (!is_merchant() || !min || Date.now() - gold_trip_at < (M.gold_trip_ms || 900_000)) return null;
+	if (!(state.fund_need > 0 || character.gold < upgrade_keep() + min)) return null;
+	const spare = (p) => (p.gold || 0) - M.fund_keep;
+	return partners().filter((p) => p.ctype !== "merchant" && spare(p) >= min && merchant_reach_ok(p)).sort((a, b) => spare(b) - spare(a))[0] || null;
+}
 // Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
 let token_trip_at = 0;
 const token_target = () => (is_merchant() && held_any("monstertoken") > 0 && Date.now() - token_trip_at > 1_800_000 ?
@@ -136,6 +149,7 @@ async function serve(f) {
 	const Wn = state.upg?.worn, for_worn = !!Wn && !Wn.got && Wn.who === f.name;
 	if (for_worn) worn_trip_at = Date.now();
 	if (f.elx === 0) elixir_trip_at = Date.now(); // v25.48: elixir_target's 10-min slot
+	if (gold_target()?.name === f.name) gold_trip_at = Date.now(); // v25.53: gold_target's slot
 	state.serving = f.name;
 	// v24.7: only the pieces for this fighter (marking every piece paused deliveries to everyone else for 20 min)
 	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type) && best_fighter_for(it)?.name === f.name) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();

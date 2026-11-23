@@ -1,4 +1,4 @@
-const VERSION = "25.52"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.53"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -370,6 +370,8 @@ const CFG = {
 		// v24.90 (owner): every fighter near the merchant hands it ALL its gold above fund_keep — the
 		// merchant runs the upgrades. (It used to top the merchant up to `float` only, from the richest fighter.)
 		dump_gold: true,
+		// v25.53: the merchant walks to a fighter for its gold (dump_gold) when short — gold_target, merchant/1_serve.js
+		gold_trip_min: 300_000, gold_trip_ms: 900_000,
 		mluck_range: 250,      // px; mluck (merchant level 40+) on every fighter in range lacking ours
 		// Stand: while idle at home the merchant opens its stand (16 trade slots) and lists only the item names in
 		// stand.list (owner's rule: nothing is sold unless the owner lists it; empty by default) — plus Merrit's decoy,
