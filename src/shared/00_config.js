@@ -1,4 +1,4 @@
-const VERSION = "25.44"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.46"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -168,7 +168,8 @@ const CFG = {
 	// v25.39: a fighter's worn piece is a project when we hold no spare copy — only steps at upgrade_worn.min_chance or
 	// better (base odds, and the server's preview), handed over in town, given up after wait_ms without it
 	upgrade_worn: { enabled: true, min_chance: 0.9, wait_ms: 1_800_000 },
-	upgrade_spend: 0.5,        // a project may cost at most 50% of the gold it may draw on (v25.38: was 20%; the expected cost)
+	// v25.46: upgrades and compounds spend all gold above this (and the role's reserve); no earnings test, no fraction
+	upgrade_keep: 1_000_000,
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
 	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)
 	merchant_upgrade_steps: 60, // v24.92: the merchant's — it lives in town; 8 a run made it start a run every minute
