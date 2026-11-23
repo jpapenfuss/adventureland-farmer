@@ -258,7 +258,7 @@ function worn_waiting() {
 		state.upg = null; state.upg_pick_at = 0;
 		return false;
 	}
-	town_reason.upgrade = `waiting for ${W.who} to hand over its ${P.name}+${W.level} (in town)`;
+	town_reason.upgrade = `waiting for ${W.who} to hand over its ${P.name}+${W.level} (we go to it)`;
 	return true;
 }
 async function task_upgrade() {

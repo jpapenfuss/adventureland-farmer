@@ -22,7 +22,18 @@ function merchant_job() {
 	const urgent = partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
 		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0];
 	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
-	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || gear_target();
+	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || worn_target() || gear_target();
+}
+// v25.43: our upgrade project waits for a fighter's worn piece → walk out to it (serve waits by it; the fighter hands the
+// piece over at the camp, between fights). One trip per 10 min.
+let worn_trip_at = 0;
+function worn_target() {
+	const W = state.upg?.worn;
+	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
+	const p = state.partners[W.who];
+	if (!p || !fresh(p) || p.rip) return null;
+	worn_trip_at = Date.now();
+	return p;
 }
 // Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
 let donate_at = 0;
