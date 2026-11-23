@@ -50,6 +50,8 @@ function collect_list() { return []; }
 function collect_due() { return []; }
 function collect_key() { return ""; }
 async function task_collect() { return 0; }
+async function task_worn_handover() { return 0; } // v25.39: fighters only
+function worn_for_me() { return null; }
 function set_piece_plan() { return null; }
 function set_piece_fetch() { return []; }
 function set_piece_start() {}

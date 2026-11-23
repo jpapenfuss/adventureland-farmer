@@ -13,6 +13,16 @@ function collect_due() {
 	const now = Date.now(), T_ = CFG.merchant.collect_retry_min * 60_000;
 	return collect_list().filter((g) => now - ((state.collect_try || {})[collect_key(g)] || 0) > T_);
 }
+// v25.39: on a town run, the worn piece the merchant's project asked us for: walk to it and wait while it's handed over
+// (merchant_handoff does that within 300px, in town)
+async function task_worn_handover() {
+	const W = worn_for_me(), M = merchant_hb();
+	if (!W || !M) return 0;
+	await go({ map: M.map, x: M.x, y: M.y });
+	const t0 = Date.now(), has = () => Object.values(character.slots || {}).concat(character.items).some((i) => i && i.name === W.name && (i.level || 0) === W.level);
+	while (Date.now() - t0 < CFG.merchant.collect_wait_s * 1000 && has() && worn_for_me()) { state.errand_at = Date.now(); set_message(`town: handing ${W.name} to ${M.name} to upgrade`); await sleep_ms(1000); }
+	return has() ? 0 : 1;
+}
 // On a town run: walk to the merchant and wait for our piece (its share_gear hands it over within gear_share_range)
 async function task_collect() {
 	const mine = collect_list(true);
@@ -152,12 +162,19 @@ function party_trip_check(due, what) {
 	// v24.75: the merchant holds an upgrade for one of us → the party goes to town for it, ahead of deferrable work
 	const coll = is_follower() ? [] : collect_due();
 	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
+	// v25.39: the merchant's project waits for a member's worn piece → the party goes to town to hand it over (one try
+	// per collect_retry_min)
+	// (only with the merchant in town, where the hand-over happens; the try is spent when the trip starts — Fable)
+	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
+	const worn_ask = !!WW && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px && (CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
+	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
 		if (walking()) { halt("town_check"); return true; }
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
 		if (state.town_runs.length < 6) {
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
 			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
+			if (worn_ask) state.worn_try_at = Date.now();
 			game_log(`Town: the party goes — ${asks.join(", ")}${what.length ? `; ours: ${what.join("+")}` : ""}`, C.dim);
 			if (town_run(due)) ptown_start(what.length ? what : ["a member's needs"]);
 			return true;

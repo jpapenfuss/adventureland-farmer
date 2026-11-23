@@ -38,6 +38,24 @@ async function merchant_handoff() {
 			await send_own_gold(M.name, g).then(() => game_log(`merchant: sent ${M.name} ${g} gold`, C.ok)).catch(() => {});
 		}
 		if ((M.esize ?? 0) <= 2) return;
+		// v25.39: the merchant's upgrade project wants a piece we wear: off and over — in town only (in_town: not just the
+		// main map, Fable), nothing on us; if it's already off (a failed send), from the bags
+		const WW = worn_for_me();
+		if (WW && in_town() && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
+			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b && (i.stat_type || null) === (WW.stat_type || null);
+			const w = character.slots?.[WW.slot];
+			if (is_it(w) && character.esize >= 1) {
+				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (before the unequip: equip_upgrades runs every 5 s)
+				await T(unequip(WW.slot), 5000).catch(() => {});
+				await until(() => character.items.some(is_it), 2000);
+			}
+			const k = character.items.findIndex(is_it);
+			if (k >= 0) {
+				await T(send_item(M.name, k, 1)).then(() => { game_log(`merchant: handed over our ${WW.name}+${WW.level} (${WW.slot}) to be upgraded`, C.ok); log_ev("give", { to: M.name, item: `${WW.name}+${WW.level}`, worn: true }); })
+					.catch((er) => { delete state.gear_skip[`equip:${WW.name}:${WW.level}`]; game_log(`merchant: handing over ${WW.name}: ${why(er)} (it can go back on)`, C.dim); });
+				return;
+			}
+		}
 		// a must-hold item we bought for the merchant: hand it over (we keep our own copy)
 		for (const n in state.hold_for) {
 			if (!(M.need || []).includes(n)) { if (held_any(n) < 2 || Date.now() - state.hold_for[n].at > 86_400_000) delete state.hold_for[n]; continue; }
@@ -299,6 +317,8 @@ function suicide(why_) {
 // ---- role functions (v25.11): the merchant's own versions are in merchant/0_loop.js ----
 // The merchant's last heartbeat while it's fresh (null if none)
 function merchant_hb() { return fresh(state.merchant) && state.merchant.name === CFG.merchant?.name ? state.merchant : null; }
+// v25.39: the worn piece the merchant's upgrade project asks us for, if it's us
+function worn_for_me() { const W = merchant_hb()?.want_worn; return W && W.to === character.name ? W : null; }
 // Who does the shared work (compounding, upgrade/craft projects, town thresholds) must not flip with a single missed
 // heartbeat (the merchant skips beats when its call budget is tight): "merchant online" = heard within 10 minutes
 function merchant_recent() {
