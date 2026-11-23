@@ -168,6 +168,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 13) fight model
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("!!state.safe.goo", ctx), "level-1 goo is safe");
+	// v25.51: the farm mode picks the camp — a twin of goo with less xp and more gold wins only in gold mode
+	{ ctx.G.monsters.richgoo = { ...ctx.G.monsters.goo, xp: 5, gold: 50 }; const g0 = ctx.G.monsters.goo.gold; ctx.G.monsters.goo.gold = 2;
+		ctx.G.maps.main.monsters.push({ type: "richgoo", count: 5, boundary: [500, 100, 800, 400] });
+		vm.runInContext("state.measured = {}; state.measured_gold = {}; state.cooldown = {}; CFG.farm_mode = 'xp'; pick_pack()", ctx);
+		const px = vm.runInContext("state.pack && state.pack.mtype", ctx);
+		vm.runInContext("CFG.farm_mode = 'gold'; state.last_pick = 0; pick_pack()", ctx);
+		const pg = vm.runInContext("state.pack && state.pack.mtype", ctx);
+		vm.runInContext("CFG.farm_mode = 'xp'", ctx);
+		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; ctx.G.monsters.goo.gold = g0; if (g0 === undefined) delete ctx.G.monsters.goo.gold;
+		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
+		assert(px === "goo" && pg === "richgoo", `v25.51: xp mode picks goo, gold mode the gold-rich twin (${px} / ${pg})`); }
 	const elite = { id: "e1", type: "monster", mtype: "goo", level: 12, hp: 650, max_hp: 650, attack: 450, frequency: 0.8, speed: 15, xp: 1200 };
 	assert(!vm.runInContext("live_ok", ctx)(elite), "levelled goo with 450 attack rejected by live check");
 	const normal = { id: "n1", type: "monster", mtype: "goo", hp: 100, max_hp: 100, attack: 5, speed: 6, xp: 10 };
@@ -2671,6 +2682,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, start: Date.now() - 100000 };
 			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
 		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
+		// v25.51: base gold/s measured beside it, whatever the farm mode
+		{ const g0 = ctx.G.monsters.goo.gold; ctx.G.monsters.goo.gold = 20;
+			vm.runInContext(`state.measured_gold = {}; state.session = { key: "main:1,1,9,7", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, start: Date.now() - 100000 };
+				for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
+			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 2 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.51: 10 kills x 20 gold / 100s = 2 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
+			assert(vm.runInContext("meas()['main:1,1,9,7'] === state.measured['main:1,1,9,7'] && (CFG.farm_mode = 'gold', meas()['main:1,1,9,7'] === state.measured_gold['main:1,1,9,7'])", ctx), "v25.51: meas() follows the farm mode");
+			vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
+			ctx.G.monsters.goo.gold = g0; if (g0 === undefined) delete ctx.G.monsters.goo.gold; }
 		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:1,1,9,8'] === undefined", ctx), "together with no kill_credit in the session: not measured");
 		vm.runInContext("state.measured = {}", ctx);

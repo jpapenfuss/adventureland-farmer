@@ -166,7 +166,7 @@ function probe_pick() {
 			if (area_danger(area, mt) || party_route_danger(area.map)) return;
 			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
-			const raw = m.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
+			const raw = kill_value(mt, null) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
 			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
 			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
@@ -233,7 +233,7 @@ function pick_pack() {
 			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
 			state.probe_none = null;
 			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.raw, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
-				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} xp/s`);
+				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} ${rate_unit()}`);
 		}
 	}
 
@@ -327,7 +327,7 @@ function best_score() {
 		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
 		const f = prof[t];
 		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
-		const est = f.xp * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
+		const est = kill_value(t, f) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));
 		best = Math.max(best, meas_aged(pack_key(area), est * state.realism));
 	});
 	return best;

@@ -25,7 +25,7 @@ function best_source(item) {
 		each_area((pack, area) => {
 			if (pack.type !== mt) return;
 			const est = Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack)) * state.realism;
-			const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp)) / Math.max(1, f.xp); // measured (aged) xp/s ÷ xp per kill
+			const kps = meas_aged(pack_key(area), est * Math.max(1, f.xp), "xp") / Math.max(1, f.xp); // (v25.51: xp rates, whatever the farm mode) // measured (aged) xp/s ÷ xp per kill
 			const ips = (rate * kps) / party_n();
 			if (!best || ips > best.ips) best = { monster: mt, ...area, ips };
 		});

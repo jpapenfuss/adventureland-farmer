@@ -1,4 +1,4 @@
-const VERSION = "25.49"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.51"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -27,6 +27,9 @@ const CFG = {
 	danger_px: 400,            // v24.10: spots this close to a spawn of an aggressive monster we can't take on aren't farmed
 	keep_px: 220,              // v24.14: step away from a monster we can't take on that may attack, once it's this close
 	keep_close_px: 120,        // v24.25: ...and coming our way, or already this close (was 300, whatever its direction)
+	// v25.51: what camps are chosen for — "xp" (xp/s) or "gold" (base gold of the kills per second). Same camp logic
+	// either way (estimate, measurement, ageing, the walk, safety); both rates are measured at every camp. Not enabled.
+	farm_mode: "xp",
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	// v24.84 (owner: explore camps for the best return; re-evaluate them as gear and levels improve): the tank reviews
 	// its camp every camp_review_min, or after camp_review_early_min once the party has grown stronger (an average level
@@ -505,6 +508,7 @@ const state = {
 	best_score: 0,           // best free-choice pack's xp/s (reference for quest opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
+	measured_gold: {},       // v25.51: pack key -> measured base gold/s, the same way (saved; CFG.farm_mode "gold")
 	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
