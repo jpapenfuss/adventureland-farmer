@@ -1061,7 +1061,7 @@ function deadly_areas(map) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
-		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 60 });
+		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 120 }); // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
 	return list;
@@ -1175,7 +1175,7 @@ const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(
 // 0.2 (under the 0.5 above) and slower than it, but range 280 and 320 magical a hit — 2,749 damage in the 10 s it
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
 // rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed). Such a
-// monster can't chase us, so deadly_areas keeps the walk out of its range (+60 px), not danger_px.
+// monster can't chase us, so deadly_areas keeps the walk out of its range (+120 px), not danger_px.
 function merchant_threat(t, v) {
 	const m = G.monsters[t];
 	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
@@ -1969,7 +1969,10 @@ function gear_stats(item, ctype) {
 	for (const [k, v] of Object.entries(mod || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
 	// v25.55: the server floors MP per attack at 1 — a saving counts only down to there: the class's own cost at our
 	// level (calculate_player_stats: mp_cost x (1 + level/10), the item's a_mp_cost added flat), less 1
-	if (p.mp_cost < 0 && cls?.mp_cost > 0) p.mp_cost = Math.max(p.mp_cost, 1 - cls.mp_cost * (1 + Math.min(character.level || 1, 80) / 10));
+	if (p.mp_cost < 0 && cls?.mp_cost > 0) {
+		const lv = ctype === character.ctype ? character.level : partners().find((q) => q.ctype === ctype)?.level || character.level; // the wearer's level
+		p.mp_cost = Math.max(p.mp_cost, 1 - cls.mp_cost * (1 + Math.min(lv || 1, 80) / 10));
+	}
 	return p;
 }
 // Points per xp stat point for a class (v23.4): its attack (ours, or a partner's from its heartbeat) x value

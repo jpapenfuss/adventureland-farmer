@@ -285,7 +285,7 @@ function deadly_areas(map) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
-		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 60 });
+		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 120 }); // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
 	return list;
@@ -399,7 +399,7 @@ const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(
 // 0.2 (under the 0.5 above) and slower than it, but range 280 and 320 magical a hit — 2,749 damage in the 10 s it
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
 // rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed). Such a
-// monster can't chase us, so deadly_areas keeps the walk out of its range (+60 px), not danger_px.
+// monster can't chase us, so deadly_areas keeps the walk out of its range (+120 px), not danger_px.
 function merchant_threat(t, v) {
 	const m = G.monsters[t];
 	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;

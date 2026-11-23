@@ -4042,8 +4042,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const dz = R("deadly_areas('dz555').map((z) => z.t).join()");
 		assert(dz === "fire555", `merchant: fire spirits are no place to walk, the scorpions it visits are (${dz})`);
 		assert(/fire555/.test(R("seg_danger('dz555', 0, 0, 0, -800) || ''")), "merchant: a walk through the fire spirits is dangerous");
-		assert(R("seg_danger('dz555', -260, 0, -260, -800)") === null && /fire555/.test(R("seg_danger('dz555', -200, 0, -200, -800) || ''")),
-			"merchant: out of their range (280 + 60 px) is fine, inside it is not — not the 400 px of a monster that chases");
+		assert(R("seg_danger('dz555', -330, 0, -330, -800)") === null && /fire555/.test(R("seg_danger('dz555', -290, 0, -290, -800) || ''")),
+			"merchant: out of their range (280 + 120 px) is fine, inside it is not — not the 400 px of a monster that chases");
 		ctx.G.maps.dz555.monsters.push({ type: "fire555", count: 0, boundary: [2000, 2000, 2200, 2200] });
 		R("dz_cache.clear()");
 		assert(R("seg_danger('dz555', 2100, 1500, 2100, 2500)") === null, "an empty spawn (count 0: an event boss's) isn't there");
@@ -4063,6 +4063,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 8, `mp_cost -40 scores 8 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
 		const cl0 = ctx.G.classes.priest; ctx.G.classes.priest = { ...(cl0 || {}), mp_cost: 2 }; character.level = 60;
 		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 2.6, `...only down to the floor of 1: class 2 x (1 + 60/10) = 14, saving 13 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
+		// the merchant scores the priest's piece at the priest's level, not its own
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", level: 30 });
+		R("state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, t: Date.now(), v: VERSION } }");
+		assert(R("gear_score({ name: 'orn555', level: 0 }, 'priest')") === 2.6, `the merchant: at the priest's level 60 (${R("gear_score({ name: 'orn555', level: 0 }, 'priest')")})`);
+		R("state.partners = {}");
 		if (cl0) ctx.G.classes.priest = cl0; else delete ctx.G.classes.priest;
 		delete ctx.G.items.orn555; ctx.G.maps = maps0; ctx.G.monsters = mons0;
 		R("rt_cache.clear(); dz_cache.clear()");
