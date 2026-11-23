@@ -215,10 +215,13 @@ const CFG = {
 	// checks every secondhand_every_ms and buys anything a fighter would wear as an upgrade, or that completes a compound
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
-	secondhand_every_ms: 600_000, // v25.18: was 30 min (owner: watch Ponty more closely)
+	// v25.50 (owner: "monitor Ponty for updates, and buy our target items aggressively"): every minute (was 10 min)
+	secondhand_every_ms: 60_000,
 	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
 	secondhand_upgrade_starts: true,
-	secondhand_max_price: 500_000,     // v18.6: was 2M (it paid 936k for +0 pants)
+	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);
+	// each reason's own price test and upg_gold_ok (gold above upgrade_keep) bound a buy
+	secondhand_max_price: Infinity,
 	// v24.81: Ponty routes — copies bought there (with ours) to compound into a piece a fighter would wear, up to +2 (the
 	// server's base odds: +1 99%, +2 75%, +3 40%); a route may cost this per gear point, weighed by its odds
 	ponty_routes: true,
@@ -229,7 +232,7 @@ const CFG = {
 	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
 	upgrade_boost_max: 50_000,
-	secondhand_gold_per_pt: 100_000, // v25.38: was 15k
+	secondhand_gold_per_pt: 300_000, // v25.50: = upgrade_gold_per_pt — a point bought is worth what a point built is (was 100k)
 	// v25.47 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying
 	// more from Ponty?"): a stock of +0 copies kept for compounding — bought whenever Ponty lists one at up to max_price,
 	// until n are held (bags + bank). The compounding turns them into +1 → +2 → +3 (the +3 is a worn upgrade). Judged
@@ -2096,7 +2099,7 @@ function gear_gain(item, ctype, g) {
 	return best;
 }
 // v25.36 (Fable, #22): worth spending on — gear_gain, but an empty slot's piece too must clear gear_min_gain. Filling
-// an empty slot with what we already hold is free; paying for it (a Ponty compound copy up to 500k, a craft, a token,
+// an empty slot with what we already hold is free; paying for it (a Ponty compound copy, a craft, a token,
 // a lower compound odds floor) is only for a real gain.
 const gear_gain_min = (item, ctype, g) => { const r = gear_gain(item, ctype, g); return r && r.gain >= CFG.gear_min_gain ? r : null; };
 // Members that could use an item more than what they wear (us first); version-matched partners only
@@ -8389,8 +8392,10 @@ function secondhand_reason(it, groups) {
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
-	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
-	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
+	// v25.50 (Fable): priced — this copy is a third of the result, so at most a third of the best fighter's gain from it
+	// at secondhand_gold_per_pt (with no fixed cap any more, a 24M ring was bought for a 3-point +1)
+	const gain = g ? Math.max(0, ...gear_takers().slice(1).filter((x) => x.ctype !== "merchant").map((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g)?.gain || 0)) : 0;
+	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
 function upgrade_start_reason(it, price, fighters) {
@@ -8417,7 +8422,7 @@ function upgrade_start_reason(it, price, fighters) {
 	for (let to = lv + 1; to <= top; to++) {
 		if (best_level_held(it.name) >= to || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= to) || party_holds_level(it.name, to, true)) break;
 		const steps = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, lv)), total = price + steps;
-		if (steps > budget) break; // the project from this copy would be over the planner's budget (higher targets cost more)
+		if (total > budget) break; // the copy and its project would be over the planner's budget (v25.50: the copy counted too)
 		const alt = own >= 0 ? upgrade_expected(it.name, to) - upgrade_expected(it.name, own) : sold_by_npc(it.name) ? upgrade_expected(it.name, to) : Infinity;
 		if (total >= alt) continue;
 		for (const x of fighters) {
@@ -8488,8 +8493,9 @@ let secondhand_at = 0;
 async function task_secondhands() {
 	const ref = G.maps.main?.ref?.secondhands;
 	if (!ref) return 0;
-	await stand_close();
-	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) await go({ map: "main", x: ref.x, y: ref.y + 40 });
+	// v25.50 (Fable): the stand is closed only for a walk — a poll every minute from the square (Ponty is ~170 px away)
+	// closed it every time, and a close restarts Merrit's 2 min
+	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) { await stand_close(); await go({ map: "main", x: ref.x, y: ref.y + 40 }); }
 	parent.socket.emit("secondhands");
 	await sleep_ms(1500); // the list arrives as a "secondhands" event; the client keeps it in parent.secondhands
 	const list = [...(parent.secondhands || [])];
@@ -9035,7 +9041,7 @@ tick();
 //   (performance_trick) so a background tab isn't throttled — click each tab once after a reload.
 //
 // Merchant (CFG.merchant): not a party member. Carries potions to fighters low on potions or bag space and collects
-//   their loot; casts mluck; fetches bank upgrades for them; runs every compound and upgrade project; every 10 min
+//   their loot; casts mluck; fetches bank upgrades for them; runs every compound and upgrade project; every minute
 //   checks Ponty: a piece that's an upgrade as listed (≤ secondhand_gold_per_pt), a head start for an upgrade (cheaper
 //   than building it), a shiny copy over a plain one, compound-route copies, quest materials; levels by donating;
 //   idle at home it opens its stand and lists only what the owner names (stand.list, empty) plus Merrit's decoy: one

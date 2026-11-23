@@ -1414,6 +1414,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { sb.push(d.rid); character.esize--; } };
 	await vm.runInContext("task_secondhands()", ctx);
 	assert(JSON.stringify(sb) === '["a","b"]', `bought Torlis's helmet upgrade and the 3rd ringx, not the bee wings (${JSON.stringify(sb)})`);
+	// v25.50 (Fable): the compound copy is priced — a third of the +1's gain at secondhand_gold_per_pt (no fixed cap)
+	{ character.items[1] = { name: "ringx", level: 0 }; character.items[2] = null; vm.runInContext("cmp_cache = null", ctx);
+		const civ = ctx.calculate_item_value; ctx.calculate_item_value = () => 12e6; // 24M at Ponty
+		const sb50 = []; ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { sb50.push(d.rid); character.esize--; } };
+		ctx.parent.secondhands = [{ name: "ringx", level: 0, rid: "z" }]; const gd50 = character.gold; character.gold = 50e6; // gold enough: only the price test stops it
+		await vm.runInContext("task_secondhands()", ctx); character.gold = gd50;
+		ctx.calculate_item_value = () => 100; ctx.parent.secondhands = [{ name: "ringx", level: 0, rid: "y" }];
+		await vm.runInContext("task_secondhands()", ctx);
+		ctx.parent.socket.emit = () => {};
+		assert(JSON.stringify(sb50) === '["y"]', `v25.50: a 24M copy for a 3-point +1 isn't bought; a cheap one is (${JSON.stringify(sb50)})`);
+		// v25.50 (Fable): a poll in Ponty's range leaves the stand open (a close restarts Merrit's 2 min)
+		{ let closed = 0; vm.runInContext("globalThis.__sc50 = stand_close", ctx); ctx.__closed = () => closed++; vm.runInContext("stand_close = async () => __closed()", ctx);
+			ctx.parent.secondhands = []; await vm.runInContext("task_secondhands()", ctx);
+			vm.runInContext("stand_close = __sc50", ctx);
+			assert(closed === 0, `v25.50: Ponty polled from in range: the stand stays open (${closed} closes)`); }
+		ctx.calculate_item_value = civ; if (civ === undefined) delete ctx.calculate_item_value; }
 	ctx.parent.socket.emit = () => {}; character.items = Array(42).fill(null); ctx.distance = dist_save;
 	// 60) world bosses: snowman joined (beats the hunt), franky not; boss pack; tokens
 	ctx.G.monsters.snowman = { name: "Snowman", hp: 1200, xp: 12000, attack: 80, damage_type: "physical", frequency: 1, range: 20, speed: 8, aggro: 0, special: true, cooperative: true, "1hp": true };

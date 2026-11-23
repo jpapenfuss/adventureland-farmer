@@ -40,8 +40,10 @@ function secondhand_reason(it, groups) {
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
-	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
-	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
+	// v25.50 (Fable): priced — this copy is a third of the result, so at most a third of the best fighter's gain from it
+	// at secondhand_gold_per_pt (with no fixed cap any more, a 24M ring was bought for a 3-point +1)
+	const gain = g ? Math.max(0, ...gear_takers().slice(1).filter((x) => x.ctype !== "merchant").map((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g)?.gain || 0)) : 0;
+	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
 function upgrade_start_reason(it, price, fighters) {
@@ -68,7 +70,7 @@ function upgrade_start_reason(it, price, fighters) {
 	for (let to = lv + 1; to <= top; to++) {
 		if (best_level_held(it.name) >= to || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= to) || party_holds_level(it.name, to, true)) break;
 		const steps = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, lv)), total = price + steps;
-		if (steps > budget) break; // the project from this copy would be over the planner's budget (higher targets cost more)
+		if (total > budget) break; // the copy and its project would be over the planner's budget (v25.50: the copy counted too)
 		const alt = own >= 0 ? upgrade_expected(it.name, to) - upgrade_expected(it.name, own) : sold_by_npc(it.name) ? upgrade_expected(it.name, to) : Infinity;
 		if (total >= alt) continue;
 		for (const x of fighters) {
@@ -139,8 +141,9 @@ let secondhand_at = 0;
 async function task_secondhands() {
 	const ref = G.maps.main?.ref?.secondhands;
 	if (!ref) return 0;
-	await stand_close();
-	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) await go({ map: "main", x: ref.x, y: ref.y + 40 });
+	// v25.50 (Fable): the stand is closed only for a walk — a poll every minute from the square (Ponty is ~170 px away)
+	// closed it every time, and a close restarts Merrit's 2 min
+	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) { await stand_close(); await go({ map: "main", x: ref.x, y: ref.y + 40 }); }
 	parent.socket.emit("secondhands");
 	await sleep_ms(1500); // the list arrives as a "secondhands" event; the client keeps it in parent.secondhands
 	const list = [...(parent.secondhands || [])];
