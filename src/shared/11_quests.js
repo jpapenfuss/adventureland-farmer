@@ -205,7 +205,7 @@ async function run_hunt() {
 // boss_tick only engages once everyone is there and it's safe with them (team "party").
 function boss_safe(name, team = "all") {
 	const m = G.monsters[name];
-	const f = m && fight_math({ ...m, hp: 1, "1hp": false }, true, team); // their side of the fight only
+	const f = m && fight_math({ ...m, mtype: name, hp: 1, "1hp": false }, true, team); // their side of the fight only
 	if (!f) return false;
 	if ((f.their_dps + f.self_dps) * CFG.boss.tank_s > f.hp_pool * safety_now() * heal_mult(f)) return false;
 	const squish = Math.min(character.max_hp, ...fight_mates(team).map((p) => p.max_hp || Infinity));

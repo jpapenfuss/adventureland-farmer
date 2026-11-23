@@ -25,6 +25,21 @@ function farmable_type(mtype) {
 // right now (not on an errand) — nobody fights alone. "all" (v23.1): every online member wherever it is — planning
 // something the whole party gathers for (a boss). Outside a party (the merchant): whoever is near.
 const fight_mates = (team = "party") => (team === "all" ? partners() : in_party_cfg() ? partners().filter((p) => !p.errand && !p.recovering) : partners_near());
+// v25.34: a spawn with a rage box (server: instance.rage_list — every player standing inside it is targeted by every
+// monster of that spawn): booboo at spookytown, 5 at once. The model counted one, and Torlis died twice there to
+// 10.3k damage in 10 s against 1.5k predicted (2026-11-22). Per monster type: the largest such spawn.
+let rage_c = null;
+function rage_n(mt) {
+	if (!rage_c) { rage_c = {}; for (const mp in G.maps || {}) for (const s of G.maps[mp].monsters || []) if (s.rage && s.type) rage_c[s.type] = Math.max(rage_c[s.type] || 1, s.count || 1); }
+	return rage_c[mt] || 1;
+}
+// The type of a monster definition: callers pass G.monsters[t] itself, or a copy carrying mtype
+let def_name = null;
+const mtype_of = (m) => {
+	if (m.mtype) return m.mtype;
+	if (!def_name || !def_name.has(m)) { def_name = new Map(); for (const n in G.monsters) def_name.set(G.monsters[n], n); } // (rebuilt on a miss)
+	return def_name.get(m);
+};
 function fight_math(m, use_tank = true, team = "party") {
 	const mates = fight_mates(team);
 	// defence → damage fraction: the game's own curve if available, else ~0.1% less per point, floored at 5%
@@ -42,8 +57,10 @@ function fight_math(m, use_tank = true, team = "party") {
 	const squish = !tank && m.aggro > 0.3 && CFG.gear_tank.includes(character.ctype) && mates.length
 		? mates.filter((p) => p.max_hp > 0).sort((a, b) => a.max_hp - b.max_hp)[0] : null;
 	const D = tank || (squish && squish.max_hp < character.max_hp ? squish : null) || character; // who the monster will be hitting
-	const their_hit = (m.attack || 0) * dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0));
-	const their_dps = their_hit * (m.frequency || 1);
+	// v25.34: "pure" damage ignores armour and resistance (server complete_attack: defense none_existent) — booboo's 220
+	// was taken through Torlis's 246 armour
+	const their_hit = (m.attack || 0) * (m.damage_type === "pure" ? 1 : dm(((theirs_magic ? D.resistance : D.armor) || 0) - ((theirs_magic ? m.rpiercing : m.apiercing) || 0)));
+	const their_dps = their_hit * (m.frequency || 1) * rage_n(mtype_of(m));
 	const heal_dps = their_dps * (m.lifesteal || 0) / 100 +
 		(m.abilities?.self_healing ? m.abilities.self_healing.heal / Math.max(1, m.abilities.self_healing.cooldown / 1000) : 0); // heal per s
 	let our_dps = hit * land * character.frequency - heal_dps;
