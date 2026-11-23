@@ -63,8 +63,8 @@ function upg_reach(name) {
 	let L = 0;
 	for (let l = 1; l <= 12; l++) {
 		let p = upg_odds(name, l);
-		// a scroll2 step: run_upgrade raises the floor to upgrade_high.min_chance
-		const floor = upgrade_scroll(name, l - 1) === "scroll2" ? Math.max(floor0, CFG.upgrade_high?.min_chance || 0) : floor0;
+		// a scroll2 step, or (v25.32) one past upgrade_max_level: run_upgrade raises the floor to upgrade_high.min_chance
+		const floor = upgrade_scroll(name, l - 1) === "scroll2" || l > CFG.upgrade_max_level ? Math.max(floor0, CFG.upgrade_high?.min_chance || 0) : floor0;
 		const hc = G.items["scroll" + (Math.max(0, item_grade({ name, level: l - 1 })) + 1)]?.g;
 		if (!shop && hc && hc <= (CFG.upgrade_boost_max || 0)) p = Math.min(1, p * 1.2 + 0.01);
 		if (p < floor) break;
@@ -137,20 +137,26 @@ function upgrade_why() {
 		const gold = Math.min(upgrade_gold(), gold_room()), budget = gold * CFG.upgrade_spend, takers = gear_takers().filter((m) => m.ctype !== "merchant"), rows = [];
 		for (const name in G.items) {
 			const def = G.items[name];
-			if (!def.upgrade || !GEAR.has(def.type) || def.cash || !sold_by_npc(name)) continue;
+			// v25.32: and the copies we own (bags/bank) — the merchant's projects since v25.17, missing from this line:
+			// "no upgradable piece" while owned set pieces were the candidates
+			const own_lv = owned_level(name);
+			if (!def.upgrade || !GEAR.has(def.type) || def.cash || (!sold_by_npc(name) && own_lv < 0)) continue;
 			let g = null, to = 0, cost = 0;
-			for (let L = 1, T = Math.min(upgrade_target(name), upg_cap_level(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
-				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = upgrade_expected(name, L);
+			for (let L = Math.max(1, own_lv + 1), T = Math.min(upgrade_target(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
+				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = own_lv >= 0 ? Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, own_lv)) : upgrade_expected(name, L);
 				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
 			}
 			if (!g) continue;
-			const stop = skipped("upg:" + name) ? "paused" : cost > budget ? `expected cost ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
+			const ready = (i) => i && i.name === name && !i.l && (i.level || 0) < to && takers.some((m) => gear_gain(i, m.ctype, m.g));
+			const stop = skipped("upg:" + name) ? `paused (${skip_why["upg:" + name] || "?"})` : to > upg_cap_level(name) ? `a past project stopped at +${upg_cap_level(name)}`
+				: cost > budget ? `expected cost ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
 				: best_level_held(name) >= to || (state.bank_gear || []).some((i) => i.name === name && (i.level || 0) >= to) || party_holds_level(name, to, true) ? "a spare copy at that level exists already"
+				: character.items.some(ready) || (state.bank_gear || []).some(ready) ? "a lower copy goes to the fighter first"
 				: "eligible";
-			rows.push({ name, to, g, stop });
+			rows.push({ name, to, g, stop: own_lv >= 0 ? `ours +${own_lv}: ${stop}` : stop });
 		}
 		rows.sort((a, b) => b.g.gain - a.g.gain);
-		out.push(rows.length ? `shop: ${rows.slice(0, 4).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : "shop: no upgradable piece at its reachable level beats what anyone wears");
+		out.push(rows.length ? `candidates: ${rows.slice(0, 4).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : "no upgradable piece (shop or ours) at its reachable level beats what anyone wears");
 	}
 	return out.length ? ` | ${out.join(" | ")}` : "";
 }

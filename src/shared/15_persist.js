@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 3, cmp_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 4, cmp_v: 3, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -101,8 +101,9 @@ function load_state() {
 	if (d.gprog) state.gprog = { ...d.gprog, t: d.gprog.t + off };
 	// v24.82: upgrade ceilings and pauses recorded under the 50%/80% rules go once (a wand "capped at +4" would stay there)
 	delete state.gear_skip["town:loop"]; // v24.93: a loop brake from before a reload (usually a new build) doesn't carry over
-	if (d.cmp_v !== 2) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
-	if (d.upg_v !== 3) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	// (v25.32: once more — ceilings recorded under the old 75%/80% floors)
+	if (d.cmp_v !== 3) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
+	if (d.upg_v !== 4) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
