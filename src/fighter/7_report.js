@@ -25,7 +25,7 @@ function gap_kind() {
 function facts_doing(F, ctx) {
 	const { p, d, now } = ctx;
 	const at_pack = !!p && character.map === p.map && in_boundary(p.boundary, 600);
-	const why_ = p?.directive || (p ? `best xp/s (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack");
+	const why_ = p?.directive || (p ? `best ${rate_unit()} (${p.score !== undefined ? p.score.toFixed(0) : "?"})` : "no safe pack");
 	const where = p && !at_pack ? (character.map === p.map ? `${Math.round(Math.hypot(character.x - (p.boundary[0] + p.boundary[2]) / 2, character.y - (p.boundary[1] + p.boundary[3]) / 2))}px away` : `now at ${character.map}`) : "";
 	const tgt = p ? `${at_pack ? "" : "→ "}${p.mtype} @ ${p.map}${where ? ` (${where})` : ""}` : "nothing";
 	// a follower's reason is "following X"; the leader's directive is in the party header
@@ -61,7 +61,7 @@ function facts_probe(F, ctx) {
 	const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
 	const why_ = P ? null : probe_why(), none = state.probe_none && Date.now() - state.probe_none.at < 2 * 3600_000 ? state.probe_none : null;
 	F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : why_}` +
-		(none && !P ? ` | last check ${ago(none.at)} ago: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} xp/s` : "") +
+		(none && !P ? ` | last check ${ago(none.at)} ago: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} ${rate_unit()}` : "") +
 		(last ? ` | last probe: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""));
 }
 

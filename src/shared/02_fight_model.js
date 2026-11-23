@@ -455,7 +455,7 @@ function party_power() {
 // Measured rate per spot with the party there: base xp (or, v25.51, base gold) of the party's kills at it (kill_credit)
 // v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is chosen for. Both rates are measured
 // at every camp all the time (state.measured / state.measured_gold), so switching modes starts with data. The unit
-// is the monster's base value per kill (G.monsters[].xp or .gold): the same for every camp, as base xp is.
+// is the monster's base value per kill (G.monsters[].xp, or G.monster_gold[]): the same for every camp, as base xp is.
 const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
 const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
 // Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)

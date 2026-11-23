@@ -179,6 +179,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; delete ctx.G.monster_gold;
 		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
 		assert(px === "goo" && pg === "richgoo", `v25.51: xp mode picks goo, gold mode the gold-rich twin (${px} / ${pg})`); }
+	// v25.52: the report's units follow the mode
+	vm.runInContext("CFG.farm_mode = 'gold'", ctx);
+	{ const out = []; ctx.__F52 = (k, w, t) => out.push(t);
+		vm.runInContext("state.directive = null; state.probe_none = { at: Date.now(), best: 5 }; facts_doing(__F52, { p: state.pack, d: null, now: Date.now() }); facts_probe(__F52, { p: state.pack, d: null, now: Date.now() })", ctx);
+		const txt = out.join(" | ");
+		assert(/best gold\/s/.test(txt) && !/xp\/s/.test(txt), `v25.52: in gold mode the doing and probe lines say gold/s (${txt})`); }
+	vm.runInContext("CFG.farm_mode = 'xp'", ctx);
 	const elite = { id: "e1", type: "monster", mtype: "goo", level: 12, hp: 650, max_hp: 650, attack: 450, frequency: 0.8, speed: 15, xp: 1200 };
 	assert(!vm.runInContext("live_ok", ctx)(elite), "levelled goo with 450 attack rejected by live check");
 	const normal = { id: "n1", type: "monster", mtype: "goo", hp: 100, max_hp: 100, attack: 5, speed: 6, xp: 10 };
