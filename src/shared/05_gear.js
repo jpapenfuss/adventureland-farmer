@@ -232,7 +232,11 @@ function gear_gain(item, ctype, g) {
 		const cur = (g.w[s] ?? 0) + (s === "mainhand" && is_2h(item.name, ctype) && !g.dh ? g.w.offhand ?? 0 : 0), gain = score - cur;
 		// a slot the guide is actively working on only takes a clearly better item (gear_guide_override)
 		const margin = g.own?.[s] ? Math.max(CFG.gear_margin, CFG.gear_guide_override) : CFG.gear_margin;
-		if (gain >= CFG.gear_min_gain && gain >= cur * margin && (!best || gain > best.gain)) best = { slot: s, gain, score };
+		// v25.35 (owner: "Dex is better than literally nothing in a slot"): an empty slot takes anything worth more than
+		// nothing — a dex earring is 0.6 pts for a mage, under gear_min_gain, and Sanala's earring slots stayed empty
+		// while one sat in the merchant's bags. gear_min_gain and the margin are for swaps.
+		const empty = !(cur > 0);
+		if ((empty ? gain > 0 : gain >= CFG.gear_min_gain && gain >= cur * margin) && (!best || gain > best.gain)) best = { slot: s, gain, score };
 	}
 	return best;
 }

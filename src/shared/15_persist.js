@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 4, cmp_v: 3, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 4, cmp_v: 3, model_v: 2, meas_v: 3, measured: state.measured, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -53,6 +53,13 @@ function load_state() {
 	Object.assign(state.danger, d.danger || {});
 	Object.assign(state.danger_at, d.danger_at || {});
 	Object.assign(state.calib, d.calib || {});
+	// v25.35: calibration learned against the pre-v25.34 model for a rage-spawn or pure-damage type (booboo, mummy)
+	// already holds the gang's damage; the model now predicts it, so the old ratio would count it twice — and a type
+	// judged unsafe is never fought again, so it could never relearn. Dropped once.
+	if ((d.model_v || 1) < 2) for (const k of Object.keys(state.calib)) {
+		const mt = k.replace(/@p$/, "");
+		if (rage_n(mt) > 1 || G.monsters[mt]?.damage_type === "pure") delete state.calib[k];
+	}
 	if (d.calib_all?.n) state.calib_all = d.calib_all;
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.camp_deaths, d.camp_deaths || {}); // v25.29

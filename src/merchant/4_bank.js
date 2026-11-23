@@ -101,20 +101,33 @@ async function gear_purge() {
 	if (!left.size) return 0;
 	// (a locked copy shares its key with the surplus: only unprotected copies are marked or pulled)
 	for (const it of character.items) if (it && (left.get(purge_key(it)) || 0) > 0 && !gear_protected(it, tk)) { state.purge[purge_key(it)] = now; left.set(purge_key(it), left.get(purge_key(it)) - 1); }
-	const cands = [];
-	for (const p in character.bank || {}) {
-		if (!p.startsWith("items") || (packs[p] && packs[p][0] !== character.map)) continue;
-		(character.bank[p] || []).forEach((it, n) => { if (it && (left.get(purge_key(it)) || 0) > 0 && !gear_protected(it, tk)) cands.push({ p, n, it, v: unit_value(it) }); });
-	}
-	cands.sort((a, b) => a.v - b.v);
 	const pulled = [];
-	for (const c of cands) {
-		if (pulled.length >= M.purge_n) break;
-		const k = purge_key(c.it);
-		if (!(left.get(k) > 0)) continue;
-		await wait_budget(1, RESERVE.bulk);
-		await T(bank_retrieve(c.p, c.n)).then(() => { pulled.push(k); left.set(k, left.get(k) - 1); state.purge[k] = Date.now(); }).catch(() => {});
-		await sleep_ms(PACE_MS);
+	// this floor's packs, cheapest first
+	const pull_here = async () => {
+		const cands = [];
+		for (const p in character.bank || {}) {
+			if (!p.startsWith("items") || (packs[p] && packs[p][0] !== character.map)) continue;
+			(character.bank[p] || []).forEach((it, n) => { if (it && (left.get(purge_key(it)) || 0) > 0 && !gear_protected(it, tk)) cands.push({ p, n, it, v: unit_value(it) }); });
+		}
+		cands.sort((a, b) => a.v - b.v);
+		for (const c of cands) {
+			if (pulled.length >= M.purge_n || character.esize < 6) break;
+			const k = purge_key(c.it);
+			if (!(left.get(k) > 0)) continue;
+			await wait_budget(1, RESERVE.bulk);
+			await T(bank_retrieve(c.p, c.n)).then(() => { pulled.push(k); left.set(k, left.get(k) - 1); state.purge[k] = Date.now(); }).catch(() => {});
+			await sleep_ms(PACE_MS);
+		}
+	};
+	await pull_here();
+	// v25.35: then the other unlocked floors holding surplus (one visit pulled 1 piece: the rest sat on other floors)
+	const floors = [...new Set(Object.keys(character.bank || {}).filter((p) => p.startsWith("items") && packs[p] && packs[p][0] !== character.map &&
+		(character.bank[p] || []).some((it) => it && (left.get(purge_key(it)) || 0) > 0 && !gear_protected(it, tk))).map((p) => packs[p][0]))];
+	for (const floor of floors) {
+		if (pulled.length >= M.purge_n || character.esize < 6) break;
+		try { await go({ map: floor }); } catch (e) { game_log(`bank: can't reach ${floor}: ${why(e)}`, C.dim); continue; }
+		if (!(await floor_loaded(floor))) continue;
+		await pull_here();
 	}
 	if (pulled.length) {
 		game_log(`bank: ${bf.free}/${bf.total} free — pulled ${pulled.length} surplus gear to sell (${pulled.slice(0, 8).join(", ")}${pulled.length > 8 ? "…" : ""})`, C.info);

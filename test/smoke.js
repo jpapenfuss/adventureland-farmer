@@ -1664,6 +1664,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		if (ring) { R("state.bank_gear = state.bank_gear.filter((i) => i.name !== 'okring')"); assert(cls(ring) !== "sell", "re-counted at the shop: with the bank's rings gone, a pulled ring isn't surplus any more"); }
 		R("state.partners.Torlis.t = Date.now() - 60000");
 		assert(pulled.every((it) => cls(it) !== "sell"), "a fighter gone quiet before the sale: nothing sold");
+		// v25.35: surplus on another unlocked floor: walked to and pulled there
+		{
+			R("state.partners.Torlis.t = Date.now(); state.bank_free = { free: 1, total: 60, at: Date.now() }; state.purge = {}");
+			character.items = Array(42).fill(null); character.map = "bank";
+			character.bank = { items0: Array(10).fill(null), items8: [{ name: "junkhelm", level: 3 }, { name: "junkhelm", level: 3 }, ...Array(8).fill(null)] };
+			const bp0 = ctx.bank_packs, walks = []; ctx.bank_packs = { items0: ["bank", 0, 0], items8: ["bank_b", 0, 0] };
+			R("globalThis.__go = go; go = async (d) => { __walks.push(d.map); character.map = d.map; }"); ctx.__walks = walks;
+			const nb = await R("bank_purge()");
+			R("go = __go");
+			assert(nb === 2 && walks.join() === "bank_b" && character.items.filter((i) => i?.name === "junkhelm").length === 2, `surplus on bank_b: walked there and pulled (${nb}, ${walks})`);
+			ctx.bank_packs = bp0; character.map = "bank";
+		}
 		R("state.partners.Torlis.t = Date.now(); state.bank_free = { free: 50, total: 60, at: Date.now() }");
 		assert(await R("bank_purge()") === 0, "with room in the bank: nothing pulled");
 		R("CFG.party.members = __pm; state.partners = {}; for (const n of ['junkhelm', 'okhelm', 'okring', 'rcoat', 'setpants', 'goodhelm', 'basehelm', 'basering', 'basepants', 'basechest']) sold_c.delete(n); CFG.sell_junk = true; G.craft = {}; recipe_lv = null; state.bank_gear = []; my_gear_cache = null");
@@ -1908,9 +1920,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("G.craft = {}; craft_cache = null; quest_inputs = null; state.bank_seen = {}", ctx);
 	// 77) merchant online is sticky (10 min); fetched compound copies go to the merchant; a broke compound retries soon
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", esize: 30, map: "main" });
-	character.items = Array(42).fill(null); character.slots = {};
+	character.items = Array(42).fill(null); character.slots = { ring1: { name: "ringx", level: 0 }, ring2: { name: "ringx", level: 0 } }; // (v25.35: empty ring slots would take one)
 	character.items[4] = { name: "ringx", level: 0 }; character.items[5] = { name: "ringx", level: 0 }; character.items[6] = { name: "ringx", level: 0 };
-	vm.runInContext("state.merchant = { name: CFG.merchant.name, t: Date.now() - 3 * 60000, map: 'main', x: 0, y: 0, esize: 30, gold: 1e6 }; state.fetched = { ringx: Date.now() }; state.needs = new Map(); cmp_cache = null; state.bank_gear = []", ctx);
+	vm.runInContext("my_gear_cache = null; state.merchant = { name: CFG.merchant.name, t: Date.now() - 3 * 60000, map: 'main', x: 0, y: 0, esize: 30, gold: 1e6 }; state.fetched = { ringx: Date.now() }; state.needs = new Map(); cmp_cache = null; state.bank_gear = []", ctx);
 	assert(vm.runInContext("merchant_does_it() && compound_groups().length === 0", ctx), "a heartbeat 3 min old still counts: fighters don't compound");
 	assert(vm.runInContext("bag_class(character.items[4])", ctx) === "bank", "a fetched compound copy isn't held: it goes to the merchant");
 	vm.runInContext("state.merchant.t = Date.now() - 11 * 60000; cmp_cache = null", ctx);
@@ -3130,6 +3142,30 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(Math.abs(d("purex") - 100) < 1e-6 && d("physx") < 100, `pure damage ignores armour (${d("purex")} vs ${d("physx").toFixed(1)} through 600 armour)`);
 		assert(Math.abs(d("ragex") - 500) < 1e-6 && R("rage_n('purex')") === 1, `a rage spawn of 5: five attackers (${d("ragex")})`);
 		assert(Math.abs(R("fight_math({ ...G.monsters.ragex, mtype: 'ragex', hp: 900 }, false).their_dps") - 500) < 1e-6, "...also for a live copy carrying its mtype");
+		// v25.35: a plain spawn of 9 (no rage box) is one attacker
+		ctx.G.monsters.plainx = { hp: 1000, xp: 10, attack: 100, frequency: 1, damage_type: "pure", range: 20, speed: 10 };
+		ctx.G.maps.ragemap.monsters.push({ type: "plainx", count: 9, boundary: [400, 0, 500, 100] });
+		R("rage_c = null");
+		assert(R("rage_n('plainx')") === 1 && Math.abs(d("plainx") - 100) < 1e-6, "a spawn without a rage box: one attacker, whatever its count");
+		// v25.35: calibration saved under the old model for a rage or pure type is dropped once; others kept
+		const gs0 = [ctx.get, ctx.set], st35 = {}; ctx.set = (k, v) => ((st35[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in st35 ? JSON.parse(st35[k]) : null);
+		R("state.calib = { 'ragex@p': { n: 5, ratio: 4 }, 'plainx@p': { n: 5, ratio: 3 }, 'goo@p': { n: 5, ratio: 1.2 } }; save_state(); { const d0 = get(SAVE_KEY); d0.model_v = 1; set(SAVE_KEY, d0); } state.calib = {}; load_state()");
+		assert(!R("'ragex@p' in state.calib") && !R("'plainx@p' in state.calib") && R("state.calib['goo@p']?.ratio") === 1.2, "old-model calibration of rage/pure types dropped once, the rest kept");
+		R("state.calib = { 'ragex@p': { n: 5, ratio: 4 } }; save_state(); state.calib = {}; load_state()");
+		assert(R("state.calib['ragex@p']?.ratio") === 4, "...and only once (a save from this version keeps it)");
+		R("state.calib = {}"); delete ctx.G.monsters.plainx; [ctx.get, ctx.set] = gs0;
+		// v25.35 (owner): an empty slot takes anything worth more than nothing; a filled one still needs gear_min_gain
+		{
+			ctx.G.items.dexear = { type: "earring", dex: 3 }; ctx.G.items.intear = { type: "earring", int: 3 };
+			const sv2 = { name: character.name, ctype: character.ctype }; Object.assign(character, { name: "Sanala", ctype: "mage" });
+			character.slots = {}; R("my_gear_cache = null");
+			const r1 = R("gear_gain({ name: 'dexear' }, 'mage', my_gear())");
+			assert(r1 && /earring/.test(r1.slot) && r1.gain > 0 && r1.gain < R("CFG.gear_min_gain"), `a dex earring (${r1 && r1.gain.toFixed(2)} pts) fills a mage's empty earring slot`);
+			character.slots = { earring1: { name: "dexear" }, earring2: { name: "dexear" } }; R("my_gear_cache = null");
+			assert(!R("gear_gain({ name: 'dexear' }, 'mage', my_gear())"), "with both slots taken: not a swap for nothing");
+			assert(!R("gear_gain({ name: 'intear' }, 'mage', my_gear())") || R("gear_gain({ name: 'intear' }, 'mage', my_gear()).gain") >= R("CFG.gear_min_gain"), "an int earring over a dex one only if it clears gear_min_gain");
+			character.slots = {}; R("my_gear_cache = null"); Object.assign(character, sv2); delete ctx.G.items.dexear; delete ctx.G.items.intear;
+		}
 		delete ctx.G.maps.ragemap; delete ctx.G.monsters.purex; delete ctx.G.monsters.physx; delete ctx.G.monsters.ragex;
 		R("rage_c = null; def_name = null"); Object.assign(character, sv);
 	}
@@ -3216,8 +3252,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items = Array(42).fill(null); character.slots = {};
 		ctx.G.items.ring119 = { type: "ring", int: 10 };
 		vm.runInContext("state.partners = {}; state.gear_skip = {}; my_gear_cache = null; state.upg = null; state.needs = new Map()", ctx);
-		hb("Aspernari", { ...asp, level: 58, gear: { w: { ring1: 10, ring2: 10 }, own: {} } });
-		hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { ring1: 0, ring2: 0 }, own: {} } });
+		hb("Aspernari", { ...asp, level: 58, gear: { w: { ring1: 10, ring2: 10, helmet: 50 }, own: {} } }); // (v25.35: helmets worn — an empty slot would take helm119)
+		hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { ring1: 0, ring2: 0, helmet: 50 }, own: {} } });
 		character.items[1] = { name: "ring119", level: 0 };
 		const tgt = vm.runInContext("gear_target()", ctx);
 		assert(tgt && tgt.name === "Sanala", `delivery goes to the biggest gain (Sanala, empty ring slots), not the first in config order (${tgt && tgt.name})`);

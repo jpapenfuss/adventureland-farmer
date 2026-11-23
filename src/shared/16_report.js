@@ -237,7 +237,10 @@ function report_facts() {
 		const cw = compound_why();
 		F("compound", "self", `compound: ${gs.map((g) => `${g.name}+${g.level} ${g.bags.length}${g.bank ? `(+${g.bank} bank)` : ""}`).join(", ") || "no sets of 3 spares"}` +
 			(paused.length ? ` | paused: ${paused.map((k) => `${k.slice(4)} ${mins(state.gear_skip[k])} (${skip_why[k] || "?"})`).join(", ")}` : "") +
-			(cw.length ? ` | not compounded: ${cw.join("; ")}` : "") + (town_reason.compound ? ` | last: ${town_reason.compound}` : ""), !gs.length && !paused.length && !cw.length);
+			(cw.length ? ` | not compounded: ${cw.join("; ")}` : "") + (town_reason.compound ? ` | last: ${town_reason.compound}` : "") +
+			// v25.35: whether the bank-full mode (any odds for cheap sets) is on, and the count it's judged on
+			(CFG.compound_bank_full && state.bank_free ? ` | bank-full mode ${bank_tight() ? "on" : "off"} (${state.bank_free.free}/${state.bank_free.total} free, counted ${state.bank_free.at ? ago(state.bank_free.at) + " ago" : "at an unknown time"})` : ""),
+			!gs.length && !paused.length && !cw.length);
 	}
 	facts_probe(F, c);
 	facts_safety(F, c);
