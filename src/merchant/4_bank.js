@@ -99,11 +99,12 @@ async function gear_purge() {
 	for (const p in character.bank || {}) if (p.startsWith("items")) for (const it of character.bank[p] || []) if (it) bank.push(it);
 	const left = gear_excess(bank, tk);
 	if (!left.size) return 0;
-	for (const it of character.items) if (it && (left.get(purge_key(it)) || 0) > 0) { state.purge[purge_key(it)] = now; left.set(purge_key(it), left.get(purge_key(it)) - 1); }
+	// (a locked copy shares its key with the surplus: only unprotected copies are marked or pulled)
+	for (const it of character.items) if (it && (left.get(purge_key(it)) || 0) > 0 && !gear_protected(it, tk)) { state.purge[purge_key(it)] = now; left.set(purge_key(it), left.get(purge_key(it)) - 1); }
 	const cands = [];
 	for (const p in character.bank || {}) {
 		if (!p.startsWith("items") || (packs[p] && packs[p][0] !== character.map)) continue;
-		(character.bank[p] || []).forEach((it, n) => { if (it && (left.get(purge_key(it)) || 0) > 0) cands.push({ p, n, it, v: unit_value(it) }); });
+		(character.bank[p] || []).forEach((it, n) => { if (it && (left.get(purge_key(it)) || 0) > 0 && !gear_protected(it, tk)) cands.push({ p, n, it, v: unit_value(it) }); });
 	}
 	cands.sort((a, b) => a.v - b.v);
 	const pulled = [];

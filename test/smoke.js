@@ -1644,10 +1644,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const pk = vm.runInContext("purge_key", ctx);
 		const got = []; ctx.bank_retrieve = (p, n) => { got.push(pk(character.bank[p][n])); const k = character.items.findIndex((i) => !i); character.items[k] = character.bank[p][n]; character.bank[p][n] = null; return Promise.resolve(); };
 		assert(await R("bank_purge()") === 0 && got.length === 0 && R("purge_takers()") === null, "a fighter's heartbeat 60 s old: nothing pulled");
+		R("state.partners.Torlis.t = Date.now(); globalThis.__g = state.partners.Torlis.gear; state.partners.Torlis.gear = null");
+		assert(await R("bank_purge()") === 0 && got.length === 0, "a fresh heartbeat without its gear: nothing pulled");
+		R("state.partners.Torlis.gear = __g");
+		// locked copies share the surplus's key: the unlocked ones are pulled, never the locked
+		pack[pack.indexOf(null)] = { name: "okhelm", level: 2, l: "l" }; pack[pack.indexOf(null)] = { name: "okhelm", level: 2, l: "l" };
 		// a dead fighter still counts (it still wears its gear)
 		R("state.partners.Torlis.t = Date.now(); state.partners.Torlis.rip = true");
 		const n = await R("bank_purge()");
 		assert(n === 10 && got.length === 10, `a dead fighter's gear still counts; purge_n (10) a visit (${n}: ${got})`);
+		assert(!character.items.some((i) => i?.name === "okhelm" && i.l), "no locked copy pulled");
 		R("state.bank_gear = character.bank.items0.filter(Boolean).map((i) => ({ name: i.name, level: i.level || 0, p: i.p }))");
 		const cls = (it) => R(`bag_class(character.items[${character.items.indexOf(it)}])`);
 		const pulled = character.items.filter(Boolean);
