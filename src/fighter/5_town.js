@@ -10,8 +10,15 @@ function collect_list(mine = false) {
 function collect_key(g) { return `${g.to}:${g.name}:${g.level}`; }
 // The tank: pieces not tried within collect_retry_min → a party trip for them
 function collect_due() {
-	const now = Date.now(), T_ = CFG.merchant.collect_retry_min * 60_000;
-	return collect_list().filter((g) => now - ((state.collect_try || {})[collect_key(g)] || 0) > T_);
+	const now = Date.now(), T_ = CFG.merchant.collect_retry_min * 60_000, M = CFG.merchant;
+	const due = collect_list().filter((g) => now - ((state.collect_try || {})[collect_key(g)] || 0) > T_);
+	// v25.43: worth a trip of its own? (first seen: kept per piece while it's listed)
+	const seen = (state.collect_seen = state.collect_seen || {}), keys = new Set(due.map(collect_key));
+	for (const k in seen) if (!keys.has(k)) delete seen[k];
+	for (const k of keys) if (!seen[k]) seen[k] = now;
+	const oldest = Math.min(now, ...[...keys].map((k) => seen[k]));
+	if (due.length >= (M.collect_batch || 1) || due.some((g) => (g.gain || 0) >= (M.collect_big_pts ?? 0)) || now - oldest >= (M.collect_batch_min || 0) * 60_000) return due;
+	return [];
 }
 // v25.39: on a town run, the worn piece the merchant's project asked us for: walk to it and wait while it's handed over
 // (merchant_handoff does that within 300px, in town)
@@ -166,7 +173,11 @@ function party_trip_check(due, what) {
 	// per collect_retry_min)
 	// (only with the merchant in town, where the hand-over happens; the try is spent when the trip starts — Fable)
 	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
-	const worn_ask = !!WW && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px && (CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
+	// (v25.43: a hand-over waits collect_batch_min since first asked, unless other pieces are due anyway)
+	const wk = WW ? `${WW.to}:${WW.name}:${WW.level}` : null;
+	if (wk && state.worn_seen?.k !== wk) state.worn_seen = { k: wk, at: Date.now() };
+	const worn_ripe = !!wk && (coll.length > 0 || Date.now() - state.worn_seen.at >= (CFG.merchant.collect_batch_min || 0) * 60_000);
+	const worn_ask = worn_ripe && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px && (CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
 	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
 		if (walking()) { halt("town_check"); return true; }

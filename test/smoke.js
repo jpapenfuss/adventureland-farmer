@@ -2353,13 +2353,20 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	{ // the tank's side: a piece for a member at the merchant (in town) is a reason for a party trip, once per retry time
 		const me = { name: character.name, ctype: character.ctype, x: character.x, y: character.y, map: character.map };
 		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 700, y: 1600 });
-		vm.runInContext("globalThis.__m75 = state.merchant; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: -8, give: [{ to: 'Sanala', name: 'gpants', level: 0, gain: 18 }] }; state.collect_try = {}", ctx);
+		vm.runInContext("globalThis.__m75 = state.merchant; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: -8, give: [{ to: 'Sanala', name: 'gpants', level: 0, gain: 25 }] }; state.collect_try = {}; state.collect_seen = {}", ctx);
 		assert(vm.runInContext("collect_due().length", ctx) === 1 && vm.runInContext("collect_list(true).length", ctx) === 0, "the tank sees a piece waiting for Sanala at the merchant (none for itself)");
 		vm.runInContext("state.collect_try[collect_key(collect_due()[0])] = Date.now()", ctx);
 		assert(vm.runInContext("collect_due().length", ctx) === 0, "...and doesn't go again for the same piece within the retry time");
 		vm.runInContext("state.collect_try = {}; state.merchant.map = 'bank'", ctx);
 		assert(vm.runInContext("collect_due().length", ctx) === 0, "...nor while the merchant isn't in town");
-		vm.runInContext("state.merchant = __m75; state.collect_try = {}", ctx);
+		// v25.43: batched — a small piece alone waits; three pieces, or the first waiting 15 min, go
+		vm.runInContext("state.merchant.map = 'main'; state.collect_try = {}; state.collect_seen = {}; state.merchant.give = [{ to: 'Sanala', name: 'gpants', level: 0, gain: 5 }]", ctx);
+		assert(vm.runInContext("collect_due().length", ctx) === 0, "v25.43: one small piece: no trip of its own yet");
+		vm.runInContext("state.collect_seen[collect_key(state.merchant.give[0])] = Date.now() - 16 * 60000", ctx);
+		assert(vm.runInContext("collect_due().length", ctx) === 1, "...after 15 min waiting: the trip goes");
+		vm.runInContext("state.collect_seen = {}; state.merchant.give = [1, 2, 3].map((i) => ({ to: 'Sanala', name: 'gp' + i, level: 0, gain: 5 }))", ctx);
+		assert(vm.runInContext("collect_due().length", ctx) === 3, "three small pieces: the trip goes");
+		vm.runInContext("state.merchant = __m75; state.collect_try = {}; state.collect_seen = {}", ctx);
 		Object.assign(character, me);
 	}
 	vm.runInContext("CFG.merchant.collect = false; cmp_cache = null", ctx);
@@ -3247,7 +3254,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// the tank takes the party to town for it
 		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "desertland", x: 300, y: -1400, slots: {} });
 		R("state.worn_try_at = 0");
-		R("globalThis.__up = state.upg; state.town_runs = []; state.town_trig = null; globalThis.__tr = town_run; town_run = () => false; state.errand = null");
+		R("globalThis.__up = state.upg; state.town_runs = []; state.town_trig = null; globalThis.__tr = town_run; town_run = () => false; state.errand = null; state.worn_seen = null");
+		R("party_trip_check(town_due(), [])");
+		assert(!/hand mpg139/.test(R("state.town_trig") || ""), "v25.43: a hand-over just asked for: no trip of its own yet");
+		R("state.worn_seen.at = Date.now() - 16 * 60000; state.town_runs = []");
 		const ptc = R("party_trip_check(town_due(), [])");
 		R("town_run = __tr; state.upg = __up"); // (one test state: the fighter's town_due drops the merchant's project)
 		assert(/hand mpg139\+0 to the merchant/.test(R("state.town_trig") || ""), `the tank takes the party to town for the hand-over (${ptc}, ${R("state.town_trig")})`);

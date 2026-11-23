@@ -1,4 +1,4 @@
-const VERSION = "25.41"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.43"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -342,6 +342,11 @@ const CFG = {
 		// checked from the first tick after loading and on every tick after (a party trip, ahead of work that can wait;
 		// one try per piece per collect_retry_min). The merchant then stays in town with it instead of walking out.
 		collect: true, collect_retry_min: 30, collect_wait_s: 30,
+		// v25.43: a trip of its own for what the merchant holds only once it's worth the walk — collect_batch pieces, or
+		// one worth collect_big_pts, or the first waiting collect_batch_min; any trip on the way collects it all. A worn
+		// piece's hand-over likewise waits collect_batch_min (its project waits 30 min). 7 trips an hour, one per piece,
+		// had the fighters away from the camp 57% of the time (12:50 AM report).
+		collect_batch: 3, collect_big_pts: 20, collect_batch_min: 15,
 		// v24.86 (owner: feed the merchant down to each fighter's minimum reserve): was 2M. A fighter keeps this much —
 		// an elixir (240k) and its potion bills — and sends the merchant the rest a project asks for, whatever the
 		// richest one near can give (it used to send all of it or nothing).
