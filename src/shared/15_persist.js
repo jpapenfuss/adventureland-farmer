@@ -110,8 +110,9 @@ function load_state() {
 	delete state.gear_skip["town:loop"]; // v24.93: a loop brake from before a reload (usually a new build) doesn't carry over
 	// (v25.32: once more — ceilings recorded under the old 75%/80% floors)
 	if (d.cmp_v !== 3) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
-	// (v25.37: once more — a day's input_missing pause sat on the shield with copies in the bank)
-	if (d.upg_v !== 5) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	// (v25.37: a day's input_missing pause sat on the shield with copies in the bank — the upg: pauses are cleared once
+	// more; the ceilings only when coming from before v25.32's floors, as before)
+	if (d.upg_v !== 5) { if (d.upg_v !== 4) state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();

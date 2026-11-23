@@ -2841,10 +2841,13 @@ async function upg_fetch_copy(P) {
 	const b = CFG.bank && (state.bank_gear || []).filter((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > have).sort((x, y) => (y.level || 0) - (x.level || 0))[0];
 	if (!b) return true;
 	// a failed bank visit pauses the project 10 min (any reason: an unknown one mustn't end it and forget the copy)
-	try { await task_bank([{ name: P.name, level: b.level || 0, exact: true, key: `upgin:${P.name}` }]); }
+	try { await task_bank([{ name: P.name, level: b.level || 0, exact: true, ...(b.stat_type ? { stat_type: b.stat_type } : {}), key: `upgin:${P.name}` }]); }
 	catch (e) { skip("upg:" + P.name, 600_000, "bank: " + why(e)); game_log(`upgrade ${P.name}: fetching its copy from the bank: ${why(e)}; retrying in 10 min`, C.dim); return false; }
-	if (best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
-	state.bank_gear = (state.bank_gear || []).filter((i) => i !== b);
+	// v25.37 (Fable): the copy didn't arrive — drop it from the record by name and level (remember_bank rebuilt the
+	// array, so the identity filter missed it), or every failed step walked to the bank for it again
+	const got = best_level_held(P.name) > have;
+	if (!got) state.bank_gear = (state.bank_gear || []).filter((i) => !(i.name === P.name && (i.level || 0) === (b.level || 0) && !i.p));
+	if (got || best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
 	game_log(`upgrade ${P.name}: the copy isn't in the bank any more, and no NPC sells one — project ended`, C.dim);
 	state.upg = null; state.upg_pick_at = 0;
 	return false;
@@ -2862,7 +2865,9 @@ async function task_upgrade() {
 		// v25.37: a failed step destroyed the copy in the bags — the next best is fetched from the bank before the next step.
 		// (The fetch ran only at the start of a run, so the next step found no copy: input_missing ended the shield project
 		// with a shield+3 and a +0 in the bank, and paused it a day — 7:29 PM report.)
-		if (best_level_held(P.name) < 0 && (state.bank_gear || []).some((i) => i.name === P.name && !i.p && (i.level || 0) < P.to) && !(await upg_fetch_copy(P))) break;
+		// (and whenever the bank holds a better copy below the target than the bags: a +0 left in the bags isn't rolled
+		// while the bank has the +3)
+		if ((state.bank_gear || []).some((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > best_level_held(P.name)) && !(await upg_fetch_copy(P))) break;
 		if (!state.upg) break;
 		const top = best_level_held(P.name);
 		if (top >= P.to) {
@@ -4259,8 +4264,9 @@ function load_state() {
 	delete state.gear_skip["town:loop"]; // v24.93: a loop brake from before a reload (usually a new build) doesn't carry over
 	// (v25.32: once more — ceilings recorded under the old 75%/80% floors)
 	if (d.cmp_v !== 3) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
-	// (v25.37: once more — a day's input_missing pause sat on the shield with copies in the bank)
-	if (d.upg_v !== 5) { state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	// (v25.37: a day's input_missing pause sat on the shield with copies in the bank — the upg: pauses are cleared once
+	// more; the ceilings only when coming from before v25.32's floors, as before)
+	if (d.upg_v !== 5) { if (d.upg_v !== 4) state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
