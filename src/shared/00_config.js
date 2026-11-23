@@ -1,4 +1,4 @@
-const VERSION = "25.45"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.47"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -187,6 +187,9 @@ const CFG = {
 	elixir_auto: true,
 	elixir_buy: "elixirluck",  // Liquid Luck: 240k for 12h of +16 luck (the only elixir an NPC sells)
 	elixir_buy_min_gold: 500_000, // v24.86: was 5M — fighters now keep only merchant.fund_keep; the rest funds upgrades
+	// v25.44 (owner: 9999 Pumpkin Spice Lattes on the merchant — "enable the party using them"): drunk before any other
+	// elixir held (crit +5, reflection +2, max MP -400, 8 h); the merchant hands each fighter a stack (merchant.elixir_supply)
+	elixir_prefer: ["pumpkinspice"],
 	// World bosses / events on this server (parent.S: snowman, pinkgoo, wabbit, dragold, mrpumpkin, franky...). They're
 	// "cooperative" (every attacker shares xp and loot by damage), so they're judged on survival, not kill time: the
 	// party (tank first) must take tank_s seconds of the boss's damage within the safety budget, and one hit may not
@@ -222,11 +225,11 @@ const CFG = {
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
 	upgrade_boost_max: 50_000,
 	secondhand_gold_per_pt: 100_000, // v25.38: was 15k
-	// v25.45 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying
+	// v25.47 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying
 	// more from Ponty?"): a stock of +0 copies kept for compounding — bought whenever Ponty lists one at up to max_price,
 	// until n are held (bags + bank). The compounding turns them into +1 → +2 → +3 (the +3 is a worn upgrade). Judged
 	// one ring at a time, the gold-per-point rule never bought any: a +3 is 27 base copies at 40% for +3-5 pts.
-	ponty_stock: { ringsj: { n: 9, max_price: 35_000 } },    // ...and an upgrade may cost at most this per gear point it adds
+	ponty_stock: { ringsj: { n: 9, max_price: 35_000 } },
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
 	exchange_auto: true,
@@ -339,6 +342,7 @@ const CFG = {
 		self_pots: 20,         // potions of each kind the merchant keeps for itself
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
 		worn_wait_ms: 120_000, // v25.43: ...or up to this long for the worn piece our project came for (a lull between fights)
+		elixir_supply: { name: "pumpkinspice", give: 3333 }, // v25.44 (owner): 3,333 to each fighter that holds none, when we meet
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free

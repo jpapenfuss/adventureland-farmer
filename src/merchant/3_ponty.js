@@ -27,7 +27,7 @@ function secondhand_reason(it, groups) {
 	// than our other way there (our own copy, or an NPC copy from +0). Pieces no NPC sells only come this way or as drops.
 	const head = CFG.secondhand_upgrade_starts && upgrade_start_reason(it, price, fighters);
 	if (head) return head;
-	// v25.45: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
+	// v25.47: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
 	const S = CFG.ponty_stock?.[it.name];
 	if (S && lv === 0 && !it.p && price <= S.max_price) {
 		const have = held(it.name, 0) + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
@@ -180,7 +180,9 @@ async function task_secondhands() {
 		if (state.errand) state.errand_at = Date.now();
 		const rt = route_of.get(it);
 		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
-		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !gold_ok(price)) continue;
+		// v25.47: a ponty_stock buy skips the earnings test (gold_ok): at most n copies at max_price each
+		const stock = /^stock for compounding/.test(why_buy || "");
+		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !(stock || gold_ok(price))) continue;
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;
 		tag_spend("ponty");
