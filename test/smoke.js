@@ -43,6 +43,7 @@ vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
+vm.runInContext("globalThis.__collect0 = CFG.merchant.collect", ctx); // v25.43: the shipped default, before the fixtures override it
 vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
 // v25.32: the shipped odds floors are 10%; the tests of the floor mechanism run with the old values (80/60/20%, a
 // wanted compound 40%), and the shipped defaults are tested on their own (globalThis.__floors0)
@@ -3212,8 +3213,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(pk && pk.name === "mpg139" && pk.worn?.who === "Aspernari" && pk.worn.slot === "gloves" && pk.to === last, `the worn gloves: a project up to the last 90%+ step (+${pk && pk.to}; odds ${odds.map((o) => Math.round(o * 100)).join("/")})`);
 		R("state.upg = pick_upgrade()");
 		assert(R("worn_waiting()") === true && R("upgrade_due()") === false, "waiting for the hand-over: no town trip for it");
+		assert(R("__collect0") === false, "v25.43: shipped with collect off — the merchant delivers at the camp");
 		R("worn_trip_at = 0");
-		assert(R("worn_target()?.name") === "Aspernari" && R("worn_target()") === null, "v25.43: the merchant walks out to Aspernari for it (once per 10 min)");
+		assert(R("worn_target()?.name") === "Aspernari" && R("worn_target()?.name") === "Aspernari" && R("merchant_job()?.name") === "Aspernari", "v25.43: the merchant's job: walk out to Aspernari for it (asking doesn't spend the slot)");
+		R("worn_trip_at = Date.now()");
+		assert(R("worn_target()") === null, "...once per 10 min after a walk starts");
+		R("worn_trip_at = 0; state.upg.worn.got = Date.now()");
+		assert(R("worn_target()") === null, "...not once the piece is here");
+		R("state.upg.worn.got = 0; state.partners.Aspernari.t = Date.now() - 60000");
+		assert(R("worn_target()") === null, "...nor to a fighter not heard from");
+		R("state.partners.Aspernari.t = Date.now(); worn_trip_at = 0");
 		// the fighter's side: the merchant's heartbeat asks; in main town with nothing on it, it hands the gloves over
 		const want = { to: "Aspernari", name: "mpg139", level: 0, slot: "gloves" };
 		Object.assign(character, { name: "Aspernari", ctype: "priest", level: 60, items: Array(42).fill(null), slots: { gloves: { name: "mpg139", level: 0 } }, map: "main", x: 0, y: 0, esize: 40 });

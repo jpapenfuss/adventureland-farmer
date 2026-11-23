@@ -20,12 +20,13 @@ function gear_to_give() {
 	return out;
 }
 function gear_target() {
-	if (!is_merchant() || !CFG.gear_auto || CFG.merchant.collect) return null; // v24.75: the party comes for it
-	const needed = needed_slots(), now = Date.now();
+	if (!is_merchant() || !CFG.gear_auto || CFG.merchant.collect) return null; // v24.75: the party comes for it (collect mode)
+	// (v25.43: not compound-set copies or stand stock either, as the collect list — Fable: a ring set held to compound)
+	const needed = needed_slots(), cmp = compound_slots(needed), st = stand_hold(), now = Date.now();
 	for (const it of character.items) {
 		if (!it || it.l || it.b || !GEAR.has(G.items[it.name]?.type)) continue;
-		const key = `${it.name}:${it.level || 0}`;
-		if (now - (gear_trip_at[key] || 0) < 1_200_000 || needed.has(character.items.indexOf(it))) continue;
+		const key = `${it.name}:${it.level || 0}`, k = character.items.indexOf(it);
+		if (now - (gear_trip_at[key] || 0) < 1_200_000 || needed.has(k) || cmp.has(k) || st.has(k)) continue;
 		const to = best_fighter_for(it); // v24.7: the fighter it helps most (was: the first in config order with any gain)
 		if (to) return to.p; // serve() marks the pieces it carries
 	}
@@ -112,6 +113,10 @@ function mluck_near() {
 async function serve(f) {
 	await stand_close();
 	const serve_t0 = Date.now();
+	// v25.43: a walk for our project's worn piece (worn_target): its 10-min slot starts now, and we wait by the fighter
+	// for a lull (it hands over only with nothing on the party) — up to worn_wait_ms
+	const Wn = state.upg?.worn, for_worn = !!Wn && !Wn.got && Wn.who === f.name;
+	if (for_worn) worn_trip_at = Date.now();
 	state.serving = f.name;
 	// v24.7: only the pieces for this fighter (marking every piece paused deliveries to everyone else for 20 min)
 	for (const it of character.items) if (it && GEAR.has(G.items[it.name]?.type) && best_fighter_for(it)?.name === f.name) gear_trip_at[`${it.name}:${it.level || 0}`] = Date.now();
@@ -132,8 +137,8 @@ async function serve(f) {
 		for (const p of partners_near(350)) await give_pots(p);
 		await give_tokens();
 		token_trip_at = Date.now();
-		const end = Date.now() + M.wait_ms;
-		while (Date.now() < end && character.esize > 2 && !character.rip) {
+		const end = Date.now() + M.wait_ms, end_w = Date.now() + (M.worn_wait_ms || 120_000);
+		while ((Date.now() < end || (for_worn && Date.now() < end_w && !state.upg?.worn?.got && best_level_held(state.upg?.name) < (state.upg?.worn?.level ?? 0))) && character.esize > 2 && !character.rip) {
 			if (state.errand) state.errand_at = Date.now();
 			mluck_near();
 			const q = state.partners[f.name], pos = q && partner_pos(q);

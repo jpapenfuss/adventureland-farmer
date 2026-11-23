@@ -333,6 +333,7 @@ const CFG = {
 		                       // to reach pot_buy, so one trip tops everyone up; was a fixed 400)
 		self_pots: 20,         // potions of each kind the merchant keeps for itself
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
+		worn_wait_ms: 120_000, // v25.43: ...or up to this long for the worn piece our project came for (a lull between fights)
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free

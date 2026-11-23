@@ -32,8 +32,7 @@ function worn_target() {
 	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
 	const p = state.partners[W.who];
 	if (!p || !fresh(p) || p.rip) return null;
-	worn_trip_at = Date.now();
-	return p;
+	return p; // (pure: the slot is stamped when serve() starts the walk — merchant_job is asked every tick and by report())
 }
 // Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
 let donate_at = 0;
