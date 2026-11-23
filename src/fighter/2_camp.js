@@ -211,7 +211,7 @@ function pick_pack() {
 		const nb = area_danger(area, t), rd = nb ? null : route_cache.has(area.map) ? route_cache.get(area.map) : (route_cache.set(area.map, party_route_danger(area.map)), route_cache.get(area.map));
 		if (nb || rd) { state.pick_skips[key] = nb ? `${nb} spawns within ${CFG.danger_px}px` : `the way there passes ${rd}`; note(key, t, area.map, state.pick_skips[key]); return; }
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
-		p.rate = p.score; // its xp/s there (the side-goal and probe reference)
+		p.rate = p.score; // its rate there in the farm mode's unit (the probe reference; v25.51: p.xp is its xp/s)
 		p.score *= walk_factor(area); // v24.9: counting the walk there
 		if (!(p.score > 0)) return; // v24.20: unreachable (no way there) or worthless: never the pick (it took "jrat @ jail")
 		note(key, t, area.map, null, { rate: p.rate, score: p.score });
