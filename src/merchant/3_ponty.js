@@ -31,7 +31,7 @@ function secondhand_reason(it, groups) {
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
-	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
+	const up = g && gear_takers().slice(1).filter((x) => x.ctype !== "merchant").some((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g));
 	if (g && up && (g.bags + g.bank) % 3 === 2) return "completes a compound set";
 	return null;
 }
@@ -40,7 +40,16 @@ function upgrade_start_reason(it, price, fighters) {
 	if (!d?.upgrade || !GEAR.has(d.type) || it.p || !CFG.upgrade_auto) return null; // (titled copies aren't project inputs)
 	// the planner's own gates (pick_upgrade): a copy it would refuse to take on isn't bought; nor one for the piece the
 	// current project is building (its steps would be paid twice)
-	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name) || state.upg?.name === it.name) return null;
+	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name)) return null;
+	// v25.36 (owner: too many exceptions): a copy of the piece the current project builds is bought when it's already
+	// above the project's best copy (bags or bank) and cheaper than the expected steps it skips — at the project's
+	// target or above, it ends the project. (Before, every copy of it was refused: "its steps would be paid twice".)
+	if (state.upg?.name === it.name) {
+		const P = state.upg, have = owned_level(it.name), to = Math.min(lv, P.to);
+		if (lv <= have) return null;
+		const skips = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, Math.max(0, have))) + (have < 0 ? (sold_by_npc(it.name) ? G.items[it.name].g || 0 : Infinity) : 0);
+		return price < skips ? `skips the project's steps: +${Math.max(0, have)} → +${to} for ${P.for} (~${fmt_k(skips)} of steps, ${fmt_k(price)} here)` : null;
+	}
 	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
 	const budget = WP ? Infinity : Math.min(upgrade_gold(), gold_room()) * CFG.upgrade_spend;
 	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name), upg_reach(it.name));

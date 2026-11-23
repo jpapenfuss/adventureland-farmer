@@ -36,7 +36,7 @@ function token_pick() {
 		const price = shop[name];
 		if (price > budget || !GEAR.has(G.items[name]?.type) || party_holds(name)) continue;
 		for (const m of gear_takers().filter((x) => x.ctype !== "merchant")) {
-			const r = gear_gain({ name, level: 0 }, m.ctype, m.g);
+			const r = gear_gain_min({ name, level: 0 }, m.ctype, m.g); // (v25.36: tokens are spent)
 			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
 		}
 		// v24.67: for ourselves, a piece that only beats what we wear once upgraded (the fifth piece of a set at +0

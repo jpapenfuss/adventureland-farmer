@@ -3164,6 +3164,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			character.slots = { earring1: { name: "dexear" }, earring2: { name: "dexear" } }; R("my_gear_cache = null");
 			assert(!R("gear_gain({ name: 'dexear' }, 'mage', my_gear())"), "with both slots taken: not a swap for nothing");
 			assert(!R("gear_gain({ name: 'intear' }, 'mage', my_gear())") || R("gear_gain({ name: 'intear' }, 'mage', my_gear()).gain") >= R("CFG.gear_min_gain"), "an int earring over a dex one only if it clears gear_min_gain");
+			character.slots = {}; R("my_gear_cache = null");
+			assert(R("!!gear_gain({ name: 'dexear' }, 'mage', my_gear()) && !gear_gain_min({ name: 'dexear' }, 'mage', my_gear())"), "v25.36: worth wearing in an empty slot, not worth paying for (gear_gain_min)");
 			character.slots = {}; R("my_gear_cache = null"); Object.assign(character, sv2); delete ctx.G.items.dexear; delete ctx.G.items.intear;
 		}
 		delete ctx.G.maps.ragemap; delete ctx.G.monsters.purex; delete ctx.G.monsters.physx; delete ctx.G.monsters.ragex;
@@ -3324,6 +3326,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for a piece the planner has paused");
 			R("state.gear_skip = {}; state.upg = { name: 'amulet119', to: 6, for: 'Sanala' }");
 			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for the piece the current project builds");
+			// v25.36: a copy of the project's piece above our best one, cheaper than the steps it skips, is bought
+			{
+				const k0 = character.items.findIndex((i) => !i); character.items[k0] = { name: "amulet119", level: 0 };
+				const steps = R("upgrade_expected('amulet119', 3) - upgrade_expected('amulet119', 0)");
+				ctx.__sp = (it) => R(`upgrade_start_reason(${JSON.stringify(it)}, shop_price(${JSON.stringify(it)}), []) || ''`); // (the rule itself: a direct upgrade would be bought earlier anyway)
+				const cheap = { name: "amulet119", level: 3, price: Math.floor(steps / 2) };
+				const civ0 = ctx.calculate_item_value; ctx.calculate_item_value = (it) => (it.price !== undefined ? it.price / 2 : civ0 ? civ0(it) : 0); // (Ponty asks 2x value)
+				assert(/skips the project's steps: \+0 → \+3/.test(ctx.__sp(cheap)), `a +3 of the project's piece at half the steps' cost: bought (${ctx.__sp(cheap)})`);
+				assert(!/skips/.test(ctx.__sp({ ...cheap, price: steps * 2 })), "...not at twice the steps' cost");
+				assert(!/skips/.test(ctx.__sp({ name: "amulet119", level: 0, price: 1 })), "...nor one no better than ours");
+				ctx.calculate_item_value = civ0; if (civ0 === undefined) delete ctx.calculate_item_value; character.items[k0] = null;
+			}
 			R("state.upg = null; globalThis.__us = CFG.upgrade_spend; CFG.upgrade_spend = 0");
 			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not over the planner's budget");
 			R("CFG.upgrade_spend = globalThis.__us; sold_c.delete('amulet119')");

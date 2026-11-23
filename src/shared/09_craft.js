@@ -25,7 +25,7 @@ function craft_pick_raw() {
 		});
 		if (!inputs_ok) continue;
 		for (const m of takers) {
-			const g = gear_gain({ name: id, level: 0 }, m.ctype, m.g);
+			const g = gear_gain_min({ name: id, level: 0 }, m.ctype, m.g); // (v25.36: a craft costs gold)
 			if (g && (!best || g.gain > best.gain)) best = { id, for: m.name, slot: g.slot, gain: Math.round(g.gain), cost: r.cost || 0 };
 		}
 	}

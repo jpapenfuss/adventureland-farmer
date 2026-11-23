@@ -222,7 +222,7 @@ function report_facts() {
 	}
 	if (M_ && state.ponty) {
 		F("ponty_json", "self", `ponty JSON (seen ${ago(state.ponty.at)} ago; name+level → [count, price each, listings, smallest listing]): ${JSON.stringify(state.ponty.items)}`);
-		F("ponty_routes", "self", `ponty routes: ${state.ponty.routes?.length ? state.ponty.routes.join(" | ") : "none — nothing there compounds (at 75% or better) into a piece a fighter would wear within the price per point"}`);
+		F("ponty_routes", "self", `ponty routes: ${state.ponty.routes?.length ? state.ponty.routes.join(" | ") : `none — nothing there compounds (at ${Math.round(Math.min(CFG.compound_min_chance, CFG.compound_min_chance_wanted) * 100)}% or better) into a piece a fighter would wear within the price per point`}`);
 	}
 	// v24.70: what's worn, as JSON (slot → name+level, :stat for a stat scroll) — with the bank dump, enough to judge gear
 	F("worn_json", "self", `worn JSON: ${JSON.stringify(Object.fromEntries(Object.entries(character.slots || {}).filter(([k, v]) => v && !/^trade/.test(k)).map(([k, v]) => [k, v.name + (v.level ? "+" + v.level : "") + (v.stat_type ? ":" + v.stat_type : "") + (v.p ? ":" + v.p : "")])))}`);
