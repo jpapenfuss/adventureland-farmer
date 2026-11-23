@@ -1,4 +1,4 @@
-const VERSION = "25.42"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.43"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -333,6 +333,7 @@ const CFG = {
 		                       // to reach pot_buy, so one trip tops everyone up; was a fixed 400)
 		self_pots: 20,         // potions of each kind the merchant keeps for itself
 		wait_ms: 15_000,       // stay with the fighters this long for their items to arrive
+		worn_wait_ms: 120_000, // v25.43: ...or up to this long for the worn piece our project came for (a lull between fights)
 		trip_gap_ms: 120_000,  // at most one trip every 2 min
 		float: 1_000_000,      // fighters top the merchant's gold up to this (the richest near fighter, every 30 min at most)
 		fighter_min_free: 3,   // while the merchant is online, fighters walk to town themselves only below this many free
@@ -341,7 +342,11 @@ const CFG = {
 		// v24.75 (owner): the merchant holding a piece that's an upgrade for a fighter brings the party to town for it —
 		// checked from the first tick after loading and on every tick after (a party trip, ahead of work that can wait;
 		// one try per piece per collect_retry_min). The merchant then stays in town with it instead of walking out.
-		collect: true, collect_retry_min: 30, collect_wait_s: 30,
+		// v25.43 (owner: "If items can be sent between party members while they're out of town, is there any point in
+		// making town trips for upgrades at all?"): no — off. The merchant walks out and hands the piece over at the camp
+		// (gear_target → serve), as it does potions; the fighters keep farming. (7 party trips an hour, one per upgraded
+		// piece, had them away from the camp 57% of the time — 12:50 AM report.)
+		collect: false, collect_retry_min: 30, collect_wait_s: 30,
 		// v24.86 (owner: feed the merchant down to each fighter's minimum reserve): was 2M. A fighter keeps this much —
 		// an elixir (240k) and its potion bills — and sends the merchant the rest a project asks for, whatever the
 		// richest one near can give (it used to send all of it or nothing).

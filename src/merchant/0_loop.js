@@ -10,7 +10,8 @@ function merchant_beat() {
 	const msg = { k: "mhb", v: VERSION, b: BUILD, worn: CFG.gear_auto ? worn_items() : null, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
 		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0,
-		give: CFG.merchant.collect ? gear_to_give() : null,
+		// (collect mode: every piece; else only those for fighters we can't safely walk to — the party comes for those)
+		...(() => { const cr = CFG.merchant.collect ? null : cant_reach(); return { cant_reach: cr, give: CFG.merchant.collect ? gear_to_give() : cr.length ? gear_to_give().filter((g) => cr.includes(g.to)) : null }; })(),
 		// v25.39: the worn piece our upgrade project needs, until it arrives
 		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
@@ -22,7 +23,34 @@ function merchant_job() {
 	const urgent = partners().filter(need).sort((a, b) => (a.esize ?? 99) - (b.esize ?? 99) ||
 		Math.min(a.pots?.hp ?? 999, a.pots?.mp ?? 999) - Math.min(b.pots?.hp ?? 999, b.pots?.mp ?? 999))[0];
 	// otherwise a delivery: a Tracktrix (or its tokens) we hold for a fighter that lacks one
-	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || gear_target();
+	return urgent || (is_merchant() ? partners().find(can_supply_hold) : null) || token_target() || worn_target() || gear_target();
+}
+// v25.43 (owner: "If the route is unsafe for the merchant, the fighters can make the trip to town"): can we walk to this
+// fighter? route_plan from here to it, judged for us (we don't fight); 30 s per fighter. The ones we can't reach are
+// named in our heartbeat (cant_reach): for them the tank takes the party to town instead.
+const reach_c = {};
+function merchant_reach_ok(p) {
+	const c = reach_c[p.name];
+	if (c && Date.now() - c.at < 30_000) return c.ok;
+	const pos = partner_pos(p);
+	const pl = pos.map === character.map && Math.hypot(pos.x - character.x, pos.y - character.y) < 400 ? { danger: null } : route_plan(pos.map, pos.x, pos.y);
+	const ok = !!pl && !pl.danger, now = Date.now();
+	reach_c[p.name] = { at: now, ok, why: pl?.danger || (pl ? null : "no way there"), bad_since: ok ? 0 : c?.bad_since || now };
+	return ok;
+}
+// (named only after the verdict has held a minute — one heartbeat starts a party trip — and not for "no way there":
+// a fighter in the bank has no route graph entry)
+const cant_reach = () => partners().filter((p) => fresh(p) && !p.rip && !merchant_reach_ok(p) && reach_c[p.name].why !== "no way there" &&
+	Date.now() - reach_c[p.name].bad_since >= 60_000).map((p) => p.name);
+// v25.43: our upgrade project waits for a fighter's worn piece → walk out to it (serve waits by it; the fighter hands the
+// piece over at the camp, between fights). One trip per 10 min.
+let worn_trip_at = 0;
+function worn_target() {
+	const W = state.upg?.worn;
+	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
+	const p = state.partners[W.who];
+	if (!p || !fresh(p) || p.rip || !merchant_reach_ok(p)) return null; // (an unsafe way: the party comes to town for it)
+	return p; // (pure: the slot is stamped when serve() starts the walk — merchant_job is asked every tick and by report())
 }
 // Donate gold above donate.keep for XP while below donate.to_level (once a minute, idle in town only)
 let donate_at = 0;
