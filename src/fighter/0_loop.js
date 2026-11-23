@@ -166,7 +166,7 @@ function fighter_tick() {
 	loot_chests();
 	if (pack) {
 		const s = state.session, live = s && Date.now() - s.start > 10_000 ? (s.xp / ((Date.now() - s.start) / 1000)).toFixed(0) : "–";
-		const src = pack.directive ? pack.directive.split(/[ :(]/)[0] : "xp";
+		const src = pack.directive ? pack.directive.split(/[ :(]/)[0] : farm_kind(); // (v25.52: "gold" when picked for gold)
 		set_message(`${errand_busy() ? state.errand + " | " : ""}${pack.mtype} (${src}) ${live}xp/s | ${character.esize} free`);
 	}
 	return wait;
