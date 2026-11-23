@@ -169,7 +169,8 @@ const CFG = {
 	// v25.39: a fighter's worn piece is a project when we hold no spare copy — only steps at upgrade_worn.min_chance or
 	// better (base odds, and the server's preview), handed over in town, given up after wait_ms without it
 	upgrade_worn: { enabled: true, min_chance: 0.9, wait_ms: 1_800_000 },
-	upgrade_spend: 0.5,        // a project may cost at most 50% of the gold it may draw on (v25.38: was 20%; the expected cost)
+	// v25.46: upgrades and compounds spend all gold above this (and the role's reserve); no earnings test, no fraction
+	upgrade_keep: 1_000_000,
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
 	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)
 	merchant_upgrade_steps: 60, // v24.92: the merchant's — it lives in town; 8 a run made it start a run every minute
@@ -2485,7 +2486,7 @@ async function run_upgrade(a, row) {
 	let off = null;
 	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
-		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !(shop_for(a.name) && !G.items[a.name]?.cash) && gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
+		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !(shop_for(a.name) && !G.items[a.name]?.cash) && upg_gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
 			await ensure_scroll(hs);
 			if (!has_computer()) await go("upgrade");
 			await wait_budget(1, RESERVE.errand);
@@ -2643,7 +2644,7 @@ async function task_compound() {
 		const floor = tight_ok(g, g.bags.slice(0, 3)) ? 0 : Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
 			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance, wanted ? CFG.compound_min_chance_wanted : 1);
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
-		if (!gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
+		if (!upg_gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
 		try {
 			// resources: the exact spare slots, so run_compound never grabs a guide-needed copy of the same item
 			const before = g.bags.slice(0, 3).map((k) => character.items[k]);
@@ -2686,10 +2687,16 @@ function upgrade_target(name, high = false) {
 	}
 	return to;
 }
-// Gold a project may draw on: our own above the reserve; the merchant also counts fighters' gold above fund_keep
-// (they send it on supply runs when a step needs it)
+// v25.46: the gold an upgrade or compound never spends: the role's reserve (gold_keep(), a role function), and for the
+// merchant at least CFG.upgrade_keep (a fighter holds ~fund_keep; a 1M floor would stop its own projects)
+const upgrade_keep = () => (is_merchant() ? Math.max(gold_keep(), CFG.upgrade_keep) : gold_keep());
+// A step's gold is there: ours minus the step stays at or above upgrade_keep() (v25.46: no earnings test)
+const upg_gold_ok = (cost) => character.gold - (cost || 0) >= upgrade_keep();
+// Gold a project may draw on: our own above upgrade_keep(); the merchant also counts fighters' gold above fund_keep
+// (they send it on supply runs when a step needs it). v25.46: this is the whole budget — no gold_room() (recent
+// earnings) and no spend fraction; "vgloves+3 expected cost 5.6M, budget 460k" held every upgrade back.
 function upgrade_gold() {
-	let g = character.gold - gold_keep(); // gold_keep(): role function (v25.11)
+	let g = character.gold - upgrade_keep();
 	g += fund_pool(); // role function (v25.11): the merchant counts the fighters' gold above fund_keep
 	return Math.max(0, g);
 }
@@ -2748,7 +2755,7 @@ function upg_reach(name) {
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
 function pick_upgrade() {
-	const room = gold_room(), gold = Math.min(upgrade_gold(), room), budget = gold * CFG.upgrade_spend, H = CFG.upgrade_high;
+	const budget = upgrade_gold(), H = CFG.upgrade_high;
 	if (!CFG.upgrade_auto) return null; // (v24.86: a budget at 0 still lets weapon projects through; the rest fail cost > cap)
 	const takers = gear_takers().filter((m) => m.ctype !== "merchant");
 	let best = null;
@@ -2836,7 +2843,7 @@ function upgrade_why() {
 		out.push(own ? `ours next: ${own[0].name}+${own[0].level || 0} (${own[1]}) → +${own[2].to} (+${own[2].gain} pts)` : "nothing we own would win once upgraded");
 	}
 	if (!merchant_does_it()) { // the merchant, or a fighter while it is away
-		const gold = Math.min(upgrade_gold(), gold_room()), budget = gold * CFG.upgrade_spend, takers = gear_takers().filter((m) => m.ctype !== "merchant"), rows = [];
+		const budget = upgrade_gold(), takers = gear_takers().filter((m) => m.ctype !== "merchant"), rows = [];
 		for (const name in G.items) {
 			const def = G.items[name];
 			// v25.32: and the copies we own (bags/bank) — the merchant's projects since v25.17, missing from this line:
@@ -2959,10 +2966,14 @@ async function task_upgrade() {
 			break;
 		}
 		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
-		// over the party's gold budget: don't ask the fighters for gold we then couldn't spend (v19.6)
-		if (!P.weapon && step > gold_room()) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
+		// v25.46: no gold for the step anywhere (ours above upgrade_keep plus what the fighters can send): the project is
+		// dropped for 30 min rather than waiting on funds forever and holding every other project back (a weapon's too)
+		if (character.gold - upgrade_keep() + fund_pool() < step) {
+			town_reason.upgrade = `gold: next step ${fmt_k(step)}, none to fund it (have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())})`;
+			skip("upg:" + P.name, 1_800_000, "no gold for the next step"); state.upg = null; state.fund_need = 0; break;
+		}
 		if (merchant_asks_funds(P, step)) break; // v25.5: merchant/ — the fighters fund the step
-		if (!(P.weapon ? character.gold - step >= gold_keep() : gold_ok(step))) { town_reason.upgrade = `gold budget: next step ${fmt_k(step)}, room ${fmt_k(Math.max(0, gold_room()))}`; break; }
+		if (!upg_gold_ok(step)) { town_reason.upgrade = `gold: next step ${fmt_k(step)}, have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())}`; break; }
 		state.fund_need = 0;
 		// v23.1: the gold the project's steps cost (copy + scrolls), counted per step — measuring from total gold let loot,
 		// sales, potion buys and the fighters' funding move it
@@ -7635,10 +7646,10 @@ function facts_cave__fighter(F) {
 // =====================================================================
 function merchant_beat() {
 	if (!is_merchant() || typeof send_cm !== "function") return;
-	if (state.fund_need > 0 && character.gold - CFG.merchant.donate.keep >= state.fund_need && !state.upg) state.fund_need = 0;
+	if (state.fund_need > 0 && upg_gold_ok(state.fund_need) && !state.upg) state.fund_need = 0;
 	const msg = { k: "mhb", v: VERSION, b: BUILD, worn: CFG.gear_auto ? worn_items() : null, ledger: my_ledger(), bag_gear: bag_gear_names(), bag_lv: bag_gear_levels(), gear: CFG.gear_auto ? my_gear() : null, level: character.level, map: character.map, x: Math.round(character.x), y: Math.round(character.y),
 		esize: character.esize, gold: character.gold, serving: state.serving || null, rip: !!character.rip, need: hold_missing(),
-		fund: state.fund_need && character.gold - CFG.merchant.donate.keep < state.fund_need ? state.fund_need : 0,
+		fund: state.fund_need && !upg_gold_ok(state.fund_need) ? state.fund_need : 0, // v25.46: upgrade_keep()
 		// (collect mode: every piece; else only those for fighters we can't safely walk to — the party comes for those)
 		...(() => { const cr = CFG.merchant.collect ? null : cant_reach(); return { cant_reach: cr, give: CFG.merchant.collect ? gear_to_give() : cr.length ? gear_to_give().filter((g) => cr.includes(g.to)) : null }; })(),
 		// v25.39: the worn piece our upgrade project needs, until it arrives
@@ -8004,11 +8015,14 @@ function merchant_fetch_sale__merchant(fetch) {
 // ---- project funding (v25.5): the merchant's projects are paid by the fighters (merchant.fund_keep) ----
 // waiting for gold asked for earlier
 function merchant_awaits_funds__merchant() {
-	return state.fund_need > 0 && character.gold - CFG.merchant.donate.keep < state.fund_need;
+	// v25.47: not past 10 min, nor with no fighter able to send any: the wait was for 3x the step (or a weapon's
+	// remainder) and held every upgrade until all of it came, even with the next step already paid for
+	return state.fund_need > 0 && !upg_gold_ok(state.fund_need) && fund_pool() > 0 && Date.now() - (state.fund_at || 0) < 600_000;
 }
 // the next step (P: an upgrade project; null: a craft costing `step`) is beyond our gold: ask the fighters. true = asked
 function merchant_asks_funds__merchant(P, step) {
-	if (character.gold - CFG.merchant.donate.keep >= step) return false;
+	if (upg_gold_ok(step)) return false; // v25.46: against upgrade_keep()
+	state.fund_at = Date.now(); // v25.47: merchant_awaits_funds times out from here
 	if (!P) { state.fund_need = step; return true; }
 	state.fund_need = P.weapon ? Math.max(step * 3, (P.cost || 0) - (P.spent || 0)) : Math.min(P.cost, step * 3); // v24.86: a weapon asks for what's left
 	game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
@@ -8336,7 +8350,7 @@ function upgrade_start_reason(it, price, fighters) {
 		return price < skips ? `skips the project's steps: +${Math.max(0, have)} → +${to} for ${P.for} (~${fmt_k(skips)} of steps, ${fmt_k(price)} here)` : null;
 	}
 	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
-	const budget = WP ? Infinity : Math.min(upgrade_gold(), gold_room()) * CFG.upgrade_spend;
+	const budget = WP ? Infinity : upgrade_gold(); // v25.46: the planner's budget
 	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name), upg_reach(it.name));
 	if (own >= lv) return null; // ours is as far along already
 	let best = null;
@@ -8458,9 +8472,7 @@ async function task_secondhands() {
 		if (state.errand) state.errand_at = Date.now();
 		const rt = route_of.get(it);
 		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
-		// v25.47: a ponty_stock buy skips the earnings test (gold_ok): at most n copies at max_price each
-		const stock = /^stock for compounding/.test(why_buy || "");
-		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !(stock || gold_ok(price))) continue;
+		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !upg_gold_ok(price)) continue; // v25.46: every reason here is gear for the party: no earnings test
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;
 		tag_spend("ponty");
