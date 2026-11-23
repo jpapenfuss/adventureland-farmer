@@ -7,7 +7,7 @@ function facts_merchant(F, ctx) {
 	const f = merchant_job(), D = CFG.merchant.donate;
 	if (D && character.level < D.to_level) F("xp", "self", `xp: level ${character.level}, donating gold above ${fmt_k(D.keep)} until level ${D.to_level} (${fmt_k(state.donated && now - state.donated.since < 86_400_000 ? state.donated.g : 0)}/${fmt_k(D.per_day)} today)`);
 	const bf = state.bank_free, pend = character.items.filter((i) => i && state.purge[purge_key(i)]).length;
-	if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? (CFG.sell_junk ? " — purging low-value items" : " — nearly full; nothing is sold (sell_junk off)") : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
+	if (bf) F("bank", "self", `bank: ${bf.free} of ${bf.total} free (seen ${ago(state.bank_at || bf.at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""})${bf.free < bf.total * CFG.merchant.purge_below ? (CFG.sell_junk ? " — purging low-value items" : CFG.merchant.gear_purge?.enabled ? ` — nearly full; ${gear_purge_text()}` : " — nearly full; nothing is sold (sell_junk off)") : ""}${pend ? ` | purge: ${pend} pending` : ""}`);
 	// v24.68: everything in the bank (as last seen) and in the merchant's bags, as JSON: "name+level" → count, * = locked
 	F("bank_json", "self", state.bank_dump ? `bank JSON (seen ${ago(state.bank_at)} ago${state.bank_by && state.bank_by !== character.name ? " by " + state.bank_by : ""}): ${JSON.stringify(state.bank_dump)}`
 		: "bank JSON: nothing recorded yet — it's taken on the next bank visit by any character");
@@ -20,4 +20,12 @@ function facts_merchant(F, ctx) {
 	const ls = Object.values(state.stand).filter((l) => !l.decoy), dc = Object.values(state.stand).find((l) => l.decoy), sold = hist.ev.filter((e) => e.type === "sold" && now - e.t < 86_400_000);
 	F("stand", "self", `stand: ${character.stand ? "open" : "closed"}, ${ls.length}/16 listed${ls.length ? ` (${fmt_k(ls.reduce((a, l) => a + l.price * (l.per_unit ? l.q || 1 : 1), 0))} asked)` : ""}${dc ? ` + Merrit's ${dc.name}` : CFG.merchant.stand.decoy ? ` | Merrit's listing: ${skipped("stand:decoy") ? `paused (${skip_why["stand:decoy"] || "?"})` : "not up yet"}` : ""} | sold 24h: ${sold.length}${sold.length ? ` for ${fmt_k(sold.reduce((a, e) => a + (e.price || 0), 0))}` : ""}`);
 	F("merchant", "self", `supply: ${state.serving ? "serving " + state.serving : f ? "next: " + f.name + ` (${f.esize} free, pots ${f.pots?.hp}/${f.pots?.mp})` : "idle"} | mluck ${G.skills.mluck && character.level >= (G.skills.mluck.level || 0) ? "on" : `at level ${G.skills.mluck?.level || 40}`}`);
+}
+
+// v25.35: the surplus-gear state for the bank line (bank as last seen)
+function gear_purge_text() {
+	const tk = purge_takers();
+	if (!tk) return "surplus gear waits: not every fighter heard from with its gear";
+	const ex = gear_excess(state.bank_gear || [], tk), n = [...ex.values()].reduce((a, b) => a + b, 0);
+	return n ? `surplus gear to sell: ${n} (${[...ex].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, c]) => `${k.replace(/:(\d+)/, "+$1")} x${c}`).join(", ")}${ex.size > 5 ? "…" : ""})` : "no surplus gear";
 }
