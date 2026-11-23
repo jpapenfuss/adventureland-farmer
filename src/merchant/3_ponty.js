@@ -27,6 +27,12 @@ function secondhand_reason(it, groups) {
 	// than our other way there (our own copy, or an NPC copy from +0). Pieces no NPC sells only come this way or as drops.
 	const head = CFG.secondhand_upgrade_starts && upgrade_start_reason(it, price, fighters);
 	if (head) return head;
+	// v25.45: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
+	const S = CFG.ponty_stock?.[it.name];
+	if (S && lv === 0 && !it.p && price <= S.max_price) {
+		const have = held(it.name, 0) + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
+		if (have < S.n) return `stock for compounding (${have + 1}/${S.n})`;
+	}
 	const g = G.items[it.name].compound && (it.level || 0) < CFG.compound_max_level &&
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty

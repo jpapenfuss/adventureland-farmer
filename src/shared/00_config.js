@@ -1,4 +1,4 @@
-const VERSION = "25.43"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.45"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -221,7 +221,12 @@ const CFG = {
 	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
 	upgrade_boost_max: 50_000,
-	secondhand_gold_per_pt: 100_000, // v25.38: was 15k    // ...and an upgrade may cost at most this per gear point it adds
+	secondhand_gold_per_pt: 100_000, // v25.38: was 15k
+	// v25.45 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying
+	// more from Ponty?"): a stock of +0 copies kept for compounding — bought whenever Ponty lists one at up to max_price,
+	// until n are held (bags + bank). The compounding turns them into +1 → +2 → +3 (the +3 is a worn upgrade). Judged
+	// one ring at a time, the gold-per-point rule never bought any: a +3 is 27 base copies at 40% for +3-5 pts.
+	ponty_stock: { ringsj: { n: 9, max_price: 35_000 } },    // ...and an upgrade may cost at most this per gear point it adds
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
 	exchange_auto: true,
