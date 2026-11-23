@@ -165,6 +165,9 @@ const CFG = {
 	// no budget — no gold-per-point test, no spending cap, no give-up after failures — and weapons come before every
 	// other project. Steps still need the server's odds over min_chance_rebuyable (10%; +7 is 25%).
 	upgrade_weapon: { enabled: true, to: 7 },
+	// v25.39: a fighter's worn piece is a project when we hold no spare copy — only steps at upgrade_worn.min_chance or
+	// better (base odds, and the server's preview), handed over in town, given up after wait_ms without it
+	upgrade_worn: { enabled: true, min_chance: 0.9, wait_ms: 1_800_000 },
 	upgrade_spend: 0.5,        // a project may cost at most 50% of the gold it may draw on (v25.38: was 20%; the expected cost)
 	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
 	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)

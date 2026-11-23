@@ -74,6 +74,9 @@ function needed_slots() {
 	const P = state.upg; // the upgrade project's copies below its target stay put (not equipped/sent/banked/compounded)
 	if (P) character.items.forEach((i, k) => { if (i && i.name === P.name && (i.level || 0) < P.to) keep.add(k); });
 	if (state.travel_off.length) for (const k of travel_slots_held()) keep.add(k); // v24.27: worn pieces off for a walk
+	// v25.39: a piece the merchant's project asked us for (worn_for_me: role function) stays put until it's sent
+	const WW = worn_for_me();
+	if (WW) character.items.forEach((i, k) => { if (i && i.name === WW.name && (i.level || 0) === WW.level && !i.p) keep.add(k); });
 	character.items.forEach((i, k) => { if (i && state.needs.has(i.name)) (by[i.name] = by[i.name] || []).push(k); });
 	for (const n in by) {
 		if (G.items[n]?.s) { by[n].forEach((k) => keep.add(k)); continue; }
