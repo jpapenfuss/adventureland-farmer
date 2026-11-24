@@ -2754,6 +2754,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		{ const cm64 = [], sc0 = ctx.send_cm; ctx.send_cm = (to, m) => (cm64.push([to.join(), m.k, m.gear?.[0]?.name]), Promise.resolve());
 			handlers.cm({ name: "Sanala", message: { k: "bankq" } });
 			const ans = JSON.stringify(cm64);
+			handlers.cm({ name: "Sanala", message: { k: "bankq" } }); // a second ask inside 30 s isn't answered
+			assert(cm64.length === 1, `v25.64: a bankq answered at most every 30 s per asker (${cm64.length})`);
 			const nr0 = ctx.G.items.newring; ctx.G.items.newring = nr0 || { type: "ring" };
 			const st64 = ctx.setTimeout, tm64 = []; ctx.setTimeout = (fn, ms) => (tm64.push({ fn, ms }), tm64.length);
 			character.map = "bank"; character.bank = { items0: [{ name: "newring", level: 0 }] };
@@ -2762,9 +2764,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const held = cm64.length, sched = tm64.find((t) => t.ms > 30000 && t.ms < 45000);
 			if (sched) sched.fn();
 			ctx.send_cm = sc0; character.map = "main"; character.bank = undefined; if (!nr0) delete ctx.G.items.newring;
-			// a second ask inside 30 s isn't answered; an answer relays who read the view
-			const n2 = cm64.length; handlers.cm({ name: "Sanala", message: { k: "bankq" } });
-			assert(cm64.length === n2, "v25.64: a bankq answered at most every 30 s per asker");
+			// an answer relays who read the view
 			handlers.cm({ name: "Torlis", message: { k: "bank", at: Date.now() + 1000, by: "DoWhatNow", seen: { r: 1 }, gear: [] } });
 			assert(vm.runInContext("state.bank_by", ctx) === "DoWhatNow", "v25.64: a relayed view keeps who read it");
 			vm.runInContext("state.bank_free = null; state.bank_dump = null; bank_hash = ''; bank_sent_at = 0; bank_send_timer = null; for (const k in bankq_at) delete bankq_at[k]", ctx);
