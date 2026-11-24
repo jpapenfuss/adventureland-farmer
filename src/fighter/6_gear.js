@@ -69,9 +69,7 @@ async function task_tokens() {
 			await T(exchange_buy("monstertoken", b.name));
 			n++;
 			if (b.hold && b.for !== character.name) state.hold_for[b.name] = { to: b.for, at: Date.now() };
-			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
-			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
-			// (v25.17: only while the merchant is away; otherwise it gets the piece and upgrades it)
+			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }

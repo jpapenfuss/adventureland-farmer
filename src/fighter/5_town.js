@@ -169,7 +169,7 @@ function party_trip_check(due, what) {
 	const ht = is_follower() || !in_party_cfg() ? null : hunts_trip_due();
 	if (ht) asks.push(ht);
 	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
-	const worn_ask = !!WW && ((MM.cant_reach || []).includes(WW.to) || WW.slot === "mainhand" || WW.slot === "offhand") && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
+	const worn_ask = !!WW && (MM.cant_reach || []).includes(WW.to) && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
 		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
 	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade (no safe way for it)`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {

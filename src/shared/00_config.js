@@ -68,7 +68,7 @@ const CFG = {
 	// Note the server counts scrolls by the piece's grade AT ITS LEVEL: most gear turns a grade higher at +7 (10x the
 	// scrolls of +6), and a rare one takes 100 (800k).
 	// v25.62 (owner): a worn piece's generic Stat gets the wearer's main stat once no upgrade of it is ahead
-	// (upgrade_ahead), at the upgrade planner's gold per point (was: only at +7, at most 100k per piece and per point)
+	// (upgrade_ahead: no +1 step for it passes the rule), at up to max_gold_per_pt (was: only at +7, 100k per piece/point)
 	stat_scroll: { enabled: true, max_cost: Infinity, max_gold_per_pt: 300_000, per_run: 3 },
 	sell: [],                  // item names to always sell
 	// v24.72 (owner): false = nothing is sold as "junk" — not plain +0 gear when the bank is full, not the merchant's
@@ -201,8 +201,6 @@ const CFG = {
 	// v25.50 (owner: "monitor Ponty for updates, and buy our target items aggressively"): every minute (was 10 min)
 	// v25.61 (owner: "poll Ponty more frequently"): every 15 s — a poll from the square is one call, no walk
 	secondhand_every_ms: 15_000,
-	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
-
 	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);
 	// each reason's own price test and upg_gold_ok (gold above upgrade_keep) bound a buy
 	secondhand_max_price: Infinity,
@@ -540,7 +538,7 @@ const state = {
 	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
 	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
-	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
+	upg: null,               // upgrade step { name, to, for, slot, gain, cost, floor, from_copy, worn? } — one roll (saved)
 	cmp_caps: {},            // item -> { level, at }: copies at this level won't be compounded (odds under the floor; v24.15, saved)
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)

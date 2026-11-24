@@ -53,7 +53,6 @@ function worn_target() {
 	const W = state.upg?.worn;
 	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
 	const p = state.partners[W.who];
-	if (W.slot === "mainhand" || W.slot === "offhand") return null; // v25.66: a weapon/offhand is handed over in town only
 	if (!p || !fresh(p) || p.rip || !merchant_reach_ok(p)) return null; // (an unsafe way: the party comes to town for it)
 	return p; // (pure: the slot is stamped when serve() starts the walk — merchant_job is asked every tick and by report())
 }

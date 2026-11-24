@@ -1225,6 +1225,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("task_upgrade()", ctx);
 	assert(JSON.stringify(ups49) === "[0]" && character.items[2].level === to49, `one step: +0 → +1 (${ups49} → +${character.items[2].level})`);
 	await vm.runInContext("task_upgrade()", ctx); assert(vm.runInContext("state.upg", ctx) === null, "step done: project closed");
+	// v25.66 (Fable): a failed roll ends the project — no chain rebuilt from another copy; a copy above the worn level
+	// goes first (no step, no fake hand-over); a titled piece is never handed over; an old saved project isn't run
+	{ character.items[2] = { name: "nhelm", level: 0 }; character.items[3] = { name: "nhelm", level: 0 };
+		const rolls = []; ctx.upgrade = (k, sk, off, preview) => preview ? Promise.resolve({ chance: 0.95 }) : (rolls.push(k), character.items[k] = null, Promise.resolve({ success: false }));
+		vm.runInContext("state.upg = { name: 'nhelm', to: 1, for: 'Torlis', slot: 'helmet', gain: 5, cost: 1000, floor: 0.5, from_copy: 0 }; state.gear_skip = {}", ctx);
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(rolls.length === 1 && vm.runInContext("state.upg", ctx) === null && character.items[3]?.name === "nhelm", `a failed roll: one roll, project ended, the other copy untouched (${rolls.length})`);
+		character.items[2] = { name: "nhelm", level: 1 }; character.items[3] = null; vm.runInContext("my_gear_cache = null", ctx);
+		const st = vm.runInContext("JSON.stringify(upgrade_step({ name: 'nhelm', level: 0 }, 'paladin', my_gear(), 'helmet', 1))", ctx);
+		assert(/"ok":false/.test(st) && /\+1 copy held goes to it first/.test(st) && vm.runInContext("pick_upgrade()", ctx) === null, `a +1 held over the worn +0: no step (${st})`);
+		const tt = vm.runInContext("JSON.stringify(upgrade_step({ name: 'nhelm', level: 0, p: 'shiny' }, 'paladin', my_gear(), 'helmet', -1))", ctx);
+		assert(/titled: never handed over/.test(tt), `a titled worn piece with no spare: no hand-over (${tt})`);
+		character.items[2] = null;
+		const g0 = ctx.get; ctx.get = () => ({ v: 1, meas_v: 3, data_v: vm.runInContext("DATA_V", ctx), rates_v: vm.runInContext("RATES_V", ctx), upg_v: 5, at: Date.now(), upg: { name: "nhelm", to: 7, for: "Torlis" } });
+		vm.runInContext("state.upg = null; load_state()", ctx); ctx.get = g0;
+		assert(vm.runInContext("state.upg", ctx) === null, "an old multi-level project (upg_v 5) isn't loaded"); }
 	// low odds stop the project at the level reached and pause that item
 	vm.runInContext("state.upg = { name: 'nhelm', to: 9, for: 'Torlis', slot: 'helmet', gain: 10, cost: 1000 }", ctx);
 	character.items[2] = { name: "nhelm", level: 2 };
@@ -1234,16 +1250,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// with the merchant online, fighters leave projects to it
 	vm.runInContext("state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 0 }", ctx);
 	assert(!vm.runInContext("upgrade_due()", ctx), "fighter skips upgrade projects while the merchant is online");
-	// v25.13: the report says when a project is the fighter's own (kept while the merchant is online)
-	{
-		const P = "state.upg = { name: 'slimestaff', to: 7, for: 'Torlis', slot: 'mainhand', gain: 10, cost: 80000, own: true }";
-		vm.runInContext(P, ctx);
-		const line = vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx);
-		assert(/slimestaff .* — our own \(while the merchant is away\)$/.test(line || ""), `report marks an own project (${line})`);
-		vm.runInContext(P.replace("own: true", "own: false"), ctx);
-		assert(!/our own/.test(vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx) || ""), "and not a shared one");
-		vm.runInContext("state.upg = null", ctx);
-	}
 	vm.runInContext("state.merchant = null", ctx);
 	ctx.find_npc = fn_save;
 
@@ -1980,9 +1986,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.item_grade = ig_save; ctx.find_npc = fn75;
 	// merchant funding: a project step beyond its gold → fund request in the heartbeat; the richest fighter near sends it
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 1002000, map: "main", x: 0, y: 0, esize: 30 }); // 2k over upgrade_keep (1M) < the 6k first step
-	character.items = Array(42).fill(null);
+	character.items = Array(42).fill(null); character.items[1] = { name: "wbow", level: 3 }; // (v25.66: one step, the copy at +3)
+	const sc0g75 = ctx.G.items.scroll0.g; ctx.G.items.scroll0.g = 60000; // a 60k step
 	// v25.46: nobody can fund the step (no fighter above fund_keep): the project is dropped for 30 min, not waited on
-	vm.runInContext("state.partners = {}; state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
+	vm.runInContext("state.partners = {}; state.upg = { name: 'wbow', to: 4, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 60000 }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
 	assert(vm.runInContext("state.upg !== null && !skipped('upg:wbow')", ctx), "v25.48: members not heard from: not dropped (a stale heartbeat isn't 'no gold')");
 	vm.runInContext("globalThis.__ss49 = seen.since; seen.since = Date.now() - 200_000", ctx);
@@ -2003,7 +2010,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("state.upg === null && state.fund_need === 0 && skipped('upg:wbow')", ctx), "v25.46: no gold anywhere for the step: project dropped for 30 min");
 	vm.runInContext("state.partners = {}", ctx);
 	hb("Aspernari", { ...asp, x: 0, y: 0, gold: 7.7e6 });
-	vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
+	vm.runInContext("state.upg = { name: 'wbow', to: 4, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 60000 }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
 	const fund75 = vm.runInContext("state.fund_need", ctx);
 	assert(fund75 > 0 && !vm.runInContext("upgrade_due()", ctx), `merchant waits for funding (${fund75})`);
@@ -2026,6 +2033,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("merchant_handoff()", ctx);
 	assert(g75.length === 1 && g75[0][0] === "DoWhatNow" && g75[0][1] === Math.round(fund75), `richest fighter funds the project (${JSON.stringify(g75)})`);
 	vm.runInContext("state.merchant = null; state.upg = null; state.fund_need = 0", ctx);
+	ctx.G.items.scroll0.g = sc0g75;
 
 	// 76) crafting for power: a non-quest recipe of plain materials whose output a member wears as an upgrade
 	ctx.G.items.cloth = { type: "material", s: true }; ctx.G.items.silkhat = { type: "helmet", armor: 90, g: 1000 };
@@ -3488,8 +3496,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items[3] = null;
 		R("state.upg.worn.got = 0; state.upg.worn.at = Date.now() - 2 * 3600e3");
 		assert(R("worn_waiting()") === false && R("state.upg") === null && R("skipped('upg:mpg139')"), "never handed over: dropped after wait_ms, paused an hour");
-		// v25.66: a worn weapon is a step too — handed over in town only (the merchant doesn't walk out for it; the tank's
-		// party trip brings the fighter)
+		// v25.66 (Fable): a worn weapon is never handed over (the fighter would fight without it): it steps from a spare only
 		{
 			ctx.G.items.stf139 = { type: "weapon", wtype: "staff", g: 12400, attack: 20, upgrade: { attack: 6 } };
 			Object.assign(character, { name: "Aspernari", ctype: "priest", level: 60, slots: { mainhand: { name: "stf139", level: 0 } } }); R("my_gear_cache = null");
@@ -3499,10 +3506,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("globalThis.__pa = state.partners; state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g2, worn: __w2 } }; state.gear_skip = {}; sold_c.set('stf139', false)");
 			R("for (const n in G.items) if (n !== 'stf139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test')");
 			const pw = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
-			R("globalThis.__upw = state.upg; state.upg = pick_upgrade(); worn_trip_at = 0");
-			const wt = R("worn_target()");
-			R("state.upg = __upw");
-			assert(pw?.name === "stf139" && pw.worn?.slot === "mainhand" && wt === null, `a worn staff: a step, handed over in town — the merchant doesn't walk out for it (${JSON.stringify(pw)}, ${wt})`);
+			R("state.bank_gear = [{ name: 'stf139', level: 0 }]");
+			const ps = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
+			R("state.bank_gear = []");
+			assert(pw === null && ps?.name === "stf139" && !ps.worn && ps.floor === 0.5, `a worn staff: no hand-over (${JSON.stringify(pw)}); a spare +0 in the bank: stepped (${JSON.stringify(ps)})`);
 			R("state.partners = __pa; sold_c.delete('stf139'); state.gear_skip = {}"); delete ctx.G.items.stf139;
 		}
 		// v25.66: the step's floor is the whole floor at the roll
@@ -3691,7 +3698,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// upgrade step: a transient error pauses it; refused odds end it (paused)
 		character.items[1] = { name: "helm119", level: 3 };
 		ctx.G.items.scroll0 = { g: 1000, type: "uscroll" };
-		vm.runInContext(`state.upg = { name: 'helm119', to: 7, cost: 100000, for: 'Torlis', spent: 0 }; state.gear_skip = {}; state.fund_need = 0;
+		vm.runInContext(`state.upg = { name: 'helm119', to: 4, cost: 1000, for: 'Torlis', floor: 0.5 }; state.gear_skip = {}; state.fund_need = 0;
 			globalThis.__ru = run_upgrade; run_upgrade = async () => { throw { reason: "timeout" }; }`, ctx);
 		await vm.runInContext("task_upgrade()", ctx);
 		assert(vm.runInContext("state.upg && state.upg.name === 'helm119' && skipped('upg:helm119')", ctx), "a timeout pauses the project, it doesn't drop it");

@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -148,7 +148,7 @@ function load_state() {
 	if (d.cmp_v !== 3 && d.cmp_v !== 4) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
 	// (v25.37: a day's input_missing pause sat on the shield with copies in the bank — the upg: pauses are cleared once
 	// more; the ceilings only when coming from before v25.32's floors, as before)
-	if (d.upg_v !== 5) { for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	if (d.upg_v !== 6) { state.upg = null; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; } // (v25.66: an old multi-level project isn't run)
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();

@@ -69,7 +69,7 @@ const CFG = {
 	// Note the server counts scrolls by the piece's grade AT ITS LEVEL: most gear turns a grade higher at +7 (10x the
 	// scrolls of +6), and a rare one takes 100 (800k).
 	// v25.62 (owner): a worn piece's generic Stat gets the wearer's main stat once no upgrade of it is ahead
-	// (upgrade_ahead), at the upgrade planner's gold per point (was: only at +7, at most 100k per piece and per point)
+	// (upgrade_ahead: no +1 step for it passes the rule), at up to max_gold_per_pt (was: only at +7, 100k per piece/point)
 	stat_scroll: { enabled: true, max_cost: Infinity, max_gold_per_pt: 300_000, per_run: 3 },
 	sell: [],                  // item names to always sell
 	// v24.72 (owner): false = nothing is sold as "junk" — not plain +0 gear when the bank is full, not the merchant's
@@ -202,8 +202,6 @@ const CFG = {
 	// v25.50 (owner: "monitor Ponty for updates, and buy our target items aggressively"): every minute (was 10 min)
 	// v25.61 (owner: "poll Ponty more frequently"): every 15 s — a poll from the square is one call, no walk
 	secondhand_every_ms: 15_000,
-	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
-
 	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);
 	// each reason's own price test and upg_gold_ok (gold above upgrade_keep) bound a buy
 	secondhand_max_price: Infinity,
@@ -541,7 +539,7 @@ const state = {
 	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
 	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
-	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
+	upg: null,               // upgrade step { name, to, for, slot, gain, cost, floor, from_copy, worn? } — one roll (saved)
 	cmp_caps: {},            // item -> { level, at }: copies at this level won't be compounded (odds under the floor; v24.15, saved)
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)
@@ -2744,7 +2742,7 @@ async function task_compound() {
 	return n;
 }
 // =====================================================================
-// shared/08_upgrade_pick.js — own upgrading: which piece to take how far, odds, costs (CFG.upgrade_auto)
+// shared/08_upgrade_pick.js — upgrading: one +1 step at a time on what a fighter wears (CFG.upgrade_auto)
 // =====================================================================
 // ---- Own upgrading (CFG.upgrade_auto) ----
 // v25.46: the gold an upgrade or compound never spends: the role's reserve (gold_keep(), a role function), and for the
@@ -2761,7 +2759,6 @@ function upgrade_gold() {
 	return Math.max(0, g);
 }
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
-// Best project: the NPC-sold piece whose upgraded copy beats a member's worn piece by the most points per gold
 // v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..10
 const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018],
 	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015] };
@@ -2781,7 +2778,7 @@ const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_f
 // ---- v25.66 (owner: rebuild the upgrade logic — one rule) ----
 // Every pick, the best single +1 step on a piece a fighter wears:
 //  - a spare copy we own at the worn level is upgraded (then delivered: it beats the worn one); else
-//  - the worn piece itself, handed over (weapons and offhands only in town: the fighter can't fight without them).
+//  - the worn piece itself, handed over (never a weapon/offhand or a titled piece).
 // Value: the wearer's gain from that +1 per gold of the step's scroll. Taken when the server's odds are at least
 // upgrade_step.floor_spare with a spare copy behind it (a failure costs a spare), upgrade_step.floor_last on the last copy.
 // No targets, caps, expected-cost chains or head starts: one level at a time, every time it pays.
@@ -2796,8 +2793,14 @@ function upgrade_step(it, ctype, g, slot, copies) {
 	if (!cost || sc === "scroll3") return { ...base, ok: false, why: "no scroll for the next level" };
 	const r = gear_gain(with_stat(it, to), ctype, g);
 	if (!r) return { ...base, ok: false, why: `+${to} gains nothing` };
-	const spare = copies >= from, p = upg_odds(it.name, to), floor = spare ? CFG.upgrade_step.floor_spare : CFG.upgrade_step.floor_last;
-	const out = { ...base, gain: r.gain, p, floor, spare, copy: copies === from };
+	// (Fable) a copy held above the worn level is delivered first — no step on this piece till then; with none at the worn
+	// level the worn piece itself is handed over — never a titled one (the hand-over leaves those on) or a weapon/offhand
+	// (the fighter can't fight without it until it comes back: those step from a spare only)
+	if (copies > from) return { ...base, ok: false, why: `a +${copies} copy held goes to it first` };
+	const spare = copies === from, p = upg_odds(it.name, to), floor = spare ? CFG.upgrade_step.floor_spare : CFG.upgrade_step.floor_last;
+	if (!spare && it.p) return { ...base, ok: false, why: "titled: never handed over, and no spare at its level" };
+	if (!spare && (slot === "mainhand" || slot === "offhand")) return { ...base, ok: false, why: `a weapon/offhand: steps from a spare +${from} only` };
+	const out = { ...base, gain: r.gain, p, floor, spare, copy: spare };
 	if (p < floor) return { ...out, ok: false, why: `odds ${Math.round(p * 100)}% < ${Math.round(floor * 100)}% (${spare ? "a spare backs it" : "the last copy"})` };
 	return { ...out, ok: true, why: null };
 }
@@ -2823,7 +2826,7 @@ function pick_upgrade() {
 		.sort((a, b) => b.gain / b.cost - a.gain / a.cost);
 	const r = rows[0];
 	if (!r) return null;
-	const P = { name: r.name, to: r.to, for: r.who, slot: r.slot, gain: Math.round(r.gain), cost: r.cost, floor: r.floor, from_copy: r.from, weapon: G.items[r.name].type === "weapon" };
+	const P = { name: r.name, to: r.to, for: r.who, slot: r.slot, gain: Math.round(r.gain), cost: r.cost, floor: r.floor, from_copy: r.from };
 	// no spare at the worn level: the worn piece itself is handed over (want_worn in our heartbeat)
 	if (!r.copy) P.worn = { who: r.who, slot: r.slot, level: r.from, stat_type: r.stat_type, at: Date.now() };
 	return P;
@@ -2918,68 +2921,40 @@ function worn_waiting() {
 	town_reason.upgrade = `waiting for ${W.who} to hand over its ${P.name}+${W.level} (we go to it)`;
 	return true;
 }
+// v25.66: a project is ONE roll: the copy at P.to-1 (a spare fetched from the bank, or the handed-over worn piece) is
+// upgraded once at P.floor; success or failure, the project ends and the next pick decides again (Fable: the old loop
+// rebuilt a chain after a failure — bought +0 copies and rolled up to the target)
 async function task_upgrade() {
-	let n = 0;
-	if (state.upg && merchant_does_it()) { game_log(`upgrade project ${state.upg.name} handed to the merchant`, C.dim); state.upg = null; return 0; }
-	if (state.upg && !(await upg_fetch_copy(state.upg))) return 0;
-	for (let i = 0; i < upgrade_steps(); i++) { // role function (v25.11)
-		if (state.errand) state.errand_at = Date.now();
-		if (upg_drop_if_stale()) break; // v24.91: something better is worn now
-		const P = state.upg;
-		if (!P) break;
-		if (merchant_does_it()) { game_log(`upgrade project ${P.name} handed to the merchant`, C.dim); state.upg = null; break; } // v25.17: it came online
-		// v25.37: a failed step destroyed the copy in the bags — the next best is fetched from the bank before the next step.
-		// (The fetch ran only at the start of a run, so the next step found no copy: input_missing ended the shield project
-		// with a shield+3 and a +0 in the bank, and paused it a day — 7:29 PM report.)
-		// (and whenever the bank holds a better copy below the target than the bags: a +0 left in the bags isn't rolled
-		// while the bank has the +3)
-		if ((state.bank_gear || []).some((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > best_level_held(P.name)) && !(await upg_fetch_copy(P))) break;
-		if (!state.upg) break;
-		if (worn_waiting()) break; // v25.39
-		const top = best_level_held(P.name);
-		if (top >= P.to) {
-			game_log(`upgrade project done: ${P.name}+${top} for ${P.for}`, C.ok);
-			state.upg = null;
-			state.upg_pick_at = 0; // v24.85: the next project is picked at once (there was a 10-min gap per project)
-			break;
-		}
-		const step = (G.items[upgrade_scroll(P.name, Math.max(0, top))]?.g || 0) + (top < 0 ? G.items[P.name]?.g || 0 : 0);
-		// v25.46: no gold for the step anywhere (ours above upgrade_keep plus what the fighters can send): the project is
-		// dropped for 30 min rather than waiting on funds forever and holding every other project back (a weapon's too)
-		// (v25.48: only with every member heard from — a stale heartbeat reads as no gold to send)
-		if (character.gold - upgrade_keep() + fund_pool() < step && party_heard()) {
-			town_reason.upgrade = `gold: next step ${fmt_k(step)}, none to fund it (have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())})`;
-			skip("upg:" + P.name, 1_800_000, "no gold for the next step"); state.upg = null; state.fund_need = 0; break;
-		}
-		if (merchant_asks_funds(P, step)) break; // v25.5: merchant/ — the fighters fund the step
-		if (!upg_gold_ok(step)) { town_reason.upgrade = `gold: next step ${fmt_k(step)}, have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())}`; break; }
-		state.fund_need = 0;
-		if (P.spent === undefined) P.spent = 0;
-		P.max = Math.max(P.max ?? -1, top);
-		const g0 = character.gold;
-		try {
-			await run_upgrade({ name: P.name, ...(P.floor !== undefined ? { floor: P.floor } : {}) }, { request: { name: P.name, level: P.to } });
-			// v24.85: at most what the step can cost (a scroll, a copy if one was bought). The gold delta alone counted a
-			// transfer to the merchant made meanwhile: Torlis's shoes1 project "cost 2.5x its estimate" at +1 and stopped.
-			P.spent += Math.min(Math.max(0, g0 - character.gold), upg_step_cost(P.name, top));
-			n++;
-		} catch (e) {
-			P.spent += Math.min(Math.max(0, g0 - character.gold), upg_step_cost(P.name, top));
-			// v24.7: a transient error (walk/call timeout, distance...) pauses the project, it doesn't end it: ending it freed the
-			// copy (banked, never a project input again), and the re-pick rebought from +0 with the abort budget reset
-			if (TRANSIENT.has(why(e))) { skip("upg:" + P.name, pause_ms(e, 600_000), why(e)); game_log(`upgrade ${P.name}: ${why(e)}; retrying in 10 min`, C.dim); break; }
-			// v25.37: no copy to work on (none in the bags or the bank, none to buy): the project ends without a day's pause —
-			// a copy arriving (a drop, Ponty, a share) makes it a candidate again at once
-			if (why(e) === "input_missing") { skip("upg:" + P.name, 600_000, why(e)); game_log(`upgrade ${P.name}: no copy left to work on; project ended`, C.dim); state.upg = null; break; }
-			// v24.5: refused for its odds, the next step will be refused again: remember the level reached, so the project
-			// isn't re-picked a day later to rebuild a copy at that level from +0 (and stopped there again, every day)
-			skip("upg:" + P.name, pause_ms(e, 24 * 3600_000), why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""));
-			game_log(`upgrade ${P.name}: ${why(e)}; project stopped${top >= 1 ? ` at +${top}` : ""}`, C.dim);
-			state.upg = null; // the copy reached so far is free again (equip/share judge it)
-			break;
-		}
+	const P0 = state.upg;
+	if (!P0) return 0;
+	if (merchant_does_it()) { game_log(`upgrade project ${P0.name} handed to the merchant`, C.dim); state.upg = null; return 0; }
+	if (state.errand) state.errand_at = Date.now();
+	if (upg_drop_if_stale()) return 0; // something better is worn now
+	if (best_level_held(P0.name) < P0.to - 1 && !(await upg_fetch_copy(P0))) return 0;
+	const P = state.upg;
+	if (!P || worn_waiting()) return 0;
+	const end = (why_, pause) => { if (pause) skip("upg:" + P.name, pause, why_); state.upg = null; state.upg_pick_at = 0; state.fund_need = 0; };
+	if (best_level_held(P.name) !== P.to - 1) { game_log(`upgrade ${P.name}: no copy at +${P.to - 1} to step; ended`, C.dim); end("no copy at the level", 600_000); return 0; }
+	const step = G.items[upgrade_scroll(P.name, P.to - 1)]?.g || 0;
+	// no gold for the step anywhere (ours above upgrade_keep plus what the fighters can send): dropped for 30 min
+	// (v25.48: only with every member heard from — a stale heartbeat reads as no gold to send)
+	if (character.gold - upgrade_keep() + fund_pool() < step && party_heard()) {
+		town_reason.upgrade = `gold: step ${fmt_k(step)}, none to fund it (have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())})`;
+		end("no gold for the step", 1_800_000); return 0;
 	}
-	return n;
+	if (merchant_asks_funds(P, step)) return 0; // merchant/: the fighters fund the step
+	if (!upg_gold_ok(step)) { town_reason.upgrade = `gold: step ${fmt_k(step)}, have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())}`; return 0; }
+	state.fund_need = 0;
+	try {
+		const r = await run_upgrade({ name: P.name, floor: P.floor }, { request: { name: P.name, level: P.to } });
+		game_log(`upgrade ${P.name} +${P.to - 1}→+${P.to} for ${P.for}: ${r?.success ? "done" : "failed"}`, r?.success ? C.ok : C.bad);
+		end(); return 1;
+	} catch (e) {
+		// a transient error (walk/call timeout, distance...) pauses it; anything else (low odds at the server) ends it, paused
+		if (TRANSIENT.has(why(e))) { skip("upg:" + P.name, pause_ms(e, 600_000), why(e)); game_log(`upgrade ${P.name}: ${why(e)}; retrying in 10 min`, C.dim); return 0; }
+		game_log(`upgrade ${P.name}: ${why(e)}${e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""}; step dropped`, C.dim);
+		end(why(e) + (e?.chance !== undefined ? ` (${Math.round(e.chance * 100)}%)` : ""), pause_ms(e, 6 * 3600_000)); return 0;
+	}
 }
 
 // v25.62/v25.66 (owner): a worn piece's generic Stat gets the wearer's main stat once no upgrade step for it passes the
@@ -4273,7 +4248,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -4412,7 +4387,7 @@ function load_state() {
 	if (d.cmp_v !== 3 && d.cmp_v !== 4) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
 	// (v25.37: a day's input_missing pause sat on the shield with copies in the bank — the upg: pauses are cleared once
 	// more; the ceilings only when coming from before v25.32's floors, as before)
-	if (d.upg_v !== 5) { for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	if (d.upg_v !== 6) { state.upg = null; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; } // (v25.66: an old multi-level project isn't run)
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
@@ -4642,7 +4617,7 @@ function report_facts() {
 			const pr = hold_price(n);
 			return M_ ? `${n} missing — a fighter buys it (${pr} tokens)` : `${n} missing — ${tok >= pr ? `buying (${pr} tokens)` : `${tok}/${pr} tokens`}`;
 		});
-		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}${b.to ? ` (to upgrade to +${b.to})` : ""}`);
+		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}`);
 		else parts.push(`monster tokens: ${tok}`); // v24.68: always shown
 		if (Object.keys(state.hold_for).length) parts.push(`for the merchant: ${Object.keys(state.hold_for).join(", ")}`);
 		if (parts.length) F("hold", "self", `hold: ${parts.join(" | ")}`, !miss.length && !(b && !b.hold) && !Object.keys(state.hold_for).length && !(tok > 0));
@@ -4666,7 +4641,7 @@ function report_facts() {
 	facts_stat(F, c);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
-		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${P.own ? " — our own (while the merchant is away)" : ""}${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "projects are the merchant's (ours too: it gets the copy)" : "no project") + upgrade_why()}`);
+		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "projects are the merchant's (ours too: it gets the copy)" : "no project") + upgrade_why()}`);
 	}
 	facts_elixir(F, c);
 	if (CFG.compound_auto) {
@@ -5339,9 +5314,7 @@ async function merchant_handoff() {
 		// main map, Fable), nothing on us; if it's already off (a failed send), from the bags
 		const WW = worn_for_me();
 		// (v25.43: also at the camp — the merchant comes to us — between fights: nothing on us or the party)
-		// (v25.66: a weapon or offhand only in town — the fighter can't fight without it)
-		const wpn = WW && (WW.slot === "mainhand" || WW.slot === "offhand");
-		if (WW && (in_town() || (!wpn && !party_hit())) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
+		if (WW && (in_town() || !party_hit()) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
 			// (v25.62: not by stat_type — a stat scroll applied between the merchant's pick and the hand-over kept it from ever
 			// matching; the slot names the piece)
 			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b;
@@ -6876,7 +6849,7 @@ function party_trip_check__fighter(due, what) {
 	const ht = is_follower() || !in_party_cfg() ? null : hunts_trip_due();
 	if (ht) asks.push(ht);
 	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
-	const worn_ask = !!WW && ((MM.cant_reach || []).includes(WW.to) || WW.slot === "mainhand" || WW.slot === "offhand") && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
+	const worn_ask = !!WW && (MM.cant_reach || []).includes(WW.to) && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
 		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
 	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade (no safe way for it)`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
@@ -7011,9 +6984,7 @@ async function task_tokens__fighter() {
 			await T(exchange_buy("monstertoken", b.name));
 			n++;
 			if (b.hold && b.for !== character.name) state.hold_for[b.name] = { to: b.for, at: Date.now() };
-			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
-			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
-			// (v25.17: only while the merchant is away; otherwise it gets the piece and upgrades it)
+			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }
@@ -7735,7 +7706,6 @@ function worn_target() {
 	const W = state.upg?.worn;
 	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
 	const p = state.partners[W.who];
-	if (W.slot === "mainhand" || W.slot === "offhand") return null; // v25.66: a weapon/offhand is handed over in town only
 	if (!p || !fresh(p) || p.rip || !merchant_reach_ok(p)) return null; // (an unsafe way: the party comes to town for it)
 	return p; // (pure: the slot is stamped when serve() starts the walk — merchant_job is asked every tick and by report())
 }
@@ -7926,10 +7896,11 @@ function gold_target() {
 	const spare = (p) => (p.gold || 0) - M.fund_keep;
 	return partners().filter((p) => p.ctype !== "merchant" && spare(p) >= min && merchant_reach_ok(p)).sort((a, b) => spare(b) - spare(a))[0] || null;
 }
-// Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
+// Tokens the merchant holds go to the fighters' pool holder (v25.66: the first configured member online — fighter/6_gear
+// token_holder); one delivery per 30 min
 let token_trip_at = 0;
 const token_target = () => (is_merchant() && held_any("monstertoken") > 0 && Date.now() - token_trip_at > 1_800_000 ?
-	partners().filter((p) => fresh(p) && p.ctype !== "merchant" && !p.rip).sort((a, b) => (a.tokens || 0) - (b.tokens || 0))[0] : null) || null;
+	(CFG.party.members || []).map((n) => state.partners[n]).find((p) => p && fresh(p) && p.ctype !== "merchant" && !p.rip) : null) || null;
 // Bag slot of a potion of this kind, preferring the configured tier, never the last self_pots
 function pot_slot(kind) {
 	let best = -1;
@@ -8113,7 +8084,7 @@ function merchant_asks_funds__merchant(P, step) {
 	if (!merchant_awaits_funds()) state.fund_at = Date.now();
 	state.fund_step = step;
 	if (!P) { state.fund_need = step; return true; }
-	state.fund_need = P.weapon ? Math.max(step * 3, (P.cost || 0) - (P.spent || 0)) : Math.min(P.cost, step * 3); // v24.86: a weapon asks for what's left
+	state.fund_need = step; // v25.66: one step, one scroll
 	game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
 	return true;
 }
