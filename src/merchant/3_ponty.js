@@ -44,7 +44,9 @@ function secondhand_reason(it, groups) {
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
 	// v25.50 (Fable): priced — this copy is a third of the result, so at most a third of the best fighter's gain from it
 	// at secondhand_gold_per_pt (with no fixed cap any more, a 24M ring was bought for a 3-point +1)
-	const gain = g ? Math.max(0, ...gear_takers().slice(1).filter((x) => x.ctype !== "merchant").map((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g)?.gain || 0)) : 0;
+	// (v25.60: the gain at the best level it leads to, up to the reachable ceiling — a ringsj +2 on the way to a +4 too)
+	const gain = g ? Math.max(0, ...gear_takers().slice(1).filter((x) => x.ctype !== "merchant").flatMap((x) => {
+		const out = []; for (let L = (it.level || 0) + 1; L <= cmp_top(it.name); L++) out.push((gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)?.gain || 0) / 3 ** (L - (it.level || 0) - 1)); return out; })) : 0;
 	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }

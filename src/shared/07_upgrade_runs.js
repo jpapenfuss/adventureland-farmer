@@ -223,11 +223,11 @@ const cmp_cap = (name, level) => { state.cmp_caps[name] = { level, at: Date.now(
 // v25.60: an item's own ceiling (ponty_stock[name].to) above compound_max_level
 const cmp_max = (name) => Math.max(CFG.compound_max_level, CFG.ponty_stock?.[name]?.to || 0);
 // A compound step from +level is "wanted" (the lower odds floor) when a fighter would wear the item at any level from the
-// result up to its ceiling — the way to a +4 ringsj goes through +3s nobody needs any more (Fable: with every fighter in
+// result up to its reachable ceiling (cmp_top) — the way to a +4 ringsj goes through +3s nobody needs any more (Fable: with every fighter in
 // two +3s, +2→+3 at 40% was refused, capped the ring at +2, and the +2s were sold)
 function cmp_wanted(name, level) {
 	const fs = gear_takers().filter((m) => m.ctype !== "merchant");
-	for (let L = level + 1; L <= cmp_max(name); L++) if (fs.some((m) => gear_gain_min({ name, level: L }, m.ctype, m.g))) return true;
+	for (let L = level + 1; L <= cmp_top(name); L++) if (fs.some((m) => gear_gain_min({ name, level: L }, m.ctype, m.g))) return true;
 	return false;
 }
 const cmp_top = (name) => {

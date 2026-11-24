@@ -2477,7 +2477,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a ceiling the server's odds set: no stock bought for levels past it
 		vm.runInContext("state.cmp_caps.ringsj = { level: 3, at: Date.now() }; cmp_cache = null", ctx);
 		assert(!/stock/.test(SR({ name: "ringsj", level: 0 })), `v25.60: capped at +3 (everyone wears +3s): no stock (${SR({ name: "ringsj", level: 0 })})`);
+		assert(!vm.runInContext("cmp_wanted('ringsj', 2)", ctx), "v25.60: ...and no step is wanted toward levels past that ceiling");
 		vm.runInContext("delete state.cmp_caps.ringsj; cmp_cache = null", ctx);
+		// a Ponty +2 that completes a set of +2s on the way to a +4: bought (priced at its share of the +4's gain)
+		const SR2 = (x) => vm.runInContext(`secondhand_reason(${JSON.stringify(x)}, { 'cmp:ringsj:2': { bags: 0, bank: 2 } }) || ''`, ctx);
+		assert(/completes a compound set/.test(SR2({ name: "ringsj", level: 2 })), `v25.60: a ringsj +2 completing a set toward a +4 is bought (${SR2({ name: "ringsj", level: 2 })})`);
 		hb("Torlis", { ...tor, x: 900, y: 900, gear: { w: { pants: 0 }, own: {} } });
 		character.items[5] = null; vm.runInContext("state.bank_gear = []", ctx); ctx.G.items.ringsj = rj0; if (rj0 === undefined) delete ctx.G.items.ringsj; }
 	// v24.81: a route through Ponty — two +0 copies there plus our one make a +1 a fighter would wear

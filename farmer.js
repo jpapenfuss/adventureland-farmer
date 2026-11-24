@@ -2662,11 +2662,11 @@ const cmp_cap = (name, level) => { state.cmp_caps[name] = { level, at: Date.now(
 // v25.60: an item's own ceiling (ponty_stock[name].to) above compound_max_level
 const cmp_max = (name) => Math.max(CFG.compound_max_level, CFG.ponty_stock?.[name]?.to || 0);
 // A compound step from +level is "wanted" (the lower odds floor) when a fighter would wear the item at any level from the
-// result up to its ceiling — the way to a +4 ringsj goes through +3s nobody needs any more (Fable: with every fighter in
+// result up to its reachable ceiling (cmp_top) — the way to a +4 ringsj goes through +3s nobody needs any more (Fable: with every fighter in
 // two +3s, +2→+3 at 40% was refused, capped the ring at +2, and the +2s were sold)
 function cmp_wanted(name, level) {
 	const fs = gear_takers().filter((m) => m.ctype !== "merchant");
-	for (let L = level + 1; L <= cmp_max(name); L++) if (fs.some((m) => gear_gain_min({ name, level: L }, m.ctype, m.g))) return true;
+	for (let L = level + 1; L <= cmp_top(name); L++) if (fs.some((m) => gear_gain_min({ name, level: L }, m.ctype, m.g))) return true;
 	return false;
 }
 const cmp_top = (name) => {
@@ -8553,7 +8553,9 @@ function secondhand_reason(it, groups) {
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
 	// v25.50 (Fable): priced — this copy is a third of the result, so at most a third of the best fighter's gain from it
 	// at secondhand_gold_per_pt (with no fixed cap any more, a 24M ring was bought for a 3-point +1)
-	const gain = g ? Math.max(0, ...gear_takers().slice(1).filter((x) => x.ctype !== "merchant").map((x) => gear_gain_min({ name: it.name, level: (it.level || 0) + 1 }, x.ctype, x.g)?.gain || 0)) : 0;
+	// (v25.60: the gain at the best level it leads to, up to the reachable ceiling — a ringsj +2 on the way to a +4 too)
+	const gain = g ? Math.max(0, ...gear_takers().slice(1).filter((x) => x.ctype !== "merchant").flatMap((x) => {
+		const out = []; for (let L = (it.level || 0) + 1; L <= cmp_top(it.name); L++) out.push((gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)?.gain || 0) / 3 ** (L - (it.level || 0) - 1)); return out; })) : 0;
 	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
