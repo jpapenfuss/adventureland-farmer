@@ -397,9 +397,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		state.measured_gold = {}; state.meas_at = {}; load_state();`, ctx);
 	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === 3.5 && Date.now() - state.meas_at["gp:main:1,2,3,4"] >= 3600000 && state.meas_at["gw:main:1,2,3,4"].lv === 50`, ctx),
 		"v25.51: gold rates and their times (gp:/gw:) survive a reload");
-	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); delete d.gold_v; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
+	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); d.gold_v = 1; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
 		vm.runInContext("globalThis.__g51 = get; get = (k) => (k === SAVE_KEY ? __d51 : __g51(k)); load_state(); get = __g51", ctx);
-		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.51: a save from before gold_v: its gold rates dropped, xp rates kept"); }
+		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.67: a save with base-gold rates (gold_v 1): its gold rates dropped, xp rates kept"); }
 	vm.runInContext(`state.measured_gold = { x: 1 }; globalThis.__ss51 = save_state; save_state = () => {}; forget(); save_state = __ss51`, ctx);
 	assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.51: forget() clears the gold rates too");
 	vm.runInContext(`state.measured = { "main:1,2,3,4": 12.5 }; state.danger.bee = 0.6`, ctx);
@@ -2818,11 +2818,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, start: Date.now() - 100000 };
 			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
 		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
-		// v25.51: base gold/s measured beside it, whatever the farm mode
+		// v25.67: gold/s is the gold really looted in the session (chest_opened shares), beside xp/s whatever the farm
+		// mode; its ratio to the kills' base gold is learned and scales the gold estimates
 		{ ctx.G.monster_gold = { goo: 20 };
-			vm.runInContext(`state.measured_gold = {}; state.session = { key: "main:1,1,9,7", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, start: Date.now() - 100000 };
-				for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
-			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 2 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.51: 10 kills x 20 gold / 100s = 2 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
+			vm.runInContext(`state.measured_gold = {}; state.gold_ratio = 0; state.session = { key: "main:1,1,9,7", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
+				for (let i = 0; i < 10; i++) { on_kill_credit({ mtype: "goo" }); on_chest_opened({ id: "c" + i, gold: 30 }); }
+				on_chest_opened({ id: "x", gone: true }); end_session(); on_chest_opened({ id: "late", gold: 999 })`, ctx);
+			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 3 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.67: 10 chests x 30 looted / 100s = 3 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
+			assert(vm.runInContext("Math.abs(state.gold_ratio - 1.5) < 1e-9 && Math.abs(kill_value('goo', null, 'gold') - 30) < 1e-9", ctx), `v25.67: looted 300 per 200 base: ratio 1.5, a goo's gold estimate 30 (${vm.runInContext("state.gold_ratio", ctx)})`);
+			vm.runInContext("state.gold_ratio = 0", ctx);
 			assert(vm.runInContext("meas()['main:1,1,9,7'] === state.measured['main:1,1,9,7'] && (CFG.farm_mode = 'gold', meas()['main:1,1,9,7'] === state.measured_gold['main:1,1,9,7'])", ctx), "v25.51: meas() follows the farm mode");
 			vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
 			delete ctx.G.monster_gold; }
@@ -2835,10 +2839,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const sock = { emit() { real++; }, on(ev, f) { on.push([ev, f]); }, off(ev, f) { off.push([ev, f]); } };
 			ctx.parent.socket = sock;
 			vm.runInContext("meter_socket(); meter_socket()", ctx);
-			assert(on.length === 1 && on[0][0] === "kill_credit", `kill_credit listener registered once (${on.length})`);
+			assert(on.length === 2 && on[0][0] === "kill_credit" && on[1][0] === "chest_opened", `kill_credit and chest_opened listeners registered once (${on.length})`);
 			const old = () => {}; sock.__farmer_kc = old;
 			vm.runInContext("meter_socket()", ctx);
-			assert(off.length === 1 && off[0][1] === old && on.length === 2, "the previous script's listener is removed and ours added");
+			assert(off.length === 1 && off[0][1] === old && on.length === 3, "the previous script's listener is removed and ours added");
 			sock.__xp_meter = []; // what a previous script leaves behind
 			vm.runInContext("meter_socket(); sent.length = 0; parent.socket.emit('x')", ctx);
 			assert(vm.runInContext("sent.length", ctx) === 1 && real === 1, `after a reload our meter counts again, one wrapper deep (${vm.runInContext("sent.length", ctx)} counted, ${real} sent)`);
