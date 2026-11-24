@@ -129,16 +129,17 @@ function best_escape(t, step) {
 	}
 	return best;
 }
-// v24.59: a levelled-up monster of the camp's type is taken as a last resort only if the fight model, on its live
-// stats and without the calibration and penalty factors, puts it within grown_over x the party's limit. Eight level-10
-// cgoo (the type's level-1 stats had passed) were far beyond that and killed the party.
-function grown_ok(e) {
+// v25.58 (owner: "trying to kill things in the camp", not leaving it because its monsters levelled up): a levelled-up
+// monster of the camp's type is taken as a last resort whenever the party can kill it at all — on its live stats,
+// within hopeless_ttk_s. (v24.59's grown_over limit and v24.61's "overgrown: leave at once" are gone; a camp that
+// really is too strong is left through its deaths: camp_death rests it 30 min, 2 h, 8 h.)
+function killable(e) {
 	const def = G.monsters[e.mtype];
 	if (!def) return false;
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
 	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
-	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
+	return !!f && f.ttk <= CFG.hopeless_ttk_s;
 }
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
@@ -167,7 +168,7 @@ function choose_target(local_ok, keep_cur = false) {
 		const f = live_ok(e);
 		if (!f) {
 			// lowest level first, then nearest; never one the party couldn't kill at all
-			if (e.mtype === want && !hopeless(e) && grown_ok(e) && (!grown || (e.level || 1) < (grown.level || 1) ||
+			if (e.mtype === want && killable(e) && (!grown || (e.level || 1) < (grown.level || 1) ||
 				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
 			continue;
 		}
@@ -192,8 +193,8 @@ function choose_target(local_ok, keep_cur = false) {
 	// v24.56 (owner): a camp whose monsters have all levelled up past the limit isn't stood at — the tank works them
 	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
 	// Torlis stood among five level 8-9 poisio, "0 attackable".)
-	// then a filler — at an overgrown camp too (owner: "How about we actually just kill things?"); the camp is left
-	// (overgrown, idle) only when there's nothing to fight
+	// then a filler (owner: "How about we actually just kill things?"); the camp is left only when there's nothing to
+	// fight for the idle time, by the camp review, or through its deaths
 	return best_tier === 0 ? best : grown || best;
 }
 // One distance used by both approach and kite, so they can't push against each other:

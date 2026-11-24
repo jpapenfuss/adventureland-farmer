@@ -4951,7 +4951,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("globalThis.__lo146 = live_ok; live_ok = (e) => (e.id === 'ok1' ? { ttk: 1, xp: 1 } : null)");
 		const mild = (id, x, lv) => ({ ...mk(id, x, lv), attack: 30, hp: 800, max_hp: 800 });
 		ctx.parent.entities = { n5: mild("n5", 60, 5), n4: mild("n4", 200, 4), n10: mk("n10", 40, 10), o9: { ...mk("o9", 30, 9), mtype: "goo" } };
-		assert(R("grown_ok(parent.entities.n4) && grown_ok(parent.entities.n5) && !grown_ok(parent.entities.n10)"), "setup: two mildly levelled monsters are within grown_over, the level-10 one is far beyond it");
+		assert(R("killable(parent.entities.n4) && killable(parent.entities.n5) && killable(parent.entities.n10)"), "setup: all three can be killed (the level-10 one too)");
 		assert(R("choose_target(true).id") === "n4", `nothing passes: the tank takes the lowest-level one of its camp's type (${R("choose_target(true)?.id")})`);
 		ctx.parent.entities.ok1 = mk("ok1", 250, 1);
 		R("live_cache.clear()");
@@ -4965,7 +4965,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const b57 = R("choose_target(true)?.id");
 			R("live_ok = __lo57"); delete ctx.parent.entities.c57; Object.assign(ctx.parent.entities, sv57); R("live_cache.clear()");
 			assert(a57 === "ok1" && b57 === "c57", `nothing of the camp's type: the other type that passes is taken; the camp's type first when there (${a57} / ${b57})`);
-			// a filler only from the box itself, not the 450px pad; none while the camp is overgrown (it's left at once)
+			// a filler only from the box itself, not the 450px pad; a levelled-up camp monster before it
 			const sv57b = { ...ctx.parent.entities }; for (const k in ctx.parent.entities) delete ctx.parent.entities[k];
 			R("globalThis.__lo57 = live_ok; live_ok = (e) => (e.mtype === 'goo' ? { ttk: 1, xp: 1 } : null); live_cache.clear()");
 			ctx.parent.entities.f57 = { ...mk("f57", 500, 1), mtype: "goo" };
@@ -4975,7 +4975,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.parent.entities.n57 = mk("n57", 40, 10); R("live_cache.clear()");
 			const og57 = R("choose_target(true)?.id ?? null");
 			R("live_ok = __lo57"); for (const k in ctx.parent.entities) delete ctx.parent.entities[k]; Object.assign(ctx.parent.entities, sv57b); R("live_cache.clear()");
-			assert(out57 === null && in57 === "f57" && og57 === "f57", `filler: not from the pad (${out57}), from the box (${in57}), and at an overgrown camp too (owner: kill things) (${og57})`);
+			assert(out57 === null && in57 === "f57" && og57 === "n57", `filler: not from the pad (${out57}), from the box (${in57}); a levelled-up camp monster comes before it (${og57})`);
 			// realism: from the camp's own type's kills; fillers count in the camp's rate only
 			R("state.realism = 1; state.measured = {}; state.session = { key: 'main:1,2,3,4#poi146', mtype: 'poi146', est: 10, kind: 'xp', xp: 0, kx: 0, kc: 2000, kcm: 1000, kg: 0, kgm: 0, kc_n: 5, kcm_n: 2, start: Date.now() - 100000 }; end_session()");
 			assert(Math.abs(R("state.measured['main:1,2,3,4#poi146']") - 20) < 0.1 && Math.abs(R("state.realism") - 1) < 1e-6, `rate 20 with fillers; realism from the camp's type (10/10 = 1): ${R("state.realism")}`);
@@ -4993,7 +4993,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			for (const k in ctx.parent.entities) delete ctx.parent.entities[k]; Object.assign(ctx.parent.entities, sv57c);
 			assert(gk57 !== "nothing alive here (respawn)" && gk57n === "nothing alive here (respawn)", `a free filler the tank would take counts as alive (${gk57}), one it wouldn't doesn't (${gk57n})`); }
 		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
-		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
+		assert(R("choose_target(true)?.id") === "n10", `v25.58 (owner: kill things in the camp): a level-10 one is worked down too (${R("choose_target(true)?.id")})`);
+		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5e8; R("live_cache.clear()");
+		assert(R("choose_target(true)") === null, "...but not one the party couldn't kill within hopeless_ttk_s");
+		{ const out = []; ctx.__F58 = (k, w, t) => out.push(t); Object.assign(character, { x: 0, y: 0 });
+			R("facts_targets(__F58, { p: state.pack, d: null, now: Date.now() })"); const gk58 = R("gap_kind()");
+			assert(/1 the party can't kill within 180s — never taken/.test(out.join()) && !/levelled up past the limit/.test(out.join()) && /none the party can kill/.test(gk58), `report: unkillable ones apart (${out.join()} | ${gk58})`); delete ctx.__F58; }
+		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5000; R("live_cache.clear()");
 		// v24.65: where the camp time goes
 		assert(R("gap_kind()") === "monsters alive, walking to the next one" || R("gap_kind()") === "monsters alive, none chosen" || R("gap_kind()") === "monsters alive, in reach, swing on cooldown", `the tank with untouched camp monsters around: ${R("gap_kind()")}`);
 		R("gaps.min = [{ m: Math.floor(Date.now() / 60_000), by: { 'nothing alive here (respawn)': 45_000, 'in a fight, target in reach': 15_000 } }]");
@@ -5015,12 +5021,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			mons57.pop(); delete ctx.G.monsters.grow57; R(`state.pack = ${pk57}`);
 			assert(k57 === "monsters here, all another player's", `the camp's monster on another player: not "nothing alive" (${k57})`); }
 		R("gaps.min = []");
-		assert(R("camp_overgrown(state.pack)") === 1, "v24.61: every monster of the camp's type in view is past the limit → the camp counts as overgrown (left at once)");
-		ctx.parent.entities.n4 = mild("n4", 200, 4); R("live_cache.clear()");
-		assert(R("camp_overgrown(state.pack)") === 0, "...not while one of them can still be taken");
-		delete ctx.parent.entities.n4; delete ctx.parent.entities.n10; R("live_cache.clear()");
-		assert(R("camp_overgrown(state.pack)") === 0, "...and not when none is in view (that's the idle time's case)");
-		ctx.parent.entities.n10 = mk("n10", 40, 10); R("live_cache.clear()");
+		delete ctx.parent.entities.n10; ctx.parent.entities.n10 = mk("n10", 40, 10); R("live_cache.clear()");
 		// the tank stands and fights what it started: no stepping away from a monster that only fails the per-monster check
 		ctx.parent.entities.n10.target = "Torlis"; steps.length = 0; R("last_move = 0; smart_depth = 0");
 		R("fight(parent.entities.n10, false)");

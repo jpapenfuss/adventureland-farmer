@@ -1,4 +1,4 @@
-const VERSION = "25.57"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.58"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -12,7 +12,6 @@ const CFG = {
 	                           //   (other mobs, walls, missed steps), so it lowers the risk 4x rather than to zero
 	max_ttk_s: 20,             // a monster that isn't the pack's type is only attacked if it dies within this many s
 	model_distrust: 2,         // v24.47: a monster we have no fights against is assumed to deal this many times the predicted damage
-	grown_over: 1.5,           // v24.59: levelled-up monsters of the camp's type are taken up to this x the party's limit
 	hopeless_ttk_s: 180,       // v24.44: a monster the party couldn't kill in 3 min is never attacked at all (ents)
 	                           //   (long fights block the pack's respawns and hunt progress)
 	max_respawn: 120,          // s; packs whose monster respawns slower than this aren't farmed (too much idle time)
