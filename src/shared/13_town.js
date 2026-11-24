@@ -6,8 +6,8 @@ let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated a
 // its truthy keys: the numeric fields would make a town run permanently due.
 const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "stat", "forge", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
-// A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in
-// v18.8: a hunt to turn in / take is no longer urgent: it rides on the next trip (Daisy is in town)
+// A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low. (Hunts: the tank's party
+// rule, hunts_trip_due — fighter/5_town.js.)
 const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" :
 	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
 // Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
@@ -96,7 +96,7 @@ async function town_body(due) {
 		const town_t0 = Date.now();
 		if (collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
 		if (worn_for_me()) did += (await step("handover", task_worn_handover)) || 0; // v25.39
-		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
+		if (due.hunt) did += await hunt_step(step);
 		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
 		// Guide steps: keep going while the next row is local (no walking); rows that walk count toward the cap;
@@ -184,10 +184,9 @@ function town_check() {
 	const what = due_tasks(due);
 	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
 	if (!what.length) return void (state.town_block = null);
-	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
-	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
-	// (v24.77: nor do stat scrolls)
-	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the next trip"], at: Date.now() });
+	// A member's own hunt never starts a trip by itself: the tank's party trip goes once every completable hunt in the
+	// party is ready (v25.59, owner; party_trip_check). Stat scrolls alone wait too (v24.77).
+	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the party's hunt trip or the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (fighter_defers_town(due, what)) return; // v25.5: fighter/ — work that can wait
@@ -224,4 +223,16 @@ function town_check() {
 	state.town_trig = town_urgent(due) || (due.relaxed ? "joined a member's trip" : "deferrable");
 	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + townies.join(", ") : ""})`, C.dim);
 	if (town_run(due)) ptown_start(what);
+}
+
+// v25.59: Daisy's step. Success is a hunt held afterwards (a reply that took none isn't); a failure pauses Daisy 5 min,
+// doubling each time in a row up to 2 h — a 5-min pause made a party trip every 5 min (Fable)
+async function hunt_step(step) {
+	const r = await step("hunt", run_hunt);
+	// (the player update with the new hunt can arrive after Daisy's reply — wait for it before judging; Fable)
+	if (r?.started && !(character.s.monsterhunt?.c > 0)) await until(() => character.s.monsterhunt?.c > 0, 2000).catch(() => {});
+	if (character.s.monsterhunt?.c > 0) { state.hunt_fails = 0; return 1; }
+	state.hunt_fails = (state.hunt_fails || 0) + 1;
+	skip("hunt:auto", Math.min(7_200_000, 300_000 * 2 ** (state.hunt_fails - 1)), "Daisy gave no hunt");
+	return 0;
 }

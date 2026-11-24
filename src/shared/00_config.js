@@ -1,4 +1,4 @@
-const VERSION = "25.58"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.59"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -335,6 +335,7 @@ const CFG = {
 	// v24.67: hunts are still taken and turned in at Daisy on town trips made for something else — never chased. One
 	// whose monster is the camp's completes by itself; monster tokens (the Monster Hunter set pieces) only come this way.
 	hunt_passive: true,
+	hunt_turnin_ms: 300_000,   // v25.59: a finished hunt with under this left is turned in now, even while a member still chases one
 	auto_monster_hunt: true,   // v24.88 (owner): on again — hunts are taken and chased (tokens: Hunter set pieces, Concord Mace). The camp
 	                           //   moves for a goal only at a camp review, which now also comes a minute after the goal changes
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
