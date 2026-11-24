@@ -42,7 +42,9 @@ async function merchant_handoff() {
 		// main map, Fable), nothing on us; if it's already off (a failed send), from the bags
 		const WW = worn_for_me();
 		// (v25.43: also at the camp — the merchant comes to us — between fights: nothing on us or the party)
-		if (WW && (in_town() || !party_hit()) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
+		// (v25.66: a weapon or offhand only in town — the fighter can't fight without it)
+		const wpn = WW && (WW.slot === "mainhand" || WW.slot === "offhand");
+		if (WW && (in_town() || (!wpn && !party_hit())) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
 			// (v25.62: not by stat_type — a stat scroll applied between the merchant's pick and the hand-over kept it from ever
 			// matching; the slot names the piece)
 			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b;

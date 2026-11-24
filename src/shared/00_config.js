@@ -1,4 +1,4 @@
-const VERSION = "25.65"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.66"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -153,36 +153,18 @@ const CFG = {
 	// (the server clamps HP/MP to the lower max, so that much is lost).
 	// .b pieces always stay on (the server deletes them on unequip). Not the merchant.
 	travel_gear: { enabled: false, min_px: 700, min_speed: 1, settle_ms: 10_000, danger_px: 400, keep_free: 2, max_hp_loss: 0.1, max_mp_loss: 0.25, cooldown_ms: 30_000 },
-	// Own upgrading (upgrade_auto): one project at a time: an NPC-sold piece, upgraded (spare copies only, never worn
-	// gear) to the level where it beats what a member wears by the most per gold. Each step is gated by the server's
-	// preview (min_chance_rebuyable: a failure only costs gold); at low odds the project stops at the level reached.
+	// Upgrading (upgrade_auto). v25.66 (owner: rebuild — one rule, 08_upgrade_pick.js): the best single +1 step on a
+	// piece a fighter wears — a spare copy at the worn level, or the worn piece handed over (weapons/offhands in town only)
+	// — by the wearer's gain per gold of the scroll, when the server's odds are at least floor_spare with a spare copy
+	// behind it, floor_last on the last copy. No targets, caps or expected-cost chains.
 	upgrade_auto: true,
-	upgrade_max_level: 7,      // target at most +7, and only levels that take scroll0/scroll1 (scroll2 costs ~1.6M)
-	// v24.82 (owner: lower odds have to be accepted for meaningful upgrades): a shop piece's target level is the one
-	// where gain x upgrade_gold_per_pt most exceeds its EXPECTED cost — the copy and scrolls, counting the copies lost
-	// to failed steps at the server's base odds (+4 70%, +5 60%, +6 40%, +7 25%). A wand: +5 ≈ 136k, +6 ≈ 340k,
-	// +7 ≈ 1.4M. Steps are then taken down to the floors below (10% since v25.32; past +7, upgrade_high.min_chance).
-	// v25.38 (owner: "We cannot progress in this game without equipment upgrades. It must happen."): 300k (was 40k). At 40k
-	// nothing past +3 paid for itself and 17M sat idle; at 300k frankypants/vgloves +3 for Torlis (~280k/pt) qualify,
-	// gphelmet +3 (~460k/pt) doesn't. The party earns ~2M/h.
-	upgrade_gold_per_pt: 300_000,
-	// v24.86 (owner: weapon upgrades are sorely needed): a shop weapon a fighter would hold is taken to +weapon_to with
-	// no budget — no gold-per-point test, no spending cap, no give-up after failures — and weapons come before every
-	// other project. Steps still need the server's odds over min_chance_rebuyable (10%; +7 is 25%).
-	upgrade_weapon: { enabled: true, to: 7 },
-	// v25.39: a fighter's worn piece is a project when we hold no spare copy — only steps at upgrade_worn.min_chance or
-	// better (base odds, and the server's preview), handed over in town, given up after wait_ms without it
-	upgrade_worn: { enabled: true, min_chance: 0.9, wait_ms: 1_800_000 },
+	upgrade_step: { floor_spare: 0.5, floor_last: 0.8 },
+	upgrade_worn: { enabled: true, wait_ms: 1_800_000 }, // a hand-over not made in wait_ms drops the step (an hour's pause)
 	// v25.46: upgrades and compounds spend all gold above this (and the role's reserve); no earnings test, no fraction
 	upgrade_keep: 1_000_000,
-	upgrade_abort_x: 2.5,      // ...and is abandoned once failures push actual spending past 2.5x that estimate
 	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)
 	merchant_upgrade_steps: 60, // v24.92: the merchant's — it lives in town; 8 a run made it start a run every minute
-	// High upgrades: weapon-slot projects may go past the scroll0/1 levels with scroll2 (1.6M each), up to max_level.
-	// A failure destroys the copy, so each such step needs the server's preview >= min_chance (a Primling offering in
-	// the bags is used when it lifts the odds over it), and a project may cost at most spend of the party's spare gold.
-	// (v25.38: scroll2 levels for every slot, judged like any other level — slots and spend no longer used)
-	upgrade_high: { enabled: true, max_level: 9, min_chance: 0.55, offerings: ["offeringp"] },
+	upgrade_offerings: ["offeringp"], // an offering in the bags is used when it lifts a step's odds over its floor
 	// Crafting for power (craft_power): craft a non-quest recipe whose output a member would wear as an upgrade, when
 	// its inputs are plain materials we have (bags + bank; never quest/guide materials) and its gold cost fits
 	// craft_spend of the spare gold. Done by the merchant while it's online.
@@ -220,7 +202,7 @@ const CFG = {
 	// v25.61 (owner: "poll Ponty more frequently"): every 15 s — a poll from the square is one call, no walk
 	secondhand_every_ms: 15_000,
 	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
-	secondhand_upgrade_starts: true,
+
 	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);
 	// each reason's own price test and upg_gold_ok (gold above upgrade_keep) bound a buy
 	secondhand_max_price: Infinity,
@@ -234,7 +216,7 @@ const CFG = {
 	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
 	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
 	upgrade_boost_max: 50_000,
-	secondhand_gold_per_pt: 300_000, // v25.50: = upgrade_gold_per_pt — a point bought is worth what a point built is (was 100k)
+	secondhand_gold_per_pt: 300_000, // v25.50: gold per gear point a Ponty buy may cost (was 100k)
 	// v25.47 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying
 	// more from Ponty?"): a stock of +0 copies kept for compounding — bought whenever Ponty lists one at up to max_price,
 	// until n are held (bags + bank). The compounding turns them into +1 → +2 → +3 (the +3 is a worn upgrade). Judged
@@ -297,10 +279,7 @@ const CFG = {
 	town_hp_critical: 0.5,     // ...or above 50% when bags are nearly full (<= 3 free)
 	errand_timeout_ms: 300_000, // an errand still running after 5 min is assumed hung; its lock is released
 	gold_reserve: 50_000,      // guide steps never spend below this much gold (potions may dip into it)
-	// v25.32 (owner: "that floor really sucks since it completely blocks us from actually trying to upgrade"; low-tier
-	// copies are often on Ponty): the odds floors are down to 10%. Which level a project aims for is the expected-cost
-	// test (upgrade_gold_per_pt against the copies and scrolls lost to failed steps at the server's odds); the floor
-	// only stops hopeless rolls. Projects never use worn gear: a failure costs a spare copy.
+	// Floors for upgrades run outside the one-step rule (guide rows; v25.66: the merchant's steps use upgrade_step)
 	min_upgrade_chance: 0.10,  // (was 0.80) the server's preview at least this; failure destroys the item
 	min_compound_chance: 0.80, // same for compounding (failure destroys all three inputs)
 	min_chance_rebuyable: 0.10, // (was 0.2) items NPCs sell: failure only costs gold
@@ -562,7 +541,6 @@ const state = {
 	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade project { name, to, for, slot, gain, cost, spent_from } (saved)
-	upg_caps: {},            // item -> { level, at }: the level a project reached before odds/failures stopped it (v24.5, saved)
 	cmp_caps: {},            // item -> { level, at }: copies at this level won't be compounded (odds under the floor; v24.15, saved)
 	probe: null,             // running probe { mtype, start, until, ratio, prof }
 	probe_at: 0,             // last time a probe was considered (every_min)

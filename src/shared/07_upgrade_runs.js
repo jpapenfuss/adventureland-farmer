@@ -120,10 +120,7 @@ async function run_upgrade(a, row) {
 	await wait_budget(1, RESERVE.errand);
 	let preview = await T(upgrade(k, find_slot(scroll, 0), null, true)); // last arg true = preview only: {chance}
 	let floor = chance_floor(a.name, CFG.min_upgrade_chance, k, from);
-	// expensive copies: never a coin flip — a scroll2 step, and (v25.32) any step past upgrade_max_level (+8 on scroll1
-	// was 15%: with the 10% floors a +7 weapon became a +8 project)
-	if (scroll === "scroll2" || from >= CFG.upgrade_max_level) floor = Math.max(floor, CFG.upgrade_high.min_chance);
-	if (a.min_chance) floor = Math.max(floor, a.min_chance); // v25.39: a worn piece's project (upgrade_worn.min_chance)
+	if (a.floor !== undefined) floor = a.floor; // v25.66: the one-step rule's floor (upgrade_step) is the whole floor
 	let off = null;
 	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
@@ -136,7 +133,7 @@ async function run_upgrade(a, row) {
 		}
 	}
 	if (preview && !(preview.chance >= floor)) { // a Primling (or other allowed offering) in the bags may lift it over
-		const ok_ = character.items.findIndex((i) => i && (CFG.upgrade_high.offerings || []).includes(i.name) && !i.l);
+		const ok_ = character.items.findIndex((i) => i && (CFG.upgrade_offerings || []).includes(i.name) && !i.l);
 		if (ok_ >= 0) {
 			await wait_budget(1, RESERVE.errand);
 			const p2 = await T(upgrade(k, find_slot(scroll, 0), ok_, true)).catch(() => null);

@@ -39,25 +39,6 @@ function token_pick() {
 			const r = gear_gain_min({ name, level: 0 }, m.ctype, m.g); // (v25.36: tokens are spent)
 			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
 		}
-		// v24.67: for ourselves, a piece that only beats what we wear once upgraded (the fifth piece of a set at +0
-		// against a worn +5): bought when the lowest level at which it wins is one our scrolls reach; we upgrade it
-		// ourselves (own project) and wear it then. Sanala sat at 4 of 5 Monster Hunter Mage pieces.
-		const mine = set_piece_plan(name);
-		if (mine && (!best || mine.gain / price > best.v)) best = { name, price, for: character.name, gain: mine.gain, v: mine.gain / price, to: mine.to, slot: mine.slot };
-	}
-	// v25.65 (owner: are monster tokens used to get pieces for upgrades?): also a piece for any member that the
-	// merchant's planner would take to a level where it wins — worth it at upgrade_gold_per_pt, the copy itself free
-	// (it's paid in tokens). The copy reaches the merchant through the bank and becomes its project there.
-	for (const name in shop) {
-		const price = shop[name];
-		if (price > budget || !GEAR.has(G.items[name]?.type) || !G.items[name]?.upgrade || party_holds(name)) continue;
-		const T = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), upg_reach(name));
-		for (const m of gear_takers().filter((x) => x.ctype !== "merchant")) for (let L = 1; L <= T; L++) {
-			const r = gear_gain_min({ name, level: L }, m.ctype, m.g), c = upgrade_expected(name, L) - upgrade_expected(name, 0);
-			if (!r || r.gain * CFG.upgrade_gold_per_pt <= c) continue;
-			if (!best || r.gain / price > best.v) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price, to: L, merchant: true };
-			break;
-		}
 	}
 	return best;
 }
@@ -77,57 +58,6 @@ async function send_tokens() {
 	const q = Math.min(spare, character.items[k].q || 1);
 	try { await T(send_item(H, k, q)); game_log(`tokens: sent ${q} monster tokens to ${H} (the party's pool)`, C.dim); return true; } catch (e) { return false; }
 }
-// The lowest level (1..what scroll0/scroll1 reach, under a past ceiling) at which an upgradable piece beats what we wear
-// (from: the level of a copy we have — in the bags or the bank; 0 for one still to buy)
-const spp_cache = new Map(); // "name:from" -> { at, v } (30s: bag_plan asks for every bag slot)
-function set_piece_plan(name, from = 0) {
-	if (state.upg) return null;
-	const key = `${name}:${from}`, c = spp_cache.get(key);
-	if (c && Date.now() - c.at < 30_000) return c.v;
-	const v = set_piece_plan_raw(name, from);
-	spp_cache.set(key, { at: Date.now(), v });
-	return v;
-}
-function set_piece_plan_raw(name, from) {
-	if (!CFG.upgrade_auto || !CFG.gear_auto || is_merchant() || !G.items[name]?.upgrade || !GEAR.has(G.items[name].type) || state.upg || skipped("upg:" + name)) return null;
-	if (merchant_does_it()) return null; // v25.17: the merchant upgrades our pieces (pick_upgrade's owned copies)
-	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name), upg_reach(name)); // (v25.19: as far as the run goes)
-	if (gear_gain({ name, level: from }, character.ctype, g)) return null; // wins as it is: the ordinary pick
-	for (let to = from + 1; to <= max; to++) {
-		const r = gear_gain({ name, level: to }, character.ctype, g);
-		if (r) return upgrade_cost(name, to) - upgrade_cost(name, from) <= upgrade_gold() ? { to, slot: r.slot, gain: Math.round(r.gain) } : null;
-	}
-	return null;
-}
-// v24.69: a piece of a set we wear that lies in the bank below the level at which it would win (Sanala's fifth
-// Monster Hunter piece sat there at +0): fetched, then upgraded as our own project. One at a time.
-// v24.70: any piece (not only a set's): the one with the biggest gain
-function set_piece_fetch() {
-	if (state.upg || is_merchant()) return [];
-	let best = null;
-	for (const it of state.bank_gear || []) {
-		if (it.p || character.items.some((i) => i && i.name === it.name)) continue;
-		const pl = set_piece_plan(it.name, it.level || 0);
-		if (pl && (!best || pl.gain > best.pl.gain)) best = { it, pl };
-	}
-	return best ? [{ name: best.it.name, level: best.it.level || 0, exact: true, key: `setp:${best.it.name}` }] : [];
-}
-// A copy in our bags that would win once upgraded → our own project
-function set_piece_start() {
-	if (state.upg || is_merchant()) return;
-	let best = null;
-	for (const i of character.items) {
-		if (!i || i.l || !GEAR.has(G.items[i.name]?.type)) continue;
-		const pl = set_piece_plan(i.name, i.level || 0);
-		if (pl && (!best || pl.gain > best.pl.gain)) best = { i, pl };
-	}
-	if (best) {
-		const { i, pl } = best;
-		state.upg = { name: i.name, to: pl.to, for: character.name, slot: pl.slot, gain: pl.gain, cost: upgrade_cost(i.name, pl.to) - upgrade_cost(i.name, i.level || 0), own: true };
-		state.upg_pick_at = Date.now();
-		return void game_log(`upgrade project (ours): ${i.name} +${i.level || 0} → +${pl.to}, then worn (+${pl.gain} pts)`, C.info);
-	}
-}
 async function task_tokens() {
 	let n = 0;
 	for (let i = 0; i < 5; i++) {
@@ -142,7 +72,6 @@ async function task_tokens() {
 			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
 			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
 			// (v25.17: only while the merchant is away; otherwise it gets the piece and upgrades it)
-			if (b.to && !b.merchant && b.for === character.name && !merchant_does_it()) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }

@@ -15,7 +15,7 @@ function save_state() {
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
-		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
+		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, hunt_fails: state.hunt_fails || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -120,7 +120,6 @@ function load_state() {
 	if (d.bank_dump && typeof d.bank_dump === "object") state.bank_dump = d.bank_dump;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
-	if (d.upg_caps && typeof d.upg_caps === "object") state.upg_caps = d.upg_caps;
 	if (d.cmp_caps && typeof d.cmp_caps === "object") state.cmp_caps = d.cmp_caps;
 	if (d.probe_ok && typeof d.probe_ok === "object") state.probe_ok = d.probe_ok;
 	if (d.donated) state.donated = d.donated;
@@ -149,7 +148,7 @@ function load_state() {
 	if (d.cmp_v !== 3 && d.cmp_v !== 4) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
 	// (v25.37: a day's input_missing pause sat on the shield with copies in the bank — the upg: pauses are cleared once
 	// more; the ceilings only when coming from before v25.32's floors, as before)
-	if (d.upg_v !== 5) { if (d.upg_v !== 4) state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
+	if (d.upg_v !== 5) { for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();

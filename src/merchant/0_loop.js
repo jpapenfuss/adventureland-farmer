@@ -17,8 +17,7 @@ function merchant_beat() {
 		// v25.62: the project and the level caps past projects left, for the fighters' "still being upgraded?" (stat scrolls)
 		upg: state.upg ? { name: state.upg.name, for: state.upg.for, to: state.upg.to } : null,
 		// v25.63: the gear copies it can hand over (not locked, bound, or held for a project) — bag_lv counts every copy (Fable)
-		give_lv: (() => { const nd = needed_slots(), o = {}; character.items.forEach((i, k) => { if (i && !i.l && !i.b && !nd.has(k) && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); }); return o; })(),
-		ucaps: Object.fromEntries(Object.entries(state.upg_caps || {}).filter(([, c]) => Date.now() - c.at < 7 * 86400_000).map(([n, c]) => [n, c.level])) };
+		give_lv: (() => { const nd = needed_slots(), o = {}; character.items.forEach((i, k) => { if (i && !i.l && !i.b && !nd.has(k) && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); }); return o; })() };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
@@ -54,6 +53,7 @@ function worn_target() {
 	const W = state.upg?.worn;
 	if (!is_merchant() || !W || W.got || Date.now() - worn_trip_at < 600_000) return null;
 	const p = state.partners[W.who];
+	if (W.slot === "mainhand" || W.slot === "offhand") return null; // v25.66: a weapon/offhand is handed over in town only
 	if (!p || !fresh(p) || p.rip || !merchant_reach_ok(p)) return null; // (an unsafe way: the party comes to town for it)
 	return p; // (pure: the slot is stamped when serve() starts the walk — merchant_job is asked every tick and by report())
 }
