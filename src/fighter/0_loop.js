@@ -199,4 +199,5 @@ function flee_tick() { return false; } // fighters never flee (v24.51): at low H
 function role_tick() { return fighter_tick(); }
 
 // v25.57: a target that counts as the camp working (the idle give-up's clock): the camp's own type, or one on a member
-function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!!t.target && party_names().has(t.target)); }
+// (a filler we started stays a filler once it targets us — Fable)
+function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!filler_ids.has(t.id) && !!t.target && party_names().has(t.target)); }

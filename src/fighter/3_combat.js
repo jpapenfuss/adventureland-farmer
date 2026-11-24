@@ -140,6 +140,9 @@ function grown_ok(e) {
 	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
 	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
 }
+// v25.57: ids of monsters taken as fillers (another type in the camp box), for camp_work; kept to the last 50
+const filler_ids = new Set();
+function mark_filler(id) { if (filler_ids.size >= 50) filler_ids.delete(filler_ids.values().next().value); filler_ids.add(id); }
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
 	let hitting = null, hd = Infinity;
@@ -193,7 +196,11 @@ function choose_target(local_ok, keep_cur = false) {
 	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
 	// Torlis stood among five level 8-9 poisio, "0 attackable".)
 	// a filler only while the camp isn't overgrown: that camp is left at once (0_loop), not farmed among over-limit monsters
-	return best_tier === 0 ? best : grown || (best && !(state.pack && camp_overgrown(state.pack)) ? best : null);
+	if (best_tier === 0) return best;
+	if (grown) return grown;
+	if (!best) return null; // (owner: an overgrown camp kills its fillers too — it's left only when there's nothing to kill)
+	mark_filler(best.id); // (camp_work: it never counts as the camp working, even once it's on us)
+	return best;
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)

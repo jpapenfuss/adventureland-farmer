@@ -12,7 +12,7 @@ function gap_kind() {
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
 		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else alive++; }
-		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) alive++; // v25.57: a filler (another type in the box)
+		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
 	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";

@@ -56,7 +56,7 @@ function on_kill_credit(d) {
 		const s = state.session;
 		s.kc = (s.kc || 0) + xp; s.kg = (s.kg || 0) + gold; s.kc_n = (s.kc_n || 0) + 1;
 		// v25.57: the camp's own type apart (fillers count in the camp's rate, not in realism: the estimate is for its type)
-		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; }
+		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; s.kcm_n = (s.kcm_n || 0) + 1; }
 	}
 }
 function spent() {

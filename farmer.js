@@ -631,7 +631,7 @@ function on_kill_credit(d) {
 		const s = state.session;
 		s.kc = (s.kc || 0) + xp; s.kg = (s.kg || 0) + gold; s.kc_n = (s.kc_n || 0) + 1;
 		// v25.57: the camp's own type apart (fillers count in the camp's rate, not in realism: the estimate is for its type)
-		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; }
+		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; s.kcm_n = (s.kcm_n || 0) + 1; }
 	}
 }
 function spent() {
@@ -1307,7 +1307,8 @@ function end_session() {
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
 	// (v25.57: the camp's own type's kills only — fillers aren't in the estimate; an old session without the split: all)
 	const r_est = (s.kind === "gold" ? (s.kgm ?? s.kg ?? 0) : (s.kcm ?? s.kc)) / secs;
-	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
+	// (no kill of the camp's own type — a contested camp, fillers only: says nothing of the estimate; an old session: kc_n)
+	if (s.est > 0 && (s.kcm_n ?? s.kc_n) > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
 	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }
 // v25.31: a camp's rest only ever lengthens (a 30-min rest written over an 8-hour death rest shortened it)
@@ -1717,7 +1718,7 @@ function meas_tick() {
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, start: Date.now() }; // (v25.51: kind: est's unit)
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, kcm: 0, kgm: 0, kcm_n: 0, start: Date.now() }; // (v25.51: kind: est's unit)
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event
 	// goo's full xp: one put realism at 42), until the 180s close
@@ -5377,7 +5378,8 @@ function flee_tick__fighter() { return false; } // fighters never flee (v24.51):
 function role_tick__fighter() { return fighter_tick(); }
 
 // v25.57: a target that counts as the camp working (the idle give-up's clock): the camp's own type, or one on a member
-function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!!t.target && party_names().has(t.target)); }
+// (a filler we started stays a filler once it targets us — Fable)
+function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!filler_ids.has(t.id) && !!t.target && party_names().has(t.target)); }
 // =====================================================================
 // fighter/1_party.js — fighters only (src/manifest.json): the party rules: the break and the suicide, group travel, heartbeat and invites, verdicts, gold to the merchant
 // =====================================================================
@@ -6183,6 +6185,9 @@ function grown_ok(e) {
 	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
 	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
 }
+// v25.57: ids of monsters taken as fillers (another type in the camp box), for camp_work; kept to the last 50
+const filler_ids = new Set();
+function mark_filler(id) { if (filler_ids.size >= 50) filler_ids.delete(filler_ids.values().next().value); filler_ids.add(id); }
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
 	let hitting = null, hd = Infinity;
@@ -6236,7 +6241,11 @@ function choose_target(local_ok, keep_cur = false) {
 	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
 	// Torlis stood among five level 8-9 poisio, "0 attackable".)
 	// a filler only while the camp isn't overgrown: that camp is left at once (0_loop), not farmed among over-limit monsters
-	return best_tier === 0 ? best : grown || (best && !(state.pack && camp_overgrown(state.pack)) ? best : null);
+	if (best_tier === 0) return best;
+	if (grown) return grown;
+	if (!best) return null; // (owner: an overgrown camp kills its fillers too — it's left only when there's nothing to kill)
+	mark_filler(best.id); // (camp_work: it never counts as the camp working, even once it's on us)
+	return best;
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)
@@ -7213,7 +7222,7 @@ function gap_kind__fighter() {
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
 		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else alive++; }
-		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) alive++; // v25.57: a filler (another type in the box)
+		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
 	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";
