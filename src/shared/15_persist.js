@@ -17,7 +17,7 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
+		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, hunt_fails: state.hunt_fails || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 // v25.56: pack keys gained the monster type ("map:box" → "map:box#type"). A saved key's type is the first farmable
@@ -113,6 +113,7 @@ function load_state() {
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
+	if (d.hunt_fails > 0) state.hunt_fails = d.hunt_fails; // v25.59: Daisy's back-off survives a reload
 	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;

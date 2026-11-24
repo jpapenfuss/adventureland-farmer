@@ -338,6 +338,7 @@ const CFG = {
 	// v24.67: hunts are still taken and turned in at Daisy on town trips made for something else — never chased. One
 	// whose monster is the camp's completes by itself; monster tokens (the Monster Hunter set pieces) only come this way.
 	hunt_passive: true,
+	hunt_turnin_ms: 300_000,   // v25.59: a finished hunt with under this left is turned in now, even while a member still chases one
 	auto_monster_hunt: true,   // v24.88 (owner): on again — hunts are taken and chased (tokens: Hunter set pieces, Concord Mace). The camp
 	                           //   moves for a goal only at a camp review, which now also comes a minute after the goal changes
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
@@ -1786,8 +1787,9 @@ function mv_note(who, kind) {
 	const now = Date.now(), last = mv.log[mv.log.length - 1];
 	// a clash: a different owner steps or stops within 1.5s of another's step or walk
 	if (last && last.who !== who && now - last.t < 1500 && !(last.kind === "halt" && kind !== "halt")) mv.clash++;
-	if (last && last.who === who && last.kind === kind) { last.t = now; last.n++; } else mv.log.push({ t: now, who, kind, n: 1 });
-	while (mv.log.length && now - mv.log[0].t > 60_000) mv.log.shift();
+	// (v25.59: a streak is split per minute — merged for good, "approach step x1149" in the 1-minute line was 8 minutes of it)
+	if (last && last.who === who && last.kind === kind && now - (last.t0 || last.t) < 60_000) { last.t = now; last.n++; } else mv.log.push({ t: now, t0: now, who, kind, n: 1 });
+	while (mv.log.length && now - (mv.log[0].t0 || mv.log[0].t) > 60_000) mv.log.shift();
 }
 function move_to_as(who, x, y, min_gap) { const ok = move_to(x, y, min_gap); if (ok) mv_note(who, "step"); return ok; }
 function travel_as(who, dest) { if (!walking() && Date.now() >= (state.travel_block_until || 0)) mv_note(who, "walk"); return travel(dest); }
@@ -4096,8 +4098,8 @@ let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated a
 // its truthy keys: the numeric fields would make a town run permanently due.
 const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "stat", "forge", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
-// A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in
-// v18.8: a hunt to turn in / take is no longer urgent: it rides on the next trip (Daisy is in town)
+// A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low. (Hunts: the tank's party
+// rule, hunts_trip_due — fighter/5_town.js.)
 const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" :
 	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
 // Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
@@ -4186,7 +4188,7 @@ async function town_body(due) {
 		const town_t0 = Date.now();
 		if (collect_list(true).length) did += (await step("collect", task_collect)) || 0; // v24.75
 		if (worn_for_me()) did += (await step("handover", task_worn_handover)) || 0; // v25.39
-		if (due.hunt) did += (await step("hunt", run_hunt)) ? 1 : (skip("hunt:auto", 300_000), 0);
+		if (due.hunt) did += await hunt_step(step);
 		if (!skipped("town:tokens") && token_pick()) did += await bag_step("tokens", task_tokens); // Daisy: next to the hunt
 		if (due.craft) did += (await step("craft", quest_crafts)) || 0;
 		// Guide steps: keep going while the next row is local (no walking); rows that walk count toward the cap;
@@ -4274,10 +4276,9 @@ function town_check() {
 	const what = due_tasks(due);
 	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
 	if (!what.length) return void (state.town_block = null);
-	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
-	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
-	// (v24.77: nor do stat scrolls)
-	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the next trip"], at: Date.now() });
+	// A member's own hunt never starts a trip by itself: the tank's party trip goes once every completable hunt in the
+	// party is ready (v25.59, owner; party_trip_check). Stat scrolls alone wait too (v24.77).
+	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the party's hunt trip or the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (fighter_defers_town(due, what)) return; // v25.5: fighter/ — work that can wait
@@ -4314,6 +4315,18 @@ function town_check() {
 	state.town_trig = town_urgent(due) || (due.relaxed ? "joined a member's trip" : "deferrable");
 	game_log(`Town: ${what.join("+")} (${due.plan.free} free${due.relaxed ? ", with " + townies.join(", ") : ""})`, C.dim);
 	if (town_run(due)) ptown_start(what);
+}
+
+// v25.59: Daisy's step. Success is a hunt held afterwards (a reply that took none isn't); a failure pauses Daisy 5 min,
+// doubling each time in a row up to 2 h — a 5-min pause made a party trip every 5 min (Fable)
+async function hunt_step(step) {
+	const r = await step("hunt", run_hunt);
+	// (the player update with the new hunt can arrive after Daisy's reply — wait for it before judging; Fable)
+	if (r?.started && !(character.s.monsterhunt?.c > 0)) await until(() => character.s.monsterhunt?.c > 0, 2000).catch(() => {});
+	if (character.s.monsterhunt?.c > 0) { state.hunt_fails = 0; return 1; }
+	state.hunt_fails = (state.hunt_fails || 0) + 1;
+	skip("hunt:auto", Math.min(7_200_000, 300_000 * 2 ** (state.hunt_fails - 1)), "Daisy gave no hunt");
+	return 0;
 }
 // =====================================================================
 // Recovery, death, parking
@@ -4371,7 +4384,7 @@ function save_state() {
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
 		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
-		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0,
+		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, hunt_fails: state.hunt_fails || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
 }
 // v25.56: pack keys gained the monster type ("map:box" → "map:box#type"). A saved key's type is the first farmable
@@ -4467,6 +4480,7 @@ function load_state() {
 	// v19.0: trip timers survive a reload (before, every reload sent everyone to town for deferrable work at once)
 	if (d.last_town) state.last_town = d.last_town;
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
+	if (d.hunt_fails > 0) state.hunt_fails = d.hunt_fails; // v25.59: Daisy's back-off survives a reload
 	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
@@ -5654,7 +5668,7 @@ function heartbeat__fighter() {
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
 		rpiercing: character.rpiercing || 0, range: character.range,
-		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
+		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null, hs: hunt_state(), hms: character.s.monsterhunt?.ms || 0,
 		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
 		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
@@ -6956,6 +6970,9 @@ function party_trip_check__fighter(due, what) {
 	if (coll.length) asks.push(...coll.map((g) => `${g.to}: ${g.name}+${g.level} at the merchant`));
 	// v25.43: a worn piece the merchant can't safely come for (cant_reach) → the party takes it to town (one try per
 	// collect_retry_min, spent when the trip starts)
+	// v25.59 (owner): the party goes to Daisy once every completable hunt it holds is ready to turn in
+	const ht = is_follower() || !in_party_cfg() ? null : hunts_trip_due();
+	if (ht) asks.push(ht);
 	const MM = !is_follower() && merchant_hb(), WW = MM?.want_worn;
 	const worn_ask = !!WW && (MM.cant_reach || []).includes(WW.to) && MM.map === "main" && Math.hypot(MM.x, MM.y) <= CFG.party.town_px &&
 		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
@@ -6998,6 +7015,29 @@ function fighter_defers_town__fighter(due, what) {
 }
 // Party town trips are on (a role function, v25.11: the merchant's is false)
 function ptown_on__fighter() { return !!CFG.party.town_together && in_party_cfg(); }
+
+// ---- Hunts (v25.59, owner: "go to town to turn in when all completable hunts the fighters have are ready") ----
+// A fighter's hunt: "ready" (done, turn in), "none" (none held: take one), "chase" (one it can finish in time), "lost"
+// (one it can't: it lapses), "off" (hunts not chased, or Daisy paused after a failure)
+function hunt_state() {
+	if (!CFG.auto_monster_hunt || character.ctype === "merchant" || skipped("hunt:auto")) return "off";
+	const h = character.s.monsterhunt;
+	if (!h) return "none";
+	if (!(h.c > 0)) return "ready";
+	return hunt_feasible(h) ? "chase" : "lost";
+}
+// The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
+// or none held. Members on an older version (no hs) don't count.
+// v25.59: a finished hunt lapses like any other — one with under hunt_turnin_ms left goes now, whoever still chases (Fable)
+function hunts_trip_due() {
+	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, p.hs])].filter(([, s]) => s && s !== "off");
+	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
+		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
+	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
+	if (!st.length || st.some(([, s]) => s === "chase")) return null;
+	const go = st.filter(([, s]) => s === "ready" || s === "none");
+	return go.length ? `monster hunts (${go.map(([n, s]) => `${n} ${s === "ready" ? "to turn in" : "to take"}`).join(", ")})` : null;
+}
 // =====================================================================
 // fighter/6_gear.js — fighters only (src/manifest.json): tokens, own upgrade projects (only while the merchant is away:
 // v25.17), worn-gear swaps, stat scrolls

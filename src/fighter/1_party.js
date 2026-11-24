@@ -269,7 +269,7 @@ function heartbeat() {
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
 		rpiercing: character.rpiercing || 0, range: character.range,
-		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null,
+		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null, hs: hunt_state(), hms: character.s.monsterhunt?.ms || 0,
 		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
 		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
