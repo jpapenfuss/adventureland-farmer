@@ -13,7 +13,10 @@ function merchant_beat() {
 		// (collect mode: every piece; else only those for fighters we can't safely walk to — the party comes for those)
 		...(() => { const cr = CFG.merchant.collect ? null : cant_reach(); return { cant_reach: cr, give: CFG.merchant.collect ? gear_to_give() : cr.length ? gear_to_give().filter((g) => cr.includes(g.to)) : null }; })(),
 		// v25.39: the worn piece our upgrade project needs, until it arrives
-		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null };
+		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null,
+		// v25.62: the project and the level caps past projects left, for the fighters' "still being upgraded?" (stat scrolls)
+		upg: state.upg ? { name: state.upg.name, for: state.upg.for, to: state.upg.to } : null,
+		ucaps: Object.fromEntries(Object.entries(state.upg_caps || {}).filter(([, c]) => Date.now() - c.at < 7 * 86400_000).map(([n, c]) => [n, c.level])) };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);

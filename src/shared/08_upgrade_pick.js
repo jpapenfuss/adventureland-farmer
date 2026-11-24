@@ -150,7 +150,7 @@ function pick_upgrade() {
 			if (upg_odds(it.name, L) < W.min_chance) break;
 			const cost = Math.max(0, upgrade_expected(it.name, L) - upgrade_expected(it.name, lw));
 			if (cost > budget) break;
-			const r = gear_gain({ name: it.name, level: L }, m.ctype, m.g);
+			const r = gear_gain({ name: it.name, level: L, ...(it.stat_type ? { stat_type: it.stat_type } : {}) }, m.ctype, m.g); // (v25.62: a scrolled piece keeps its stat)
 			if (!r) continue;
 			const v = r.gain * CFG.upgrade_gold_per_pt - cost;
 			if (v > 0 && (!best || (!best.weapon && v > best.v)))
@@ -359,4 +359,42 @@ async function task_upgrade() {
 		}
 	}
 	return n;
+}
+
+// v25.62 (owner: a piece with a generic Stat that is no longer being worked on gets its wearer's primary stat): is an
+// upgrade of this worn piece still ahead? It mirrors pick_upgrade's two paths (Fable: a looser test left pieces the
+// planner never takes "still being upgraded" for good):
+//  - the merchant's project on it for this member;
+//  - main path (a new copy built, NPC-sold or a copy held): a weapon straight to upgrade_weapon.to (no cost test); else a
+//    level within reach (targets, odds floors, caps) whose gain covers the copy's full expected cost;
+//  - worn path (the merchant upgrades the piece itself): merchant online, not a weapon/offhand, untitled, no spare copy,
+//    steps while the base odds stay at upgrade_worn.min_chance, gain over the step-up cost.
+// Cash-shop and quest-craft pieces are never projects: nothing ahead.
+function upgrade_ahead(it, ctype, g, who, slot) {
+	const name = it.name, lv = it.level || 0, def = G.items[name], M = typeof merchant_hb === "function" ? merchant_hb() : null;
+	if (!def?.upgrade || def.cash || CFG.quest_craft_skip.includes(name)) return null;
+	if (M?.upg?.name === name && (!M.upg.for || M.upg.for === who)) return `the merchant's project (+${M.upg.to})`;
+	const cap = Math.min(upg_cap_level(name), M?.ucaps?.[name] ?? Infinity);
+	const top = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), cap);
+	const with_stat = (L) => ({ name, level: L, ...(it.stat_type ? { stat_type: it.stat_type } : {}) });
+	// (v25.63: the merchant's bags too — a spare there makes the planner skip the worn path — Fable)
+	const copy = Math.max(owned_level(name), M?.bag_lv?.[name] ?? -1), main_ok = sold_by_npc(name) || copy >= 0;
+	// v25.63 (Fable): a copy held above it that beats it is delivered (it replaces this piece): don't scroll this one
+	if (copy > lv && gear_gain({ name, level: copy }, ctype, g)) return `a +${copy} copy held replaces it`;
+	if (main_ok && def.type === "weapon" && CFG.upgrade_weapon?.enabled) {
+		const WP = Math.min(CFG.upgrade_weapon.to, upgrade_target(name), cap, upg_reach(name));
+		if (WP > lv && gear_gain(with_stat(WP), ctype, g)) return `a weapon goes to +${WP}`;
+	}
+	if (main_ok) for (let L = lv + 1, T = Math.min(top, upg_reach(name)); L <= T; L++) {
+		const r = gear_gain(with_stat(L), ctype, g), c = copy >= 0 && copy < L ? Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, copy)) : upgrade_expected(name, L);
+		if (r && r.gain * CFG.upgrade_gold_per_pt > c) return `+${L} would be worth it (+${Math.round(r.gain)} pts)`;
+	}
+	const W = CFG.upgrade_worn;
+	if (W?.enabled && M && slot !== "mainhand" && slot !== "offhand" && def.type !== "weapon" && !it.p && copy < 0)
+		for (let L = lv + 1; L <= top; L++) {
+			if (upg_odds(name, L) < W.min_chance) break;
+			const r = gear_gain(with_stat(L), ctype, g), c = Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, lv));
+			if (r && r.gain * CFG.upgrade_gold_per_pt > c) return `+${L} would be worth it (+${Math.round(r.gain)} pts, the merchant upgrades it as worn)`;
+		}
+	return null;
 }

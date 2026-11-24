@@ -4501,17 +4501,55 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			Object.assign(character, { ctype: "paladin", gold: 5_000_000 });
 			character.slots = { gloves: { name: "sg0_137", level: 3 }, pants: { name: "sg1_137", level: 0 }, chest: { name: "sg2_137", level: 0 }, helmet: { name: "sgx_137", level: 0 }, shoes: { name: "sg0_137", level: 0, stat_type: "str" } };
 			R("state.gear_skip = Object.fromEntries(Object.entries(state.gear_skip).filter(([k]) => !k.startsWith('stat:')))");
-			R("globalThis.__ss137 = { ...CFG.stat_scroll }; CFG.stat_scroll.min_level = 0; CFG.stat_scroll.max_cost = Infinity");
+			R("globalThis.__ss137 = { ...CFG.stat_scroll }; CFG.stat_scroll.max_cost = Infinity; CFG.stat_scroll.max_gold_per_pt = 100000; globalThis.__ua137 = upgrade_ahead; upgrade_ahead = () => null");
 			const L = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.stat, r.q, r.cost, r.ok]))"));
 			assert(JSON.stringify(L) === '[["gloves","str",1,8000,true],["pants","str",10,80000,true],["chest","str",100,800000,false]]',
 				`stat scrolls: the class's main stat; 1/10/100 scrolls by grade; the rare piece is over the price cap; scrolled and stat-less pieces aren't listed (${JSON.stringify(L)})`);
 			assert(R("town_due().stat") === true && /chest.*not done: 800k/.test(R("report_facts().find((f) => f.key === 'stat').text").replace(/sg2_137/, "chest")), "...due on a town trip, and the report says what is left and why");
-			// v24.78: only at +7 or higher, and never more than max_cost for one piece
-			R("Object.assign(CFG.stat_scroll, __ss137)");
-			assert(R("stat_scroll_list().every((r) => !r.ok && /only at \\+7/.test(r.why))") && R("town_due().stat") === false, "by default nothing under +7 is scrolled");
-			character.slots.gloves.level = 7; character.slots.chest.level = 7;
-			const L7 = JSON.parse(R("JSON.stringify(stat_scroll_list().filter((r) => r.level >= 7).map((r) => [r.slot, r.q, r.ok]))"));
-			assert(JSON.stringify(L7) === '[["gloves",10,true],["chest",100,false]]', `at +7: the piece that turned high grade takes 10 scrolls and is done; the rare one (800k) is over max_cost (${JSON.stringify(L7)})`);
+			// v25.62 (owner): no +7 rule — a piece is scrolled once no upgrade of it is ahead; at 300k per point (the rare one too)
+			R("Object.assign(CFG.stat_scroll, __ss137); upgrade_ahead = (it) => (it.name === 'sg1_137' ? '+3 would be worth it (+5 pts)' : null)");
+			const L62 = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.ok, r.why]))"));
+			assert(JSON.stringify(L62) === '[["gloves",true,null],["pants",false,"still being upgraded: +3 would be worth it (+5 pts)"],["chest",true,null]]',
+				`v25.62: done pieces scrolled (the 800k rare one too: 222k/pt), one still being upgraded waits (${JSON.stringify(L62)})`);
+			R("upgrade_ahead = __ua137");
+			// upgrade_ahead itself: the merchant's project on it; else a worthwhile level within reach; else nothing ahead
+			{ const g62 = R("JSON.stringify(my_gear())"), M0 = R("JSON.stringify(state.merchant || null)");
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), upg: { name: 'sg0_137', for: character.name, to: 9 } }`);
+				const a1 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${g62}, character.name)`);
+				R("state.merchant = null");
+				const a2 = R(`upgrade_ahead({ name: 'sgx_137', level: 12 }, 'paladin', ${g62}, character.name)`);
+				R(`state.merchant = ${M0}`);
+				assert(/merchant's project/.test(a1 || "") && a2 === null, `upgrade_ahead: the merchant's project (${a1}); a piece at its top: nothing ahead (${a2})`);
+				// the planner's paths (Fable): a drop-only piece with no copy, worn at +3 — the worn path stops where the base
+				// odds fall under upgrade_worn.min_chance (+4: 70%), the main path needs a copy or an NPC: nothing ahead
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now() }; state.bank_gear = []; sold_c.clear()`);
+				const a3 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`); // (+4 would win: only the odds stop it)
+				// worn at +0 with the merchant online: +1..+3 at 99/98/95% — ahead if worth it; with no merchant: no path
+				const a4 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`);
+				R("state.merchant = null");
+				const a5 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`);
+				R(`state.merchant = ${M0}`);
+				assert(a3 === null && /as worn/.test(a4 || "") && a5 === null, `drop-only at +3: nothing ahead (${a3}); at +0 with the merchant: the worn path (${a4}); no merchant: nothing (${a5})`);
+				// v25.63: a +5 copy in the merchant's bags that beats the worn +3 replaces it (not scrolled); a +2 spare there
+				// takes the worn path away (the planner skips it) and the main path then needs the full cost
+				const w0 = `{ ...${g62}, w: { ...${g62}.w, gloves: 0 } }`;
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), bag_lv: { sg0_137: 5 } }`);
+				const a6 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), bag_lv: { sg0_137: 0 } }; globalThis.__gp63 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1e-6`);
+				const a7 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				// NPC-sold: the main path at the full expected cost — worth it at 300k/pt, not at a millionth of a gold
+				R(`state.merchant = null; sold_c.set('sg0_137', true)`);
+				const a8 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				R("CFG.upgrade_gold_per_pt = __gp63");
+				const a9 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				// a weapon an NPC sells goes to upgrade_weapon.to or its reach (no cost test): ahead below it, nothing at it
+				ctx.G.items.sw63 = { type: "weapon", wtype: "sword", attack: 10, upgrade: { attack: 5 }, grades: [7, 9, 10, 12], g: 1000 }; R("sold_c.set('sw63', true); my_gear_cache = null");
+				const pc63 = ctx.G.classes.paladin; ctx.G.classes.paladin = { ...(pc63 || {}), mainhand: { ...(pc63?.mainhand || {}), sword: {} } };
+				const wg = `{ ...${g62}, w: { ...${g62}.w, mainhand: 0 } }`;
+				const a10 = R(`upgrade_ahead({ name: 'sw63', level: 2 }, 'paladin', ${wg}, character.name, 'mainhand')`), a11 = R(`upgrade_ahead({ name: 'sw63', level: upg_reach('sw63') }, 'paladin', ${wg}, character.name, 'mainhand')`);
+				delete ctx.G.items.sw63; if (pc63) ctx.G.classes.paladin = pc63; else delete ctx.G.classes.paladin; R(`sold_c.clear(); state.merchant = ${M0}`);
+				assert(/\+5 copy held replaces it/.test(a6 || "") && a7 === null && a8 === null && /worth it/.test(a9 || "") && /weapon goes to \+\d/.test(a10 || "") && a11 === null,
+					`replaced by a better copy (${a6}); merchant's spare, worn path gone, not worth the full cost (${a7}); NPC-sold full cost: not worth (${a8}) / worth (${a9}); weapon below its top (${a10}) / at it (${a11})`); }
 			for (const n of ["sg0_137", "sg1_137", "sg2_137", "sgx_137"]) delete I[n];
 			ctx.item_grade = ig137;
 			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;
