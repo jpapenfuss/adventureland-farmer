@@ -277,17 +277,6 @@ function make_waypoints([x1, y1, x2, y2]) {
 	return pts;
 }
 
-// How many of the camp's monsters are in view when every one of them is over the limit (0: none in view, or one is takeable)
-function camp_overgrown(pack) {
-	let n = 0;
-	for (const id in parent.entities) {
-		const e = parent.entities[id];
-		if (e.type !== "monster" || e.mtype !== pack.mtype || !valid(e) || !in_rect(e.x, e.y, [pack.boundary[0] - CFG.near_pad, pack.boundary[1] - CFG.near_pad, pack.boundary[2] + CFG.near_pad, pack.boundary[3] + CFG.near_pad])) continue;
-		if (live_ok(e) || (grown_ok(e) && !hopeless(e))) return 0;
-		n++;
-	}
-	return n;
-}
 function patrol() {
 	if (is_moving(character) || walking() || !state.waypoints.length) return;
 	if (distance(character, state.waypoints[state.wp]) < 30) state.wp = (state.wp + 1) % state.waypoints.length; // reached
