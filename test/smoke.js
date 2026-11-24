@@ -4475,17 +4475,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			Object.assign(character, { ctype: "paladin", gold: 5_000_000 });
 			character.slots = { gloves: { name: "sg0_137", level: 3 }, pants: { name: "sg1_137", level: 0 }, chest: { name: "sg2_137", level: 0 }, helmet: { name: "sgx_137", level: 0 }, shoes: { name: "sg0_137", level: 0, stat_type: "str" } };
 			R("state.gear_skip = Object.fromEntries(Object.entries(state.gear_skip).filter(([k]) => !k.startsWith('stat:')))");
-			R("globalThis.__ss137 = { ...CFG.stat_scroll }; CFG.stat_scroll.min_level = 0; CFG.stat_scroll.max_cost = Infinity");
+			R("globalThis.__ss137 = { ...CFG.stat_scroll }; CFG.stat_scroll.max_cost = Infinity; CFG.stat_scroll.max_gold_per_pt = 100000; globalThis.__ua137 = upgrade_ahead; upgrade_ahead = () => null");
 			const L = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.stat, r.q, r.cost, r.ok]))"));
 			assert(JSON.stringify(L) === '[["gloves","str",1,8000,true],["pants","str",10,80000,true],["chest","str",100,800000,false]]',
 				`stat scrolls: the class's main stat; 1/10/100 scrolls by grade; the rare piece is over the price cap; scrolled and stat-less pieces aren't listed (${JSON.stringify(L)})`);
 			assert(R("town_due().stat") === true && /chest.*not done: 800k/.test(R("report_facts().find((f) => f.key === 'stat').text").replace(/sg2_137/, "chest")), "...due on a town trip, and the report says what is left and why");
-			// v24.78: only at +7 or higher, and never more than max_cost for one piece
-			R("Object.assign(CFG.stat_scroll, __ss137)");
-			assert(R("stat_scroll_list().every((r) => !r.ok && /only at \\+7/.test(r.why))") && R("town_due().stat") === false, "by default nothing under +7 is scrolled");
-			character.slots.gloves.level = 7; character.slots.chest.level = 7;
-			const L7 = JSON.parse(R("JSON.stringify(stat_scroll_list().filter((r) => r.level >= 7).map((r) => [r.slot, r.q, r.ok]))"));
-			assert(JSON.stringify(L7) === '[["gloves",10,true],["chest",100,false]]', `at +7: the piece that turned high grade takes 10 scrolls and is done; the rare one (800k) is over max_cost (${JSON.stringify(L7)})`);
+			// v25.62 (owner): no +7 rule — a piece is scrolled once no upgrade of it is ahead; at 300k per point (the rare one too)
+			R("Object.assign(CFG.stat_scroll, __ss137); upgrade_ahead = (it) => (it.name === 'sg1_137' ? '+3 would be worth it (+5 pts)' : null)");
+			const L62 = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.ok, r.why]))"));
+			assert(JSON.stringify(L62) === '[["gloves",true,null],["pants",false,"still being upgraded: +3 would be worth it (+5 pts)"],["chest",true,null]]',
+				`v25.62: done pieces scrolled (the 800k rare one too: 222k/pt), one still being upgraded waits (${JSON.stringify(L62)})`);
+			R("upgrade_ahead = __ua137");
+			// upgrade_ahead itself: the merchant's project on it; else a worthwhile level within reach; else nothing ahead
+			{ const g62 = R("JSON.stringify(my_gear())"), M0 = R("JSON.stringify(state.merchant || null)");
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), upg: { name: 'sg0_137', for: character.name, to: 9 } }`);
+				const a1 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${g62}, character.name)`);
+				R("state.merchant = null");
+				const a2 = R(`upgrade_ahead({ name: 'sgx_137', level: 12 }, 'paladin', ${g62}, character.name)`);
+				R(`state.merchant = ${M0}`);
+				assert(/merchant's project/.test(a1 || "") && a2 === null, `upgrade_ahead: the merchant's project (${a1}); a piece at its top: nothing ahead (${a2})`); }
 			for (const n of ["sg0_137", "sg1_137", "sg2_137", "sgx_137"]) delete I[n];
 			ctx.item_grade = ig137;
 			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;

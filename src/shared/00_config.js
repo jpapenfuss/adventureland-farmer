@@ -1,4 +1,4 @@
-const VERSION = "25.60"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.62"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -69,7 +69,9 @@ const CFG = {
 	// v24.78 (owner): only pieces at +min_level or higher (ones we'll keep), and never more than max_cost for one piece.
 	// Note the server counts scrolls by the piece's grade AT ITS LEVEL: most gear turns a grade higher at +7 (10x the
 	// scrolls of +6), and a piece that's rare by then takes 100 (800k) — over max_cost, so it's left.
-	stat_scroll: { enabled: true, min_level: 7, max_cost: 100_000, max_gold_per_pt: 100_000, per_run: 3 },
+	// v25.62 (owner): a worn piece's generic Stat gets the wearer's main stat once no upgrade of it is ahead
+	// (upgrade_ahead), at the upgrade planner's gold per point (was: only at +7, at most 100k per piece and per point)
+	stat_scroll: { enabled: true, max_cost: Infinity, max_gold_per_pt: 300_000, per_run: 3 },
 	sell: [],                  // item names to always sell
 	// v24.72 (owner): false = nothing is sold as "junk" — not plain +0 gear when the bank is full, not the merchant's
 	// bank purge, not compound pieces at their ceiling. Only the names in `sell` are sold. (What we own can still be

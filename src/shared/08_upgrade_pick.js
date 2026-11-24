@@ -355,3 +355,19 @@ async function task_upgrade() {
 	}
 	return n;
 }
+
+// v25.62 (owner: a piece with a generic Stat that is no longer being worked on gets its wearer's primary stat): is an
+// upgrade of this worn piece still ahead? The merchant's project on it for this member, or a level above it within reach
+// (odds floors, targets, a past project's cap) that beats it by enough to be worth its expected cost — the planner's test.
+function upgrade_ahead(it, ctype, g, who) {
+	const name = it.name, lv = it.level || 0, M = typeof merchant_hb === "function" ? merchant_hb() : null;
+	if (M?.upg?.name === name && (!M.upg.for || M.upg.for === who)) return `the merchant's project (+${M.upg.to})`;
+	const cap = Math.min(upg_cap_level(name), M?.ucaps?.[name] ?? Infinity);
+	const T = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), upg_reach(name), cap,
+		G.items[name]?.type === "weapon" && CFG.upgrade_weapon?.enabled ? Math.max(CFG.upgrade_weapon.to, upgrade_target(name)) : Infinity);
+	for (let L = lv + 1; L <= T; L++) {
+		const r = gear_gain({ name, level: L }, ctype, g), c = Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, lv));
+		if (r && r.gain * CFG.upgrade_gold_per_pt > c) return `+${L} would be worth it (+${Math.round(r.gain)} pts)`;
+	}
+	return null;
+}
