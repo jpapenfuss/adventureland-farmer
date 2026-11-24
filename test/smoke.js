@@ -2115,10 +2115,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	delete ctx.parent.entities.rival;
 	// routine trip waits while the stand settles; an urgent one goes
 	Object.assign(character, { x: sp78b.x, y: sp78b.y, stand: true });
-	vm.runInContext(`state.mspot = { x: ${sp78b.x}, y: ${sp78b.y} }; state.stand_since = Date.now() - 30000; merchant_trip_at = 0; state.errand = null; smart_depth = 0`, ctx);
+	vm.runInContext(`state.mspot = { x: ${sp78b.x}, y: ${sp78b.y} }; state.stand_since = Date.now() - 30000; merchant_trip_at = 0; state.errand = null; smart_depth = 0; secondhand_at = Date.now()`, ctx);
 	hb("Torlis", { ...tor, x: 900, y: 900, esize: 10, pots: { hp: 150, mp: 150 } });
 	vm.runInContext("merchant_tick()", ctx);
 	assert(vm.runInContext("state.errand", ctx) === null, "routine supply trip waits for the 2-minute window");
+	// v25.61: a Ponty poll from the square doesn't wait for Merrit's settling (no walk); one that would walk does
+	{ const ref0 = ctx.G.maps.main.ref; ctx.G.maps.main.ref = { ...(ref0 || {}), secondhands: { x: sp78b.x + 100, y: sp78b.y } };
+		vm.runInContext("secondhand_at = 0; state.errand = null; smart_depth = 0; merchant_trip_at = Date.now(); merchant_tick()", ctx);
+		const near61 = vm.runInContext("state.errand", ctx);
+		ctx.G.maps.main.ref.secondhands = { x: sp78b.x + 2000, y: sp78b.y };
+		vm.runInContext("secondhand_at = 0; state.errand = null; smart_depth = 0; merchant_tick()", ctx);
+		const far61 = vm.runInContext("state.errand", ctx);
+		ctx.G.maps.main.ref = ref0; vm.runInContext("state.errand = null; smart_depth = 0; secondhand_at = Date.now(); merchant_trip_at = 0", ctx);
+		assert(near61 === "secondhands" && far61 === null, `Ponty near: polled while settling (${near61}); far: waits (${far61})`); }
 	hb("Torlis", { ...tor, x: 900, y: 900, esize: 2, pots: { hp: 150, mp: 150 } });
 	vm.runInContext("merchant_tick()", ctx);
 	assert(vm.runInContext("state.errand", ctx) === "serve", "an urgent trip (2 free slots) goes at once");
@@ -4362,6 +4371,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(R("JSON.stringify(set_piece_fetch().map((f) => f.name + '+' + f.level))") === '["mmg137+0"]', `a set piece in the bank that wins once upgraded is fetched (${R("JSON.stringify(set_piece_fetch())")})`);
 			assert(R("bag_plan().fetch.some((f) => f.key === 'setp:mmg137')"), "...it's on the bank visit's fetch list");
 			assert(/ours next: mmg137\+0 \(bank\) → \+\d/.test(R("upgrade_why()")), `v24.70: the report says which piece of ours is next (${R("upgrade_why()")})`);
+			{ R("globalThis.__mdi61 = merchant_recent; merchant_recent = () => false; globalThis.__gp61 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1");
+				const w61 = R("upgrade_why()"); R("CFG.upgrade_gold_per_pt = __gp61; merchant_recent = __mdi61");
+				assert(/not worth it: \+\d+ pts/.test(w61) && /judged for/.test(w61), `v25.61: a piece that wins but not for its cost is listed with why, and who it was judged for (${w61})`); }
 			assert(/"gloves":"gl137\+5"/.test(R("report_facts().find((f) => f.key === 'worn_json').text")), "v24.70: the report dumps what's worn as JSON");
 			character.items[1] = { name: "mmg137", level: 0 };
 			assert(R("set_piece_fetch().length") === 0, "...not fetched again once a copy is in the bags");

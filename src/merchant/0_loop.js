@@ -82,7 +82,9 @@ function merchant_tick() {
 		return void errand("serve", () => serve(f));
 	}
 	merchant_donate();
-	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5 && !settling) { // Ponty can wait for Merrit
+	// (v25.61: Merrit's settling time holds only a poll that walks — from the square, Ponty is ~170 px away: no move)
+	const ponty_ref = G.maps.main?.ref?.secondhands, ponty_near = !!ponty_ref && character.map === "main" && Math.hypot(character.x - ponty_ref.x, character.y - ponty_ref.y) <= 400;
+	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5 && (!settling || ponty_near)) {
 		secondhand_at = Date.now();
 		return void errand("secondhands", () => task_secondhands());
 	}
