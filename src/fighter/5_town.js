@@ -226,7 +226,7 @@ function hunt_state() {
 // v25.59: a finished hunt lapses like any other — one with under hunt_turnin_ms left goes now, whoever still chases (Fable)
 function hunts_trip_due() {
 	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, p.hs])].filter(([, s]) => s && s !== "off");
-	const mine = character.s.monsterhunt, late = [[character.name, mine && !(mine.c > 0) ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
+	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
 		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
 	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
 	if (!st.length || st.some(([, s]) => s === "chase")) return null;
