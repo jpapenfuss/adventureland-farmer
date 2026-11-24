@@ -175,10 +175,12 @@ async function task_secondhands() {
 				const price = shop_price(it);
 				if (price > CFG.ponty_material_max || character.gold - price < CFG.merchant.donate.keep || character.esize < 3) continue;
 				await wait_budget(1, RESERVE.errand);
+				if (skipped(sbuy_key(it))) continue;
 				const before = held_any(nm);
 				tag_spend("ponty");
 				parent.socket.emit("sbuy", { rid: it.rid });
 				await until(() => held_any(nm) > before, 3000);
+				if (!(held_any(nm) > before)) sbuy_missed(it, price);
 				if (held_any(nm) > before) {
 					n++; need -= it.q || 1;
 					game_log(`secondhands: bought ${it.q || 1} ${nm} for ${fmt_k(price)} (quest material the fighters are short of)`, C.ok);
@@ -192,16 +194,16 @@ async function task_secondhands() {
 		const rt = route_of.get(it);
 		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
 		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !upg_gold_ok(price)) continue; // v25.46: every reason here is gear for the party: no earnings test
-		if (it.rid && skipped("sbuy:" + it.rid)) continue; // v25.63: a listing whose buy didn't land waits 10 min
+		if (skipped(sbuy_key(it))) continue; // v25.63: a listing whose buy didn't land waits 10 min
 		await wait_budget(1, RESERVE.errand);
-		const before = character.esize;
+		// (v25.63: landed = one more copy of it at that level in the bags — not a free slot fewer, which a slot freed in the
+		// same 3 s hid — Fable)
+		const copies = () => character.items.filter((b) => b && b.name === it.name && (b.level || 0) === (it.level || 0)).length, before = copies();
 		tag_spend("ponty");
 		parent.socket.emit("sbuy", { rid: it.rid });
-		await until(() => character.esize < before, 3000);
-		// v25.63 (Fable): a buy that didn't land (sold to someone else, refused) was retried every poll — every 15 s since
-		// v25.61 — with a 3 s wait each time and nothing in the log
-		if (!(character.esize < before)) { if (it.rid) skip("sbuy:" + it.rid, 600_000, "the buy didn't land"); game_log(`secondhands: buying ${it.name}+${it.level || 0} for ${fmt_k(price)} didn't land; that listing waits 10 min`, C.dim); }
-		if (character.esize < before) {
+		await until(() => copies() > before, 3000);
+		if (!(copies() > before)) sbuy_missed(it, price);
+		if (copies() > before) {
 			n++;
 			game_log(`secondhands: bought ${it.name}+${it.level || 0} for ${fmt_k(price)} (${why_buy})`, C.ok);
 			log_ev("buy", { item: `${it.name}+${it.level || 0}`, src: "secondhands", price });
@@ -216,3 +218,11 @@ async function task_secondhands() {
 
 // Open game windows (the client's modals), or -1 when that can't be told (then a poll's window is always closed, as before)
 function modals_open() { try { return typeof parent.$ === "function" ? parent.$(".modal:visible").length : -1; } catch (e) { return -1; } }
+
+// v25.63 (Fable): a buy that didn't land (sold to someone else, refused) was retried every poll — every 15 s since v25.61
+// — with a 3 s wait each time and nothing in the log. Keyed by listing (its rid; without one, name, level and price).
+const sbuy_key = (it) => "sbuy:" + (it.rid || `${it.name}:${it.level || 0}:${shop_price(it)}`);
+function sbuy_missed(it, price) {
+	skip(sbuy_key(it), 600_000, "the buy didn't land");
+	game_log(`secondhands: buying ${it.name}${it.level ? "+" + it.level : ""} for ${fmt_k(price)} didn't land; that listing waits 10 min`, C.dim);
+}

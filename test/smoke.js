@@ -1468,7 +1468,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.parent.secondhands = [{ name: "ringx", level: 0, rid: "x63" }];
 			await vm.runInContext("task_secondhands()", ctx); await vm.runInContext("task_secondhands()", ctx);
 			ctx.parent.socket.emit = () => {};
-			assert(JSON.stringify(sb63) === '["x63"]' && vm.runInContext("skipped('sbuy:x63')", ctx), `v25.63: a buy that didn't land: tried once, then paused (${JSON.stringify(sb63)})`); }
+			assert(JSON.stringify(sb63) === '["x63"]' && vm.runInContext("skipped('sbuy:x63')", ctx), `v25.63: a buy that didn't land: tried once, then paused (${JSON.stringify(sb63)})`);
+			// a buy that lands while a slot frees (free slots unchanged) is still seen: one more copy in the bags
+			ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { const k = character.items.findIndex((x) => !x); character.items[k] = { name: "ringx", level: 0 }; } };
+			character.items[1] = { name: "ringx", level: 0 }; character.items[2] = { name: "ringx", level: 0 }; character.items[3] = null; vm.runInContext("cmp_cache = null; state.gear_skip = {}", ctx);
+			ctx.parent.secondhands = [{ name: "ringx", level: 0 }]; // (no rid: keyed by name, level and price)
+			await vm.runInContext("task_secondhands()", ctx);
+			ctx.parent.socket.emit = () => {};
+			assert(vm.runInContext("!Object.keys(state.gear_skip).some((k) => k.startsWith('sbuy:'))", ctx) && character.items.filter((x) => x?.name === "ringx").length === 3,
+				`v25.63: a landed buy counted by copies, not free slots — no "didn't land" pause (${JSON.stringify(Object.keys(vm.runInContext("state.gear_skip", ctx)))})`); }
 		// v25.50 (Fable): a poll in Ponty's range leaves the stand open (a close restarts Merrit's 2 min)
 		{ let closed = 0; vm.runInContext("globalThis.__sc50 = stand_close", ctx); ctx.__closed = () => closed++; vm.runInContext("stand_close = async () => __closed()", ctx);
 			ctx.parent.secondhands = []; await vm.runInContext("task_secondhands()", ctx);
@@ -4533,9 +4541,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				// v25.63: a +5 copy in the merchant's bags that beats the worn +3 replaces it (not scrolled); a +2 spare there
 				// takes the worn path away (the planner skips it) and the main path then needs the full cost
 				const w0 = `{ ...${g62}, w: { ...${g62}.w, gloves: 0 } }`;
-				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), bag_lv: { sg0_137: 5 } }`);
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 5 }, bag_lv: { sg0_137: 5 } }`);
 				const a6 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
-				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), bag_lv: { sg0_137: 0 } }; globalThis.__gp63 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1e-6`);
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 0 }, bag_lv: { sg0_137: 0 } }; globalThis.__gp63 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1e-6`);
+				// a +5 the merchant can't hand over (locked, a project's): counted in bag_lv only — doesn't replace it
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: {}, bag_lv: { sg0_137: 5 } }`);
+				const a6b = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				assert(!/replaces/.test(a6b || ""), `a locked or project copy in the merchant's bags doesn't replace the worn piece (${a6b})`);
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 0 }, bag_lv: { sg0_137: 0 } }`);
 				const a7 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
 				// NPC-sold: the main path at the full expected cost — worth it at 300k/pt, not at a millionth of a gold
 				R(`state.merchant = null; sold_c.set('sg0_137', true)`);

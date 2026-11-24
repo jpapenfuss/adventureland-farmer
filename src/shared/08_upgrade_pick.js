@@ -378,9 +378,13 @@ function upgrade_ahead(it, ctype, g, who, slot) {
 	const top = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), cap);
 	const with_stat = (L) => ({ name, level: L, ...(it.stat_type ? { stat_type: it.stat_type } : {}) });
 	// (v25.63: the merchant's bags too — a spare there makes the planner skip the worn path — Fable)
-	const copy = Math.max(owned_level(name), M?.bag_lv?.[name] ?? -1), main_ok = sold_by_npc(name) || copy >= 0;
-	// v25.63 (Fable): a copy held above it that beats it is delivered (it replaces this piece): don't scroll this one
-	if (copy > lv && gear_gain({ name, level: copy }, ctype, g)) return `a +${copy} copy held replaces it`;
+	const mine = owned_level(name), copy = Math.max(mine, M?.give_lv?.[name] ?? -1), main_ok = sold_by_npc(name) || copy >= 0;
+	// v25.63 (Fable): a copy held above it that beats it is delivered (it replaces this piece): don't scroll this one —
+	// counted from what can be handed over: the merchant's give_lv, our own bags, our bank view only while under an hour old
+	const own_now = Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.b).map((i) => i.level || 0),
+		...(Date.now() - (state.bank_at || 0) < 3600_000 ? (state.bank_gear || []).filter((i) => i.name === name).map((i) => i.level || 0) : []));
+	const better = Math.max(own_now, M?.give_lv?.[name] ?? -1);
+	if (better > lv && gear_gain({ name, level: better }, ctype, g)) return `a +${better} copy held replaces it`;
 	if (main_ok && def.type === "weapon" && CFG.upgrade_weapon?.enabled) {
 		const WP = Math.min(CFG.upgrade_weapon.to, upgrade_target(name), cap, upg_reach(name));
 		if (WP > lv && gear_gain(with_stat(WP), ctype, g)) return `a weapon goes to +${WP}`;
@@ -390,7 +394,7 @@ function upgrade_ahead(it, ctype, g, who, slot) {
 		if (r && r.gain * CFG.upgrade_gold_per_pt > c) return `+${L} would be worth it (+${Math.round(r.gain)} pts)`;
 	}
 	const W = CFG.upgrade_worn;
-	if (W?.enabled && M && slot !== "mainhand" && slot !== "offhand" && def.type !== "weapon" && !it.p && copy < 0)
+	if (W?.enabled && M && slot !== "mainhand" && slot !== "offhand" && def.type !== "weapon" && !it.p && copy < 0) // (the planner: owned_level)
 		for (let L = lv + 1; L <= top; L++) {
 			if (upg_odds(name, L) < W.min_chance) break;
 			const r = gear_gain(with_stat(L), ctype, g), c = Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, lv));
