@@ -3453,20 +3453,29 @@ let bank_send_timer = null;
 // Our bank view to the others (all of them, or `to`)
 function send_bank_view(h, to = party_names_all().filter((n) => n !== character.name)) {
 	if (typeof send_cm !== "function" || !state.bank_at || !to.length) return;
-	if (h) { bank_hash = h; bank_sent_at = Date.now(); }
-	Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen: state.bank_seen, gear: state.bank_gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
+	if (h) { bank_hash = h; bank_sent_at = Date.now(); if (bank_send_timer) { clearTimeout(bank_send_timer); bank_send_timer = null; } } // (no second send — Fable)
+	// by: who read it (an answer can relay another character's view — Fable)
+	Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, by: state.bank_by || character.name, seen: state.bank_seen, gear: state.bank_gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
 }
 // v25.64 (Fable): a character offline when a view was sent never got it — on load it asks the others for theirs (each
 // answers with its own; adopt_bank keeps the newest)
 function ask_bank_view() {
 	const to = party_names_all().filter((n) => n !== character.name);
 	if (typeof send_cm === "function" && to.length) Promise.resolve(send_cm(to, { k: "bankq" })).catch(() => {});
+	send_bank_view(null); // and ours to them: a held change, or a newer view, isn't lost to a reload or a late loader (Fable)
+}
+// A bankq answered at most every 30 s per asker (the view can be large)
+const bankq_at = {};
+function answer_bankq(name) {
+	if (Date.now() - (bankq_at[name] || 0) < 30_000) return;
+	bankq_at[name] = Date.now();
+	send_bank_view(null, [name]);
 }
 // Another character's bank snapshot: adopt it if it's newer than ours
 function adopt_bank(m) {
 	const b = m.message;
 	if (!(b.at > (state.bank_at || 0)) || !b.seen || !Array.isArray(b.gear)) return;
-	Object.assign(state, { bank_seen: b.seen, bank_gear: b.gear, bank_at: b.at, bank_by: m.name });
+	Object.assign(state, { bank_seen: b.seen, bank_gear: b.gear, bank_at: b.at, bank_by: b.by || m.name });
 	if (b.free) state.bank_free = b.free;
 	if (b.dump && typeof b.dump === "object") state.bank_dump = b.dump;
 	cmp_cache = null;
@@ -5199,7 +5208,7 @@ function on_cm_message(m) {
 	}
 	if (fighter_cm(m)) return; // v25.1: tgt, mhb, verdict, ptown, ptown_off, bill (fighter/)
 	if (m && m.message?.k === "bank" && party_names_all().includes(m.name)) return void adopt_bank(m);
-	if (m && m.message?.k === "bankq" && party_names_all().includes(m.name)) return void send_bank_view(null, [m.name]); // v25.64
+	if (m && m.message?.k === "bankq" && party_names_all().includes(m.name)) return void answer_bankq(m.name); // v25.64
 	if (m && (m.message?.k === "rreq" || m.message?.k === "rrep") && party_names_all().includes(m.name)) {
 		if (m.message.k === "rreq") report_reply(m); else report_collect(m);
 		return;
