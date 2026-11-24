@@ -4551,6 +4551,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: {}, bag_lv: { sg0_137: 5 } }`);
 				const a6b = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
 				assert(!/replaces/.test(a6b || ""), `a locked or project copy in the merchant's bags doesn't replace the worn piece (${a6b})`);
+				// the bank is one, account-wide: a +5 there replaces the piece, however long ago the (shared) view last changed
+				R("globalThis.__bg63 = state.bank_gear; globalThis.__ba63 = state.bank_at; state.bank_gear = [{ name: 'sg0_137', level: 5 }]; state.bank_at = Date.now() - 5 * 3600_000");
+				const a6c = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				R("state.bank_gear = __bg63; state.bank_at = __ba63");
+				assert(/\+5 copy held replaces it/.test(a6c || ""), `a better copy in the bank (view 5 h old, unchanged) replaces it (${a6c})`);
 				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 0 }, bag_lv: { sg0_137: 0 } }`);
 				const a7 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
 				// NPC-sold: the main path at the full expected cost — worth it at 300k/pt, not at a millionth of a gold

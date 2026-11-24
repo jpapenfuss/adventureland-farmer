@@ -380,9 +380,10 @@ function upgrade_ahead(it, ctype, g, who, slot) {
 	// (v25.63: the merchant's bags too — a spare there makes the planner skip the worn path — Fable)
 	const mine = owned_level(name), copy = Math.max(mine, M?.give_lv?.[name] ?? -1), main_ok = sold_by_npc(name) || copy >= 0;
 	// v25.63 (Fable): a copy held above it that beats it is delivered (it replaces this piece): don't scroll this one —
-	// counted from what can be handed over: the merchant's give_lv, our own bags, our bank view only while under an hour old
+	// counted from what can be handed over: the merchant's give_lv, our own bags, and the bank (one account-wide bank: the
+	// view is whoever read it last, shared by remember_bank/adopt_bank — and re-sent only when it changes, so no age limit)
 	const own_now = Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.b).map((i) => i.level || 0),
-		...(Date.now() - (state.bank_at || 0) < 3600_000 ? (state.bank_gear || []).filter((i) => i.name === name).map((i) => i.level || 0) : []));
+		...(state.bank_gear || []).filter((i) => i.name === name).map((i) => i.level || 0));
 	const better = Math.max(own_now, M?.give_lv?.[name] ?? -1);
 	if (better > lv && gear_gain({ name, level: better }, ctype, g)) return `a +${better} copy held replaces it`;
 	if (main_ok && def.type === "weapon" && CFG.upgrade_weapon?.enabled) {

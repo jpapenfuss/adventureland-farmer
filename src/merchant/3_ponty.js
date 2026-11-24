@@ -174,8 +174,8 @@ async function task_secondhands() {
 				if (need <= 0) break;
 				const price = shop_price(it);
 				if (price > CFG.ponty_material_max || character.gold - price < CFG.merchant.donate.keep || character.esize < 3) continue;
-				await wait_budget(1, RESERVE.errand);
 				if (skipped(sbuy_key(it))) continue;
+				await wait_budget(1, RESERVE.errand);
 				const before = held_any(nm);
 				tag_spend("ponty");
 				parent.socket.emit("sbuy", { rid: it.rid });
