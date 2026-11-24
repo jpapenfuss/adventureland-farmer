@@ -1246,17 +1246,16 @@ function party_power() {
 	pw_cache = { at: Date.now(), v };
 	return v;
 }
-// Measured rate per spot with the party there: base xp (or, v25.51, base gold) of the party's kills at it (kill_credit)
-// v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is chosen for. Both rates are measured
-// at every camp all the time (state.measured / state.measured_gold), so switching modes starts with data. The unit
-// is the monster's base value per kill (G.monsters[].xp, or G.monster_gold[]): the same for every camp, as base xp is.
+// Measured rate per spot with the party there: base xp of the party's kills at it (kill_credit); gold (v25.67): the gold
+// we really looted there (chest_opened). v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is
+// chosen for. Both rates are measured at every camp the party fights at (state.measured / state.measured_gold).
 const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
 const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
 // Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)
 const monster_gold = (t) => G.monster_gold?.[t] || 0;
 // v25.67: gold we really loot per base gold — the learned ratio (our goldm, our share of the party's chests, the tax);
-// none learned yet: our goldm over the party's size
-const gold_ratio = () => (state.gold_ratio > 0 ? state.gold_ratio : (character.goldm || 1) / Math.max(1, (CFG.party?.members || []).length + 1));
+// none learned yet: our goldm over the party's fighters (the server splits a chest among the non-merchants)
+const gold_ratio = () => (state.gold_ratio > 0 ? state.gold_ratio : (character.goldm || 1) / Math.max(1, (CFG.party?.members || []).length));
 // a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set). Gold
 // (v25.67): looted gold, as measured — base gold × gold_ratio()
 const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? monster_gold(t) * gold_ratio() : f?.xp ?? G.monsters[t]?.xp ?? 0);
@@ -1288,10 +1287,12 @@ function end_session() {
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
 	// v25.67 (owner): gold/s is the gold really looted at the camp (chest_opened shares) over the session's time, whatever
 	// the mode — was the table's base gold per kill. Its ratio to the same kills' base gold is learned, for estimates.
-	const grate = (s.rg || 0) / secs, gbase = (s.kg || 0) / secs;
-	if (s.kg > 0) state.gold_ratio = state.gold_ratio > 0 ? state.gold_ratio * 0.7 + Math.min(5, (s.rg || 0) / s.kg) * 0.3 : Math.min(5, (s.rg || 0) / s.kg);
+	// Kills but no chest opened yet (loot lagging the session's close): says nothing of the gold — not booked (Fable).
+	// (The cap is wide: chest gold grows with the monster's level.)
+	const grate = (s.rg || 0) / secs, gbase = (s.kg || 0) / secs, gbook = s.rg > 0 || !(s.kg > 0);
+	if (s.kg > 0 && s.rg > 0) state.gold_ratio = state.gold_ratio > 0 ? state.gold_ratio * 0.7 + Math.min(50, s.rg / s.kg) * 0.3 : Math.min(50, s.rg / s.kg);
 	const pw = party_power();
-	for (const [kind, r] of [["xp", rate], ["gold", grate]]) {
+	for (const [kind, r] of [["xp", rate], ...(gbook ? [["gold", grate]] : [])]) {
 		const tab = meas(kind), prev = tab[s.key], pre = kind === "gold" ? "g" : "";
 		// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
 		tab[s.key] = prev === undefined ? r : meas_aged(s.key, r, kind) * 0.5 + r * 0.5;
@@ -1554,10 +1555,11 @@ function history_lines(hours = 6) {
 		L.push(`${new Date(k).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}  ${fmt_k(Math.round(b.xp)).padEnd(7)} ${fmt_k(Math.round(b.gold)).padEnd(7)} ${String(b.kills).padEnd(5)} ${String(b.deaths).padEnd(6)} ${b.flees}`);
 	}
 	// v25.67 (owner): each camp's gold really looted per second in its fights beside its xp/s; sorted by the mode's unit
-	const rates = {}, avg = (v) => v.reduce((a, b) => a + b, 0) / v.length;
+	// (gold: only events with gb_s — older ones hold base gold in gold_s, Fable)
+	const rates = {}, avg = (v) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0);
 	for (const e of ev) if (e.type === "rate") (rates[e.pack] = rates[e.pack] || []).push(e);
 	const gmode = farm_kind() === "gold";
-	const top = Object.entries(rates).map(([k, v]) => [k, avg(v.map((e) => e.xp_s || 0)), avg(v.map((e) => e.gold_s || 0)), v.length]).sort((a, b) => (gmode ? b[2] - a[2] : b[1] - a[1])).slice(0, 6);
+	const top = Object.entries(rates).map(([k, v]) => [k, avg(v.map((e) => e.xp_s || 0)), avg(v.filter((e) => e.gb_s !== undefined).map((e) => e.gold_s || 0)), v.length]).sort((a, b) => (gmode ? b[2] - a[2] : b[1] - a[1])).slice(0, 6);
 	L.push(`packs (measured xp/s | looted gold/s): ${top.map(([k, x, g, n]) => `${k} ${x.toFixed(0)} | ${g.toFixed(1)} (${n}x)`).join(", ") || "none measured"}; looted per base gold ${state.gold_ratio > 0 ? state.gold_ratio.toFixed(2) : "not learned"}`);
 	for (const e of ev.filter((x) => x.type === "death" || x.type === "flee").slice(-10))
 		L.push(`${e.type.toUpperCase()}${e.unexplained ? " (unexplained: no damage seen" + (e.watched_s !== undefined ? `, script up ${e.watched_s}s` : "") + ")" : ""} ${ago(e.t)} ago: ${e.killer || "?"} @ ${e.map} | hp ${e.hp?.[0] ?? "?"}→${e.hp?.[e.hp.length - 1] ?? "?"}/${e.max_hp} | ` +
@@ -1716,7 +1718,7 @@ function meas_tick() {
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, kcm: 0, kgm: 0, kcm_n: 0, rg: 0, gr: gold_ratio(), start: Date.now() }; // (v25.51: kind: est's unit)
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, kcm: 0, kgm: 0, kcm_n: 0, rg: 0, gr: p.gr ?? gold_ratio(), start: Date.now() }; // (v25.51: kind: est's unit)
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event
 	// goo's full xp: one put realism at 42), until the 180s close
@@ -4311,7 +4313,7 @@ function load_state() {
 	// into fights one by one — none of it describes this party farming a camp together. Each character drops it once,
 	// the first time it loads this version; quests, bank, gear and town state are kept.
 	if (d.data_v !== DATA_V) {
-		for (const k of ["measured", "measured_gold", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
+		for (const k of ["measured", "measured_gold", "gold_ratio", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
 	}
 	// v25.16: the owner (2026-11-22): the time estimates were far off — the rates had been measured with the party held
@@ -4319,7 +4321,7 @@ function load_state() {
 	// and realism scaled every estimate down with it. Spot xp/s and realism are dropped once (calibration, safety and
 	// everything else are kept), and re-measured on the seconds the camp itself is responsible for.
 	if ((d.rates_v || 1) !== RATES_V) {
-		for (const k of ["measured", "measured_gold", "meas_at", "realism"]) delete d[k];
+		for (const k of ["measured", "measured_gold", "gold_ratio", "meas_at", "realism"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned spot rates and realism cleared once (measured while held for missing members) — re-measuring`, C.warn);
 	}
 	if ((d.key_v || 1) < 2) migrate_pack_keys(d);
@@ -5738,6 +5740,8 @@ function camp_review() {
 // =====================================================================
 // Switch to a pack: new patrol route, close the running xp measurement, log the reason
 function set_pack(p, label) {
+	// v25.67 (Fable): the gold ratio p.est was made with — end_session below can move it before the session opens
+	if (p && p.gr === undefined) p.gr = gold_ratio();
 	if (!state.pack || !p || pack_key(state.pack) !== pack_key(p)) {
 		if (p) game_log(label, C.info);
 		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || `best ${rate_unit()}` });
@@ -7176,7 +7180,7 @@ function facts_picks__fighter(F, ctx) {
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
 			(RL ? ` | last ${ago(RL.at)} ago (${RL.why}): ${RL.text}` : ""));
 	}
-	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: base gold/s" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: looted gold/s" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 		(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 }
 

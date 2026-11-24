@@ -56,7 +56,7 @@ function load_state() {
 	// into fights one by one — none of it describes this party farming a camp together. Each character drops it once,
 	// the first time it loads this version; quests, bank, gear and town state are kept.
 	if (d.data_v !== DATA_V) {
-		for (const k of ["measured", "measured_gold", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
+		for (const k of ["measured", "measured_gold", "gold_ratio", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
 	}
 	// v25.16: the owner (2026-11-22): the time estimates were far off — the rates had been measured with the party held
@@ -64,7 +64,7 @@ function load_state() {
 	// and realism scaled every estimate down with it. Spot xp/s and realism are dropped once (calibration, safety and
 	// everything else are kept), and re-measured on the seconds the camp itself is responsible for.
 	if ((d.rates_v || 1) !== RATES_V) {
-		for (const k of ["measured", "measured_gold", "meas_at", "realism"]) delete d[k];
+		for (const k of ["measured", "measured_gold", "gold_ratio", "meas_at", "realism"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned spot rates and realism cleared once (measured while held for missing members) — re-measuring`, C.warn);
 	}
 	if ((d.key_v || 1) < 2) migrate_pack_keys(d);

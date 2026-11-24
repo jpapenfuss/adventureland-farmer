@@ -2826,6 +2826,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				on_chest_opened({ id: "x", gone: true }); end_session(); on_chest_opened({ id: "late", gold: 999 })`, ctx);
 			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 3 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.67: 10 chests x 30 looted / 100s = 3 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
 			assert(vm.runInContext("Math.abs(state.gold_ratio - 1.5) < 1e-9 && Math.abs(kill_value('goo', null, 'gold') - 30) < 1e-9", ctx), `v25.67: looted 300 per 200 base: ratio 1.5, a goo's gold estimate 30 (${vm.runInContext("state.gold_ratio", ctx)})`);
+			// kills but no chest opened: the gold rate and ratio aren't booked; realism in a gold session uses the est's ratio
+			vm.runInContext(`state.session = { key: "main:1,1,9,6", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
+				for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
+			assert(vm.runInContext("state.measured_gold['main:1,1,9,6'] === undefined && state.measured['main:1,1,9,6'] > 0 && Math.abs(state.gold_ratio - 1.5) < 1e-9", ctx), "v25.67: kills but no chest opened: gold not booked, ratio kept, xp booked");
+			vm.runInContext(`state.realism = 1; state.session = { key: "main:1,1,9,5", mtype: "goo", est: 3, kind: "gold", gr: 1.5, xp: 0, kx: 0, kc: 0, kg: 0, kgm: 0, kc_n: 0, kcm_n: 0, rg: 0, start: Date.now() - 100000 };
+				for (let i = 0; i < 10; i++) { on_kill_credit({ mtype: "goo" }); on_chest_opened({ gold: 30 }); } end_session()`, ctx);
+			assert(vm.runInContext("Math.abs(state.realism - 1) < 1e-9", ctx), `v25.67: gold session at its estimate (10 x 20 base x 1.5 / 100s = 3): realism unchanged (${vm.runInContext("state.realism", ctx)})`);
+			{ const sg = ctx.set, gg = ctx.get, st = {}; ctx.set = (k, v) => ((st[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in st ? JSON.parse(st[k]) : null);
+				vm.runInContext("save_state(); state.gold_ratio = 0; load_state()", ctx); ctx.set = sg; ctx.get = gg; }
+			assert(vm.runInContext("Math.abs(state.gold_ratio - 1.5) < 1e-9", ctx), "v25.67: the gold ratio survives a reload");
+			vm.runInContext("globalThis.__ssg = save_state; save_state = () => {}; forget(); save_state = __ssg", ctx);
+			assert(vm.runInContext("state.gold_ratio === 0", ctx), "v25.67: forget() clears the gold ratio");
 			vm.runInContext("state.gold_ratio = 0", ctx);
 			assert(vm.runInContext("meas()['main:1,1,9,7'] === state.measured['main:1,1,9,7'] && (CFG.farm_mode = 'gold', meas()['main:1,1,9,7'] === state.measured_gold['main:1,1,9,7'])", ctx), "v25.51: meas() follows the farm mode");
 			vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
