@@ -4996,6 +4996,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("choose_target(true)?.id") === "n10", `v25.58 (owner: kill things in the camp): a level-10 one is worked down too (${R("choose_target(true)?.id")})`);
 		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5e8; R("live_cache.clear()");
 		assert(R("choose_target(true)") === null, "...but not one the party couldn't kill within hopeless_ttk_s");
+		{ const out = []; ctx.__F58 = (k, w, t) => out.push(t); Object.assign(character, { x: 0, y: 0 });
+			R("facts_targets(__F58, { p: state.pack, d: null, now: Date.now() })"); const gk58 = R("gap_kind()");
+			assert(/1 the party can't kill within 180s — never taken/.test(out.join()) && !/levelled up past the limit/.test(out.join()) && /none the party can kill/.test(gk58), `report: unkillable ones apart (${out.join()} | ${gk58})`); delete ctx.__F58; }
 		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5000; R("live_cache.clear()");
 		// v24.65: where the camp time goes
 		assert(R("gap_kind()") === "monsters alive, walking to the next one" || R("gap_kind()") === "monsters alive, none chosen" || R("gap_kind()") === "monsters alive, in reach, swing on cooldown", `the tank with untouched camp monsters around: ${R("gap_kind()")}`);

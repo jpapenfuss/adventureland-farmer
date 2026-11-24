@@ -7189,19 +7189,19 @@ function gap_kind__fighter() {
 	if (character.rip || is_merchant() || !pk || !valid_boundary(pk.boundary)) return null;
 	if (errand_busy() || walking() || character.map !== pk.map || !in_boundary(pk.boundary, 250)) return "away from the camp (walk, town)";
 	const party = party_names(), b = pk.boundary, P_ = CFG.near_pad, box = [b[0] - P_, b[1] - P_, b[2] + P_, b[3] + P_];
-	let alive = 0, on_us = 0, theirs = 0;
+	let alive = 0, on_us = 0, theirs = 0, beyond = 0;
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
-		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else alive++; }
+		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || killable(e)) alive++; else beyond++; }
 		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
 	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";
 	// v25.57: the camp's monsters that another player is fighting aren't "nothing alive" (squigtoad: a grow spawn of 2 always
 	// has one up, yet the report said "nothing alive" 53% of the time — other players had them)
-	if (!alive) return theirs ? "monsters here, all another player's" : "nothing alive here (respawn)";
+	if (!alive) return theirs ? "monsters here, all another player's" : beyond ? "monsters here, none the party can kill (the idle time rests the camp)" : "nothing alive here (respawn)";
 	if (is_follower()) return "monsters alive, waiting for the tank's first hit";
 	if (!t) return "monsters alive, none chosen";
 	if (tank_first(t)) return "monsters alive, holding for the party";
@@ -7279,19 +7279,20 @@ function facts_picks__fighter(F, ctx) {
 function facts_targets__fighter(F, ctx) {
 	const { p, d, now } = ctx;
 	if (!(p && character.map === p.map)) return;
-	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, unsafe: [], far: 0, taken: 0, ignored: 0, wall: 0 };
+	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, unsafe: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (!e || e.type !== "monster" || e.mtype !== p.mtype || !e.visible || e.dead) continue;
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) c.unsafe.push(e.level || 1);
+		else if (!live_ok(e)) (killable(e) ? c.unsafe : c.beyond).push(e.level || 1);
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
-	const n = c.ok + c.unsafe.length + c.far + c.taken + c.ignored;
+	const n = c.ok + c.unsafe.length + c.beyond.length + c.far + c.taken + c.ignored;
 	if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
-		`${c.unsafe.length ? `, ${c.unsafe.length} levelled up past the limit — the tank takes them, lowest first, when nothing else is there (levels ${c.unsafe.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.unsafe.length ? `, ${c.unsafe.length} levelled up past the limit — the tank takes them, lowest first, when none passes (levels ${c.unsafe.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.beyond.length ? `, ${c.beyond.length} the party can't kill within ${CFG.hopeless_ttk_s}s — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 }
 
