@@ -162,8 +162,6 @@ const CFG = {
 	upgrade_worn: { enabled: true, wait_ms: 1_800_000 }, // a hand-over not made in wait_ms drops the step (an hour's pause)
 	// v25.46: upgrades and compounds spend all gold above this (and the role's reserve); no earnings test, no fraction
 	upgrade_keep: 1_000_000,
-	upgrade_steps_per_run: 8,  // upgrade steps per town run (a fighter's)
-	merchant_upgrade_steps: 60, // v24.92: the merchant's — it lives in town; 8 a run made it start a run every minute
 	upgrade_offerings: ["offeringp"], // an offering in the bags is used when it lifts a step's odds over its floor
 	// Crafting for power (craft_power): craft a non-quest recipe whose output a member would wear as an upgrade, when
 	// its inputs are plain materials we have (bags + bank; never quest/guide materials) and its gold cost fits

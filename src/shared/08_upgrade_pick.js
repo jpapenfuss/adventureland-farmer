@@ -15,16 +15,13 @@ function upgrade_gold() {
 	g += fund_pool(); // role function (v25.11): the merchant counts the fighters' gold above fund_keep
 	return Math.max(0, g);
 }
+// v25.66 (Fable): plain (untitled) copies only — a titled one is never a step's input or a hand-over received
+const plain_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l && !i.p ? Math.max(m, i.level || 0) : m), -1);
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
 // v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..10
 const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018],
 	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015] };
 const upg_odds = (name, to) => (UPG_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || UPG_ODDS[0])[to - 1] || 0;
-// The most one step of a project can cost: the scroll (the next one up when the boost is used) and a copy if none is held
-const upg_step_cost = (name, top) => {
-	const lv = Math.max(0, top), g = Math.max(0, item_grade({ name, level: lv }));
-	return (G.items["scroll" + (g + 1)]?.g <= (CFG.upgrade_boost_max || 0) ? G.items["scroll" + (g + 1)].g : G.items["scroll" + g]?.g || 0) + (top < 0 ? G.items[name]?.g || 0 : 0);
-};
 // v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
 // (the project's bank fetch skips titled copies too); -1 if none
 const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.p).map((i) => i.level || 0),
@@ -113,7 +110,7 @@ function upg_drop_if_stale() {
 	state.upg = null; state.upg_pick_at = 0;
 	return true;
 }
-// Is there upgrade work for a town run? Picks a project (every 10 min at most) when there's none.
+// Is there upgrade work for a town run? Picks a step (every minute at most) when there's none.
 // v25.48: every party member heard from (fresh heartbeat) — their gear and gold are known
 // (v25.49, Fable: per member, for 3 min — after our load for one never heard from, after its last beat for one that
 // went quiet (a fighter's reload); a member offline for long mustn't keep an unfundable project or a pick every
@@ -143,7 +140,7 @@ function upgrade_due() {
 	}
 	if (merchant_awaits_funds()) return false; // v25.5: merchant/
 	if (worn_waiting()) return false; // v25.39: the fighter hasn't handed its piece over yet
-	return !!state.upg && !skipped("upg:" + state.upg.name) && best_level_held(state.upg.name) < state.upg.to;
+	return !!state.upg && !skipped("upg:" + state.upg.name) && plain_held(state.upg.name) < state.upg.to;
 }
 // v25.17: the project's best copy lies in the bank (a piece we own: the bank step comes after this one in a town run,
 // and run_upgrade only looks in the bags) → fetch it first. Gone from the bank (bank_gear is last seen) and no NPC sells
@@ -168,7 +165,7 @@ async function upg_fetch_copy(P) {
 function worn_waiting() {
 	const P = state.upg, W = P?.worn;
 	if (!W || W.got) return false;
-	if (best_level_held(P.name) >= W.level) { W.got = Date.now(); game_log(`upgrade: ${W.who} handed over its ${P.name}+${W.level}`, C.info); return false; }
+	if (plain_held(P.name) >= W.level) { W.got = Date.now(); game_log(`upgrade: ${W.who} handed over its ${P.name}+${W.level}`, C.info); return false; }
 	if (Date.now() - (W.at || 0) > (CFG.upgrade_worn?.wait_ms || 1_800_000)) {
 		game_log(`upgrade project ${P.name}: ${W.who} didn't hand its piece over in time; dropped`, C.dim);
 		skip("upg:" + P.name, 3600_000, "worn piece not handed over");
@@ -187,11 +184,11 @@ async function task_upgrade() {
 	if (merchant_does_it()) { game_log(`upgrade project ${P0.name} handed to the merchant`, C.dim); state.upg = null; return 0; }
 	if (state.errand) state.errand_at = Date.now();
 	if (upg_drop_if_stale()) return 0; // something better is worn now
-	if (best_level_held(P0.name) < P0.to - 1 && !(await upg_fetch_copy(P0))) return 0;
+	if (plain_held(P0.name) < P0.to - 1 && !(await upg_fetch_copy(P0))) return 0;
 	const P = state.upg;
 	if (!P || worn_waiting()) return 0;
 	const end = (why_, pause) => { if (pause) skip("upg:" + P.name, pause, why_); state.upg = null; state.upg_pick_at = 0; state.fund_need = 0; };
-	if (best_level_held(P.name) !== P.to - 1) { game_log(`upgrade ${P.name}: no copy at +${P.to - 1} to step; ended`, C.dim); end("no copy at the level", 600_000); return 0; }
+	if (plain_held(P.name) !== P.to - 1) { game_log(`upgrade ${P.name}: no copy at +${P.to - 1} to step; ended`, C.dim); end("no copy at the level", 600_000); return 0; }
 	const step = G.items[upgrade_scroll(P.name, P.to - 1)]?.g || 0;
 	// no gold for the step anywhere (ours above upgrade_keep plus what the fighters can send): dropped for 30 min
 	// (v25.48: only with every member heard from — a stale heartbeat reads as no gold to send)
@@ -203,7 +200,8 @@ async function task_upgrade() {
 	if (!upg_gold_ok(step)) { town_reason.upgrade = `gold: step ${fmt_k(step)}, have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())}`; return 0; }
 	state.fund_need = 0;
 	try {
-		const r = await run_upgrade({ name: P.name, floor: P.floor }, { request: { name: P.name, level: P.to } });
+		const k = character.items.findIndex((i) => i && i.name === P.name && !i.l && !i.p && (i.level || 0) === P.to - 1); // (that exact plain copy)
+		const r = await run_upgrade({ name: P.name, floor: P.floor, resources: [{ num: k }] }, { request: { name: P.name, level: P.to } });
 		game_log(`upgrade ${P.name} +${P.to - 1}→+${P.to} for ${P.for}: ${r?.success ? "done" : "failed"}`, r?.success ? C.ok : C.bad);
 		end(); return 1;
 	} catch (e) {

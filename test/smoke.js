@@ -1237,6 +1237,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/"ok":false/.test(st) && /\+1 copy held goes to it first/.test(st) && vm.runInContext("pick_upgrade()", ctx) === null, `a +1 held over the worn +0: no step (${st})`);
 		const tt = vm.runInContext("JSON.stringify(upgrade_step({ name: 'nhelm', level: 0, p: 'shiny' }, 'paladin', my_gear(), 'helmet', -1))", ctx);
 		assert(/titled: never handed over/.test(tt), `a titled worn piece with no spare: no hand-over (${tt})`);
+		// a titled copy in our bags is neither the hand-over received nor the copy rolled
+		character.items[2] = { name: "nhelm", level: 0, p: "shiny" };
+		vm.runInContext("state.upg = { name: 'nhelm', to: 1, for: 'Torlis', slot: 'helmet', gain: 5, cost: 1000, floor: 0.8, from_copy: 0, worn: { who: 'Torlis', slot: 'helmet', level: 0, at: Date.now() } }", ctx);
+		const ww = vm.runInContext("worn_waiting()", ctx), got = vm.runInContext("!!state.upg.worn.got", ctx);
+		character.items[3] = { name: "nhelm", level: 0 }; rolls.length = 0;
+		ctx.upgrade = (k, sk, off, preview) => preview ? Promise.resolve({ chance: 0.95 }) : (rolls.push(k), Promise.resolve({ success: true }));
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(ww === true && !got && JSON.stringify(rolls) === "[3]", `a titled copy: not "handed over" (${ww}, ${got}); the plain one is rolled (${rolls})`);
+		character.items[2] = character.items[3] = null; vm.runInContext("state.upg = null", ctx);
 		character.items[2] = null;
 		const g0 = ctx.get; ctx.get = () => ({ v: 1, meas_v: 3, data_v: vm.runInContext("DATA_V", ctx), rates_v: vm.runInContext("RATES_V", ctx), upg_v: 5, at: Date.now(), upg: { name: "nhelm", to: 7, for: "Torlis" } });
 		vm.runInContext("state.upg = null; load_state()", ctx); ctx.get = g0;
