@@ -2749,6 +2749,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.map = "main"; character.bank = { items0: [{ name: "lingering", level: 0 }] };
 		vm.runInContext("remember_bank()", ctx);
 		assert(vm.runInContext("state.bank_gear[0].name === 'fresh'", ctx), "off a bank floor, a lingering character.bank doesn't overwrite the snapshot");
+		// v25.64: asked for its view (a character that was offline), one answers with its own; a change within a minute of
+		// the last send goes when the minute is up
+		{ const cm64 = [], sc0 = ctx.send_cm; ctx.send_cm = (to, m) => (cm64.push([to.join(), m.k, m.gear?.[0]?.name]), Promise.resolve());
+			handlers.cm({ name: "Sanala", message: { k: "bankq" } });
+			const ans = JSON.stringify(cm64);
+			ctx.G.items.newring = ctx.G.items.newring || { type: "ring" };
+			const st64 = ctx.setTimeout, tm64 = []; ctx.setTimeout = (fn, ms) => (tm64.push({ fn, ms }), tm64.length);
+			character.map = "bank"; character.bank = { items0: [{ name: "newring", level: 0 }] };
+			vm.runInContext("bank_hash = ''; bank_sent_at = Date.now() - 20000; bank_send_timer = null; remember_bank()", ctx);
+			ctx.setTimeout = st64;
+			const held = cm64.length, sched = tm64.find((t) => t.ms > 30000 && t.ms < 45000);
+			if (sched) sched.fn();
+			ctx.send_cm = sc0; character.map = "main"; character.bank = undefined; delete ctx.G.items.newring;
+			vm.runInContext("state.bank_free = null; bank_hash = ''; bank_sent_at = 0; bank_send_timer = null", ctx);
+			assert(ans === '[["Sanala","bank","fresh"]]' && held === 1 && !!sched && cm64.length === 2 && cm64[1][1] === "bank" && cm64[1][2] === "newring",
+				`asked: answered with our view (${ans}); a change 20 s after a send held (${held}), sent when the minute is up (${JSON.stringify(cm64)})`); }
 		character.bank = undefined; vm.runInContext("state.bank_gear = []; state.bank_seen = {}; state.bank_at = 0; state.bank_by = null", ctx);
 	}
 	// 104) v21.2: a fighter's own upgrade project is dropped once the merchant runs projects (its copies are freed)

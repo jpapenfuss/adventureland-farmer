@@ -155,11 +155,25 @@ function remember_bank() {
 	state.bank_at = Date.now();
 	state.bank_by = character.name;
 	const h = JSON.stringify([seen, gear.map((i) => i.name + i.level)]);
-	if (h !== bank_hash && Date.now() - bank_sent_at > 60_000 && typeof send_cm === "function") {
-		bank_hash = h; bank_sent_at = Date.now();
-		const to = party_names_all().filter((n) => n !== character.name);
-		if (to.length) Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen, gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
-	}
+	if (h === bank_hash) return;
+	const wait = 60_000 - (Date.now() - bank_sent_at);
+	if (wait <= 0) return void send_bank_view(h);
+	// v25.64 (Fable): a change within a minute of the last send went unsent if we left the bank before reading it again —
+	// it goes when the minute is up (the newest view then)
+	if (!bank_send_timer) bank_send_timer = setTimeout(() => { bank_send_timer = null; send_bank_view(JSON.stringify([state.bank_seen, (state.bank_gear || []).map((i) => i.name + i.level)])); }, wait + 50);
+}
+let bank_send_timer = null;
+// Our bank view to the others (all of them, or `to`)
+function send_bank_view(h, to = party_names_all().filter((n) => n !== character.name)) {
+	if (typeof send_cm !== "function" || !state.bank_at || !to.length) return;
+	if (h) { bank_hash = h; bank_sent_at = Date.now(); }
+	Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen: state.bank_seen, gear: state.bank_gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
+}
+// v25.64 (Fable): a character offline when a view was sent never got it — on load it asks the others for theirs (each
+// answers with its own; adopt_bank keeps the newest)
+function ask_bank_view() {
+	const to = party_names_all().filter((n) => n !== character.name);
+	if (typeof send_cm === "function" && to.length) Promise.resolve(send_cm(to, { k: "bankq" })).catch(() => {});
 }
 // Another character's bank snapshot: adopt it if it's newer than ours
 function adopt_bank(m) {

@@ -153,6 +153,7 @@ function load_state() {
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
+if (typeof setTimeout === "function") setTimeout(() => { try { ask_bank_view(); } catch (e) {} }, 3000); // v25.64: the others' newer bank view
 // v24.2: the commit this build came from (loader v2 passes it on); a version number alone can't tell two builds apart
 const BUILD = (() => { const s = typeof window !== "undefined" ? window.farmer_loaded?.sha : null; return typeof s === "string" ? s.slice(0, 7) : null; })();
 const build_txt = (v, b) => `v${v || "?"}${b ? "@" + b : ""}`;
