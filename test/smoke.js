@@ -2464,6 +2464,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(/\(9\/9\)/.test(SR({ name: "ringsj", level: 0 })), `v25.47: 8 held (bags + bank, the +2 not counted): the 9th bought (${SR({ name: "ringsj", level: 0 })})`);
 		vm.runInContext("state.bank_gear.push({ name: 'ringsj', level: 0 })", ctx);
 		assert(!/stock/.test(SR({ name: "ringsj", level: 0 })), "v25.47: 9 held: no more");
+		// v25.60: a fighter already wearing two +3s still gains from a +4 (the item's ceiling, ponty_stock.to): still stocked
+		vm.runInContext("state.bank_gear = []", ctx); character.items[5] = null;
+		const sc3 = vm.runInContext("gear_score({ name: 'ringsj', level: 3 }, 'paladin')", ctx);
+		hb("Torlis", { ...tor, x: 900, y: 900, gear: { w: { pants: 0, ring1: sc3, ring2: sc3 }, own: {} } });
+		assert(/stock for compounding/.test(SR({ name: "ringsj", level: 0 })), `v25.60: two +3s worn, a +4 would win: still stocked (${SR({ name: "ringsj", level: 0 })})`);
+		assert(vm.runInContext("cmp_max('ringsj') === 5 && cmp_max('hpamulet') === CFG.compound_max_level", ctx), "v25.60: ringsj compounds to +5, the rest to compound_max_level");
+		hb("Torlis", { ...tor, x: 900, y: 900, gear: { w: { pants: 0 }, own: {} } });
 		character.items[5] = null; vm.runInContext("state.bank_gear = []", ctx); ctx.G.items.ringsj = rj0; if (rj0 === undefined) delete ctx.G.items.ringsj; }
 	// v24.81: a route through Ponty — two +0 copies there plus our one make a +1 a fighter would wear
 	ctx.G.items.rngp = { type: "ring", attack: 30, compound: { attack: 10 }, g: 1000 }; ctx.G.items.cscroll0 = ctx.G.items.cscroll0 || { type: "cscroll", g: 1000 };

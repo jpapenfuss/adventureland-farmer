@@ -29,14 +29,15 @@ function secondhand_reason(it, groups) {
 	if (head) return head;
 	// v25.47: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
 	const S = CFG.ponty_stock?.[it.name];
-	// v25.48: only while compounding runs and a fighter would wear the result (+compound_max_level) — else the stock
-	// grows with nothing turning it into anything; and only plain, unlocked copies count (what compounding uses)
-	const useful = S && CFG.compound_auto && fighters.some((x) => gear_gain_min({ name: it.name, level: CFG.compound_max_level }, x.ctype, x.g));
+	// v25.48: only while compounding runs and a fighter would wear a result (v25.60: at any level up to the item's ceiling,
+	// cmp_max — +3 alone stopped it once everyone wore two +3s) — else the stock grows with nothing turning it into
+	// anything; and only plain, unlocked copies count (what compounding uses)
+	const useful = S && CFG.compound_auto && fighters.some((x) => { for (let L = 1; L <= cmp_max(it.name); L++) if (gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)) return true; return false; });
 	if (useful && lv === 0 && !it.p && price <= S.max_price) {
 		const have = character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
 		if (have < S.n) return `stock for compounding (${have + 1}/${S.n})`;
 	}
-	const g = G.items[it.name].compound && (it.level || 0) < CFG.compound_max_level &&
+	const g = G.items[it.name].compound && (it.level || 0) < cmp_max(it.name) &&
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
 	// copy costs twice its value; the merchant's twelve unwanted Amulet of HP +2 were built partly this way
@@ -97,7 +98,7 @@ function ponty_routes(list, groups) {
 		const have = (L) => { const g = groups[compound_key(name, L)]; return g ? g.bags + g.bank : 0; };
 		const shop = (L) => list.filter((it) => it.name === name && (it.level || 0) === L).map((it) => ({ it, price: shop_price(it) })).sort((a, b) => a.price - b.price);
 		for (const to of [1, 2, 3]) { // (v24.87: +3 too, at compound_min_chance_wanted — the result is one a fighter would wear)
-			if (to > CFG.compound_max_level || cmp_odds(name, to) < Math.min(CFG.compound_min_chance, CFG.compound_min_chance_wanted) || to > cmp_top(name)) continue;
+			if (to > cmp_max(name) || cmp_odds(name, to) < Math.min(CFG.compound_min_chance, CFG.compound_min_chance_wanted) || to > cmp_top(name)) continue;
 			let best = null;
 			for (const m of takers) { const r = gear_gain_min({ name, level: to }, m.ctype, m.g); /* (v25.36: a route spends) */ if (r && (!best || r.gain > best.gain)) best = { gain: r.gain, who: m.name }; }
 			if (!best) continue;

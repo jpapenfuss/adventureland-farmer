@@ -199,7 +199,7 @@ function compound_spare(it, k, needed) {
 	// v24.73: a copy a member would wear is no longer left out. Three skull amulets sat in the merchant's bags, each
 	// "wanted" for one empty amulet slot, so there was never a set of three; the +1 goes to whoever wanted the +0.
 	// (v24.87: titled copies too — the server doesn't check titles; the result is the first copy, so a titled one goes first)
-	return !!def?.compound && !it.l && !it.b && !needed.has(k) && (it.level || 0) < (tight_item(it) ? CFG.compound_max_level : cmp_top(it.name)) &&
+	return !!def?.compound && !it.l && !it.b && !needed.has(k) && (it.level || 0) < (tight_item(it) ? cmp_max(it.name) : cmp_top(it.name)) &&
 		!CFG.keep.includes(it.name);
 }
 // Report: three or more equal copies in the bags that aren't being compounded, and why
@@ -211,7 +211,7 @@ function compound_why() {
 		const L = by[key], [it] = L[0];
 		if (L.length < 3 || groups.some((g) => g.key === key)) continue;
 		const lv = it.level || 0;
-		const why_ = skipped(key) ? `paused ${mins(state.gear_skip[key])} (${skip_why[key] || "?"})` : lv >= cmp_top(it.name) ? `+${lv} is its ceiling here (max +${CFG.compound_max_level}, or the odds were under ${Math.round(CFG.compound_min_chance * 100)}%)`
+		const why_ = skipped(key) ? `paused ${mins(state.gear_skip[key])} (${skip_why[key] || "?"})` : lv >= cmp_top(it.name) ? `+${lv} is its ceiling here (max +${cmp_max(it.name)}, or the odds were under ${Math.round(CFG.compound_min_chance * 100)}%)`
 			: CFG.keep.includes(it.name) ? "on the keep list" : L.some(([i]) => i.l || i.b) ? "locked or bound copies" : L.some(([i]) => i.p) ? "titled copies" : L.some(([, k]) => needed.has(k)) ? "copies held for a quest or project"
 			: !CFG.compound_auto ? "compound_auto is off" : merchant_does_it() ? "the merchant compounds" : "?";
 		out.push(`${it.name}+${lv} x${L.length}: ${why_}`);
@@ -220,9 +220,11 @@ function compound_why() {
 }
 // Compound ceilings (v24.15): item -> { level, at } where the server's odds were under our floor; 7 days (saved)
 const cmp_cap = (name, level) => { state.cmp_caps[name] = { level, at: Date.now() }; cmp_cache = null; };
+// v25.60: an item's own ceiling (ponty_stock[name].to) above compound_max_level
+const cmp_max = (name) => Math.max(CFG.compound_max_level, CFG.ponty_stock?.[name]?.to || 0);
 const cmp_top = (name) => {
 	const c = state.cmp_caps[name];
-	let top = Math.min(CFG.compound_max_level, c && Date.now() - c.at < 7 * 86400_000 ? c.level : Infinity);
+	let top = Math.min(cmp_max(name), c && Date.now() - c.at < 7 * 86400_000 ? c.level : Infinity);
 	// a refusal for its odds paused before v24.15 (a 6h skip, no ceiling recorded) counts too
 	for (let L = 0; L < top; L++) if (skipped(compound_key(name, L)) && /low_chance/.test(skip_why[compound_key(name, L)] || "")) { top = L; break; }
 	return top;
