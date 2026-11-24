@@ -192,11 +192,15 @@ async function task_secondhands() {
 		const rt = route_of.get(it);
 		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
 		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !upg_gold_ok(price)) continue; // v25.46: every reason here is gear for the party: no earnings test
+		if (it.rid && skipped("sbuy:" + it.rid)) continue; // v25.63: a listing whose buy didn't land waits 10 min
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;
 		tag_spend("ponty");
 		parent.socket.emit("sbuy", { rid: it.rid });
 		await until(() => character.esize < before, 3000);
+		// v25.63 (Fable): a buy that didn't land (sold to someone else, refused) was retried every poll — every 15 s since
+		// v25.61 — with a 3 s wait each time and nothing in the log
+		if (!(character.esize < before)) { if (it.rid) skip("sbuy:" + it.rid, 600_000, "the buy didn't land"); game_log(`secondhands: buying ${it.name}+${it.level || 0} for ${fmt_k(price)} didn't land; that listing waits 10 min`, C.dim); }
 		if (character.esize < before) {
 			n++;
 			game_log(`secondhands: bought ${it.name}+${it.level || 0} for ${fmt_k(price)} (${why_buy})`, C.ok);

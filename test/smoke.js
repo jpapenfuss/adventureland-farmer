@@ -1462,6 +1462,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await vm.runInContext("task_secondhands()", ctx);
 		ctx.parent.socket.emit = () => {};
 		assert(JSON.stringify(sb50) === '["y"]', `v25.50: a 24M copy for a 3-point +1 isn't bought; a cheap one is (${JSON.stringify(sb50)})`);
+		// v25.63: a buy that doesn't land pauses that listing (10 min) instead of being retried every poll
+		{ const sb63 = []; ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") sb63.push(d.rid); }; // nothing arrives
+			character.items[1] = { name: "ringx", level: 0 }; character.items[2] = null; vm.runInContext("cmp_cache = null", ctx);
+			ctx.parent.secondhands = [{ name: "ringx", level: 0, rid: "x63" }];
+			await vm.runInContext("task_secondhands()", ctx); await vm.runInContext("task_secondhands()", ctx);
+			ctx.parent.socket.emit = () => {};
+			assert(JSON.stringify(sb63) === '["x63"]' && vm.runInContext("skipped('sbuy:x63')", ctx), `v25.63: a buy that didn't land: tried once, then paused (${JSON.stringify(sb63)})`); }
 		// v25.50 (Fable): a poll in Ponty's range leaves the stand open (a close restarts Merrit's 2 min)
 		{ let closed = 0; vm.runInContext("globalThis.__sc50 = stand_close", ctx); ctx.__closed = () => closed++; vm.runInContext("stand_close = async () => __closed()", ctx);
 			ctx.parent.secondhands = []; await vm.runInContext("task_secondhands()", ctx);
