@@ -2993,12 +2993,20 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("globalThis.__runs3 === 1 && town_urgent(town_due()) === 'monster hunt (Daisy)'", ctx), "v25.59 (owner: do the hunts): a hunt to turn in or take starts the trip");
 		vm.runInContext("state.last_town = 0; state.town_runs = []; town_due = () => ({ stat: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
 		assert(vm.runInContext("globalThis.__runs3 === 1 && /stat scrolls alone/.test(state.town_block.blockers.join())", ctx), "stat scrolls alone still wait for the next trip");
+		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = town_urgent({ hunt: true, plan: { free: 30, bank: [] }, min_free: 10 }), CFG.auto_monster_hunt = true, __u59 === ''", ctx), "hunts not chased (passive only): a hunt isn't urgent");
+		// Daisy: success is a hunt held; failures pause her 5, 10, 20 min...; a success resets
+		{ const s0 = character.s; character.s = {};
+			const st59 = (n, h) => vm.runInContext(`state.hunt_fails = ${n}; state.gear_skip = {}; hunt_step(async () => { ${h ? "character.s.monsterhunt = { c: 5, id: 'goo' };" : ""} return { success: true }; })`, ctx);
+			const r1 = await st59(0, false), p1 = vm.runInContext("Math.round((state.gear_skip['hunt:auto'] - Date.now()) / 60000)", ctx);
+			const r2 = await st59(2, false), p2 = vm.runInContext("Math.round((state.gear_skip['hunt:auto'] - Date.now()) / 60000)", ctx);
+			const r3 = await st59(9, true), f3 = vm.runInContext("state.hunt_fails", ctx), k3 = vm.runInContext("!state.gear_skip['hunt:auto']", ctx);
+			character.s = s0; vm.runInContext("state.hunt_fails = 0; state.gear_skip = {}", ctx);
+			assert(r1 === 0 && p1 === 5 && r2 === 0 && p2 === 20 && r3 === 1 && f3 === 0 && k3, `a reply without a hunt is a failure (5, then 20 min after 2 more); a hunt held resets (${[r1, p1, r2, p2, r3, f3, k3]})`); }
 		// the movement line's counts are per minute: a streak older than a minute starts a new entry
-		{ const n0 = Date.now, t59 = n0();
-			vm.runInContext("mv.log = []; mv_note('approach', 'step')", ctx);
+		{ vm.runInContext("mv.log = []; mv_note('approach', 'step')", ctx);
 			vm.runInContext(`mv.log[0].t0 -= 61000`, ctx);
 			vm.runInContext("mv_note('approach', 'step')", ctx);
-			assert(vm.runInContext("mv.log.length === 2 && mv.log[1].n === 1", ctx), `a streak over a minute starts a new entry (${vm.runInContext("JSON.stringify(mv.log)", ctx)})`);
+			assert(vm.runInContext("mv.log.length === 1 && mv.log[0].n === 1", ctx), `a streak over a minute starts a new entry; the old one, begun over a minute ago, is dropped (${vm.runInContext("JSON.stringify(mv.log)", ctx)})`);
 			vm.runInContext("mv.log = []", ctx); }
 		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
 		// side goals compare with this pick's best, not the best rate ever measured
