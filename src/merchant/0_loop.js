@@ -16,6 +16,8 @@ function merchant_beat() {
 		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null,
 		// v25.62: the project and the level caps past projects left, for the fighters' "still being upgraded?" (stat scrolls)
 		upg: state.upg ? { name: state.upg.name, for: state.upg.for, to: state.upg.to } : null,
+		// v25.63: the gear copies it can hand over (not locked, bound, or held for a project) — bag_lv counts every copy (Fable)
+		give_lv: (() => { const nd = needed_slots(), o = {}; character.items.forEach((i, k) => { if (i && !i.l && !i.b && !nd.has(k) && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); }); return o; })(),
 		ucaps: Object.fromEntries(Object.entries(state.upg_caps || {}).filter(([, c]) => Date.now() - c.at < 7 * 86400_000).map(([n, c]) => [n, c.level])) };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }

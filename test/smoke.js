@@ -1462,6 +1462,24 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await vm.runInContext("task_secondhands()", ctx);
 		ctx.parent.socket.emit = () => {};
 		assert(JSON.stringify(sb50) === '["y"]', `v25.50: a 24M copy for a 3-point +1 isn't bought; a cheap one is (${JSON.stringify(sb50)})`);
+		// v25.63: a buy that doesn't land pauses that listing (10 min) instead of being retried every poll
+		{ const sb63 = []; ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") sb63.push(d.rid); }; // nothing arrives
+			character.items[1] = { name: "ringx", level: 0 }; character.items[2] = null; vm.runInContext("cmp_cache = null", ctx);
+			ctx.parent.secondhands = [{ name: "ringx", level: 0, rid: "x63" }];
+			await vm.runInContext("task_secondhands()", ctx); await vm.runInContext("task_secondhands()", ctx);
+			ctx.parent.socket.emit = () => {};
+			assert(JSON.stringify(sb63) === '["x63"]' && vm.runInContext("skipped('sbuy:x63')", ctx), `v25.63: a buy that didn't land: tried once, then paused (${JSON.stringify(sb63)})`);
+			// a buy that lands while a slot frees (free slots unchanged) is still seen: one more copy in the bags
+			ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { const k = character.items.findIndex((x) => !x); character.items[k] = { name: "ringx", level: 0 }; character.items[10] = null; character.esize = character.items.filter((x) => !x).length; } }; // (and a potion stack used up: free slots unchanged)
+			character.items[10] = { name: "hpot0", q: 1 }; character.esize = character.items.filter((x) => !x).length;
+			character.items[0] = null; character.items[1] = { name: "ringx", level: 0 }; character.items[2] = { name: "ringx", level: 0 }; character.items[3] = null; vm.runInContext("cmp_cache = null; state.gear_skip = {}", ctx);
+			ctx.parent.secondhands = [{ name: "ringx", level: 0 }]; // (no rid: keyed by name, level and price)
+			const l0 = log.length;
+			await vm.runInContext("task_secondhands()", ctx);
+			const said63 = log.slice(l0).join(" | ");
+			ctx.parent.socket.emit = () => {};
+			assert(/bought ringx/.test(said63) && !/didn't land/.test(said63) && character.items.filter((x) => x?.name === "ringx").length === 3,
+				`v25.63: a landed buy counted by copies, not free slots — no "didn't land" (${said63})`); }
 		// v25.50 (Fable): a poll in Ponty's range leaves the stand open (a close restarts Merrit's 2 min)
 		{ let closed = 0; vm.runInContext("globalThis.__sc50 = stand_close", ctx); ctx.__closed = () => closed++; vm.runInContext("stand_close = async () => __closed()", ctx);
 			ctx.parent.secondhands = []; await vm.runInContext("task_secondhands()", ctx);
@@ -4522,7 +4540,37 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				R("state.merchant = null");
 				const a5 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`);
 				R(`state.merchant = ${M0}`);
-				assert(a3 === null && /as worn/.test(a4 || "") && a5 === null, `drop-only at +3: nothing ahead (${a3}); at +0 with the merchant: the worn path (${a4}); no merchant: nothing (${a5})`); }
+				assert(a3 === null && /as worn/.test(a4 || "") && a5 === null, `drop-only at +3: nothing ahead (${a3}); at +0 with the merchant: the worn path (${a4}); no merchant: nothing (${a5})`);
+				// v25.63: a +5 copy in the merchant's bags that beats the worn +3 replaces it (not scrolled); a +2 spare there
+				// takes the worn path away (the planner skips it) and the main path then needs the full cost
+				const w0 = `{ ...${g62}, w: { ...${g62}.w, gloves: 0 } }`;
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 5 }, bag_lv: { sg0_137: 5 } }`);
+				const a6 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 0 }, bag_lv: { sg0_137: 0 } }; globalThis.__gp63 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1e-6`);
+				// a +5 the merchant can't hand over (locked, a project's): counted in bag_lv only — doesn't replace it
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: {}, bag_lv: { sg0_137: 5 } }`);
+				const a6b = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				assert(!/replaces/.test(a6b || ""), `a locked or project copy in the merchant's bags doesn't replace the worn piece (${a6b})`);
+				// the bank is one, account-wide: a +5 there replaces the piece, however long ago the (shared) view last changed
+				R("globalThis.__bg63 = state.bank_gear; globalThis.__ba63 = state.bank_at; state.bank_gear = [{ name: 'sg0_137', level: 5 }]; state.bank_at = Date.now() - 5 * 3600_000");
+				const a6c = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				R("state.bank_gear = __bg63; state.bank_at = __ba63");
+				assert(/\+5 copy held replaces it/.test(a6c || ""), `a better copy in the bank (view 5 h old, unchanged) replaces it (${a6c})`);
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), give_lv: { sg0_137: 0 }, bag_lv: { sg0_137: 0 } }`);
+				const a7 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				// NPC-sold: the main path at the full expected cost — worth it at 300k/pt, not at a millionth of a gold
+				R(`state.merchant = null; sold_c.set('sg0_137', true)`);
+				const a8 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				R("CFG.upgrade_gold_per_pt = __gp63");
+				const a9 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
+				// a weapon an NPC sells goes to upgrade_weapon.to or its reach (no cost test): ahead below it, nothing at it
+				ctx.G.items.sw63 = { type: "weapon", wtype: "sword", attack: 10, upgrade: { attack: 5 }, grades: [7, 9, 10, 12], g: 1000 }; R("sold_c.set('sw63', true); my_gear_cache = null");
+				const pc63 = ctx.G.classes.paladin; ctx.G.classes.paladin = { ...(pc63 || {}), mainhand: { ...(pc63?.mainhand || {}), sword: {} } };
+				const wg = `{ ...${g62}, w: { ...${g62}.w, mainhand: 0 } }`;
+				const a10 = R(`upgrade_ahead({ name: 'sw63', level: 2 }, 'paladin', ${wg}, character.name, 'mainhand')`), a11 = R(`upgrade_ahead({ name: 'sw63', level: upg_reach('sw63') }, 'paladin', ${wg}, character.name, 'mainhand')`);
+				delete ctx.G.items.sw63; if (pc63) ctx.G.classes.paladin = pc63; else delete ctx.G.classes.paladin; R(`sold_c.clear(); state.merchant = ${M0}`);
+				assert(/\+5 copy held replaces it/.test(a6 || "") && a7 === null && a8 === null && /worth it/.test(a9 || "") && /weapon goes to \+\d/.test(a10 || "") && a11 === null,
+					`replaced by a better copy (${a6}); merchant's spare, worn path gone, not worth the full cost (${a7}); NPC-sold full cost: not worth (${a8}) / worth (${a9}); weapon below its top (${a10}) / at it (${a11})`); }
 			for (const n of ["sg0_137", "sg1_137", "sg2_137", "sgx_137"]) delete I[n];
 			ctx.item_grade = ig137;
 			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;
