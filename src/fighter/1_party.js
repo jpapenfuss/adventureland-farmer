@@ -43,7 +43,9 @@ async function merchant_handoff() {
 		const WW = worn_for_me();
 		// (v25.43: also at the camp — the merchant comes to us — between fights: nothing on us or the party)
 		if (WW && (in_town() || !party_hit()) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
-			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b && (i.stat_type || null) === (WW.stat_type || null);
+			// (v25.62: not by stat_type — a stat scroll applied between the merchant's pick and the hand-over kept it from ever
+			// matching; the slot names the piece)
+			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b;
 			const w = character.slots?.[WW.slot];
 			if (is_it(w) && character.esize >= 1) {
 				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (before the unequip: equip_upgrades runs every 5 s)

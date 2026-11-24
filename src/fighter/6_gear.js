@@ -178,7 +178,9 @@ function stat_scroll_list() {
 		const q = [1, 10, 100, 1000][Math.max(0, item_grade(it))] || 9999, cost = q * sg;
 		const pts = (def.stat + (it.level || 0) * (def.upgrade?.stat || 0)) * stat_weight(stat, character.ctype);
 		const key = `stat:${it.name}:${it.level || 0}`;
-		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : (it.level || 0) < (C_.min_level || 0) ? `only at +${C_.min_level} or higher` : cost > (C_.max_cost ?? Infinity) ? `${fmt_k(cost)} is over ${fmt_k(C_.max_cost)} for one piece` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
+		// v25.62 (owner): once the piece is no longer being worked on for upgrades — was: only at +7 or higher
+		const ahead = skipped(key) ? null : upgrade_ahead(it, character.ctype, my_gear(), character.name, slot);
+		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : ahead ? `still being upgraded: ${ahead}` : cost > (C_.max_cost ?? Infinity) ? `${fmt_k(cost)} is over ${fmt_k(C_.max_cost)} for one piece` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
 			: character.gold - cost < CFG.gold_reserve || !gold_ok(cost) ? `gold (${fmt_k(cost)})` : null;
 		out.push({ slot, name: it.name, level: it.level || 0, stat, scroll, q, cost, pts, key, ok: !why_, why: why_ });
 	}
