@@ -6,12 +6,9 @@ let bags_warned = 0; // last "bags full and nothing to bank" warning (repeated a
 // its truthy keys: the numeric fields would make a town run permanently due.
 const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "stat", "forge", "exchange", "elixir", "sell", "restock", "bank"];
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
-// A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in or take
-// v25.59 (owner: "Why aren't these [fighters] doing hunts"): a monster hunt to turn in or take is a reason to go — every
-// hunt is chased since v24.88 (hunt_min_xp 0), yet a finished one waited for a trip made for something else (105 min
-// with none). A follower asks the tank for the party trip with it (tn), as for bags or potions. Only when the party chases
-// hunts (auto_monster_hunt; hunt_passive alone takes one on a trip made anyway).
-const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" : due.hunt && CFG.auto_monster_hunt ? "monster hunt (Daisy)" :
+// A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low. (Hunts: the tank's party
+// rule, hunts_trip_due — fighter/5_town.js.)
+const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" :
 	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
 // Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
 // span: minutes covered (less than 60 right after an update)
@@ -187,8 +184,9 @@ function town_check() {
 	const what = due_tasks(due);
 	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
 	if (!what.length) return void (state.town_block = null);
-	// v24.77: stat scrolls alone wait for the next trip (v25.59: a hunt no longer does — town_urgent)
-	if (what.every((k) => k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["stat scrolls alone wait for the next trip"], at: Date.now() });
+	// A member's own hunt never starts a trip by itself: the tank's party trip goes once every completable hunt in the
+	// party is ready (v25.59, owner; party_trip_check). Stat scrolls alone wait too (v24.77).
+	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the party's hunt trip or the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (fighter_defers_town(due, what)) return; // v25.5: fighter/ — work that can wait
@@ -230,7 +228,9 @@ function town_check() {
 // v25.59: Daisy's step. Success is a hunt held afterwards (a reply that took none isn't); a failure pauses Daisy 5 min,
 // doubling each time in a row up to 2 h — a hunt is urgent now, and a 5-min pause made a party trip every 5 min (Fable)
 async function hunt_step(step) {
-	await step("hunt", run_hunt);
+	const r = await step("hunt", run_hunt);
+	// (the player update with the new hunt can arrive after Daisy's reply — wait for it before judging; Fable)
+	if (r?.started && !(character.s.monsterhunt?.c > 0)) await until(() => character.s.monsterhunt?.c > 0, 2000).catch(() => {});
 	if (character.s.monsterhunt?.c > 0) { state.hunt_fails = 0; return 1; }
 	state.hunt_fails = (state.hunt_fails || 0) + 1;
 	skip("hunt:auto", Math.min(7_200_000, 300_000 * 2 ** (state.hunt_fails - 1)), "Daisy gave no hunt");

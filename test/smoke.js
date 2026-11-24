@@ -2990,10 +2990,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`globalThis.__td3 = town_due; globalThis.__tr3 = town_run; globalThis.__runs3 = 0; smart_depth = 0; state.errand = null;
 			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {}; state.regroup_due = false; state.ptown = null;
 			town_due = () => ({ hunt: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()`, ctx);
-		assert(vm.runInContext("globalThis.__runs3 === 1 && town_urgent(town_due()) === 'monster hunt (Daisy)'", ctx), "v25.59 (owner: do the hunts): a hunt to turn in or take starts the trip");
-		vm.runInContext("state.last_town = 0; state.town_runs = []; town_due = () => ({ stat: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
-		assert(vm.runInContext("globalThis.__runs3 === 1 && /stat scrolls alone/.test(state.town_block.blockers.join())", ctx), "stat scrolls alone still wait for the next trip");
-		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = town_urgent({ hunt: true, plan: { free: 30, bank: [] }, min_free: 10 }), CFG.auto_monster_hunt = true, __u59 === ''", ctx), "hunts not chased (passive only): a hunt isn't urgent");
+		assert(vm.runInContext("globalThis.__runs3 === 0 && /hunt or stat scrolls alone/.test(state.town_block.blockers.join())", ctx), "a member's own hunt alone doesn't start a trip");
+		vm.runInContext("town_due = () => ({ hunt: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
+		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
+		// v25.59 (owner): the party's hunt trip goes once every completable hunt is ready
+		{ const s0 = character.s, now59 = Date.now();
+			vm.runInContext("state.partners = {}; state.gear_skip = {}; globalThis.__hf59 = hunt_feasible; hunt_feasible = (h) => h.id !== 'far'", ctx);
+			const hs = (me, a, s) => { character.s = me ? { monsterhunt: me } : {}; hb("Aspernari", { ...asp, level: 58, hs: a }); hb("Torlis", { ...tor, level: 60, hs: s }); return vm.runInContext("hunts_trip_due()", ctx); };
+			const r1 = hs({ id: "goo", c: 0 }, "chase", "ready"), r2 = hs({ id: "goo", c: 0 }, "ready", "lost"), r3 = hs({ id: "goo", c: 3 }, "ready", "ready"), r4 = hs({ id: "far", c: 9 }, "none", "off");
+			const r5 = hs({ id: "goo", c: 3 }, "chase", "chase");
+			vm.runInContext("hunt_feasible = __hf59; state.partners = {}", ctx); character.s = s0;
+			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Aspernari to take/.test(r4) && r5 === null,
+				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); lost + none: go (${r4}); all chasing: wait (${r5})`); }
+		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = hunt_state(), CFG.auto_monster_hunt = true, __u59 === 'off'", ctx), "hunts not chased (passive only): no hunt trips");
 		// Daisy: success is a hunt held; failures pause her 5, 10, 20 min...; a success resets
 		{ const s0 = character.s; character.s = {};
 			const st59 = (n, h) => vm.runInContext(`state.hunt_fails = ${n}; state.gear_skip = {}; hunt_step(async () => { ${h ? "character.s.monsterhunt = { c: 5, id: 'goo' };" : ""} return { success: true }; })`, ctx);
@@ -3002,6 +3011,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const r3 = await st59(9, true), f3 = vm.runInContext("state.hunt_fails", ctx), k3 = vm.runInContext("!state.gear_skip['hunt:auto']", ctx);
 			character.s = s0; vm.runInContext("state.hunt_fails = 0; state.gear_skip = {}", ctx);
 			assert(r1 === 0 && p1 === 5 && r2 === 0 && p2 === 20 && r3 === 1 && f3 === 0 && k3, `a reply without a hunt is a failure (5, then 20 min after 2 more); a hunt held resets (${[r1, p1, r2, p2, r3, f3, k3]})`); }
+		// the new hunt's player update arriving after the reply still counts as a success
+		{ const s0 = character.s; character.s = {};
+			const p59 = vm.runInContext(`state.hunt_fails = 3; state.gear_skip = {}; hunt_step(async () => { setTimeout(() => (character.s.monsterhunt = { c: 5, id: 'goo' }), 300); return { started: true }; })`, ctx);
+			const r59 = await p59, f59 = vm.runInContext("state.hunt_fails", ctx);
+			character.s = s0; vm.runInContext("state.hunt_fails = 0; state.gear_skip = {}", ctx);
+			assert(r59 === 1 && f59 === 0, `a hunt that shows up 300 ms after Daisy's reply is a success (${r59}, fails ${f59})`); }
 		// the movement line's counts are per minute: a streak older than a minute starts a new entry
 		{ vm.runInContext("mv.log = []; mv_note('approach', 'step')", ctx);
 			vm.runInContext(`mv.log[0].t0 -= 61000`, ctx);
