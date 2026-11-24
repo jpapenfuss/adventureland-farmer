@@ -185,7 +185,7 @@ function upgrade_why() {
 			}
 			// v25.61: a piece that wins but not by enough for its cost is listed too (the line said "no upgradable piece" with
 			// nothing to show why)
-			if (!g) { if (best_any) rows.push({ name, to: best_any.to, g: best_any, stop: `${own_lv >= 0 ? `ours +${own_lv}: ` : ""}not worth it: +${Math.round(best_any.gain)} pts × ${fmt_k(CFG.upgrade_gold_per_pt)} < expected cost ${fmt_k(best_any.cost)}` }); continue; }
+			if (!g) { if (best_any) rows.push({ name, to: best_any.to, g: best_any, poor: true, stop: `${own_lv >= 0 ? `ours +${own_lv}: ` : ""}not worth it (× ${fmt_k(CFG.upgrade_gold_per_pt)}/pt < expected cost ${fmt_k(best_any.cost)})` }); continue; }
 			const ready = (i) => i && i.name === name && !i.l && (i.level || 0) < to && takers.some((m) => gear_gain(i, m.ctype, m.g));
 			const stop = skipped("upg:" + name) ? `paused (${skip_why["upg:" + name] || "?"})` : to > upg_cap_level(name) ? `a past project stopped at +${upg_cap_level(name)}`
 				: cost > budget ? `expected cost ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
@@ -194,7 +194,7 @@ function upgrade_why() {
 				: "eligible";
 			rows.push({ name, to, g, stop: own_lv >= 0 ? `ours +${own_lv}: ${stop}` : stop });
 		}
-		rows.sort((a, b) => b.g.gain - a.g.gain);
+		rows.sort((a, b) => (a.poor ? 1 : 0) - (b.poor ? 1 : 0) || b.g.gain - a.g.gain); // (worth-it rows first — Fable)
 		// (v25.61: the best few, and the reach limits — a piece whose next levels fall under the odds floors never shows)
 		const who = `judged for ${takers.map((m) => m.name).join(", ") || "no fighter's gear (no heartbeat with gear)"}`;
 		out.push(rows.length ? `candidates (${who}): ${rows.slice(0, 6).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : `no upgradable piece (shop or ours) at its reachable level beats what anyone wears (${who})`);

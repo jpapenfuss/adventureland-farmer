@@ -84,7 +84,9 @@ function merchant_tick() {
 	merchant_donate();
 	// (v25.61: Merrit's settling time holds only a poll that walks — from the square, Ponty is ~170 px away: no move)
 	const ponty_ref = G.maps.main?.ref?.secondhands, ponty_near = !!ponty_ref && character.map === "main" && Math.hypot(character.x - ponty_ref.x, character.y - ponty_ref.y) <= 400;
-	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5 && (!settling || ponty_near)) {
+	// (a poll that walks keeps the old minute, and at least Merrit's min stay: every 15 s it closed the stand for good — Fable)
+	const ponty_gap = ponty_near ? CFG.secondhand_every_ms : Math.max(60_000, MM.min_stay_ms || 0);
+	if (CFG.secondhand_auto && Date.now() - secondhand_at > ponty_gap && character.esize >= 5 && (!settling || ponty_near)) {
 		secondhand_at = Date.now();
 		return void errand("secondhands", () => task_secondhands());
 	}

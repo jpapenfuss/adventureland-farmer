@@ -2126,6 +2126,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.ref.secondhands = { x: sp78b.x + 2000, y: sp78b.y };
 		vm.runInContext("secondhand_at = 0; state.errand = null; smart_depth = 0; merchant_tick()", ctx);
 		const far61 = vm.runInContext("state.errand", ctx);
+		// a poll that walks keeps the long gap (min stay), even with the stand not settling; one from the square: 15 s
+		vm.runInContext("secondhand_at = Date.now() - 30000; state.stand_since = 0; state.errand = null; smart_depth = 0; merchant_tick()", ctx);
+		const far61b = vm.runInContext("state.errand", ctx);
+		ctx.G.maps.main.ref.secondhands = { x: sp78b.x + 100, y: sp78b.y };
+		vm.runInContext("secondhand_at = Date.now() - 20000; state.errand = null; smart_depth = 0; merchant_tick()", ctx);
+		const near61b = vm.runInContext("state.errand", ctx);
+		assert(far61b === null && near61b === "secondhands", `far: 30 s after the last poll, none (${far61b}); near: 20 s after, polled (${near61b})`);
 		ctx.G.maps.main.ref = ref0; vm.runInContext("state.errand = null; smart_depth = 0; secondhand_at = Date.now(); merchant_trip_at = 0", ctx);
 		assert(near61 === "secondhands" && far61 === null, `Ponty near: polled while settling (${near61}); far: waits (${far61})`); }
 	hb("Torlis", { ...tor, x: 900, y: 900, esize: 2, pots: { hp: 150, mp: 150 } });
@@ -4373,7 +4380,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(/ours next: mmg137\+0 \(bank\) → \+\d/.test(R("upgrade_why()")), `v24.70: the report says which piece of ours is next (${R("upgrade_why()")})`);
 			{ R("globalThis.__mdi61 = merchant_recent; merchant_recent = () => false; globalThis.__gp61 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1");
 				const w61 = R("upgrade_why()"); R("CFG.upgrade_gold_per_pt = __gp61; merchant_recent = __mdi61");
-				assert(/not worth it: \+\d+ pts/.test(w61) && /judged for/.test(w61), `v25.61: a piece that wins but not for its cost is listed with why, and who it was judged for (${w61})`); }
+				assert(/not worth it \(× /.test(w61) && /judged for/.test(w61), `v25.61: a piece that wins but not for its cost is listed with why, and who it was judged for (${w61})`); }
 			assert(/"gloves":"gl137\+5"/.test(R("report_facts().find((f) => f.key === 'worn_json').text")), "v24.70: the report dumps what's worn as JSON");
 			character.items[1] = { name: "mmg137", level: 0 };
 			assert(R("set_piece_fetch().length") === 0, "...not fetched again once a copy is in the bags");

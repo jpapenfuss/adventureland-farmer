@@ -148,6 +148,7 @@ async function task_secondhands() {
 	// v25.50 (Fable): the stand is closed only for a walk — a poll every minute from the square (Ponty is ~170 px away)
 	// closed it every time, and a close restarts Merrit's 2 min
 	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) { await stand_close(); await go({ map: "main", x: ref.x, y: ref.y + 40 }); }
+	const modals0 = modals_open();
 	parent.socket.emit("secondhands");
 	await sleep_ms(1500); // the list arrives as a "secondhands" event; the client keeps it in parent.secondhands
 	const list = [...(parent.secondhands || [])];
@@ -203,6 +204,11 @@ async function task_secondhands() {
 			if (why_buy.startsWith("completes")) count(it, "bags");
 		}
 	}
-	try { if (typeof parent.hide_modal === "function") parent.hide_modal(); } catch (e) {} // the list opens Ponty's window: close it
+	// the list opens Ponty's window: close it — only if a window opened during the poll (v25.61: every 15 s it would close
+	// one the owner had open — Fable)
+	try { if (typeof parent.hide_modal === "function" && modals_open() > modals0) parent.hide_modal(); } catch (e) {}
 	return n;
 }
+
+// Open game windows (the client's modals), or -1 when that can't be told (then a poll's window is always closed, as before)
+function modals_open() { try { return typeof parent.$ === "function" ? parent.$(".modal:visible").length : -1; } catch (e) { return -1; } }
