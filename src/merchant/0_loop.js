@@ -17,8 +17,7 @@ function merchant_beat() {
 		// v25.62: the project and the level caps past projects left, for the fighters' "still being upgraded?" (stat scrolls)
 		upg: state.upg ? { name: state.upg.name, for: state.upg.for, to: state.upg.to } : null,
 		// v25.63: the gear copies it can hand over (not locked, bound, or held for a project) — bag_lv counts every copy (Fable)
-		give_lv: (() => { const nd = needed_slots(), o = {}; character.items.forEach((i, k) => { if (i && !i.l && !i.b && !nd.has(k) && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); }); return o; })(),
-		ucaps: Object.fromEntries(Object.entries(state.upg_caps || {}).filter(([, c]) => Date.now() - c.at < 7 * 86400_000).map(([n, c]) => [n, c.level])) };
+		give_lv: (() => { const nd = needed_slots(), o = {}; character.items.forEach((i, k) => { if (i && !i.l && !i.b && !nd.has(k) && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); }); return o; })() };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
@@ -183,6 +182,5 @@ function flee_tick() {
 function role_tick() { merchant_tick(); loot_chests(); return 250; }
 // Gold for an upgrade project: the fighters' gold above fund_keep counts too (they send it on supply runs)
 function fund_pool() { return partners().reduce((g, p) => g + Math.max(0, (p.gold || 0) - CFG.merchant.fund_keep), 0); }
-function upgrade_steps() { return CFG.merchant_upgrade_steps; }
 // A bank piece: the members' it would help; ours only if none would and merchant.wear_gear (v24.5)
 function bank_cands(own, theirs) { const t = theirs(); return t.length ? t : own && CFG.merchant.wear_gear ? [[character.name, own]] : []; }

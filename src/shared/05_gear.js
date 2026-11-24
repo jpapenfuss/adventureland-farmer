@@ -211,7 +211,9 @@ function my_gear() {
 	// v24.26: a worn piece's score includes what it adds to its set's bonus (taking it off loses that)
 	for (const s of GEAR_SLOTS) { w[s] = slot_value(sl[s], character.ctype, ws, s); if (owned(s)) own[s] = true; }
 	const mh = sl.mainhand && G.items[sl.mainhand.name];
-	const g = { w, own, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), has_off: !!sl.offhand, sets: ws.sets, sset: ws.sset, off };
+	// wn (v25.65): what each slot holds, name and level — a higher level of the same piece is a win by any margin
+	const wn = {}; for (const s of GEAR_SLOTS) if (sl[s]) wn[s] = [sl[s].name, sl[s].level || 0];
+	const g = { w, own, wn, dh: !!(mh && G.classes[character.ctype]?.doublehand?.[mh.wtype]), has_off: !!sl.offhand, sets: ws.sets, sset: ws.sset, off };
 	my_gear_cache = { at: now, key, g };
 	return g;
 }
@@ -242,14 +244,17 @@ function gear_gain(item, ctype, g) {
 		// nothing — a dex earring is 0.6 pts for a mage, under gear_min_gain, and Sanala's earring slots stayed empty
 		// while one sat in the merchant's bags. gear_min_gain and the margin are for swaps.
 		const empty = !(cur > 0);
-		if ((empty ? gain > 0 : gain >= CFG.gear_min_gain && gain >= cur * margin) && (!best || gain > best.gain)) best = { slot: s, gain, score };
+		// v25.65 (owner: "Everyone is wearing one at level 0, which means upgrading to level 1 is a win"): the same piece
+		// at a higher level is no swap for noise — any gain counts (an orbg+1 over the +0: +1 str/int/dex, under gear_min_gain)
+		const same = g.wn?.[s]?.[0] === item.name && (item.level || 0) > g.wn[s][1];
+		if ((empty || same ? gain > 0 : gain >= CFG.gear_min_gain && gain >= cur * margin) && (!best || gain > best.gain)) best = { slot: s, gain, score, same };
 	}
 	return best;
 }
 // v25.36 (Fable, #22): worth spending on — gear_gain, but an empty slot's piece too must clear gear_min_gain. Filling
 // an empty slot with what we already hold is free; paying for it (a Ponty compound copy, a craft, a token,
 // a lower compound odds floor) is only for a real gain.
-const gear_gain_min = (item, ctype, g) => { const r = gear_gain(item, ctype, g); return r && r.gain >= CFG.gear_min_gain ? r : null; };
+const gear_gain_min = (item, ctype, g) => { const r = gear_gain(item, ctype, g); return r && (r.gain >= CFG.gear_min_gain || r.same) ? r : null; }; // (v25.65: a higher level of the worn piece)
 // Members that could use an item more than what they wear (us first); version-matched partners only
 function gear_takers() {
 	const out = [{ name: character.name, ctype: character.ctype, g: my_gear() }];
@@ -392,4 +397,4 @@ function worn_items() {
 	for (const s of GEAR_SLOTS) if (sl[s]) out[s] = { name: sl[s].name, level: sl[s].level || 0, p: sl[s].p, stat_type: sl[s].stat_type, l: !!(sl[s].l || sl[s].b) };
 	return out;
 }
-setInterval(() => { equip_upgrades().then((did) => did || drink_elixir()).then((did) => did || share_gear()).then((did) => did || swap_worn()).catch(() => {}); }, 5_000);
+setInterval(() => { equip_upgrades().then((did) => did || drink_elixir()).then((did) => did || share_gear()).then((did) => did || swap_worn()).then((did) => did || send_tokens()).catch(() => {}); }, 5_000);

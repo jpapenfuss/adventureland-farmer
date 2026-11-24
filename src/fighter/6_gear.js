@@ -39,64 +39,24 @@ function token_pick() {
 			const r = gear_gain_min({ name, level: 0 }, m.ctype, m.g); // (v25.36: tokens are spent)
 			if (r && (!best || r.gain / price > best.v)) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price };
 		}
-		// v24.67: for ourselves, a piece that only beats what we wear once upgraded (the fifth piece of a set at +0
-		// against a worn +5): bought when the lowest level at which it wins is one our scrolls reach; we upgrade it
-		// ourselves (own project) and wear it then. Sanala sat at 4 of 5 Monster Hunter Mage pieces.
-		const mine = set_piece_plan(name);
-		if (mine && (!best || mine.gain / price > best.v)) best = { name, price, for: character.name, gain: mine.gain, v: mine.gain / price, to: mine.to, slot: mine.slot };
 	}
 	return best;
 }
-// The lowest level (1..what scroll0/scroll1 reach, under a past ceiling) at which an upgradable piece beats what we wear
-// (from: the level of a copy we have — in the bags or the bank; 0 for one still to buy)
-const spp_cache = new Map(); // "name:from" -> { at, v } (30s: bag_plan asks for every bag slot)
-function set_piece_plan(name, from = 0) {
-	if (state.upg) return null;
-	const key = `${name}:${from}`, c = spp_cache.get(key);
-	if (c && Date.now() - c.at < 30_000) return c.v;
-	const v = set_piece_plan_raw(name, from);
-	spp_cache.set(key, { at: Date.now(), v });
-	return v;
-}
-function set_piece_plan_raw(name, from) {
-	if (!CFG.upgrade_auto || !CFG.gear_auto || is_merchant() || !G.items[name]?.upgrade || !GEAR.has(G.items[name].type) || state.upg || skipped("upg:" + name)) return null;
-	if (merchant_does_it()) return null; // v25.17: the merchant upgrades our pieces (pick_upgrade's owned copies)
-	const g = my_gear(), max = Math.min(upgrade_target(name), upg_cap_level(name), upg_reach(name)); // (v25.19: as far as the run goes)
-	if (gear_gain({ name, level: from }, character.ctype, g)) return null; // wins as it is: the ordinary pick
-	for (let to = from + 1; to <= max; to++) {
-		const r = gear_gain({ name, level: to }, character.ctype, g);
-		if (r) return upgrade_cost(name, to) - upgrade_cost(name, from) <= upgrade_gold() ? { to, slot: r.slot, gain: Math.round(r.gain) } : null;
-	}
-	return null;
-}
-// v24.69: a piece of a set we wear that lies in the bank below the level at which it would win (Sanala's fifth
-// Monster Hunter piece sat there at +0): fetched, then upgraded as our own project. One at a time.
-// v24.70: any piece (not only a set's): the one with the biggest gain
-function set_piece_fetch() {
-	if (state.upg || is_merchant()) return [];
-	let best = null;
-	for (const it of state.bank_gear || []) {
-		if (it.p || character.items.some((i) => i && i.name === it.name)) continue;
-		const pl = set_piece_plan(it.name, it.level || 0);
-		if (pl && (!best || pl.gain > best.pl.gain)) best = { it, pl };
-	}
-	return best ? [{ name: best.it.name, level: best.it.level || 0, exact: true, key: `setp:${best.it.name}` }] : [];
-}
-// A copy in our bags that would win once upgraded → our own project
-function set_piece_start() {
-	if (state.upg || is_merchant()) return;
-	let best = null;
-	for (const i of character.items) {
-		if (!i || i.l || !GEAR.has(G.items[i.name]?.type)) continue;
-		const pl = set_piece_plan(i.name, i.level || 0);
-		if (pl && (!best || pl.gain > best.pl.gain)) best = { i, pl };
-	}
-	if (best) {
-		const { i, pl } = best;
-		state.upg = { name: i.name, to: pl.to, for: character.name, slot: pl.slot, gain: pl.gain, cost: upgrade_cost(i.name, pl.to) - upgrade_cost(i.name, i.level || 0), own: true };
-		state.upg_pick_at = Date.now();
-		return void game_log(`upgrade project (ours): ${i.name} +${i.level || 0} → +${pl.to}, then worn (+${pl.gain} pts)`, C.info);
-	}
+// v25.65 (owner): monster tokens are pooled with one holder — the first configured party member online — so a piece
+// costing more than any one fighter holds gets bought (mpshoes at 15 tokens: Aspernari's fifth Monster Hunter piece, +43
+// pts at +0, while the party held 9, 9 and 6). Each keeps what its own missing must-hold items need (token_reserve).
+const token_holder = () => (CFG.party.members || []).find((n) => n === character.name || fresh(state.partners[n])) || character.name;
+let tok_sent_at = 0;
+async function send_tokens() {
+	if (!CFG.token_auto || is_merchant() || typeof send_item !== "function" || errand_busy() || Date.now() - tok_sent_at < 30_000) return false;
+	const H = token_holder();
+	if (H === character.name) return false;
+	const k = character.items.findIndex((i) => i && i.name === "monstertoken"), spare = held_any("monstertoken") - token_reserve();
+	const p = state.partners[H];
+	if (k < 0 || spare <= 0 || !p || p.map !== character.map || Math.hypot(partner_pos(p).x - character.x, partner_pos(p).y - character.y) > 300) return false;
+	tok_sent_at = Date.now();
+	const q = Math.min(spare, character.items[k].q || 1);
+	try { await T(send_item(H, k, q)); game_log(`tokens: sent ${q} monster tokens to ${H} (the party's pool)`, C.dim); return true; } catch (e) { return false; }
 }
 async function task_tokens() {
 	let n = 0;
@@ -109,10 +69,7 @@ async function task_tokens() {
 			await T(exchange_buy("monstertoken", b.name));
 			n++;
 			if (b.hold && b.for !== character.name) state.hold_for[b.name] = { to: b.for, at: Date.now() };
-			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
-			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
-			// (v25.17: only while the merchant is away; otherwise it gets the piece and upgrades it)
-			if (b.to && !merchant_does_it()) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
+			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts)`, C.ok);
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }
@@ -193,7 +150,5 @@ function self_taker_ok() { return true; }
 function gold_keep() { return CFG.gold_reserve; }
 // Gold the fighters' accounts add to an upgrade project's budget: none (the merchant counts theirs)
 function fund_pool() { return 0; }
-// Upgrade steps per run
-function upgrade_steps() { return CFG.upgrade_steps_per_run; }
 // A bank piece: ours if it helps us, else the members' it would help (v24.5: a fighter keeps first claim)
 function bank_cands(own, theirs) { return own ? [[character.name, own]] : theirs(); }
