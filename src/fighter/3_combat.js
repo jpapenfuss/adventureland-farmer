@@ -176,6 +176,7 @@ function choose_target(local_ok, keep_cur = false) {
 		// up, other players on them, "nothing alive" 53% of the time), another type in the camp box that passes the same
 		// check and dies within max_ttk_s is taken (the squigs sharing the box) — the camp's type always first.
 		const tier = e.mtype === want ? 0 : 1;
+		if (tier === 1 && box && !in_rect(e.x, e.y, box)) continue; // (a filler from the camp box itself, not its 450px pad)
 		if (tier === 1 && f.ttk * (e.hp / e.max_hp) > CFG.max_ttk_s) continue;
 		if (tier > best_tier) continue;
 		const walk_s = Math.max(0, distance(character, e) - character.range) / Math.max(character.speed, 1);
@@ -191,7 +192,8 @@ function choose_target(local_ok, keep_cur = false) {
 	// v24.56 (owner): a camp whose monsters have all levelled up past the limit isn't stood at — the tank works them
 	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
 	// Torlis stood among five level 8-9 poisio, "0 attackable".)
-	return best_tier === 0 ? best : grown || best;
+	// a filler only while the camp isn't overgrown: that camp is left at once (0_loop), not farmed among over-limit monsters
+	return best_tier === 0 ? best : grown || (best && !(state.pack && camp_overgrown(state.pack)) ? best : null);
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)

@@ -4964,7 +4964,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.parent.entities.c57 = mk("c57", 260, 1); R("globalThis.__lo57 = live_ok; live_ok = (e) => (e.id === 'ok1' || e.id === 'c57' ? { ttk: 1, xp: 1 } : null); live_cache.clear()");
 			const b57 = R("choose_target(true)?.id");
 			R("live_ok = __lo57"); delete ctx.parent.entities.c57; Object.assign(ctx.parent.entities, sv57); R("live_cache.clear()");
-			assert(a57 === "ok1" && b57 === "c57", `nothing of the camp's type: the other type that passes is taken; the camp's type first when there (${a57} / ${b57})`); }
+			assert(a57 === "ok1" && b57 === "c57", `nothing of the camp's type: the other type that passes is taken; the camp's type first when there (${a57} / ${b57})`);
+			// a filler only from the box itself, not the 450px pad; none while the camp is overgrown (it's left at once)
+			const sv57b = { ...ctx.parent.entities }; for (const k in ctx.parent.entities) delete ctx.parent.entities[k];
+			R("globalThis.__lo57 = live_ok; live_ok = (e) => (e.mtype === 'goo' ? { ttk: 1, xp: 1 } : null); live_cache.clear()");
+			ctx.parent.entities.f57 = { ...mk("f57", 500, 1), mtype: "goo" };
+			const out57 = R("choose_target(true)?.id ?? null");
+			ctx.parent.entities.f57.x = 200; R("live_cache.clear()");
+			const in57 = R("choose_target(true)?.id ?? null");
+			ctx.parent.entities.n57 = mk("n57", 40, 10); R("live_cache.clear()");
+			const og57 = R("choose_target(true)?.id ?? null");
+			R("live_ok = __lo57"); for (const k in ctx.parent.entities) delete ctx.parent.entities[k]; Object.assign(ctx.parent.entities, sv57b); R("live_cache.clear()");
+			assert(out57 === null && in57 === "f57" && og57 === null, `filler: not from the pad (${out57}), from the box (${in57}), none at an overgrown camp (${og57})`);
+			// the idle give-up's clock runs on the camp's own type and what's on a member, not on fillers
+			assert(R("camp_work({ mtype: 'poi146' }, state.pack) && !camp_work({ mtype: 'goo' }, state.pack) && camp_work({ mtype: 'goo', target: 'Sanala' }, state.pack)"), "a filler doesn't reset the idle give-up");
+			// realism: from the camp's own type's kills; fillers count in the camp's rate only
+			R("state.realism = 1; state.measured = {}; state.session = { key: 'main:1,2,3,4#poi146', mtype: 'poi146', est: 10, kind: 'xp', xp: 0, kx: 0, kc: 2000, kcm: 1000, kg: 0, kgm: 0, kc_n: 5, start: Date.now() - 100000 }; end_session()");
+			assert(Math.abs(R("state.measured['main:1,2,3,4#poi146']") - 20) < 0.1 && Math.abs(R("state.realism") - 1) < 1e-6, `rate 20 with fillers; realism from the camp's type (10/10 = 1): ${R("state.realism")}`);
+			R("state.realism = 1; state.measured = {}");
+			// the camp-time line: a free filler in the box isn't "nothing alive"
+			Object.assign(character, { x: 0, y: 0 }); const sv57c = { ...ctx.parent.entities }; for (const k in ctx.parent.entities) delete ctx.parent.entities[k];
+			ctx.parent.entities.f57 = { ...mk("f57", 100, 1), mtype: "goo" };
+			const gk57 = R("gap_kind()"); for (const k in ctx.parent.entities) delete ctx.parent.entities[k]; Object.assign(ctx.parent.entities, sv57c);
+			assert(gk57 !== "nothing alive here (respawn)", `a free filler in the box counts as something alive (${gk57})`); }
 		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
 		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
 		// v24.65: where the camp time goes
@@ -4976,6 +4998,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			mons57.push({ type: "grow57", count: 2, grow: true, boundary: [0, 0, 10, 10] }); ctx.G.monsters.grow57 = { ...ctx.G.monsters.goo, respawn: 120 };
 			R("state.pack = { ...state.pack, mtype: 'grow57' }");
 			assert(/grow spawn: refilled on each kill once 1 or fewer are up/.test(R("gaps_text()")) && !/kills\/h/.test(R("gaps_text()")), `grow: no kills/h cap (${R("gaps_text()")})`);
+			// the camp's own spawn decides (the server's threshold is per spawn), not every spawn of the type on the map
+			mons57.push({ type: "grow57", count: 6, grow: true, boundary: R("state.pack.boundary") });
+			assert(/the map has 6 grow57, a grow spawn: refilled on each kill once 4 or fewer/.test(R("gaps_text()")), `the camp's own spawn (${R("gaps_text()")})`);
+			mons57.pop();
 			const saved57 = { ...ctx.parent.entities }; for (const k in ctx.parent.entities) delete ctx.parent.entities[k];
 			Object.assign(character, { x: R("state.pack.boundary[0]") + 5, y: R("state.pack.boundary[1]") + 5 });
 			ctx.parent.entities.g57 = { id: "g57", type: "monster", mtype: "grow57", visible: true, x: character.x, y: character.y, target: "SomeoneElse", hp: 10, max_hp: 10 };

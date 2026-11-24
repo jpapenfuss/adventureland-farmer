@@ -627,7 +627,12 @@ function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
 	const gold = (d?.mtype && G.monster_gold?.[d.mtype]) || 0; // v25.51: base gold, for the gold farm mode's rates
-	if (state.session) { state.session.kc = (state.session.kc || 0) + xp; state.session.kg = (state.session.kg || 0) + gold; state.session.kc_n = (state.session.kc_n || 0) + 1; }
+	if (state.session) {
+		const s = state.session;
+		s.kc = (s.kc || 0) + xp; s.kg = (s.kg || 0) + gold; s.kc_n = (s.kc_n || 0) + 1;
+		// v25.57: the camp's own type apart (fillers count in the camp's rate, not in realism: the estimate is for its type)
+		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; }
+	}
 }
 function spent() {
 	const cut = Date.now() - BUDGET.window_ms;
@@ -1300,7 +1305,8 @@ function end_session() {
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3.
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
-	const r_est = s.kind === "gold" ? grate : rate;
+	// (v25.57: the camp's own type's kills only — fillers aren't in the estimate; an old session without the split: all)
+	const r_est = (s.kind === "gold" ? (s.kgm ?? s.kg ?? 0) : (s.kcm ?? s.kc)) / secs;
 	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
 	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }
@@ -5311,7 +5317,9 @@ function fighter_tick() {
 	const t = hit_on_me() || (!i_am_tank() && caller_target()) || (state.lead_walk ? choose_target(false) : choose_target(in_area || !pack, true));
 	announce_target(t);
 	if (t && !watch_progress(t)) {
-		state.last_target_at = Date.now();
+		// v25.57: a filler (another type in the camp box) isn't the camp working: the idle give-up still leaves a camp
+		// whose own monsters are all taken (Fable)
+		if (camp_work(t, pack)) state.last_target_at = Date.now();
 		fight(t, true);
 		wait = Math.min(Math.max(+(parent.next_skill?.attack || 0) - Date.now(), 50), 200); // wake for the next attack
 	} else if (!pack) {
@@ -5367,6 +5375,9 @@ function fighter_cm__fighter(m) {
 // ---- role functions (v25.11): the main loop's fighter parts (tick(), main.js); the merchant's are in merchant/0_loop.js ----
 function flee_tick__fighter() { return false; } // fighters never flee (v24.51): at low HP they fight on with potions and heals
 function role_tick__fighter() { return fighter_tick(); }
+
+// v25.57: a target that counts as the camp working (the idle give-up's clock): the camp's own type, or one on a member
+function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!!t.target && party_names().has(t.target)); }
 // =====================================================================
 // fighter/1_party.js — fighters only (src/manifest.json): the party rules: the break and the suicide, group travel, heartbeat and invites, verdicts, gold to the merchant
 // =====================================================================
@@ -6208,6 +6219,7 @@ function choose_target(local_ok, keep_cur = false) {
 		// up, other players on them, "nothing alive" 53% of the time), another type in the camp box that passes the same
 		// check and dies within max_ttk_s is taken (the squigs sharing the box) — the camp's type always first.
 		const tier = e.mtype === want ? 0 : 1;
+		if (tier === 1 && box && !in_rect(e.x, e.y, box)) continue; // (a filler from the camp box itself, not its 450px pad)
 		if (tier === 1 && f.ttk * (e.hp / e.max_hp) > CFG.max_ttk_s) continue;
 		if (tier > best_tier) continue;
 		const walk_s = Math.max(0, distance(character, e) - character.range) / Math.max(character.speed, 1);
@@ -6223,7 +6235,8 @@ function choose_target(local_ok, keep_cur = false) {
 	// v24.56 (owner): a camp whose monsters have all levelled up past the limit isn't stood at — the tank works them
 	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
 	// Torlis stood among five level 8-9 poisio, "0 attackable".)
-	return best_tier === 0 ? best : grown || best;
+	// a filler only while the camp isn't overgrown: that camp is left at once (0_loop), not farmed among over-limit monsters
+	return best_tier === 0 ? best : grown || (best && !(state.pack && camp_overgrown(state.pack)) ? best : null);
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)
@@ -7200,6 +7213,7 @@ function gap_kind__fighter() {
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
 		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else alive++; }
+		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) alive++; // v25.57: a filler (another type in the box)
 	}
 	const t = get_targeted_monster();
 	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";
@@ -7399,9 +7413,12 @@ function gaps_text() {
 	for (const b of gaps.min) for (const k in b.by) by[k] = (by[k] || 0) + b.by[k];
 	const tot = sum_obj(by);
 	if (tot < 30_000) return null;
-	const pk = state.pack, spawn = pk && (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype).reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
+	// the camp's own spawn (the server's grow threshold is per spawn), else the type's spawns on the map
+	const pk = state.pack, sp_all = pk ? (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype) : [];
+	const own = pk && valid_boundary(pk.boundary) && sp_all.find((x) => x.boundary && x.boundary.join(",") === pk.boundary.join(","));
+	const spawn = own ? own.count || 0 : sp_all.reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
 	// (a grow spawn refills on a kill once two thirds or fewer are up — server: no respawn wait, no kills/h cap)
-	const grow = pk && (G.maps[pk.map]?.monsters || []).some((x) => x.type === pk.mtype && x.grow);
+	const grow = own ? !!own.grow : sp_all.some((x) => x.grow);
 	const cap = !spawn ? "" : grow ? ` | the map has ${spawn} ${pk.mtype}, a grow spawn: refilled on each kill once ${Math.floor(spawn * 2 / 3)} or fewer are up`
 		: rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
 	return `camp time (${Math.round(tot / 60_000)} min): ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / tot * 100)}%`).join(" | ") + cap;

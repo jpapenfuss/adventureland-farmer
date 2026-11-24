@@ -12,6 +12,7 @@ function gap_kind() {
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
 		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else alive++; }
+		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) alive++; // v25.57: a filler (another type in the box)
 	}
 	const t = get_targeted_monster();
 	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";
@@ -211,9 +212,12 @@ function gaps_text() {
 	for (const b of gaps.min) for (const k in b.by) by[k] = (by[k] || 0) + b.by[k];
 	const tot = sum_obj(by);
 	if (tot < 30_000) return null;
-	const pk = state.pack, spawn = pk && (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype).reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
+	// the camp's own spawn (the server's grow threshold is per spawn), else the type's spawns on the map
+	const pk = state.pack, sp_all = pk ? (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype) : [];
+	const own = pk && valid_boundary(pk.boundary) && sp_all.find((x) => x.boundary && x.boundary.join(",") === pk.boundary.join(","));
+	const spawn = own ? own.count || 0 : sp_all.reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
 	// (a grow spawn refills on a kill once two thirds or fewer are up — server: no respawn wait, no kills/h cap)
-	const grow = pk && (G.maps[pk.map]?.monsters || []).some((x) => x.type === pk.mtype && x.grow);
+	const grow = own ? !!own.grow : sp_all.some((x) => x.grow);
 	const cap = !spawn ? "" : grow ? ` | the map has ${spawn} ${pk.mtype}, a grow spawn: refilled on each kill once ${Math.floor(spawn * 2 / 3)} or fewer are up`
 		: rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
 	return `camp time (${Math.round(tot / 60_000)} min): ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / tot * 100)}%`).join(" | ") + cap;
