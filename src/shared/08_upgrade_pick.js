@@ -146,7 +146,7 @@ function upgrade_due() {
 // and run_upgrade only looks in the bags) → fetch it first. Gone from the bank (bank_gear is last seen) and no NPC sells
 // one: the project ends, it isn't paused for a day on "input_missing". → false to stop this run
 async function upg_fetch_copy(P) {
-	const have = best_level_held(P.name);
+	const have = plain_held(P.name);
 	const b = CFG.bank && (state.bank_gear || []).filter((i) => i.name === P.name && !i.p && (i.level || 0) < P.to && (i.level || 0) > have).sort((x, y) => (y.level || 0) - (x.level || 0))[0];
 	if (!b) return true;
 	// a failed bank visit pauses the project 10 min (any reason: an unknown one mustn't end it and forget the copy)
@@ -154,9 +154,9 @@ async function upg_fetch_copy(P) {
 	catch (e) { skip("upg:" + P.name, 600_000, "bank: " + why(e)); game_log(`upgrade ${P.name}: fetching its copy from the bank: ${why(e)}; retrying in 10 min`, C.dim); return false; }
 	// v25.37 (Fable): the copy didn't arrive — drop it from the record by name and level (remember_bank rebuilt the
 	// array, so the identity filter missed it), or every failed step walked to the bank for it again
-	const got = best_level_held(P.name) > have;
+	const got = plain_held(P.name) > have;
 	if (!got) state.bank_gear = (state.bank_gear || []).filter((i) => !(i.name === P.name && (i.level || 0) === (b.level || 0) && !i.p));
-	if (got || best_level_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
+	if (got || plain_held(P.name) >= 0 || sold_by_npc(P.name)) return true;
 	game_log(`upgrade ${P.name}: the copy isn't in the bank any more, and no NPC sells one — project ended`, C.dim);
 	state.upg = null; state.upg_pick_at = 0;
 	return false;
