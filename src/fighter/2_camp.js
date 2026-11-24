@@ -118,8 +118,6 @@ function camp_review() {
 // =====================================================================
 // Switch to a pack: new patrol route, close the running xp measurement, log the reason
 function set_pack(p, label) {
-	// v25.67 (Fable): the gold ratio p.est was made with — end_session below can move it before the session opens
-	if (p && p.gr === undefined) p.gr = gold_ratio();
 	if (!state.pack || !p || pack_key(state.pack) !== pack_key(p)) {
 		if (p) game_log(label, C.info);
 		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || `best ${rate_unit()}` });
@@ -170,7 +168,7 @@ function probe_pick() {
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
 			const raw = kill_value(mt, null) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
 			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
-			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
+			if (est > 0 && est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
 	return best;

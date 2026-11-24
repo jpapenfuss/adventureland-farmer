@@ -221,6 +221,11 @@ function last_hour() {
 		xph: Math.round((b.xp || 0) + (pb.xp || 0) * (1 - frac)), town: ev.filter((e) => e.type === "town").length };
 }
 // history(hours): in a party, every character's history in one window (like report()); history(hours, "solo") only ours
+// "squigtoad@main 4.2/s (15.1k in 1.0h, 24x)", best first
+function gold_camps_text(n = 8) {
+	return Object.entries(state.measured_gold).filter(([, m]) => m.s > 0).sort((a, b) => b[1].g / b[1].s - a[1].g / a[1].s).slice(0, n)
+		.map(([k, m]) => `${k.split("#")[1] || "?"}@${k.split(":")[0]} ${(m.g / m.s).toFixed(1)}/s (${fmt_k(Math.round(m.g))} in ${(m.s / 3600).toFixed(1)}h, ${m.n}x)`).join(", ");
+}
 function history(hours = 6, solo) {
 	const targets = party_names_all().filter((n) => n !== character.name);
 	if (solo === "solo" || hours === "solo" || !targets.length || typeof send_cm !== "function")
@@ -244,13 +249,12 @@ function history_lines(hours = 6) {
 		const b = hist.buckets[k];
 		L.push(`${new Date(k).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}  ${fmt_k(Math.round(b.xp)).padEnd(7)} ${fmt_k(Math.round(b.gold)).padEnd(7)} ${String(b.kills).padEnd(5)} ${String(b.deaths).padEnd(6)} ${b.flees}`);
 	}
-	// v25.67 (owner): each camp's gold really looted per second in its fights beside its xp/s; sorted by the mode's unit
-	// (gold: only events with gb_s — older ones hold base gold in gold_s, Fable)
-	const rates = {}, avg = (v) => (v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0);
-	for (const e of ev) if (e.type === "rate") (rates[e.pack] = rates[e.pack] || []).push(e);
-	const gmode = farm_kind() === "gold";
-	const top = Object.entries(rates).map(([k, v]) => [k, avg(v.map((e) => e.xp_s || 0)), avg(v.filter((e) => e.gb_s !== undefined).map((e) => e.gold_s || 0)), v.length]).sort((a, b) => (gmode ? b[2] - a[2] : b[1] - a[1])).slice(0, 6);
-	L.push(`packs (measured xp/s | looted gold/s): ${top.map(([k, x, g, n]) => `${k} ${x.toFixed(0)} | ${g.toFixed(1)} (${n}x)`).join(", ") || "none measured"}; looted per base gold ${state.gold_ratio > 0 ? state.gold_ratio.toFixed(2) : "not learned"}`);
+	const rates = {};
+	for (const e of ev) if (e.type === "rate") (rates[e.pack] = rates[e.pack] || []).push(e.xp_s);
+	const top = Object.entries(rates).map(([k, v]) => [k, v.reduce((a, b) => a + b, 0) / v.length, v.length]).sort((a, b) => b[1] - a[1]).slice(0, 6);
+	L.push(`packs (measured xp/s): ${top.map(([k, r, n]) => `${k} ${r.toFixed(0)} (${n}x)`).join(", ") || "none measured"}`);
+	// v25.68 (owner): each camp's gold really looted by us there over the time fought there, all saved sessions
+	L.push(`camp gold (looted, our share; all time): ${gold_camps_text() || "none measured"}`);
 	for (const e of ev.filter((x) => x.type === "death" || x.type === "flee").slice(-10))
 		L.push(`${e.type.toUpperCase()}${e.unexplained ? " (unexplained: no damage seen" + (e.watched_s !== undefined ? `, script up ${e.watched_s}s` : "") + ")" : ""} ${ago(e.t)} ago: ${e.killer || "?"} @ ${e.map} | hp ${e.hp?.[0] ?? "?"}→${e.hp?.[e.hp.length - 1] ?? "?"}/${e.max_hp} | ` +
 			`10s dmg ${Object.entries(e.dmg10 || {}).map(([m, d]) => `${m} ${Math.round(d)}`).join(", ") || "none seen"} | predicted ${e.predicted ?? "?"} of ${e.pool ?? "?"} hp` +
@@ -408,7 +412,7 @@ function meas_tick() {
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
 	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, kcm: 0, kgm: 0, kcm_n: 0, rg: 0, gr: p.gr ?? gold_ratio(), start: Date.now() }; // (v25.51: kind: est's unit)
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kc_n: 0, kcm: 0, kcm_n: 0, rg: 0, start: Date.now() }; // (v25.51: kind: est's unit)
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event
 	// goo's full xp: one put realism at 42), until the 180s close

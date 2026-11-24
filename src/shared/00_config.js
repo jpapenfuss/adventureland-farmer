@@ -1,4 +1,4 @@
-const VERSION = "25.67"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.68"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -26,8 +26,8 @@ const CFG = {
 	danger_px: 400,            // v24.10: spots this close to a spawn of an aggressive monster we can't take on aren't farmed
 	keep_px: 220,              // v24.14: step away from a monster we can't take on that may attack, once it's this close
 	keep_close_px: 120,        // v24.25: ...and coming our way, or already this close (was 300, whatever its direction)
-	// v25.51: what camps are chosen for — "xp" (xp/s) or "gold" (base gold of the kills per second). Same camp logic
-	// either way (estimate, measurement, ageing, the walk, safety); both rates are measured at every camp. Not enabled.
+	// v25.51: what camps are chosen for — "xp" (xp/s) or "gold" (v25.68: measured looted gold/s only, no estimate: a camp
+	// never fought at scores 0). Gold is measured at every camp the party fights at, whatever the mode. Not enabled.
 	farm_mode: "xp",
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	// v24.84 (owner: explore camps for the best return; re-evaluate them as gear and levels improve): the tank reviews
@@ -496,8 +496,7 @@ const state = {
 	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
-	measured_gold: {},       // pack key -> measured gold/s: v25.67 the gold we really looted there (chest_opened), averaged (saved)
-	gold_ratio: 0,           // v25.67: looted gold ÷ base gold (G.monster_gold) of the same kills, learned; 0 = none yet (saved)
+	measured_gold: {},       // v25.68: pack key -> { g: gold we looted there (chest_opened), s: seconds fought, n, at } (saved)
 	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
