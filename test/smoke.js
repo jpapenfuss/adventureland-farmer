@@ -4497,7 +4497,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				// the planner's paths (Fable): a drop-only piece with no copy, worn at +3 — the worn path stops where the base
 				// odds fall under upgrade_worn.min_chance (+4: 70%), the main path needs a copy or an NPC: nothing ahead
 				R(`state.merchant = { name: CFG.merchant.name, t: Date.now() }; state.bank_gear = []; sold_c.clear()`);
-				const a3 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${g62}, character.name, 'gloves')`);
+				const a3 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`); // (+4 would win: only the odds stop it)
 				// worn at +0 with the merchant online: +1..+3 at 99/98/95% — ahead if worth it; with no merchant: no path
 				const a4 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`);
 				R("state.merchant = null");
