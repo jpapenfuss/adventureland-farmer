@@ -1,4 +1,4 @@
-const VERSION = "25.60"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.61"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -217,7 +217,8 @@ const CFG = {
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
 	// v25.50 (owner: "monitor Ponty for updates, and buy our target items aggressively"): every minute (was 10 min)
-	secondhand_every_ms: 60_000,
+	// v25.61 (owner: "poll Ponty more frequently"): every 15 s — a poll from the square is one call, no walk
+	secondhand_every_ms: 15_000,
 	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
 	secondhand_upgrade_starts: true,
 	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);

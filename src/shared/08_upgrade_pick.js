@@ -177,12 +177,15 @@ function upgrade_why() {
 			// "no upgradable piece" while owned set pieces were the candidates
 			const own_lv = owned_level(name);
 			if (!def.upgrade || !GEAR.has(def.type) || def.cash || (!sold_by_npc(name) && own_lv < 0)) continue;
-			let g = null, to = 0, cost = 0;
+			let g = null, to = 0, cost = 0, best_any = null; // best_any: the biggest gain at any level, worth its cost or not
 			for (let L = Math.max(1, own_lv + 1), T = Math.min(CFG.upgrade_high?.enabled ? Math.max(upgrade_target(name), upgrade_target(name, true)) : upgrade_target(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
 				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = own_lv >= 0 ? Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, own_lv)) : upgrade_expected(name, L);
+				if (r && (!best_any || r.gain > best_any.gain)) best_any = { gain: r.gain, who: m.name, to: L, cost: c };
 				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
 			}
-			if (!g) continue;
+			// v25.61: a piece that wins but not by enough for its cost is listed too (the line said "no upgradable piece" with
+			// nothing to show why)
+			if (!g) { if (best_any) rows.push({ name, to: best_any.to, g: best_any, poor: true, stop: `${own_lv >= 0 ? `ours +${own_lv}: ` : ""}not worth it (× ${fmt_k(CFG.upgrade_gold_per_pt)}/pt < expected cost ${fmt_k(best_any.cost)})` }); continue; }
 			const ready = (i) => i && i.name === name && !i.l && (i.level || 0) < to && takers.some((m) => gear_gain(i, m.ctype, m.g));
 			const stop = skipped("upg:" + name) ? `paused (${skip_why["upg:" + name] || "?"})` : to > upg_cap_level(name) ? `a past project stopped at +${upg_cap_level(name)}`
 				: cost > budget ? `expected cost ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
@@ -191,8 +194,10 @@ function upgrade_why() {
 				: "eligible";
 			rows.push({ name, to, g, stop: own_lv >= 0 ? `ours +${own_lv}: ${stop}` : stop });
 		}
-		rows.sort((a, b) => b.g.gain - a.g.gain);
-		out.push(rows.length ? `candidates: ${rows.slice(0, 4).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : "no upgradable piece (shop or ours) at its reachable level beats what anyone wears");
+		rows.sort((a, b) => (a.poor ? 1 : 0) - (b.poor ? 1 : 0) || b.g.gain - a.g.gain); // (worth-it rows first — Fable)
+		// (v25.61: the best few, and the reach limits — a piece whose next levels fall under the odds floors never shows)
+		const who = `judged for ${takers.map((m) => m.name).join(", ") || "no fighter's gear (no heartbeat with gear)"}`;
+		out.push(rows.length ? `candidates (${who}): ${rows.slice(0, 6).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : `no upgradable piece (shop or ours) at its reachable level beats what anyone wears (${who})`);
 	}
 	return out.length ? ` | ${out.join(" | ")}` : "";
 }
