@@ -8,7 +8,10 @@ const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low, a hunt to turn in
 // v18.8: a hunt to turn in / take is no longer urgent: it rides on the next trip (Daisy is in town)
-const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" :
+// v25.59 (owner: "Why aren't these [fighters] doing hunts"): a monster hunt to turn in or take is a reason to go — every
+// hunt is chased since v24.88 (hunt_min_xp 0), yet a finished one waited for a trip made for something else (105 min
+// with none). A follower asks the tank for the party trip with it (tn), as for bags or potions.
+const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" : due.hunt ? "monster hunt (Daisy)" :
 	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
 // Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
 // span: minutes covered (less than 60 right after an update)
@@ -184,10 +187,8 @@ function town_check() {
 	const what = due_tasks(due);
 	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
 	if (!what.length) return void (state.town_block = null);
-	// v23.6: a hunt to take or turn in never starts a trip by itself (with hunt_min_xp most hunts lapse unchased, so a
-	// trip just for Daisy mostly fetched another one to ignore); it's done on the next trip made for anything else
-	// (v24.77: nor do stat scrolls)
-	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the next trip"], at: Date.now() });
+	// v24.77: stat scrolls alone wait for the next trip (v25.59: a hunt no longer does — town_urgent)
+	if (what.every((k) => k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["stat scrolls alone wait for the next trip"], at: Date.now() });
 	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (fighter_defers_town(due, what)) return; // v25.5: fighter/ — work that can wait

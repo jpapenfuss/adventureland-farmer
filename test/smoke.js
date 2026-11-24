@@ -2990,9 +2990,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`globalThis.__td3 = town_due; globalThis.__tr3 = town_run; globalThis.__runs3 = 0; smart_depth = 0; state.errand = null;
 			town_run = () => { globalThis.__runs3++; return true; }; state.last_town = 0; state.town_end_at = 0; state.town_runs = []; state.gear_skip = {}; state.regroup_due = false; state.ptown = null;
 			town_due = () => ({ hunt: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()`, ctx);
-		assert(vm.runInContext("globalThis.__runs3 === 0 && /hunt or stat scrolls alone/.test(state.town_block.blockers.join())", ctx), "a hunt alone: no trip");
-		vm.runInContext("town_due = () => ({ hunt: true, restock: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
-		assert(vm.runInContext("globalThis.__runs3 === 1", ctx), "a hunt with potions due: the trip goes (and takes the hunt)");
+		assert(vm.runInContext("globalThis.__runs3 === 1 && town_urgent(town_due()) === 'monster hunt (Daisy)'", ctx), "v25.59 (owner: do the hunts): a hunt to turn in or take starts the trip");
+		vm.runInContext("state.last_town = 0; state.town_runs = []; town_due = () => ({ stat: true, plan: { free: 30, bank: [], sell: [], fetch: [] }, min_free: 10, pot_min: 30 }); town_check()", ctx);
+		assert(vm.runInContext("globalThis.__runs3 === 1 && /stat scrolls alone/.test(state.town_block.blockers.join())", ctx), "stat scrolls alone still wait for the next trip");
 		vm.runInContext("town_due = globalThis.__td3; town_run = globalThis.__tr3; state.last_town = 0; state.town_end_at = 0", ctx);
 		// side goals compare with this pick's best, not the best rate ever measured
 		vm.runInContext("(state.best_xp = 400, state.best_at = Date.now()); state.measured = { 'main:0,0,1,1': 2000 }", ctx);
