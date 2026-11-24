@@ -2999,6 +2999,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const hs = (me, a, s) => { character.s = me ? { monsterhunt: me } : {}; hb("Aspernari", { ...asp, level: 58, hs: a }); hb("Torlis", { ...tor, level: 60, hs: s }); return vm.runInContext("hunts_trip_due()", ctx); };
 			const r1 = hs({ id: "goo", c: 0 }, "chase", "ready"), r2 = hs({ id: "goo", c: 0 }, "ready", "lost"), r3 = hs({ id: "goo", c: 3 }, "ready", "ready"), r4 = hs({ id: "far", c: 9 }, "none", "off");
 			const r5 = hs({ id: "goo", c: 3 }, "chase", "chase");
+			hb("Aspernari", { ...asp, level: 58, hs: "ready", hms: 120_000 }); character.s = { monsterhunt: { id: "goo", c: 3 } };
+			const r6 = vm.runInContext("hunts_trip_due()", ctx);
+			assert(/Aspernari to turn in before it lapses/.test(r6 || ""), `a finished hunt with 2 min left goes now, whoever still chases (${r6})`);
 			vm.runInContext("hunt_feasible = __hf59; state.partners = {}", ctx); character.s = s0;
 			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Aspernari to take/.test(r4) && r5 === null,
 				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); lost + none: go (${r4}); all chasing: wait (${r5})`); }

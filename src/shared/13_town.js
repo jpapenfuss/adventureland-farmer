@@ -226,7 +226,7 @@ function town_check() {
 }
 
 // v25.59: Daisy's step. Success is a hunt held afterwards (a reply that took none isn't); a failure pauses Daisy 5 min,
-// doubling each time in a row up to 2 h — a hunt is urgent now, and a 5-min pause made a party trip every 5 min (Fable)
+// doubling each time in a row up to 2 h — a 5-min pause made a party trip every 5 min (Fable)
 async function hunt_step(step) {
 	const r = await step("hunt", run_hunt);
 	// (the player update with the new hunt can arrive after Daisy's reply — wait for it before judging; Fable)

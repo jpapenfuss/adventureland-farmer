@@ -336,6 +336,7 @@ const CFG = {
 	// v24.67: hunts are still taken and turned in at Daisy on town trips made for something else — never chased. One
 	// whose monster is the camp's completes by itself; monster tokens (the Monster Hunter set pieces) only come this way.
 	hunt_passive: true,
+	hunt_turnin_ms: 300_000,   // v25.59: a finished hunt with under this left is turned in now, even while a member still chases one
 	auto_monster_hunt: true,   // v24.88 (owner): on again — hunts are taken and chased (tokens: Hunter set pieces, Concord Mace). The camp
 	                           //   moves for a goal only at a camp review, which now also comes a minute after the goal changes
 	park_key: null,            // e.g. "P": key toggling park()/resume() (replaces that key's game binding)
@@ -4305,7 +4306,7 @@ function town_check() {
 }
 
 // v25.59: Daisy's step. Success is a hunt held afterwards (a reply that took none isn't); a failure pauses Daisy 5 min,
-// doubling each time in a row up to 2 h — a hunt is urgent now, and a 5-min pause made a party trip every 5 min (Fable)
+// doubling each time in a row up to 2 h — a 5-min pause made a party trip every 5 min (Fable)
 async function hunt_step(step) {
 	const r = await step("hunt", run_hunt);
 	// (the player update with the new hunt can arrive after Daisy's reply — wait for it before judging; Fable)
@@ -5653,7 +5654,7 @@ function heartbeat__fighter() {
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
 		rpiercing: character.rpiercing || 0, range: character.range,
-		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null, hs: hunt_state(),
+		hunt: character.s.monsterhunt?.c > 0 ? { id: character.s.monsterhunt.id, c: character.s.monsterhunt.c } : null, hs: hunt_state(), hms: character.s.monsterhunt?.ms || 0,
 		// our own top goal (a follower's directive is always its own; a leader's may be the partner's, so skip those)
 		goals: goals_list().sort((a, b) => b.w - a.w).slice(0, 12),
 		gold: character.gold, gold_xfer_at: state.gold_xfer_at || 0,
@@ -7013,8 +7014,12 @@ function hunt_state() {
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.
+// v25.59: a finished hunt lapses like any other — one with under hunt_turnin_ms left goes now, whoever still chases (Fable)
 function hunts_trip_due() {
 	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, p.hs])].filter(([, s]) => s && s !== "off");
+	const mine = character.s.monsterhunt, late = [[character.name, mine && !(mine.c > 0) ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
+		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
+	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
 	if (!st.length || st.some(([, s]) => s === "chase")) return null;
 	const go = st.filter(([, s]) => s === "ready" || s === "none");
 	return go.length ? `monster hunts (${go.map(([n, s]) => `${n} ${s === "ready" ? "to turn in" : "to take"}`).join(", ")})` : null;
