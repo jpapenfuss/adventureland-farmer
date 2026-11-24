@@ -43,7 +43,8 @@ function mv_note(who, kind) {
 	const now = Date.now(), last = mv.log[mv.log.length - 1];
 	// a clash: a different owner steps or stops within 1.5s of another's step or walk
 	if (last && last.who !== who && now - last.t < 1500 && !(last.kind === "halt" && kind !== "halt")) mv.clash++;
-	if (last && last.who === who && last.kind === kind) { last.t = now; last.n++; } else mv.log.push({ t: now, who, kind, n: 1 });
+	// (v25.59: a streak is split per minute — merged for good, "approach step x1149" in the 1-minute line was 8 minutes of it)
+	if (last && last.who === who && last.kind === kind && now - (last.t0 || last.t) < 60_000) { last.t = now; last.n++; } else mv.log.push({ t: now, t0: now, who, kind, n: 1 });
 	while (mv.log.length && now - mv.log[0].t > 60_000) mv.log.shift();
 }
 function move_to_as(who, x, y, min_gap) { const ok = move_to(x, y, min_gap); if (ok) mv_note(who, "step"); return ok; }
