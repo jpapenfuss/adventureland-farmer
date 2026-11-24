@@ -65,11 +65,9 @@ const CFG = {
 	bag_min_free: 10,          // town run (sell + bank) when free bag slots drop below this (bags hold 42)
 	// v24.77 (owner): worn pieces with an empty Stat line get the class's main stat by stat scroll (int/str...; 8k each
 	// at the scroll seller; the server takes 1 scroll for a normal-grade piece, 10 for high, 100 for rare; it can't
-	// fail). Done on town trips, never a reason for one. max_gold_per_pt: the most a point of gear score may cost —
-	// 100k covers normal and high grade pieces; a rare one (800k for +3 of a stat) needs it raised.
-	// v24.78 (owner): only pieces at +min_level or higher (ones we'll keep), and never more than max_cost for one piece.
+	// fail). Done on town trips, never a reason for one. max_gold_per_pt: the most a point of gear score may cost.
 	// Note the server counts scrolls by the piece's grade AT ITS LEVEL: most gear turns a grade higher at +7 (10x the
-	// scrolls of +6), and a piece that's rare by then takes 100 (800k) — over max_cost, so it's left.
+	// scrolls of +6), and a rare one takes 100 (800k).
 	// v25.62 (owner): a worn piece's generic Stat gets the wearer's main stat once no upgrade of it is ahead
 	// (upgrade_ahead), at the upgrade planner's gold per point (was: only at +7, at most 100k per piece and per point)
 	stat_scroll: { enabled: true, max_cost: Infinity, max_gold_per_pt: 300_000, per_run: 3 },
@@ -2915,7 +2913,7 @@ function pick_upgrade() {
 			if (upg_odds(it.name, L) < W.min_chance) break;
 			const cost = Math.max(0, upgrade_expected(it.name, L) - upgrade_expected(it.name, lw));
 			if (cost > budget) break;
-			const r = gear_gain({ name: it.name, level: L }, m.ctype, m.g);
+			const r = gear_gain({ name: it.name, level: L, ...(it.stat_type ? { stat_type: it.stat_type } : {}) }, m.ctype, m.g); // (v25.62: a scrolled piece keeps its stat)
 			if (!r) continue;
 			const v = r.gain * CFG.upgrade_gold_per_pt - cost;
 			if (v > 0 && (!best || (!best.weapon && v > best.v)))
@@ -3122,18 +3120,37 @@ async function task_upgrade() {
 }
 
 // v25.62 (owner: a piece with a generic Stat that is no longer being worked on gets its wearer's primary stat): is an
-// upgrade of this worn piece still ahead? The merchant's project on it for this member, or a level above it within reach
-// (odds floors, targets, a past project's cap) that beats it by enough to be worth its expected cost — the planner's test.
-function upgrade_ahead(it, ctype, g, who) {
-	const name = it.name, lv = it.level || 0, M = typeof merchant_hb === "function" ? merchant_hb() : null;
+// upgrade of this worn piece still ahead? It mirrors pick_upgrade's two paths (Fable: a looser test left pieces the
+// planner never takes "still being upgraded" for good):
+//  - the merchant's project on it for this member;
+//  - main path (a new copy built, NPC-sold or a copy held): a weapon straight to upgrade_weapon.to (no cost test); else a
+//    level within reach (targets, odds floors, caps) whose gain covers the copy's full expected cost;
+//  - worn path (the merchant upgrades the piece itself): merchant online, not a weapon/offhand, untitled, no spare copy,
+//    steps while the base odds stay at upgrade_worn.min_chance, gain over the step-up cost.
+// Cash-shop and quest-craft pieces are never projects: nothing ahead.
+function upgrade_ahead(it, ctype, g, who, slot) {
+	const name = it.name, lv = it.level || 0, def = G.items[name], M = typeof merchant_hb === "function" ? merchant_hb() : null;
+	if (!def?.upgrade || def.cash || CFG.quest_craft_skip.includes(name)) return null;
 	if (M?.upg?.name === name && (!M.upg.for || M.upg.for === who)) return `the merchant's project (+${M.upg.to})`;
 	const cap = Math.min(upg_cap_level(name), M?.ucaps?.[name] ?? Infinity);
-	const T = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), upg_reach(name), cap,
-		G.items[name]?.type === "weapon" && CFG.upgrade_weapon?.enabled ? Math.max(CFG.upgrade_weapon.to, upgrade_target(name)) : Infinity);
-	for (let L = lv + 1; L <= T; L++) {
-		const r = gear_gain({ name, level: L }, ctype, g), c = Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, lv));
+	const top = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), cap);
+	const with_stat = (L) => ({ name, level: L, ...(it.stat_type ? { stat_type: it.stat_type } : {}) });
+	const copy = owned_level(name), main_ok = sold_by_npc(name) || copy >= 0;
+	if (main_ok && def.type === "weapon" && CFG.upgrade_weapon?.enabled) {
+		const WP = Math.min(CFG.upgrade_weapon.to, upgrade_target(name), cap, upg_reach(name));
+		if (WP > lv && gear_gain(with_stat(WP), ctype, g)) return `a weapon goes to +${WP}`;
+	}
+	if (main_ok) for (let L = lv + 1, T = Math.min(top, upg_reach(name)); L <= T; L++) {
+		const r = gear_gain(with_stat(L), ctype, g), c = copy >= 0 && copy < L ? Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, copy)) : upgrade_expected(name, L);
 		if (r && r.gain * CFG.upgrade_gold_per_pt > c) return `+${L} would be worth it (+${Math.round(r.gain)} pts)`;
 	}
+	const W = CFG.upgrade_worn;
+	if (W?.enabled && M && slot !== "mainhand" && slot !== "offhand" && def.type !== "weapon" && !it.p && copy < 0)
+		for (let L = lv + 1; L <= top; L++) {
+			if (upg_odds(name, L) < W.min_chance) break;
+			const r = gear_gain(with_stat(L), ctype, g), c = Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, lv));
+			if (r && r.gain * CFG.upgrade_gold_per_pt > c) return `+${L} would be worth it (+${Math.round(r.gain)} pts, the merchant upgrades it as worn)`;
+		}
 	return null;
 }
 // =====================================================================
@@ -5460,7 +5477,9 @@ async function merchant_handoff() {
 		const WW = worn_for_me();
 		// (v25.43: also at the camp — the merchant comes to us — between fights: nothing on us or the party)
 		if (WW && (in_town() || !party_hit()) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
-			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b && (i.stat_type || null) === (WW.stat_type || null);
+			// (v25.62: not by stat_type — a stat scroll applied between the merchant's pick and the hand-over kept it from ever
+			// matching; the slot names the piece)
+			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b;
 			const w = character.slots?.[WW.slot];
 			if (is_it(w) && character.esize >= 1) {
 				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (before the unequip: equip_upgrades runs every 5 s)
@@ -7237,7 +7256,7 @@ function stat_scroll_list__fighter() {
 		const pts = (def.stat + (it.level || 0) * (def.upgrade?.stat || 0)) * stat_weight(stat, character.ctype);
 		const key = `stat:${it.name}:${it.level || 0}`;
 		// v25.62 (owner): once the piece is no longer being worked on for upgrades — was: only at +7 or higher
-		const ahead = upgrade_ahead(it, character.ctype, my_gear(), character.name);
+		const ahead = skipped(key) ? null : upgrade_ahead(it, character.ctype, my_gear(), character.name, slot);
 		const why_ = skipped(key) ? `paused (${skip_why[key] || "?"})` : ahead ? `still being upgraded: ${ahead}` : cost > (C_.max_cost ?? Infinity) ? `${fmt_k(cost)} is over ${fmt_k(C_.max_cost)} for one piece` : !(pts > 0) ? "no points in it" : cost / pts > C_.max_gold_per_pt ? `${fmt_k(cost)} for +${pts.toFixed(1)} pts is over ${fmt_k(C_.max_gold_per_pt)}/pt`
 			: character.gold - cost < CFG.gold_reserve || !gold_ok(cost) ? `gold (${fmt_k(cost)})` : null;
 		out.push({ slot, name: it.name, level: it.level || 0, stat, scroll, q, cost, pts, key, ok: !why_, why: why_ });

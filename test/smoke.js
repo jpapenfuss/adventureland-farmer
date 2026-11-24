@@ -4493,7 +4493,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				R("state.merchant = null");
 				const a2 = R(`upgrade_ahead({ name: 'sgx_137', level: 12 }, 'paladin', ${g62}, character.name)`);
 				R(`state.merchant = ${M0}`);
-				assert(/merchant's project/.test(a1 || "") && a2 === null, `upgrade_ahead: the merchant's project (${a1}); a piece at its top: nothing ahead (${a2})`); }
+				assert(/merchant's project/.test(a1 || "") && a2 === null, `upgrade_ahead: the merchant's project (${a1}); a piece at its top: nothing ahead (${a2})`);
+				// the planner's paths (Fable): a drop-only piece with no copy, worn at +3 — the worn path stops where the base
+				// odds fall under upgrade_worn.min_chance (+4: 70%), the main path needs a copy or an NPC: nothing ahead
+				R(`state.merchant = { name: CFG.merchant.name, t: Date.now() }; state.bank_gear = []; sold_c.clear()`);
+				const a3 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${g62}, character.name, 'gloves')`);
+				// worn at +0 with the merchant online: +1..+3 at 99/98/95% — ahead if worth it; with no merchant: no path
+				const a4 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`);
+				R("state.merchant = null");
+				const a5 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', { ...${g62}, w: { ...${g62}.w, gloves: 0 } }, character.name, 'gloves')`);
+				R(`state.merchant = ${M0}`);
+				assert(a3 === null && /as worn/.test(a4 || "") && a5 === null, `drop-only at +3: nothing ahead (${a3}); at +0 with the merchant: the worn path (${a4}); no merchant: nothing (${a5})`); }
 			for (const n of ["sg0_137", "sg1_137", "sg2_137", "sgx_137"]) delete I[n];
 			ctx.item_grade = ig137;
 			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;
