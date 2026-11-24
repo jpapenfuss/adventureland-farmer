@@ -218,7 +218,8 @@ const CFG = {
 	// set, within secondhand_max_price and never below gold_reserve.
 	secondhand_auto: true,
 	// v25.50 (owner: "monitor Ponty for updates, and buy our target items aggressively"): every minute (was 10 min)
-	secondhand_every_ms: 60_000,
+	// v25.61 (owner: "poll Ponty more frequently"): every 15 s — a poll from the square is one call, no walk
+	secondhand_every_ms: 15_000,
 	// v25.18: also buy a piece that wins for a fighter once upgraded, when that's cheaper than building it (merchant/3_ponty.js)
 	secondhand_upgrade_starts: true,
 	// v25.50: no fixed cap (was 500k: every listing over it — gphelmet+2/+3, hboots, frankypants — was never even weighed);
@@ -2940,12 +2941,15 @@ function upgrade_why() {
 			// "no upgradable piece" while owned set pieces were the candidates
 			const own_lv = owned_level(name);
 			if (!def.upgrade || !GEAR.has(def.type) || def.cash || (!sold_by_npc(name) && own_lv < 0)) continue;
-			let g = null, to = 0, cost = 0;
+			let g = null, to = 0, cost = 0, best_any = null; // best_any: the biggest gain at any level, worth its cost or not
 			for (let L = Math.max(1, own_lv + 1), T = Math.min(CFG.upgrade_high?.enabled ? Math.max(upgrade_target(name), upgrade_target(name, true)) : upgrade_target(name), upg_reach(name)); L <= T; L++) for (const m of takers) {
 				const r = gear_gain({ name, level: L }, m.ctype, m.g), c = own_lv >= 0 ? Math.max(0, upgrade_expected(name, L) - upgrade_expected(name, own_lv)) : upgrade_expected(name, L);
+				if (r && (!best_any || r.gain > best_any.gain)) best_any = { gain: r.gain, who: m.name, to: L, cost: c };
 				if (r && r.gain * CFG.upgrade_gold_per_pt - c > 0 && (!g || r.gain * CFG.upgrade_gold_per_pt - c > g.net)) { g = { gain: r.gain, who: m.name, net: r.gain * CFG.upgrade_gold_per_pt - c }; to = L; cost = c; }
 			}
-			if (!g) continue;
+			// v25.61: a piece that wins but not by enough for its cost is listed too (the line said "no upgradable piece" with
+			// nothing to show why)
+			if (!g) { if (best_any) rows.push({ name, to: best_any.to, g: best_any, poor: true, stop: `${own_lv >= 0 ? `ours +${own_lv}: ` : ""}not worth it (× ${fmt_k(CFG.upgrade_gold_per_pt)}/pt < expected cost ${fmt_k(best_any.cost)})` }); continue; }
 			const ready = (i) => i && i.name === name && !i.l && (i.level || 0) < to && takers.some((m) => gear_gain(i, m.ctype, m.g));
 			const stop = skipped("upg:" + name) ? `paused (${skip_why["upg:" + name] || "?"})` : to > upg_cap_level(name) ? `a past project stopped at +${upg_cap_level(name)}`
 				: cost > budget ? `expected cost ${fmt_k(cost)}, budget ${fmt_k(Math.max(0, budget))}`
@@ -2954,8 +2958,10 @@ function upgrade_why() {
 				: "eligible";
 			rows.push({ name, to, g, stop: own_lv >= 0 ? `ours +${own_lv}: ${stop}` : stop });
 		}
-		rows.sort((a, b) => b.g.gain - a.g.gain);
-		out.push(rows.length ? `candidates: ${rows.slice(0, 4).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : "no upgradable piece (shop or ours) at its reachable level beats what anyone wears");
+		rows.sort((a, b) => (a.poor ? 1 : 0) - (b.poor ? 1 : 0) || b.g.gain - a.g.gain); // (worth-it rows first — Fable)
+		// (v25.61: the best few, and the reach limits — a piece whose next levels fall under the odds floors never shows)
+		const who = `judged for ${takers.map((m) => m.name).join(", ") || "no fighter's gear (no heartbeat with gear)"}`;
+		out.push(rows.length ? `candidates (${who}): ${rows.slice(0, 6).map((r) => `${r.name}+${r.to} for ${r.g.who} +${Math.round(r.g.gain)} pts — ${r.stop}`).join("; ")}` : `no upgradable piece (shop or ours) at its reachable level beats what anyone wears (${who})`);
 	}
 	return out.length ? ` | ${out.join(" | ")}` : "";
 }
@@ -7943,7 +7949,11 @@ function merchant_tick() {
 		return void errand("serve", () => serve(f));
 	}
 	merchant_donate();
-	if (CFG.secondhand_auto && Date.now() - secondhand_at > CFG.secondhand_every_ms && character.esize >= 5 && !settling) { // Ponty can wait for Merrit
+	// (v25.61: Merrit's settling time holds only a poll that walks — from the square, Ponty is ~170 px away: no move)
+	const ponty_ref = G.maps.main?.ref?.secondhands, ponty_near = !!ponty_ref && character.map === "main" && Math.hypot(character.x - ponty_ref.x, character.y - ponty_ref.y) <= 400;
+	// (a poll that walks keeps the old minute, and at least Merrit's min stay: every 15 s it closed the stand for good — Fable)
+	const ponty_gap = ponty_near ? CFG.secondhand_every_ms : Math.max(60_000, MM.min_stay_ms || 0);
+	if (CFG.secondhand_auto && Date.now() - secondhand_at > ponty_gap && character.esize >= 5 && (!settling || ponty_near)) {
 		secondhand_at = Date.now();
 		return void errand("secondhands", () => task_secondhands());
 	}
@@ -8699,6 +8709,7 @@ async function task_secondhands() {
 	// v25.50 (Fable): the stand is closed only for a walk — a poll every minute from the square (Ponty is ~170 px away)
 	// closed it every time, and a close restarts Merrit's 2 min
 	if (character.map !== "main" || Math.hypot(character.x - ref.x, character.y - ref.y) > 400) { await stand_close(); await go({ map: "main", x: ref.x, y: ref.y + 40 }); }
+	const modals0 = modals_open();
 	parent.socket.emit("secondhands");
 	await sleep_ms(1500); // the list arrives as a "secondhands" event; the client keeps it in parent.secondhands
 	const list = [...(parent.secondhands || [])];
@@ -8754,9 +8765,14 @@ async function task_secondhands() {
 			if (why_buy.startsWith("completes")) count(it, "bags");
 		}
 	}
-	try { if (typeof parent.hide_modal === "function") parent.hide_modal(); } catch (e) {} // the list opens Ponty's window: close it
+	// the list opens Ponty's window: close it — only if a window opened during the poll (v25.61: every 15 s it would close
+	// one the owner had open — Fable)
+	try { if (typeof parent.hide_modal === "function" && modals_open() > modals0) parent.hide_modal(); } catch (e) {}
 	return n;
 }
+
+// Open game windows (the client's modals), or -1 when that can't be told (then a poll's window is always closed, as before)
+function modals_open() { try { return typeof parent.$ === "function" ? parent.$(".modal:visible").length : -1; } catch (e) { return -1; } }
 // =====================================================================
 // merchant/4_bank.js — merchant only (src/manifest.json): bank housekeeping (purge)
 // =====================================================================
