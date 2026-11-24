@@ -4976,16 +4976,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const og57 = R("choose_target(true)?.id ?? null");
 			R("live_ok = __lo57"); for (const k in ctx.parent.entities) delete ctx.parent.entities[k]; Object.assign(ctx.parent.entities, sv57b); R("live_cache.clear()");
 			assert(out57 === null && in57 === "f57" && og57 === "f57", `filler: not from the pad (${out57}), from the box (${in57}), and at an overgrown camp too (owner: kill things) (${og57})`);
-			// the idle give-up's clock runs on the camp's own type and what's on a member, not on fillers
-			assert(R("camp_work({ mtype: 'poi146' }, state.pack) && !camp_work({ mtype: 'goo' }, state.pack) && camp_work({ mtype: 'goo', target: 'Sanala' }, state.pack)"), "a filler doesn't reset the idle give-up");
 			// realism: from the camp's own type's kills; fillers count in the camp's rate only
 			R("state.realism = 1; state.measured = {}; state.session = { key: 'main:1,2,3,4#poi146', mtype: 'poi146', est: 10, kind: 'xp', xp: 0, kx: 0, kc: 2000, kcm: 1000, kg: 0, kgm: 0, kc_n: 5, kcm_n: 2, start: Date.now() - 100000 }; end_session()");
 			assert(Math.abs(R("state.measured['main:1,2,3,4#poi146']") - 20) < 0.1 && Math.abs(R("state.realism") - 1) < 1e-6, `rate 20 with fillers; realism from the camp's type (10/10 = 1): ${R("state.realism")}`);
 			R("state.realism = 1; state.measured = {}; state.session = { key: 'main:1,2,3,5#poi146', mtype: 'poi146', est: 10, kind: 'xp', xp: 0, kx: 0, kc: 2000, kcm: 0, kg: 0, kgm: 0, kc_n: 5, kcm_n: 0, start: Date.now() - 100000 }; end_session()");
 			assert(R("state.realism") === 1 && R("state.measured['main:1,2,3,5#poi146']") > 0, `fillers only (the camp's type all taken): the rate is booked, realism untouched (${R("state.realism")})`);
-			// a filler we started stays a filler once it's on us
-			R("mark_filler('fil57')");
-			assert(R("!camp_work({ id: 'fil57', mtype: 'goo', target: 'Torlis' }, state.pack) && camp_work({ id: 'att57', mtype: 'goo', target: 'Torlis' }, state.pack)"), "a filler on us doesn't reset the idle clock; another type that attacked us does");
 			R("state.realism = 1; state.measured = {}");
 			// the camp-time line: a free filler in the box isn't "nothing alive"
 			Object.assign(character, { x: 0, y: 0 }); const sv57c = { ...ctx.parent.entities }; for (const k in ctx.parent.entities) delete ctx.parent.entities[k];

@@ -139,9 +139,9 @@ function fighter_tick() {
 	const t = hit_on_me() || (!i_am_tank() && caller_target()) || (state.lead_walk ? choose_target(false) : choose_target(in_area || !pack, true));
 	announce_target(t);
 	if (t && !watch_progress(t)) {
-		// v25.57: a filler (another type in the camp box) isn't the camp working: the idle give-up still leaves a camp
-		// whose own monsters are all taken (Fable)
-		if (camp_work(t, pack)) state.last_target_at = Date.now();
+		// (v25.57, owner "just kill things": a filler — another type in the camp box — counts as activity too; a camp
+		// whose own monsters are taken is left by the camp review, on its measured rate, fillers included)
+		state.last_target_at = Date.now();
 		fight(t, true);
 		wait = Math.min(Math.max(+(parent.next_skill?.attack || 0) - Date.now(), 50), 200); // wake for the next attack
 	} else if (!pack) {
@@ -198,6 +198,3 @@ function fighter_cm(m) {
 function flee_tick() { return false; } // fighters never flee (v24.51): at low HP they fight on with potions and heals
 function role_tick() { return fighter_tick(); }
 
-// v25.57: a target that counts as the camp working (the idle give-up's clock): the camp's own type, or one on a member
-// (a filler we started stays a filler once it targets us — Fable)
-function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!filler_ids.has(t.id) && !!t.target && party_names().has(t.target)); }

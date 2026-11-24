@@ -5318,9 +5318,9 @@ function fighter_tick() {
 	const t = hit_on_me() || (!i_am_tank() && caller_target()) || (state.lead_walk ? choose_target(false) : choose_target(in_area || !pack, true));
 	announce_target(t);
 	if (t && !watch_progress(t)) {
-		// v25.57: a filler (another type in the camp box) isn't the camp working: the idle give-up still leaves a camp
-		// whose own monsters are all taken (Fable)
-		if (camp_work(t, pack)) state.last_target_at = Date.now();
+		// (v25.57, owner "just kill things": a filler — another type in the camp box — counts as activity too; a camp
+		// whose own monsters are taken is left by the camp review, on its measured rate, fillers included)
+		state.last_target_at = Date.now();
 		fight(t, true);
 		wait = Math.min(Math.max(+(parent.next_skill?.attack || 0) - Date.now(), 50), 200); // wake for the next attack
 	} else if (!pack) {
@@ -5376,10 +5376,6 @@ function fighter_cm__fighter(m) {
 // ---- role functions (v25.11): the main loop's fighter parts (tick(), main.js); the merchant's are in merchant/0_loop.js ----
 function flee_tick__fighter() { return false; } // fighters never flee (v24.51): at low HP they fight on with potions and heals
 function role_tick__fighter() { return fighter_tick(); }
-
-// v25.57: a target that counts as the camp working (the idle give-up's clock): the camp's own type, or one on a member
-// (a filler we started stays a filler once it targets us — Fable)
-function camp_work(t, pack) { return !pack || t.mtype === pack.mtype || (!filler_ids.has(t.id) && !!t.target && party_names().has(t.target)); }
 // =====================================================================
 // fighter/1_party.js — fighters only (src/manifest.json): the party rules: the break and the suicide, group travel, heartbeat and invites, verdicts, gold to the merchant
 // =====================================================================
@@ -6185,9 +6181,6 @@ function grown_ok(e) {
 	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
 	return !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * CFG.safety * heal_mult(f) * CFG.grown_over; // (v24.64: v24.63's kill-time limit here is gone)
 }
-// v25.57: ids of monsters taken as fillers (another type in the camp box), for camp_work; kept to the last 50
-const filler_ids = new Set();
-function mark_filler(id) { if (filler_ids.size >= 50) filler_ids.delete(filler_ids.values().next().value); filler_ids.add(id); }
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
 	let hitting = null, hd = Infinity;
@@ -6240,12 +6233,9 @@ function choose_target(local_ok, keep_cur = false) {
 	// v24.56 (owner): a camp whose monsters have all levelled up past the limit isn't stood at — the tank works them
 	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
 	// Torlis stood among five level 8-9 poisio, "0 attackable".)
-	// a filler only while the camp isn't overgrown: that camp is left at once (0_loop), not farmed among over-limit monsters
-	if (best_tier === 0) return best;
-	if (grown) return grown;
-	if (!best) return null; // (owner: an overgrown camp kills its fillers too — it's left only when there's nothing to kill)
-	mark_filler(best.id); // (camp_work: it never counts as the camp working, even once it's on us)
-	return best;
+	// then a filler — at an overgrown camp too (owner: "How about we actually just kill things?"); the camp is left
+	// (overgrown, idle) only when there's nothing to fight
+	return best_tier === 0 ? best : grown || best;
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)
