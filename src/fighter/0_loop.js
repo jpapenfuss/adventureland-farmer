@@ -139,6 +139,8 @@ function fighter_tick() {
 	const t = hit_on_me() || (!i_am_tank() && caller_target()) || (state.lead_walk ? choose_target(false) : choose_target(in_area || !pack, true));
 	announce_target(t);
 	if (t && !watch_progress(t)) {
+		// (v25.57, owner "just kill things": a filler — another type in the camp box — counts as activity too; a camp
+		// whose own monsters are taken is left by the camp review, on its measured rate, fillers included)
 		state.last_target_at = Date.now();
 		fight(t, true);
 		wait = Math.min(Math.max(+(parent.next_skill?.attack || 0) - Date.now(), 50), 200); // wake for the next attack
@@ -195,3 +197,4 @@ function fighter_cm(m) {
 // ---- role functions (v25.11): the main loop's fighter parts (tick(), main.js); the merchant's are in merchant/0_loop.js ----
 function flee_tick() { return false; } // fighters never flee (v24.51): at low HP they fight on with potions and heals
 function role_tick() { return fighter_tick(); }
+

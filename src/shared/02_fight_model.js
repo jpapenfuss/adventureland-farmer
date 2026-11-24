@@ -524,7 +524,9 @@ function end_session() {
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3.
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
-	const r_est = s.kind === "gold" ? grate : rate;
-	if (s.est > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
+	// (v25.57: the camp's own type's kills only — fillers aren't in the estimate; an old session without the split: all)
+	const r_est = (s.kind === "gold" ? (s.kgm ?? s.kg ?? 0) : (s.kcm ?? s.kc)) / secs;
+	// (no kill of the camp's own type — a contested camp, fillers only: says nothing of the estimate; an old session: kc_n)
+	if (s.est > 0 && (s.kcm_n ?? s.kc_n) > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
 	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }

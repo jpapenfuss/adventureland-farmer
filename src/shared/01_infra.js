@@ -52,7 +52,12 @@ function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
 	const gold = (d?.mtype && G.monster_gold?.[d.mtype]) || 0; // v25.51: base gold, for the gold farm mode's rates
-	if (state.session) { state.session.kc = (state.session.kc || 0) + xp; state.session.kg = (state.session.kg || 0) + gold; state.session.kc_n = (state.session.kc_n || 0) + 1; }
+	if (state.session) {
+		const s = state.session;
+		s.kc = (s.kc || 0) + xp; s.kg = (s.kg || 0) + gold; s.kc_n = (s.kc_n || 0) + 1;
+		// v25.57: the camp's own type apart (fillers count in the camp's rate, not in realism: the estimate is for its type)
+		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; s.kcm_n = (s.kcm_n || 0) + 1; }
+	}
 }
 function spent() {
 	const cut = Date.now() - BUDGET.window_ms;
