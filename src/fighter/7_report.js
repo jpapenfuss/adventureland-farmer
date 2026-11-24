@@ -6,16 +6,18 @@ function gap_kind() {
 	if (character.rip || is_merchant() || !pk || !valid_boundary(pk.boundary)) return null;
 	if (errand_busy() || walking() || character.map !== pk.map || !in_boundary(pk.boundary, 250)) return "away from the camp (walk, town)";
 	const party = party_names(), b = pk.boundary, P_ = CFG.near_pad, box = [b[0] - P_, b[1] - P_, b[2] + P_, b[3] + P_];
-	let alive = 0, on_us = 0;
+	let alive = 0, on_us = 0, theirs = 0;
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
-		else if (e.mtype === pk.mtype && !e.target && in_rect(e.x, e.y, box)) alive++;
+		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else alive++; }
 	}
 	const t = get_targeted_monster();
 	if (on_us) return t && t.target && in_reach(t, "attack") ? "in a fight, target in reach" : "in a fight, no target in reach";
-	if (!alive) return "nothing alive here (respawn)";
+	// v25.57: the camp's monsters that another player is fighting aren't "nothing alive" (squigtoad: a grow spawn of 2 always
+	// has one up, yet the report said "nothing alive" 53% of the time — other players had them)
+	if (!alive) return theirs ? "monsters here, all another player's" : "nothing alive here (respawn)";
 	if (is_follower()) return "monsters alive, waiting for the tank's first hit";
 	if (!t) return "monsters alive, none chosen";
 	if (tank_first(t)) return "monsters alive, holding for the party";
@@ -210,7 +212,10 @@ function gaps_text() {
 	const tot = sum_obj(by);
 	if (tot < 30_000) return null;
 	const pk = state.pack, spawn = pk && (G.maps[pk.map]?.monsters || []).filter((x) => x.type === pk.mtype).reduce((a, x) => a + (x.count || 0), 0), rs = pk && G.monsters[pk.mtype]?.respawn;
-	const cap = spawn && rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
+	// (a grow spawn refills on a kill once two thirds or fewer are up — server: no respawn wait, no kills/h cap)
+	const grow = pk && (G.maps[pk.map]?.monsters || []).some((x) => x.type === pk.mtype && x.grow);
+	const cap = !spawn ? "" : grow ? ` | the map has ${spawn} ${pk.mtype}, a grow spawn: refilled on each kill once ${Math.floor(spawn * 2 / 3)} or fewer are up`
+		: rs > 0 ? ` | the map has ${spawn} ${pk.mtype}, respawn ${rs}s: at most ${Math.round(spawn * 3600 / rs)} kills/h for the party` : "";
 	return `camp time (${Math.round(tot / 60_000)} min): ` + Object.entries(by).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${k} ${Math.round(v / tot * 100)}%`).join(" | ") + cap;
 }
 // ---- why_not("bee") (console): is this monster farmable and safe for us — the fighters' answer (v25.3) ----

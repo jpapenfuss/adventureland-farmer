@@ -4957,13 +4957,32 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("live_cache.clear()");
 		assert(R("choose_target(true).id") === "ok1", "a monster that passes is there: that one first");
 		ctx.parent.entities.ok1.mtype = "goo"; R("live_cache.clear()");
-		assert(R("choose_target(true).id") !== "ok1", "v24.64: a monster of another type is never started on, even one that passes the check");
+		assert(R("choose_target(true).id") === "n4", "levelled monsters of the camp's type are worked down before another type is taken");
+		// v25.57 (owner: never stand idle at a camp): none of the camp's type free → another type in the box that passes
+		{ const sv57 = { ...ctx.parent.entities }; delete ctx.parent.entities.n4; delete ctx.parent.entities.n5; delete ctx.parent.entities.n10; R("live_cache.clear()");
+			const a57 = R("choose_target(true)?.id");
+			ctx.parent.entities.c57 = mk("c57", 260, 1); R("globalThis.__lo57 = live_ok; live_ok = (e) => (e.id === 'ok1' || e.id === 'c57' ? { ttk: 1, xp: 1 } : null); live_cache.clear()");
+			const b57 = R("choose_target(true)?.id");
+			R("live_ok = __lo57"); delete ctx.parent.entities.c57; Object.assign(ctx.parent.entities, sv57); R("live_cache.clear()");
+			assert(a57 === "ok1" && b57 === "c57", `nothing of the camp's type: the other type that passes is taken; the camp's type first when there (${a57} / ${b57})`); }
 		delete ctx.parent.entities.ok1; delete ctx.parent.entities.n5; delete ctx.parent.entities.n4; R("live_cache.clear()");
 		assert(R("choose_target(true)") === null, "v24.59: one far beyond the party (level 10), or of another type, is never taken this way");
 		// v24.65: where the camp time goes
 		assert(R("gap_kind()") === "monsters alive, walking to the next one" || R("gap_kind()") === "monsters alive, none chosen" || R("gap_kind()") === "monsters alive, in reach, swing on cooldown", `the tank with untouched camp monsters around: ${R("gap_kind()")}`);
 		R("gaps.min = [{ m: Math.floor(Date.now() / 60_000), by: { 'nothing alive here (respawn)': 45_000, 'in a fight, target in reach': 15_000 } }]");
 		assert(/camp time \(1 min\): nothing alive here \(respawn\) 75% \| in a fight, target in reach 25%/.test(R("gaps_text()")), `the report line: ${R("gaps_text()")}`);
+		// v25.57: a grow spawn has no kills/h cap; camp monsters another player fights aren't "nothing alive"
+		{ const pk57 = R("JSON.stringify(state.pack)"), mons57 = ctx.G.maps[R("state.pack.map")].monsters;
+			mons57.push({ type: "grow57", count: 2, grow: true, boundary: [0, 0, 10, 10] }); ctx.G.monsters.grow57 = { ...ctx.G.monsters.goo, respawn: 120 };
+			R("state.pack = { ...state.pack, mtype: 'grow57' }");
+			assert(/grow spawn: refilled on each kill once 1 or fewer are up/.test(R("gaps_text()")) && !/kills\/h/.test(R("gaps_text()")), `grow: no kills/h cap (${R("gaps_text()")})`);
+			const saved57 = { ...ctx.parent.entities }; for (const k in ctx.parent.entities) delete ctx.parent.entities[k];
+			Object.assign(character, { x: R("state.pack.boundary[0]") + 5, y: R("state.pack.boundary[1]") + 5 });
+			ctx.parent.entities.g57 = { id: "g57", type: "monster", mtype: "grow57", visible: true, x: character.x, y: character.y, target: "SomeoneElse", hp: 10, max_hp: 10 };
+			const k57 = R("gap_kind()");
+			delete ctx.parent.entities.g57; Object.assign(ctx.parent.entities, saved57);
+			mons57.pop(); delete ctx.G.monsters.grow57; R(`state.pack = ${pk57}`);
+			assert(k57 === "monsters here, all another player's", `the camp's monster on another player: not "nothing alive" (${k57})`); }
 		R("gaps.min = []");
 		assert(R("camp_overgrown(state.pack)") === 1, "v24.61: every monster of the camp's type in view is past the limit → the camp counts as overgrown (left at once)");
 		ctx.parent.entities.n4 = mild("n4", 200, 4); R("live_cache.clear()");
