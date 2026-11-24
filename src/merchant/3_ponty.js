@@ -34,10 +34,14 @@ function secondhand_reason(it, groups) {
 	// anything; and only plain, unlocked copies count (what compounding uses)
 	// (up to cmp_top: no stock for levels the server's odds have ruled out — Fable)
 	const useful = S && CFG.compound_auto && fighters.some((x) => { for (let L = 1; L <= cmp_top(it.name); L++) if (gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)) return true; return false; });
+	const have0 = () => character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
 	if (useful && lv === 0 && !it.p && price <= S.max_price) {
-		const have = character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
+		const have = have0();
 		if (have < S.n) return `stock for compounding (${have + 1}/${S.n})`;
 	}
+	// v25.65: a stocked item's plain copies stop at n by any route — 15 ringsj+0 piled up through "completes a set" while
+	// compounding waited on gold (the 10:50 PM report: Ponty 5.5M in 6 h)
+	if (S && lv === 0 && have0() >= S.n) return null;
 	const g = G.items[it.name].compound && (it.level || 0) < cmp_max(it.name) &&
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty

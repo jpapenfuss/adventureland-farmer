@@ -1,4 +1,4 @@
-const VERSION = "25.64"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.65"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -241,7 +241,8 @@ const CFG = {
 	// one ring at a time, the gold-per-point rule never bought any: a +3 is 27 base copies at 40% for +3-5 pts.
 	// v25.60: to = that item's compound ceiling (past compound_max_level): the stock keeps coming while a fighter would
 	// wear a copy at any level up to it — all three wore two ringsj+3 and the buying stopped (owner: stockpile them)
-	ponty_stock: { ringsj: { n: 9, max_price: 35_000, to: 5 } },
+	// v25.65 (owner: more Orbs of Beginnings): orbg — nine +0 make a +2, where it first wins (Torlis +5 pts)
+	ponty_stock: { ringsj: { n: 9, max_price: 35_000, to: 5 }, orbg: { n: 9, max_price: 130_000 } },
 	// Exchange (exchange_auto): items the exchange NPC (or a quest NPC) opens, once the bags hold G.items[].e of them:
 	// boxes, gems, candies, seashells... Copies the guide/quests need and CFG.keep are never exchanged.
 	exchange_auto: true,

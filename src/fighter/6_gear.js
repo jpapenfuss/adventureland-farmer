@@ -45,7 +45,37 @@ function token_pick() {
 		const mine = set_piece_plan(name);
 		if (mine && (!best || mine.gain / price > best.v)) best = { name, price, for: character.name, gain: mine.gain, v: mine.gain / price, to: mine.to, slot: mine.slot };
 	}
+	// v25.65 (owner: are monster tokens used to get pieces for upgrades?): also a piece for any member that the
+	// merchant's planner would take to a level where it wins — worth it at upgrade_gold_per_pt, the copy itself free
+	// (it's paid in tokens). The copy reaches the merchant through the bank and becomes its project there.
+	for (const name in shop) {
+		const price = shop[name];
+		if (price > budget || !GEAR.has(G.items[name]?.type) || !G.items[name]?.upgrade || party_holds(name)) continue;
+		const T = Math.min(Math.max(upgrade_target(name), CFG.upgrade_high?.enabled ? upgrade_target(name, true) : 0), upg_reach(name));
+		for (const m of gear_takers().filter((x) => x.ctype !== "merchant")) for (let L = 1; L <= T; L++) {
+			const r = gear_gain_min({ name, level: L }, m.ctype, m.g), c = upgrade_expected(name, L) - upgrade_expected(name, 0);
+			if (!r || r.gain * CFG.upgrade_gold_per_pt <= c) continue;
+			if (!best || r.gain / price > best.v) best = { name, price, for: m.name, gain: Math.round(r.gain), v: r.gain / price, to: L, merchant: true };
+			break;
+		}
+	}
 	return best;
+}
+// v25.65 (owner): monster tokens are pooled with one holder — the first configured party member online — so a piece
+// costing more than any one fighter holds gets bought (mpshoes at 15 tokens: Aspernari's fifth Monster Hunter piece, +43
+// pts at +0, while the party held 9, 9 and 6). Each keeps what its own missing must-hold items need (token_reserve).
+const token_holder = () => (CFG.party.members || []).find((n) => n === character.name || fresh(state.partners[n])) || character.name;
+let tok_sent_at = 0;
+async function send_tokens() {
+	if (!CFG.token_auto || is_merchant() || typeof send_item !== "function" || errand_busy() || Date.now() - tok_sent_at < 30_000) return false;
+	const H = token_holder();
+	if (H === character.name) return false;
+	const k = character.items.findIndex((i) => i && i.name === "monstertoken"), spare = held_any("monstertoken") - token_reserve();
+	const p = state.partners[H];
+	if (k < 0 || spare <= 0 || !p || p.map !== character.map || Math.hypot(partner_pos(p).x - character.x, partner_pos(p).y - character.y) > 300) return false;
+	tok_sent_at = Date.now();
+	const q = Math.min(spare, character.items[k].q || 1);
+	try { await T(send_item(H, k, q)); game_log(`tokens: sent ${q} monster tokens to ${H} (the party's pool)`, C.dim); return true; } catch (e) { return false; }
 }
 // The lowest level (1..what scroll0/scroll1 reach, under a past ceiling) at which an upgradable piece beats what we wear
 // (from: the level of a copy we have — in the bags or the bank; 0 for one still to buy)
@@ -112,7 +142,7 @@ async function task_tokens() {
 			game_log(`tokens: bought ${b.name} (${b.price} tokens) for ${b.for} (+${b.gain} pts${b.to ? ` once it's +${b.to}` : ""})`, C.ok);
 			// a piece bought to be upgraded: our own project (the merchant has no copy of it to work on)
 			// (v25.17: only while the merchant is away; otherwise it gets the piece and upgrades it)
-			if (b.to && !merchant_does_it()) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
+			if (b.to && !b.merchant && b.for === character.name && !merchant_does_it()) { state.upg = { name: b.name, to: b.to, for: character.name, slot: b.slot, gain: b.gain, cost: upgrade_cost(b.name, b.to), own: true }; state.upg_pick_at = Date.now(); }
 			log_ev("buy", { item: b.name, src: "tokens", for: b.for });
 			await until(() => held_any(b.name) > 0, 3000);
 		} catch (e) { game_log(`tokens: ${b.name}: ${why(e)}`, C.dim); skip("town:tokens", pause_ms(e, 3600_000), why(e)); break; }

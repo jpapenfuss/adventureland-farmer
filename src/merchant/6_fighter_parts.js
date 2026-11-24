@@ -45,6 +45,7 @@ function gap_kind() { return null; }
 function follower_tick() {}
 function party_heal() { return false; }
 function token_pick() { return null; }
+function send_tokens() { return false; }
 function task_tokens() { return 0; }
 function collect_list() { return []; }
 function collect_due() { return []; }
