@@ -1470,13 +1470,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.parent.socket.emit = () => {};
 			assert(JSON.stringify(sb63) === '["x63"]' && vm.runInContext("skipped('sbuy:x63')", ctx), `v25.63: a buy that didn't land: tried once, then paused (${JSON.stringify(sb63)})`);
 			// a buy that lands while a slot frees (free slots unchanged) is still seen: one more copy in the bags
-			ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { const k = character.items.findIndex((x) => !x); character.items[k] = { name: "ringx", level: 0 }; } };
-			character.items[1] = { name: "ringx", level: 0 }; character.items[2] = { name: "ringx", level: 0 }; character.items[3] = null; vm.runInContext("cmp_cache = null; state.gear_skip = {}", ctx);
+			ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { const k = character.items.findIndex((x) => !x); character.items[k] = { name: "ringx", level: 0 }; character.items[10] = null; character.esize = character.items.filter((x) => !x).length; } }; // (and a potion stack used up: free slots unchanged)
+			character.items[10] = { name: "hpot0", q: 1 }; character.esize = character.items.filter((x) => !x).length;
+			character.items[0] = null; character.items[1] = { name: "ringx", level: 0 }; character.items[2] = { name: "ringx", level: 0 }; character.items[3] = null; vm.runInContext("cmp_cache = null; state.gear_skip = {}", ctx);
 			ctx.parent.secondhands = [{ name: "ringx", level: 0 }]; // (no rid: keyed by name, level and price)
+			const l0 = log.length;
 			await vm.runInContext("task_secondhands()", ctx);
+			const said63 = log.slice(l0).join(" | ");
 			ctx.parent.socket.emit = () => {};
-			assert(vm.runInContext("!Object.keys(state.gear_skip).some((k) => k.startsWith('sbuy:'))", ctx) && character.items.filter((x) => x?.name === "ringx").length === 3,
-				`v25.63: a landed buy counted by copies, not free slots — no "didn't land" pause (${JSON.stringify(Object.keys(vm.runInContext("state.gear_skip", ctx)))})`); }
+			assert(/bought ringx/.test(said63) && !/didn't land/.test(said63) && character.items.filter((x) => x?.name === "ringx").length === 3,
+				`v25.63: a landed buy counted by copies, not free slots — no "didn't land" (${said63})`); }
 		// v25.50 (Fable): a poll in Ponty's range leaves the stand open (a close restarts Merrit's 2 min)
 		{ let closed = 0; vm.runInContext("globalThis.__sc50 = stand_close", ctx); ctx.__closed = () => closed++; vm.runInContext("stand_close = async () => __closed()", ctx);
 			ctx.parent.secondhands = []; await vm.runInContext("task_secondhands()", ctx);
