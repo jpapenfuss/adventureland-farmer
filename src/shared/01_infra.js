@@ -45,6 +45,11 @@ function meter_socket() {
 		s.on("kill_credit", on_kill_credit);
 		s.__farmer_kc = on_kill_credit;
 	}
+	if (typeof s.on === "function" && s.__farmer_co !== on_chest_opened) {
+		if (s.__farmer_co && typeof s.off === "function") try { s.off("chest_opened", s.__farmer_co); } catch (e) {}
+		s.on("chest_opened", on_chest_opened);
+		s.__farmer_co = on_chest_opened;
+	}
 }
 // Server "kill_credit" { mtype }: sent to every party member for every party kill, wherever they are (and to a solo
 // player for its own). Counts the party's kills for pack measurements (together) and the watchdog (v23.0).
@@ -58,6 +63,11 @@ function on_kill_credit(d) {
 		// v25.57: the camp's own type apart (fillers count in the camp's rate, not in realism: the estimate is for its type)
 		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; s.kcm_n = (s.kcm_n || 0) + 1; }
 	}
+}
+// v25.67 (owner: gold earned per unit of time, from real fights at the camp): server "chest_opened" { gold } is sent to
+// each party member with its own share of the chest's gold (goldm and tax applied) — the gold this character really got
+function on_chest_opened(d) {
+	if (state.session && !d?.gone && d?.gold > 0) state.session.rg = (state.session.rg || 0) + d.gold;
 }
 function spent() {
 	const cut = Date.now() - BUDGET.window_ms;

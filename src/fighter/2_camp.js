@@ -118,6 +118,8 @@ function camp_review() {
 // =====================================================================
 // Switch to a pack: new patrol route, close the running xp measurement, log the reason
 function set_pack(p, label) {
+	// v25.67 (Fable): the gold ratio p.est was made with — end_session below can move it before the session opens
+	if (p && p.gr === undefined) p.gr = gold_ratio();
 	if (!state.pack || !p || pack_key(state.pack) !== pack_key(p)) {
 		if (p) game_log(label, C.info);
 		if (p) log_ev(p.boss ? "boss" : "pack", { name: p.mtype, to: `${p.mtype}@${p.map}`, from: state.pack ? `${state.pack.mtype}@${state.pack.map}` : null, why: p.directive || `best ${rate_unit()}` });

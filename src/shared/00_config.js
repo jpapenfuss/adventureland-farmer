@@ -1,4 +1,4 @@
-const VERSION = "25.66"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.67"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -496,7 +496,8 @@ const state = {
 	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
-	measured_gold: {},       // v25.51: pack key -> measured base gold/s, the same way (saved; CFG.farm_mode "gold")
+	measured_gold: {},       // pack key -> measured gold/s: v25.67 the gold we really looted there (chest_opened), averaged (saved)
+	gold_ratio: 0,           // v25.67: looted gold ÷ base gold (G.monster_gold) of the same kills, learned; 0 = none yet (saved)
 	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
