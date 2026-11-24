@@ -451,7 +451,8 @@ function score_area(t, pack, area) {
 // Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
 // spot out of every pick for good, since it was never visited again to re-measure it.
 function meas_aged(key, est, kind = farm_kind()) {
-	const v = meas(kind)[key], pre = kind === "gold" ? "g" : "";
+	if (kind === "gold") return gold_rate(key) ?? est; // v25.68: measured totals, not aged into an estimate
+	const v = state.measured[key], pre = "";
 	if (v === undefined) return est;
 	const at = state.meas_at[pre + "p:" + key];
 	let w = at && CFG.meas_half_h > 0 ? Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000)) : 1;
@@ -480,15 +481,13 @@ function party_power() {
 // we really looted there (chest_opened). v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is
 // chosen for. Both rates are measured at every camp the party fights at (state.measured / state.measured_gold).
 const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
-const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
-// Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)
-const monster_gold = (t) => G.monster_gold?.[t] || 0;
-// v25.67: gold we really loot per base gold — the learned ratio (our goldm, our share of the party's chests, the tax);
-// none learned yet: our goldm over the party's fighters (the server splits a chest among the non-merchants)
-const gold_ratio = () => (state.gold_ratio > 0 ? state.gold_ratio : (character.goldm || 1) / Math.max(1, (CFG.party?.members || []).length));
-// a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set). Gold
-// (v25.67): looted gold, as measured — base gold × gold_ratio()
-const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? monster_gold(t) * gold_ratio() : f?.xp ?? G.monsters[t]?.xp ?? 0);
+// v25.68 (owner: no projections without evidence): gold is only ever measured — state.measured_gold holds each camp's
+// totals { g: gold looted, s: seconds fought, n: sessions, at } and its rate is g / s; there is no gold estimate
+const gold_rate = (key) => { const m = state.measured_gold[key]; return m && m.s > 0 ? m.g / m.s : undefined; };
+const meas = (kind = farm_kind()) => (kind === "gold" ? Object.fromEntries(Object.keys(state.measured_gold).map((k) => [k, gold_rate(k)]).filter((x) => x[1] !== undefined)) : state.measured);
+// a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set). Gold: none —
+// a camp's gold is only what was measured there (v25.68)
+const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? 0 : f?.xp ?? G.monsters[t]?.xp ?? 0);
 const rate_unit = () => (farm_kind() === "gold" ? "gold/s" : "xp/s");
 
 // xp/s measurement per pack (feeds the picker)
@@ -508,6 +507,13 @@ function end_session() {
 	if (!s) return;
 	// v25.16: less the seconds held for the party (03_history.js): the rate is the camp's, not our waiting
 	const secs = ((s.end || Date.now()) - s.start - (s.lost || 0)) / 1000;
+	// v25.68 (owner): the gold really looted here (chest_opened, our share) and the seconds fought, added to the camp's
+	// totals whatever the session's length or kills; chests opened just after the close are added too (on_chest_opened)
+	if (secs > 0) {
+		const m = state.measured_gold[s.key] = state.measured_gold[s.key] || { g: 0, s: 0, n: 0 };
+		m.g += s.rg || 0; m.s += secs; m.n++; m.at = Date.now();
+		gold_last = { key: s.key, at: Date.now() };
+	}
 	if (secs < CFG.measure_min_s) return;
 	// v23.0: the unit score_area estimates in: base xp of the kills made at this spot. The xp we receive is a share of
 	// every party kill anywhere (server), so it can't be used: every party kill counts (kill_credit, sent to each
@@ -515,26 +521,20 @@ function end_session() {
 	let rate;
 	if (s.kc_n > 0) rate = s.kc / secs;
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
-	// v25.67 (owner): gold/s is the gold really looted at the camp (chest_opened shares) over the session's time, whatever
-	// the mode — was the table's base gold per kill. Its ratio to the same kills' base gold is learned, for estimates.
-	// Kills but no chest opened yet (loot lagging the session's close): says nothing of the gold — not booked (Fable).
-	// (The cap is wide: chest gold grows with the monster's level.)
-	const grate = (s.rg || 0) / secs, gbase = (s.kg || 0) / secs, gbook = s.rg > 0 || !(s.kg > 0);
-	if (s.kg > 0 && s.rg > 0) state.gold_ratio = state.gold_ratio > 0 ? state.gold_ratio * 0.7 + Math.min(50, s.rg / s.kg) * 0.3 : Math.min(50, s.rg / s.kg);
-	const pw = party_power();
-	for (const [kind, r] of [["xp", rate], ...(gbook ? [["gold", grate]] : [])]) {
-		const tab = meas(kind), prev = tab[s.key], pre = kind === "gold" ? "g" : "";
+	const grate = (s.rg || 0) / secs, pw = party_power();
+	{
+		const tab = state.measured, prev = tab[s.key];
 		// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
-		tab[s.key] = prev === undefined ? r : meas_aged(s.key, r, kind) * 0.5 + r * 0.5;
-		state.meas_at[pre + "p:" + s.key] = Date.now();
-		if (pw) state.meas_at[pre + "w:" + s.key] = { lv: pw.lv, gs: pw.gs }; // v24.84
+		tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate, "xp") * 0.5 + rate * 0.5;
+		state.meas_at["p:" + s.key] = Date.now();
+		if (pw) state.meas_at["w:" + s.key] = { lv: pw.lv, gs: pw.gs }; // v24.84
 	}
-	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), gb_s: +gbase.toFixed(1), secs: Math.round(secs) });
+	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), lg: 1, secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3.
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
 	// (v25.57: the camp's own type's kills only — fillers aren't in the estimate; an old session without the split: all)
-	const r_est = (s.kind === "gold" ? (s.kgm ?? s.kg ?? 0) * (s.gr || 1) : (s.kcm ?? s.kc)) / secs; // (s.gr: the ratio the est used)
+	const r_est = (s.kcm ?? s.kc) / secs;
 	// (no kill of the camp's own type — a contested camp, fillers only: says nothing of the estimate; an old session: kc_n)
-	if (s.est > 0 && (s.kcm_n ?? s.kc_n) > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
-	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s looted (${gbase.toFixed(1)} base) over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
+	if (s.kind !== "gold" && s.est > 0 && (s.kcm_n ?? s.kc_n) > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
+	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s looted over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }

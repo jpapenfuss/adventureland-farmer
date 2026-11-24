@@ -168,17 +168,22 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 13) fight model
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("!!state.safe.goo", ctx), "level-1 goo is safe");
-	// v25.51: the farm mode picks the camp — a twin of goo with less xp and more gold wins only in gold mode
-	{ ctx.G.monsters.richgoo = { ...ctx.G.monsters.goo, xp: 5 }; ctx.G.monster_gold = { goo: 2, richgoo: 50 }; // (base gold: G.monster_gold, as in the game's data)
+	// v25.51: the farm mode picks the camp; v25.68: gold is only what was measured there (looted totals, g / s) — the
+	// table's gold (richgoo 5000) is no estimate; the measured camp wins in gold mode, the xp camp in xp mode
+	{ ctx.G.monsters.richgoo = { ...ctx.G.monsters.goo, xp: 5 }; ctx.G.monster_gold = { goo: 2, richgoo: 5000 };
 		ctx.G.maps.main.monsters.push({ type: "richgoo", count: 5, boundary: [500, 100, 800, 400] });
+		const RG = "main:500,100,800,400#richgoo", GO = "main:100,100,400,400#goo";
 		vm.runInContext("state.measured = {}; state.measured_gold = {}; state.cooldown = {}; CFG.farm_mode = 'xp'; pick_pack()", ctx);
 		const px = vm.runInContext("state.pack && state.pack.mtype", ctx);
-		vm.runInContext("CFG.farm_mode = 'gold'; state.last_pick = 0; pick_pack()", ctx);
+		const e0 = vm.runInContext("kill_value('richgoo', null, 'gold')", ctx);
+		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 600, n: 4 }, '${GO}': { g: 60, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
 		const pg = vm.runInContext("state.pack && state.pack.mtype", ctx);
-		vm.runInContext("CFG.farm_mode = 'xp'", ctx);
+		vm.runInContext(`state.measured_gold = { '${RG}': { g: 60, s: 600, n: 4 }, '${GO}': { g: 3000, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
+		const pg2 = vm.runInContext("state.pack && state.pack.mtype", ctx);
+		vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; delete ctx.G.monster_gold;
 		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
-		assert(px === "goo" && pg === "richgoo", `v25.51: xp mode picks goo, gold mode the gold-rich twin (${px} / ${pg})`); }
+		assert(e0 === 0 && px === "goo" && pg === "richgoo" && pg2 === "goo", `v25.68: no gold estimate (${e0}); xp mode goo, gold mode the camp measured richer (${px} / ${pg} / ${pg2})`); }
 	// v25.56: two types sharing a box (main's squigs and squigtoads) are two camps — the first type seen no longer
 	// claims the box; each type's rates, rests and deaths have their own key; an old save's keys are migrated
 	{ const B = [100, 100, 400, 400];
@@ -392,14 +397,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		state.measured = {}; state.danger = {}; state.cooldown = {}; load_state();`, ctx);
 	assert(vm.runInContext(`state.measured["main:1,2,3,4"] === 12.5 && state.danger.bee === 0.6 && state.cooldown.x > 0 && !("old" in state.cooldown)`, ctx),
 		"learned state survives reload; expired cooldowns dropped");
-	// v25.51: gold rates and their times survive a reload; a save without gold_v (the first build's zeros) drops them once
-	vm.runInContext(`state.measured_gold["main:1,2,3,4"] = 3.5; state.meas_at["gp:main:1,2,3,4"] = Date.now() - 3600000; state.meas_at["gw:main:1,2,3,4"] = { lv: 50, gs: 400 }; save_state();
-		state.measured_gold = {}; state.meas_at = {}; load_state();`, ctx);
-	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === 3.5 && Date.now() - state.meas_at["gp:main:1,2,3,4"] >= 3600000 && state.meas_at["gw:main:1,2,3,4"].lv === 50`, ctx),
-		"v25.51: gold rates and their times (gp:/gw:) survive a reload");
-	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); d.gold_v = 1; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
+	// v25.68: each camp's gold totals survive a reload; a save with older gold rates (gold_v 1/2: a number per camp) drops them once
+	vm.runInContext(`state.measured_gold["main:1,2,3,4"] = { g: 900, s: 300, n: 3, at: 5 }; save_state(); state.measured_gold = {}; load_state();`, ctx);
+	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"].g === 900 && state.measured_gold["main:1,2,3,4"].s === 300 && gold_rate("main:1,2,3,4") === 3`, ctx),
+		"v25.68: a camp's looted gold and seconds survive a reload (3 gold/s)");
+	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); d.gold_v = 2; d.measured_gold = { "main:1,2,3,4": 3.5 }; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
 		vm.runInContext("globalThis.__g51 = get; get = (k) => (k === SAVE_KEY ? __d51 : __g51(k)); load_state(); get = __g51", ctx);
-		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.67: a save with base-gold rates (gold_v 1): its gold rates dropped, xp rates kept"); }
+		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.68: a save with older gold rates (gold_v 2): dropped, xp rates kept"); }
 	vm.runInContext(`state.measured_gold = { x: 1 }; globalThis.__ss51 = save_state; save_state = () => {}; forget(); save_state = __ss51`, ctx);
 	assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.51: forget() clears the gold rates too");
 	vm.runInContext(`state.measured = { "main:1,2,3,4": 12.5 }; state.danger.bee = 0.6`, ctx);
@@ -2818,30 +2822,21 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, start: Date.now() - 100000 };
 			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
 		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
-		// v25.67: gold/s is the gold really looted in the session (chest_opened shares), beside xp/s whatever the farm
-		// mode; its ratio to the kills' base gold is learned and scales the gold estimates
-		{ ctx.G.monster_gold = { goo: 20 };
-			vm.runInContext(`state.measured_gold = {}; state.gold_ratio = 0; state.session = { key: "main:1,1,9,7", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
+		// v25.68: each session adds the gold really looted in it (chest_opened, our share) and its seconds to the camp's
+		// totals — whatever its length or kills; a chest opened within 20 s of the close, still at that camp, too
+		{ vm.runInContext(`state.measured_gold = {}; state.pack = { map: "main", boundary: [1, 1, 9, 7], mtype: "goo" }; state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
 				for (let i = 0; i < 10; i++) { on_kill_credit({ mtype: "goo" }); on_chest_opened({ id: "c" + i, gold: 30 }); }
-				on_chest_opened({ id: "x", gone: true }); end_session(); on_chest_opened({ id: "late", gold: 999 })`, ctx);
-			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 3 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.67: 10 chests x 30 looted / 100s = 3 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
-			assert(vm.runInContext("Math.abs(state.gold_ratio - 1.5) < 1e-9 && Math.abs(kill_value('goo', null, 'gold') - 30) < 1e-9", ctx), `v25.67: looted 300 per 200 base: ratio 1.5, a goo's gold estimate 30 (${vm.runInContext("state.gold_ratio", ctx)})`);
-			// kills but no chest opened: the gold rate and ratio aren't booked; realism in a gold session uses the est's ratio
-			vm.runInContext(`state.session = { key: "main:1,1,9,6", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
-				for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
-			assert(vm.runInContext("state.measured_gold['main:1,1,9,6'] === undefined && state.measured['main:1,1,9,6'] > 0 && Math.abs(state.gold_ratio - 1.5) < 1e-9", ctx), "v25.67: kills but no chest opened: gold not booked, ratio kept, xp booked");
-			vm.runInContext(`state.realism = 1; state.session = { key: "main:1,1,9,5", mtype: "goo", est: 3, kind: "gold", gr: 1.5, xp: 0, kx: 0, kc: 0, kg: 0, kgm: 0, kc_n: 0, kcm_n: 0, rg: 0, start: Date.now() - 100000 };
-				for (let i = 0; i < 10; i++) { on_kill_credit({ mtype: "goo" }); on_chest_opened({ gold: 30 }); } end_session()`, ctx);
-			assert(vm.runInContext("Math.abs(state.realism - 1) < 1e-9", ctx), `v25.67: gold session at its estimate (10 x 20 base x 1.5 / 100s = 3): realism unchanged (${vm.runInContext("state.realism", ctx)})`);
-			{ const sg = ctx.set, gg = ctx.get, st = {}; ctx.set = (k, v) => ((st[k] = JSON.stringify(v)), true); ctx.get = (k) => (k in st ? JSON.parse(st[k]) : null);
-				vm.runInContext("save_state(); state.gold_ratio = 0; load_state()", ctx); ctx.set = sg; ctx.get = gg; }
-			assert(vm.runInContext("Math.abs(state.gold_ratio - 1.5) < 1e-9", ctx), "v25.67: the gold ratio survives a reload");
-			vm.runInContext("globalThis.__ssg = save_state; save_state = () => {}; forget(); save_state = __ssg", ctx);
-			assert(vm.runInContext("state.gold_ratio === 0", ctx), "v25.67: forget() clears the gold ratio");
-			vm.runInContext("state.gold_ratio = 0", ctx);
-			assert(vm.runInContext("meas()['main:1,1,9,7'] === state.measured['main:1,1,9,7'] && (CFG.farm_mode = 'gold', meas()['main:1,1,9,7'] === state.measured_gold['main:1,1,9,7'])", ctx), "v25.51: meas() follows the farm mode");
-			vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
-			delete ctx.G.monster_gold; }
+				on_chest_opened({ id: "x", gone: true }); end_session(); on_chest_opened({ id: "late", gold: 100 })`, ctx);
+			const K = "state.measured_gold['main:1,1,9,7#goo']";
+			ctx.__gm = vm.runInContext(K, ctx);
+			assert(ctx.__gm && ctx.__gm.g === 400 && Math.round(ctx.__gm.s) === 100 && Math.round(vm.runInContext("state.measured['main:1,1,9,7#goo']", ctx)) === 1, `v25.68: 10 chests x 30 + a late one of 100 = 400 gold in 100 s, beside 1 xp/s (${JSON.stringify(ctx.__gm)})`);
+			// a short session with no chest: its seconds count, at 0 gold
+			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() - 20000 }; end_session()`, ctx);
+			assert(Math.round(vm.runInContext(K + ".s", ctx)) === 120 && vm.runInContext(K + ".n", ctx) === 2, "v25.68: a short session without a chest still books its seconds");
+			assert(vm.runInContext("CFG.farm_mode = 'gold', meas()['main:1,1,9,7#goo'] === gold_rate('main:1,1,9,7#goo') && meas_aged('main:1,1,9,7#goo', 0) === gold_rate('main:1,1,9,7#goo') && meas_aged('nowhere', 0) === 0", ctx), "v25.68: gold mode reads the measured totals only");
+			vm.runInContext("CFG.farm_mode = 'xp'; globalThis.__ssg = save_state; save_state = () => {}; forget(); save_state = __ssg", ctx);
+			assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.68: forget() clears the gold totals");
+			vm.runInContext("state.pack = null", ctx); }
 		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:1,1,9,8'] === undefined", ctx), "together with no kill_credit in the session: not measured");
 		vm.runInContext("state.measured = {}", ctx);
