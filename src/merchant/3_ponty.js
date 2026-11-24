@@ -29,10 +29,11 @@ function secondhand_reason(it, groups) {
 	if (head) return head;
 	// v25.47: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
 	const S = CFG.ponty_stock?.[it.name];
-	// v25.48: only while compounding runs and a fighter would wear a result (v25.60: at any level up to the item's ceiling,
-	// cmp_max — +3 alone stopped it once everyone wore two +3s) — else the stock grows with nothing turning it into
+	// v25.48: only while compounding runs and a fighter would wear a result (v25.60: at any level up to the item's reachable
+	// ceiling — +3 alone stopped it once everyone wore two +3s) — else the stock grows with nothing turning it into
 	// anything; and only plain, unlocked copies count (what compounding uses)
-	const useful = S && CFG.compound_auto && fighters.some((x) => { for (let L = 1; L <= cmp_max(it.name); L++) if (gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)) return true; return false; });
+	// (up to cmp_top: no stock for levels the server's odds have ruled out — Fable)
+	const useful = S && CFG.compound_auto && fighters.some((x) => { for (let L = 1; L <= cmp_top(it.name); L++) if (gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)) return true; return false; });
 	if (useful && lv === 0 && !it.p && price <= S.max_price) {
 		const have = character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
 		if (have < S.n) return `stock for compounding (${have + 1}/${S.n})`;

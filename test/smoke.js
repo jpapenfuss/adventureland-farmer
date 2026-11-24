@@ -1123,7 +1123,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(n48 === 1 && JSON.stringify(cmp) === "[[2,3,5]]" && character.items[4].l, `compounded the three spares, left the locked ring (${JSON.stringify(cmp)})`);
 	// low odds: paused 6h, nothing destroyed
 	character.items[6] = { name: "ringx", level: 1 }; character.items[7] = { name: "ringx", level: 1 };
-	ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.5 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
+	// (5%: under even the floor for a result a fighter would wear — v25.60: a +3 counts for this +1→+2 step)
+	ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.05 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
 	vm.runInContext("cmp_cache = null", ctx);
 	await vm.runInContext("task_compound()", ctx);
 	assert(!cmp.includes("REAL") && vm.runInContext("skipped('cmp:ringx:1')", ctx), "low preview chance: group paused, no compound");
@@ -1133,7 +1134,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.45 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
 	await vm.runInContext("task_compound()", ctx);
 	assert(cmp.includes("REAL"), `a 45% compound whose result a fighter would wear goes ahead (${JSON.stringify(cmp)})`);
-	ctx.G.items.ringx.attack = 2; ctx.G.items.ringx.compound = { attack: 1 };
+	ctx.G.items.ringx.attack = 2; ctx.G.items.ringx.compound = { attack: 0 }; // (v25.60: no level wins for anyone — not even a +3)
 	// v25.32 (owner): the bank nearly full — a set nobody wants at 40% odds, paused and capped for its odds, is combined
 	{
 		character.items = Array(42).fill(null); character.items[6] = { name: "ringx", level: 1 }; character.items[7] = { name: "ringx", level: 1 }; character.items[8] = { name: "ringx", level: 1 };
@@ -1178,6 +1179,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		}
 		vm.runInContext("CFG.compound_bank_full = true; state.bank_free = null; state.cmp_caps = {}; bank_tight_on = false", ctx);
 	}
+	ctx.G.items.ringx.compound = { attack: 1 }; // (back: later tests need a level win)
 	character.slots = {}; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);
 	// 49) upgrade project: pick the NPC piece that beats Torlis's worn helmet most per gold, upgrade a spare to target
@@ -2470,6 +2472,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, x: 900, y: 900, gear: { w: { pants: 0, ring1: sc3, ring2: sc3 }, own: {} } });
 		assert(/stock for compounding/.test(SR({ name: "ringsj", level: 0 })), `v25.60: two +3s worn, a +4 would win: still stocked (${SR({ name: "ringsj", level: 0 })})`);
 		assert(vm.runInContext("cmp_max('ringsj') === 5 && cmp_max('hpamulet') === CFG.compound_max_level", ctx), "v25.60: ringsj compounds to +5, the rest to compound_max_level");
+		// the steps on the way (+2→+3, a result nobody wears any more) are "wanted": the low odds floor
+		assert(vm.runInContext("cmp_wanted('ringsj', 2) && cmp_wanted('ringsj', 0)", ctx), "v25.60: +2→+3 on the way to a +4 someone would wear counts as wanted");
+		// a ceiling the server's odds set: no stock bought for levels past it
+		vm.runInContext("state.cmp_caps.ringsj = { level: 3, at: Date.now() }; cmp_cache = null", ctx);
+		assert(!/stock/.test(SR({ name: "ringsj", level: 0 })), `v25.60: capped at +3 (everyone wears +3s): no stock (${SR({ name: "ringsj", level: 0 })})`);
+		vm.runInContext("delete state.cmp_caps.ringsj; cmp_cache = null", ctx);
 		hb("Torlis", { ...tor, x: 900, y: 900, gear: { w: { pants: 0 }, own: {} } });
 		character.items[5] = null; vm.runInContext("state.bank_gear = []", ctx); ctx.G.items.ringsj = rj0; if (rj0 === undefined) delete ctx.G.items.ringsj; }
 	// v24.81: a route through Ponty — two +0 copies there plus our one make a +1 a fighter would wear
@@ -4898,6 +4906,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), rates_v: R("RATES_V"), at: Date.now(), measured: { "main:1,2,3,4": 999 }, realism: 0.4 });
 		R("state.measured = {}; state.realism = 1; load_state()");
 		assert(R("state.measured['main:1,2,3,4']") === 999 && R("state.realism") === 0.4, "a save with the markers loads in full");
+		// v25.60: a cmp_v 3 save drops the ringsj ceiling (and its low-odds pauses) set by the old "wanted" rule; others stay
+		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), rates_v: R("RATES_V"), cmp_v: 3, at: Date.now(), cmp_caps: { ringsj: { level: 2, at: Date.now() }, hpamulet: { level: 2, at: Date.now() } },
+			gear_skip: { "cmp:ringsj:2": Date.now() + 3e6, "cmp:hpamulet:2": Date.now() + 3e6 } });
+		R("state.cmp_caps = {}; state.gear_skip = {}; load_state()");
+		assert(R("!state.cmp_caps.ringsj && !!state.cmp_caps.hpamulet && !state.gear_skip['cmp:ringsj:2'] && !!state.gear_skip['cmp:hpamulet:2']"), `v25.60: the old ringsj ceiling dropped once, others kept (${R("JSON.stringify([state.cmp_caps, state.gear_skip])")})`);
+		R("state.cmp_caps = {}; state.gear_skip = {}");
 		// v25.16: a save from before the rates marker loses its spot rates and realism only
 		ctx.get = () => ({ v: 1, meas_v: 3, data_v: R("DATA_V"), at: Date.now(), measured: { "main:1,2,3,4": 999 }, realism: 0.4, calib: { goo: { ratio: 3, n: 50 } } });
 		R("state.measured = {}; state.realism = 1; state.calib = {}; load_state()");
