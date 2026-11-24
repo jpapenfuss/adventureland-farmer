@@ -1252,10 +1252,12 @@ function party_power() {
 // Measured rate per spot with the party there: base xp of the party's kills at it (kill_credit); gold (v25.67): the gold
 // we really looted there (chest_opened). v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is
 // chosen for. Both rates are measured at every camp the party fights at (state.measured / state.measured_gold).
-const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
+// (gold mode with no camp measured above 0 gold/s yet: xp picks the camp — nothing would be fought, so nothing measured; Fable)
+const farm_kind = () => (CFG.farm_mode === "gold" && Object.keys(state.measured_gold).some((k) => gold_rate(k) > 0) ? "gold" : "xp");
 // v25.68 (owner: no projections without evidence): gold is only ever measured — state.measured_gold holds each camp's
 // totals { g: gold looted, s: seconds fought, n: sessions, at } and its rate is g / s; there is no gold estimate
-const gold_rate = (key) => { const m = state.measured_gold[key]; return m && m.s > 0 ? m.g / m.s : undefined; };
+// (counted once CFG.measure_min_s seconds were fought there — one chest in a 5 s session isn't a rate)
+const gold_rate = (key) => { const m = state.measured_gold[key]; return m && m.s >= CFG.measure_min_s ? m.g / m.s : undefined; };
 const meas = (kind = farm_kind()) => (kind === "gold" ? Object.fromEntries(Object.keys(state.measured_gold).map((k) => [k, gold_rate(k)]).filter((x) => x[1] !== undefined)) : state.measured);
 // a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set). Gold: none —
 // a camp's gold is only what was measured there (v25.68)
@@ -1283,7 +1285,7 @@ function end_session() {
 	// totals whatever the session's length or kills; chests opened just after the close are added too (on_chest_opened)
 	if (secs > 0) {
 		const m = state.measured_gold[s.key] = state.measured_gold[s.key] || { g: 0, s: 0, n: 0 };
-		m.g += s.rg || 0; m.s += secs; m.n++; m.at = Date.now();
+		m.g += s.rg || 0; m.s = Math.round(m.s + secs); m.n++; m.at = Date.now();
 		gold_last = { key: s.key, at: Date.now() };
 	}
 	if (secs < CFG.measure_min_s) return;
@@ -1301,7 +1303,7 @@ function end_session() {
 		state.meas_at["p:" + s.key] = Date.now();
 		if (pw) state.meas_at["w:" + s.key] = { lv: pw.lv, gs: pw.gs }; // v24.84
 	}
-	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), lg: 1, secs: Math.round(secs) });
+	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3.
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
 	// (v25.57: the camp's own type's kills only — fillers aren't in the estimate; an old session without the split: all)
@@ -5791,7 +5793,7 @@ function probe_pick() {
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
 			const raw = kill_value(mt, null) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
 			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
-			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
+			if (est > 0 && est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
 	return best;

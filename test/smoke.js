@@ -176,6 +176,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.measured = {}; state.measured_gold = {}; state.cooldown = {}; CFG.farm_mode = 'xp'; pick_pack()", ctx);
 		const px = vm.runInContext("state.pack && state.pack.mtype", ctx);
 		const e0 = vm.runInContext("kill_value('richgoo', null, 'gold')", ctx);
+		// gold mode with nothing measured (or under measure_min_s): xp picks the camp, so the party fights and measures
+		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 10, n: 1 } }; state.last_pick = 0; state.pack = null; pick_pack()`, ctx);
+		const p0 = vm.runInContext("[farm_kind(), state.pack && state.pack.mtype].join()", ctx);
+		assert(p0 === "xp,goo", `v25.68: gold mode, no camp measured for long enough: xp picks (${p0})`);
 		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 600, n: 4 }, '${GO}': { g: 60, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
 		const pg = vm.runInContext("state.pack && state.pack.mtype", ctx);
 		vm.runInContext(`state.measured_gold = { '${RG}': { g: 60, s: 600, n: 4 }, '${GO}': { g: 3000, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
@@ -214,12 +218,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.toad56; delete ctx.__d56;
 		vm.runInContext("state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx); }
 	// v25.52: the report's units follow the mode
-	vm.runInContext("CFG.farm_mode = 'gold'", ctx);
+	vm.runInContext("CFG.farm_mode = 'gold'; state.measured_gold = { 'main:1,1,2,2#goo': { g: 500, s: 100, n: 1 } }", ctx); // (v25.68: a camp measured)
 	{ const out = []; ctx.__F52 = (k, w, t) => out.push(t);
 		vm.runInContext("state.directive = null; state.probe_none = { at: Date.now(), best: 5 }; facts_doing(__F52, { p: state.pack, d: null, now: Date.now() }); facts_probe(__F52, { p: state.pack, d: null, now: Date.now() })", ctx);
 		const txt = out.join(" | ");
 		assert(/best gold\/s/.test(txt) && !/xp\/s/.test(txt), `v25.52: in gold mode the doing and probe lines say gold/s (${txt})`); }
-	vm.runInContext("CFG.farm_mode = 'xp'", ctx);
+	vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
 	const elite = { id: "e1", type: "monster", mtype: "goo", level: 12, hp: 650, max_hp: 650, attack: 450, frequency: 0.8, speed: 15, xp: 1200 };
 	assert(!vm.runInContext("live_ok", ctx)(elite), "levelled goo with 450 attack rejected by live check");
 	const normal = { id: "n1", type: "monster", mtype: "goo", hp: 100, max_hp: 100, attack: 5, speed: 6, xp: 10 };
