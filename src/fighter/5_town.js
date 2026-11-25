@@ -189,7 +189,7 @@ function party_trip_check(due, what) {
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
 		// v25.71 (owner: "standing around on the beach"): the cap first — with 6 trips in 10 min it halted the walk every
 		// tick and then didn't go: walk, halt, walk, halt, standing still
-		if (state.town_runs.length >= 6) { state.town_block = { what: asks.join(", "), blockers: ["6 trips in 10 min: next one when the oldest is 10 min old"], at: Date.now() }; return false; }
+		if (state.town_runs.length >= 6) { state.town_block = { what: asks.join(", "), blockers: ["6 trips in 10 min: next one when the oldest is 10 min old"], at: Date.now(), cap: true }; return false; }
 		if (walking()) { halt("town_check"); return true; }
 		{
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
