@@ -31,6 +31,7 @@ function on_death() {
 		// that sent the party away from its best spot, through the caves, and back 30 min later
 		const roamer = !!killer && killer !== p.mtype;
 		incident(killer || p.mtype, 0.6);
+		proven_death(killer || p.mtype); // v25.69: a death to it: no longer proven for 24h
 		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
 		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
 		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p));

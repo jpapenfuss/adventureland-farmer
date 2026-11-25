@@ -55,6 +55,7 @@ function meter_socket() {
 // player for its own). Counts the party's kills for pack measurements (together) and the watchdog (v23.0).
 function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
+	if (d?.mtype && G.monsters[d.mtype]) { const p = (state.proven[d.mtype] = state.proven[d.mtype] || { k: 0, d: [] }); p.k++; } // v25.69
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
 	if (state.session) {
 		const s = state.session;

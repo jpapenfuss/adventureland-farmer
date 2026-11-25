@@ -30,6 +30,8 @@ const CFG = {
 	// v25.51: what camps are chosen for — "xp" (xp/s) or "gold" (v25.68: measured looted gold/s only, no estimate: a camp
 	// never fought at scores 0). Gold is measured at every camp the party fights at, whatever the mode. Not enabled.
 	farm_mode: "xp",
+	proven_kills: 10,          // v25.69 (owner: "if we killed 493 of a target, we can kill 7 more"): a type the party has killed
+	                           // this many times, with no death to it in 24h, is fought whatever the fight model says
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	// v24.84 (owner: explore camps for the best return; re-evaluate them as gear and levels improve): the tank reviews
 	// its camp every camp_review_min, or after camp_review_early_min once the party has grown stronger (an average level
@@ -534,6 +536,7 @@ const state = {
 	mspot: null,             // merchant: the stand spot for Merrit { x, y } (saved)
 	stand_since: 0,          // merchant: when the stand was last opened and left still (Merrit's 2-minute timer)
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
+	proven: {},              // v25.69: monster type -> { k: party kills seen (kill_credit), d: [death times to it, 24h] } (saved)
 	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
 	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
@@ -608,6 +611,7 @@ function meter_socket() {
 // player for its own). Counts the party's kills for pack measurements (together) and the watchdog (v23.0).
 function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
+	if (d?.mtype && G.monsters[d.mtype]) { const p = (state.proven[d.mtype] = state.proven[d.mtype] || { k: 0, d: [] }); p.k++; } // v25.69
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
 	if (state.session) {
 		const s = state.session;
@@ -930,13 +934,25 @@ function tank_first(t) {
 	if (!is_tank_class(character.ctype)) return !free_for_all(t); // not the tank: never the first hit (v24.51), unless the tank one-shoots these (v25.20)
 	return party_missing().length > 0; // the tank: not before everyone's here
 }
+// v25.69 (owner): evidence over the model — the party has killed this type proven_kills times (kill_credit, any member)
+// and no member died to it in the last 24h
+function proven(mtype) {
+	const p = state.proven[mtype], now = Date.now();
+	return !!p && p.k >= (CFG.proven_kills || Infinity) && !(p.d || []).some((t) => now - t < 86_400_000);
+}
+function proven_death(mtype, at = Date.now()) {
+	if (!mtype) return;
+	const p = (state.proven[mtype] = state.proven[mtype] || { k: 0, d: [] });
+	p.d = [...(p.d || []).filter((t) => at - t < 86_400_000 && Math.abs(t - at) > 60_000), at];
+}
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
 	// v24.35: a monster type is judged for the party, not for whoever is within 400px this second. The leader stepped
 	// through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another spot and
 	// walked back — at every door.
 	const f = fight_math(G.monsters[mtype]);
-	return safe_enough(f, mtype) ? { ttk: f.ttk, xp: f.xp } : null;
+	if (safe_enough(f, mtype)) return { ttk: f.ttk, xp: f.xp };
+	return f && proven(mtype) ? { ttk: f.ttk, xp: f.xp, proven: true } : null;
 }
 // Seconds between respawns, as the server schedules them: respawn + 0..0.9s random (mean +0.45); respawns over 200s
 // are instead scaled by 0.72..1.2 (mean ×0.96). "grow" packs refill almost instantly (0.1s here).
@@ -4276,7 +4292,7 @@ function save_state() {
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
 	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 3, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
-		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
+		cooldown: state.cooldown, camp_deaths: state.camp_deaths, proven: state.proven, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
@@ -4359,6 +4375,7 @@ function load_state() {
 	if (d.calib_all?.n) state.calib_all = d.calib_all;
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.camp_deaths, d.camp_deaths || {}); // v25.29
+	Object.assign(state.proven, d.proven || {}); // v25.69
 	if (d.cave_block) state.cave_block = d.cave_block;
 	Object.assign(state.gear_skip, live(d.gear_skip));
 	Object.assign(state.crafted, d.crafted || {});
@@ -5548,7 +5565,7 @@ function apply_verdict(v, from) {
 		const now = Date.now();
 		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) camp_death(v.key);
 		else if (v.key && v.cd > now) rest_camp(v.key, Math.min(v.cd - now, 3600_000), now);
-		if (v.death) delete state.probe_ok[v.mtype];
+		if (v.death) { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
 		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
@@ -6557,6 +6574,11 @@ function refresh_directive__fighter() {
 	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine); // a boss beats every goal
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
+	// v25.69 (owner: "why did we go to squigtoads, kill 2, turn around and leave?"): a member's finished hunt dropped its
+	// goal, the tank re-picked the best camp, went to town to turn it in, came back to that camp — and the member's new
+	// hunt (often the same monster) arrived a minute later. While a hunt trip is due, and for 45 s after a town run (the
+	// members' new goals reach us), the current goal stays.
+	if (!d && cur && !cur.boss && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
@@ -6662,16 +6684,16 @@ const best_known_xps = () => {
 	state.best_ref = { at: now, v };
 	return v;
 };
+// v25.69 (owner: two fresh hunts on very killable targets, and the party went to squigtoad): a hunt is chased while it
+// lasts and the camp pick would fight its monster — no estimate of whether it finishes in time (hunt counts are sized
+// for every spawn of the type on every map, so a kill-rate estimate at one spawn failed most fresh hunts) and no xp floor
 function hunt_feasible(h) {
-	if (!h || !(h.c > 0)) return false;
-	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
-	const best = best_known_xps();
-	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
-	if (!(h.ms > 0)) return true; // no expiry known
-	// v24.3: kills_per_s is already the party's rate (party table, or an estimate with the members counted); adding
-	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
-	const kps = kills_per_s(h.id);
-	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
+	if (!h || !(h.c > 0) || (h.ms !== undefined && !(h.ms > 0))) return false;
+	// (a follower never picks camps, so its state.safe and danger data are partial: it reports the hunt, the leader
+	// judges it — pick_shared and hunts_trip_due apply goal_blocked to partners' hunts; Fable)
+	if (is_follower()) return state.safe[h.id] !== undefined ? !!state.safe[h.id] : !!fight_profile(h.id);
+	const a = resolve_area(h.id);
+	return !!a && !goal_blocked(h.id, a.map, a.boundary);
 }
 // Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
 function kills_per_s(mt) {
@@ -6696,7 +6718,8 @@ function goals_list() {
 	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
 	const h = character.s.monsterhunt;
 	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
-	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
+	// (v25.69: no eta — a hunt isn't dropped as "too slow to share" on an estimate)
+	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left` });
 	// v24.3: own-quest goals get quest_directive's rules here too (at least quest_farm_min_xp of the best xp/s, done within
 	// quest_farm_max_h): this list goes to the leader, whose shared pick (mutual goals, turns) used it unfiltered and
 	// took the party to low-xp quest monsters the floor was meant to keep it off
@@ -6949,14 +6972,15 @@ function hunt_state() {
 	if (!(h.c > 0)) return "ready";
 	// v25.69: a hunt the camp pick refuses (unsafe, a danger zone, resting) isn't being chased: counted as one, it held
 	// back every member's turn-in trip (Torlis's pppompom, 7 left)
-	const a = hunt_feasible(h) && resolve_area(h.id);
-	return a && !goal_blocked(h.id, a.map, a.boundary) ? "chase" : "lost";
+	return hunt_feasible(h) ? "chase" : "lost"; // (v25.69: includes the camp pick's refusal — goal_blocked)
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.
 // v25.59: a finished hunt lapses like any other — one with under hunt_turnin_ms left goes now, whoever still chases (Fable)
 function hunts_trip_due() {
-	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, p.hs])].filter(([, s]) => s && s !== "off");
+	// (v25.69: a partner "chasing" a hunt we, the leader, would refuse to farm isn't chasing it)
+	const ps = (p) => (p.hs === "chase" && p.hunt?.id && !hunt_feasible({ id: p.hunt.id, c: p.hunt.c || 1 }) ? "lost" : p.hs);
+	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, ps(p)])].filter(([, s]) => s && s !== "off");
 	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
 		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
 	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
@@ -7307,6 +7331,8 @@ function facts_shared__fighter(F, ctx) {
 	if (!is_follower() && partners().length) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
+		const pv = Object.entries(state.safe || {}).filter(([, f]) => f?.proven).map(([t]) => `${t} (${state.proven[t].k} kills)`);
+		if (pv.length) F("proven", "party", `fought on evidence (the model calls them unsafe; killed ${CFG.proven_kills}+ times, no death to them in 24h): ${pv.slice(0, 6).join(", ")}`);
 		if (state.shared?.blocked?.length) F("goal_blocked", "party", `goals left out (the camp pick would refuse them): ${state.shared.blocked.slice(0, 4).join(" | ")}`);
 		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
@@ -7318,7 +7344,7 @@ function facts_goals__fighter(F, ctx) {
 function facts_hunt__fighter(F, ctx) {
 	const { p, d, now } = ctx;
 	const h = character.s.monsterhunt;
-	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : ` — not chased: ${(() => { const a = resolve_area(h.id); return a ? goal_blocked(h.id, a.map, a.boundary) || "expired" : "no spawn found"; })()}`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 }
 function facts_owe__fighter(F, ctx) {
 	const { p, d, now } = ctx;
@@ -8932,6 +8958,7 @@ function on_death() {
 		// that sent the party away from its best spot, through the caves, and back 30 min later
 		const roamer = !!killer && killer !== p.mtype;
 		incident(killer || p.mtype, 0.6);
+		proven_death(killer || p.mtype); // v25.69: a death to it: no longer proven for 24h
 		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
 		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
 		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p));

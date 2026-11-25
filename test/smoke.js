@@ -718,6 +718,29 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("!state.directive && state.shared.blocked.some((b) => /tortoise \\(Aspernari\\): not safe/.test(b))", ctx),
 		`v25.69: the partner's refused hunt gets no turn and is listed (${vm.runInContext("JSON.stringify([state.directive, state.shared.blocked])", ctx)})`);
 	vm.runInContext("delete state.safe.tortoise; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
+	// v25.69: a finished hunt drops its goal; while the hunt trip is due (and 45 s after a town run) the goal stays
+	{ const td = vm.runInContext("hunts_trip_due", ctx);
+		vm.runInContext("state.goals_cache = null; refresh_directive()", ctx); // tortoise turn again
+		const before = vm.runInContext("state.directive && state.directive.monster", ctx);
+		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical", hunt: null, hs: "ready", goals: [] } });
+		vm.runInContext("state.town_end_at = 0; hunts_trip_due = () => 'monster hunts (Aspernari to turn in)'; state.goals_cache = null; refresh_directive()", ctx);
+		const held = vm.runInContext("state.directive && state.directive.monster", ctx);
+		vm.runInContext("hunts_trip_due = () => null; state.town_end_at = Date.now() - 10000; refresh_directive()", ctx);
+		const after_town = vm.runInContext("state.directive && state.directive.monster", ctx);
+		vm.runInContext("state.town_end_at = Date.now() - 60000; refresh_directive()", ctx);
+		const later = vm.runInContext("state.directive && state.directive.monster", ctx);
+		ctx.hunts_trip_due = td; vm.runInContext("state.directive = null; state.dir_lock = null; state.turn = null; state.partners = {}", ctx);
+		assert(before === "tortoise" && held === "tortoise" && after_town === "tortoise" && !later,
+			`v25.69: the finished hunt's camp is kept while the trip is due and 45 s after town, then dropped (${before}/${held}/${after_town}/${later})`); }
+	// v25.69 (owner): evidence over the model — a type killed proven_kills times with no death to it in 24h is fought
+	{ ctx.G.monsters.brute69 = { xp: 900, hp: 90000, attack: 2000, respawn: 10, range: 300, speed: 10, frequency: 1.5, resistance: 0, armor: 0 };
+		const r0 = vm.runInContext("!!fight_profile('brute69')", ctx);
+		vm.runInContext("for (let i = 0; i < 10; i++) on_kill_credit({ mtype: 'brute69' })", ctx);
+		const r1 = vm.runInContext("fight_profile('brute69')?.proven === true", ctx);
+		vm.runInContext("proven_death('brute69')", ctx);
+		const r2 = vm.runInContext("!!fight_profile('brute69')", ctx);
+		vm.runInContext("delete state.proven.brute69", ctx); delete ctx.G.monsters.brute69;
+		assert(!r0 && r1 && !r2, `v25.69: unsafe by the model (${r0}); 10 party kills: fought (${r1}); a death to it: not for 24h (${r2})`); }
 
 	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.bank_full_at = 0; state.needs = new Map(); state.guide = null", ctx);
@@ -2466,14 +2489,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 95) v18.6: an unfinishable hunt is ignored; Ponty buys cap price per point; the merchant delivers held gear
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
 	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05; globalThis.__ms = state.measured; state.measured = {}; state.best_xp = 0", ctx); // 3 kills/min
-	assert(vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__h95 = !hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 }); CFG.hunt_min_xp = 0.7; globalThis.__h95", ctx),
-		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept (xp floor off: this is about expiry)");
-	// v18.7: a hunt monster far below the best xp/s we know isn't chased
-	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_xp = 800, state.best_at = Date.now())", ctx);
-	assert(!vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v23.5: hunt_min_xp 70% by default — a bee hunt at 300 vs best 800 isn't chased");
-	vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__ok0 = hunt_feasible({ id: 'bee', c: 10 }); CFG.hunt_min_xp = 0.6", ctx);
-	assert(vm.runInContext("globalThis.__ok0", ctx), "hunt_min_xp 0: chased");
-	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "hunt_min_xp 0.6: bee hunt at 300 xp/s vs best 800 not chased; croc chased");
+	// v25.69 (owner): a hunt is chased while it lasts and the camp pick would fight it — no finish-in-time estimate, no xp floor
+	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_xp = 800, state.best_at = Date.now()); CFG.hunt_min_xp = 0.7", ctx);
+	assert(vm.runInContext("hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 10 }) && !hunt_feasible({ id: 'bee', c: 10, ms: 0 }) && !hunt_feasible({ id: 'bee', c: 0 })", ctx),
+		"v25.69: 417 left in 30 min at 3 kills/min: chased; a low-xp hunt: chased; expired or done: not");
+	assert(vm.runInContext("globalThis.__sb = state.safe.bee; state.safe.bee = false; globalThis.__r69 = hunt_feasible({ id: 'bee', c: 10 }); state.safe.bee = __sb; if (__sb === undefined) delete state.safe.bee; !__r69", ctx), "v25.69: a hunt the camp pick refuses: not chased");
+	vm.runInContext("CFG.hunt_min_xp = 0.6", ctx);
 	vm.runInContext("CFG.hunt_min_xp = 0.7", ctx); // back to the default
 	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_xp = 0", ctx);
 	// v18.7 gold budget: party spending held under 90% of income
@@ -3084,7 +3105,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = hunt_state(), CFG.auto_monster_hunt = true, __u59 === 'off'", ctx), "hunts not chased (passive only): no hunt trips");
 		// v25.69: a hunt the camp pick refuses isn't chased ("lost"): it no longer holds back the party's turn-in trip
 		{ const s0 = character.s; character.s = { monsterhunt: { id: "goo", c: 7 } };
-			const st = vm.runInContext("globalThis.__hf69 = hunt_feasible; hunt_feasible = () => true; globalThis.__sg69 = state.safe.goo; state.safe.goo = { ttk: 1, xp: 1 }; [hunt_state(), (state.safe.goo = false, hunt_state())].join()", ctx);
+			const st = vm.runInContext("globalThis.__hf69 = hunt_feasible; globalThis.__sg69 = state.safe.goo; state.safe.goo = { ttk: 1, xp: 1 }; [hunt_state(), (state.safe.goo = false, hunt_state())].join()", ctx);
 			vm.runInContext("hunt_feasible = __hf69; state.safe.goo = __sg69; if (__sg69 === undefined) delete state.safe.goo", ctx); character.s = s0;
 			assert(st === "chase,lost", `v25.69: our hunt chased while the camp pick would take it, lost once it's judged unsafe (${st})`); }
 		// Daisy: success is a hunt held; failures pause her 5, 10, 20 min...; a success resets
@@ -3146,8 +3167,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// #7: together, the hunt rate is already the party's
 		vm.runInContext("CFG.hunt_min_xp = 0; kills_per_s = () => 0.05", ctx);
 		hb("Torlis", { ...tor, level: 60, x: 30, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: -30, y: 0 });
-		assert(vm.runInContext("partners_near().length === 2 && !hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
-			"100 kills at the party's 0.05/s (2000s) don't fit in 30 min — not x2.2 for the members near");
+		assert(vm.runInContext("partners_near().length === 2 && hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
+			"v25.69: 100 kills that an estimate says won't fit in 30 min are still chased (no finish-in-time estimate)");
 		// #10: a measurement's weight halves every meas_half_h
 		vm.runInContext("state.measured['main:9,9,9,9'] = 100; state.meas_at['p:main:9,9,9,9'] = Date.now() - CFG.meas_half_h * 3600000", ctx);
 		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300)", ctx) - 200) < 0.5, "12h old: half measured (100), half estimate (300)");

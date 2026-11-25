@@ -187,6 +187,8 @@ function facts_shared(F, ctx) {
 	if (!is_follower() && partners().length) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
+		const pv = Object.entries(state.safe || {}).filter(([, f]) => f?.proven).map(([t]) => `${t} (${state.proven[t].k} kills)`);
+		if (pv.length) F("proven", "party", `fought on evidence (the model calls them unsafe; killed ${CFG.proven_kills}+ times, no death to them in 24h): ${pv.slice(0, 6).join(", ")}`);
 		if (state.shared?.blocked?.length) F("goal_blocked", "party", `goals left out (the camp pick would refuse them): ${state.shared.blocked.slice(0, 4).join(" | ")}`);
 		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
@@ -198,7 +200,7 @@ function facts_goals(F, ctx) {
 function facts_hunt(F, ctx) {
 	const { p, d, now } = ctx;
 	const h = character.s.monsterhunt;
-	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : ` — not chased: ${(() => { const a = resolve_area(h.id); return a ? goal_blocked(h.id, a.map, a.boundary) || "expired" : "no spawn found"; })()}`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 }
 function facts_owe(F, ctx) {
 	const { p, d, now } = ctx;

@@ -158,13 +158,25 @@ function tank_first(t) {
 	if (!is_tank_class(character.ctype)) return !free_for_all(t); // not the tank: never the first hit (v24.51), unless the tank one-shoots these (v25.20)
 	return party_missing().length > 0; // the tank: not before everyone's here
 }
+// v25.69 (owner): evidence over the model — the party has killed this type proven_kills times (kill_credit, any member)
+// and no member died to it in the last 24h
+function proven(mtype) {
+	const p = state.proven[mtype], now = Date.now();
+	return !!p && p.k >= (CFG.proven_kills || Infinity) && !(p.d || []).some((t) => now - t < 86_400_000);
+}
+function proven_death(mtype, at = Date.now()) {
+	if (!mtype) return;
+	const p = (state.proven[mtype] = state.proven[mtype] || { k: 0, d: [] });
+	p.d = [...(p.d || []).filter((t) => at - t < 86_400_000 && Math.abs(t - at) > 60_000), at];
+}
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
 	// v24.35: a monster type is judged for the party, not for whoever is within 400px this second. The leader stepped
 	// through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another spot and
 	// walked back — at every door.
 	const f = fight_math(G.monsters[mtype]);
-	return safe_enough(f, mtype) ? { ttk: f.ttk, xp: f.xp } : null;
+	if (safe_enough(f, mtype)) return { ttk: f.ttk, xp: f.xp };
+	return f && proven(mtype) ? { ttk: f.ttk, xp: f.xp, proven: true } : null;
 }
 // Seconds between respawns, as the server schedules them: respawn + 0..0.9s random (mean +0.45); respawns over 200s
 // are instead scaled by 0.72..1.2 (mean ×0.96). "grow" packs refill almost instantly (0.1s here).

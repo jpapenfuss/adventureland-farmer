@@ -185,6 +185,11 @@ function refresh_directive() {
 	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine); // a boss beats every goal
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
+	// v25.69 (owner: "why did we go to squigtoads, kill 2, turn around and leave?"): a member's finished hunt dropped its
+	// goal, the tank re-picked the best camp, went to town to turn it in, came back to that camp — and the member's new
+	// hunt (often the same monster) arrived a minute later. While a hunt trip is due, and for 45 s after a town run (the
+	// members' new goals reach us), the current goal stays.
+	if (!d && cur && !cur.boss && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
@@ -290,16 +295,16 @@ const best_known_xps = () => {
 	state.best_ref = { at: now, v };
 	return v;
 };
+// v25.69 (owner: two fresh hunts on very killable targets, and the party went to squigtoad): a hunt is chased while it
+// lasts and the camp pick would fight its monster — no estimate of whether it finishes in time (hunt counts are sized
+// for every spawn of the type on every map, so a kill-rate estimate at one spawn failed most fresh hunts) and no xp floor
 function hunt_feasible(h) {
-	if (!h || !(h.c > 0)) return false;
-	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
-	const best = best_known_xps();
-	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
-	if (!(h.ms > 0)) return true; // no expiry known
-	// v24.3: kills_per_s is already the party's rate (party table, or an estimate with the members counted); adding
-	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
-	const kps = kills_per_s(h.id);
-	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
+	if (!h || !(h.c > 0) || (h.ms !== undefined && !(h.ms > 0))) return false;
+	// (a follower never picks camps, so its state.safe and danger data are partial: it reports the hunt, the leader
+	// judges it — pick_shared and hunts_trip_due apply goal_blocked to partners' hunts; Fable)
+	if (is_follower()) return state.safe[h.id] !== undefined ? !!state.safe[h.id] : !!fight_profile(h.id);
+	const a = resolve_area(h.id);
+	return !!a && !goal_blocked(h.id, a.map, a.boundary);
 }
 // Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
 function kills_per_s(mt) {
@@ -324,7 +329,8 @@ function goals_list() {
 	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
 	const h = character.s.monsterhunt;
 	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
-	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left`, eta_h: eta(h.c, 1, h.id) });
+	// (v25.69: no eta — a hunt isn't dropped as "too slow to share" on an estimate)
+	if (CFG.auto_monster_hunt && h?.c > 0 && hunt_feasible(h)) out.push({ monster: h.id, w: W.hunt, reason: `monster hunt ${h.c} left` });
 	// v24.3: own-quest goals get quest_directive's rules here too (at least quest_farm_min_xp of the best xp/s, done within
 	// quest_farm_max_h): this list goes to the leader, whose shared pick (mutual goals, turns) used it unfiltered and
 	// took the party to low-xp quest monsters the floor was meant to keep it off
