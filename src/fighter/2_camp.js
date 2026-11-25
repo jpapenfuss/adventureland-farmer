@@ -81,12 +81,13 @@ function keep_away(e) {
 	state.keep_at = now;
 }
 // v24.16: together, a spot is only as safe as the way there for every member (one in another map walks its own route)
-function party_route_danger(to) {
-	const own = route_danger(to);
+// (v25.75, audit: x/y — the camp itself; without, the map's spawn)
+function party_route_danger(to, x, y) {
+	const own = route_danger(to, x, y);
 	if (own || !in_party_cfg()) return own;
 	for (const p of partners()) {
 		if (p.map === character.map || p.errand) continue;
-		const q = partner_pos(p), rd = route_danger(to, undefined, undefined, { map: q.map, x: q.x, y: q.y });
+		const q = partner_pos(p), rd = route_danger(to, x, y, { map: q.map, x: q.x, y: q.y });
 		if (rd) return `${rd} (${p.name}'s way)`;
 	}
 	return null;
@@ -94,14 +95,20 @@ function party_route_danger(to) {
 // v24.9: a spot's xp/s counting the walk there: over an expected stay of stay_min, travel minutes earn nothing. Spots
 // were picked by rate alone, so a slightly better one maps away beat the one at hand (walk was 72-93% of the time)
 const walk_factor = (area) => { const st = CFG.travel.stay_min * 60, t = travel_s(area.map, area.boundary); return Number.isFinite(t) ? st / (st + t) : 0; };
+// The live goal as the camp review compares it: monster, map and (v25.75, Fable) the box — another area of the same
+// monster on the same map is a new goal too (a rested hunt camp's other area waited for the 30-min review)
+const dir_key = (now = Date.now()) => { const d = state.directive; return d && d.until > now ? `${d.monster}:${d.map}:${valid_boundary(d.boundary) ? d.boundary.join(",") : ""}` : ""; };
 // v24.84: the tank's camp review — on time, or early once the party is stronger than at the last pick
 function camp_review() {
 	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
-	if (!cur || cur.boss || cur.probe || errand_busy() || walking() || party_hit()) return false;
+	if (!cur || cur.boss || cur.probe || errand_busy() || party_hit()) return false;
 	const pw = party_power(), p0 = state.review_pw;
 	// v24.88: a new goal (a hunt taken, a quest's material) or one ended → review after a minute, not up to 30
-	const dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : "";
+	const dir = dir_key(now);
 	const goal_changed = dir !== (state.review_dir || "") && since >= 60_000;
+	// v25.75 (audit): a walk to the camp no longer blocks a goal change — the party walked all the way to the old hunt's
+	// camp, killed a few, then turned around. Other reviews still wait for the walk's end.
+	if (walking()) { if (!goal_changed) return false; halt("camp_review"); }
 	const stronger = !!(pw && p0 && (pw.lv - p0.lv >= 1 || (p0.gs > 0 && pw.gs / p0.gs - 1 >= CFG.camp_review_gear)));
 	if (!(goal_changed || since >= CFG.camp_review_min * 60_000 || (stronger && since >= CFG.camp_review_early_min * 60_000))) return false;
 	const before = pack_key(cur);
@@ -138,7 +145,7 @@ function goal_blocked(mt, map, boundary, guide_safe) {
 	if (!safe && !(guide_safe && farmable_type(mt))) return "not safe for us";
 	if (!map || !valid_boundary(boundary)) return null;
 	const area = { map, boundary, mtype: mt };
-	const dz = area_danger(area, mt) || party_route_danger(map);
+	const dz = area_danger(area, mt) || party_route_danger(map, (boundary[0] + boundary[2]) / 2, (boundary[1] + boundary[3]) / 2);
 	if (dz) return dz;
 	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
 }
@@ -242,7 +249,7 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
-	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
+	state.review_dir = dir_key(now); // v24.88
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
@@ -270,7 +277,7 @@ function pick_pack() {
 	if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
+		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map, (area.boundary[0] + area.boundary[2]) / 2, (area.boundary[1] + area.boundary[3]) / 2));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
 		if (!dz && !((state.cooldown[pack_key(area)] || 0) > now)) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };

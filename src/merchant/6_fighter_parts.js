@@ -58,3 +58,7 @@ function cave_died() {}
 function cave_watch_deaths() {} // v25.41: fighters only
 function facts_cave() {}
 function cave_entry_tick() { return false; }
+// v25.75: the merchant never picks camps nor waits for a party
+function goal_blocked() { return null; }
+function party_break() { return null; }
+function oneshot_types() { return []; }

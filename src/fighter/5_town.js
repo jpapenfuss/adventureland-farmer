@@ -166,6 +166,7 @@ async function ptown_wait() {
 	ptown_end_id(P.id);
 	state.ptown = null;
 	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
+	if (!is_follower()) { state.goals_cache = null; try { refresh_directive(); } catch (e) {} } // v25.75: walk out to the current goal
 	const waited = Math.round((Date.now() - t0) / 1000);
 	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
 	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
@@ -242,7 +243,9 @@ function hunt_state() {
 	if (!(h.c > 0)) return "ready";
 	// v25.69: a hunt the camp pick refuses (unsafe, a danger zone, resting) isn't being chased: counted as one, it held
 	// back every member's turn-in trip (Torlis's pppompom, 7 left)
-	return hunt_feasible(h) ? "chase" : "lost"; // (v25.69: includes the camp pick's refusal — goal_blocked)
+	// (v25.69: includes the camp pick's refusal — goal_blocked; v25.75: a follower's live hunt is "chase" — the leader judges it, ps())
+	if (is_follower()) return !(h.ms !== undefined && !(h.ms > 0)) ? "chase" : "lost";
+	return hunt_feasible(h) ? "chase" : "lost";
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.
