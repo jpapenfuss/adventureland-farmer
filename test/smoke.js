@@ -407,9 +407,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext(`state.measured_gold["main:1,2,3,4"] = { g: 900, s: 300, n: 3, at: 5 }; save_state(); state.measured_gold = {}; load_state();`, ctx);
 	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"].g === 900 && state.measured_gold["main:1,2,3,4"].s === 300 && gold_rate("main:1,2,3,4") === 3`, ctx),
 		"v25.68: a camp's looted gold and seconds survive a reload (3 gold/s)");
-	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); d.gold_v = 2; d.measured_gold = { "main:1,2,3,4": 3.5 }; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
+	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); d.gold_v = 3; d.measured_gold = { "main:1,2,3,4": { g: 900, s: 300, n: 3 } }; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
 		vm.runInContext("globalThis.__g51 = get; get = (k) => (k === SAVE_KEY ? __d51 : __g51(k)); load_state(); get = __g51", ctx);
-		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.68: a save with older gold rates (gold_v 2): dropped, xp rates kept"); }
+		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.76: a save with gold totals from before v25.76 (gold_v 3, may hold stray loot): dropped, xp rates kept"); }
 	vm.runInContext(`state.measured_gold = { x: 1 }; globalThis.__ss51 = save_state; save_state = () => {}; forget(); save_state = __ss51`, ctx);
 	assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.51: forget() clears the gold rates too");
 	vm.runInContext(`state.measured = { "main:1,2,3,4": 12.5 }; state.danger.bee = 0.6`, ctx);
@@ -2942,6 +2942,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const K = "state.measured_gold['main:1,1,9,7#goo']";
 			ctx.__gm = vm.runInContext(K, ctx);
 			assert(ctx.__gm && ctx.__gm.g === 400 && Math.round(ctx.__gm.s) === 100 && Math.round(vm.runInContext("state.measured['main:1,1,9,7#goo']", ctx)) === 1, `v25.68: 10 chests x 30 + a late one of 100 = 400 gold in 100 s (a chest before any kill not counted), beside 1 xp/s (${JSON.stringify(ctx.__gm)})`);
+			// v25.76 (Fable): the next session at the same camp, just rolled over: the last kill's chest still counts there
+			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() }; on_chest_opened({ id: "roll", gold: 7 })`, ctx);
+			const roll = vm.runInContext("state.session.rg", ctx);
+			vm.runInContext(`state.session.key = "main:9,9,9,9#goo"; state.session.rg = 0; on_chest_opened({ id: "other", gold: 7 })`, ctx);
+			const other = vm.runInContext("state.session.rg", ctx);
+			vm.runInContext("state.session = null", ctx);
+			assert(roll === 7 && other === 0, `v25.76: a chest right after a roll-over at the same camp counts (${roll}); at another camp before a kill it doesn't (${other})`);
 			// v25.76 (owner: frog 1809/s from 45k in ~25 s): a session under measure_min_s books nothing — its gold is stray loot
 			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 1, rg: 45000, start: Date.now() - 25000 }; end_session()`, ctx);
 			assert(Math.round(vm.runInContext(K + ".s", ctx)) === 100 && vm.runInContext(K + ".g", ctx) === 400 && vm.runInContext(K + ".n", ctx) === 1, "v25.76: a 25 s visit with 45k of loot books nothing");
@@ -3791,6 +3798,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("meas_tick()");
 			assert(R("state.session") === null, "Sanala unheard: no measurement session");
 			R("state.partners.Sanala = { name: 'Sanala', ctype: 'mage', map: 'main', x: 40, y: 40, t: Date.now() }; meas_tick()");
+			assert(R("state.session") === null, "v25.76: within loot_wait_ms of arriving at the camp: no session yet (the last camp's chests)");
+			R("meas_pk.at = 0; meas_tick()");
 			assert(R("!!state.session"), "everyone heard and here: the session starts");
 			// a member out of the tank's engage range: the elapsed seconds are left out (not just 1 s a tick)
 			R("state.session.last_here = Date.now() - 3000; state.partners.Sanala.x = 50 + CFG.party.engage_px + 50; state.partners.Sanala.y = 50; meas_tick()");
