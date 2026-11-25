@@ -114,8 +114,7 @@ function pick_shared(mine) {
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
 	// nothing in common: turns, rotating through members that have a goal the group can fight
 	const top = (n) => cands.filter((e) => e.w[n]).sort((a, b) => b.w[n] - a.w[n])[0];
-	const mine_ok = mine && (mine.boss || !goal_blocked(mine.monster, mine.map, mine.boundary, mine.guide_safe));
-	if (mine && !mine_ok) blocked.push(`${mine.monster} (${me}): ${goal_blocked(mine.monster, mine.map, mine.boundary, mine.guide_safe)}`);
+	const mine_ok = !!mine; // (refresh_directive passes only a goal the camp pick would take)
 	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine_ok : top(n)));
 	if (!order.length) return mine_ok ? mine : null;
 	// a turn's turn_min counts from arrival at its target (walking there isn't the turn), capped by turn_walk_max_min
@@ -189,7 +188,7 @@ function refresh_directive() {
 	// goal, the tank re-picked the best camp, went to town to turn it in, came back to that camp — and the member's new
 	// hunt (often the same monster) arrived a minute later. While a hunt trip is due, and for 45 s after a town run (the
 	// members' new goals reach us), the current goal stays.
-	if (!d && cur && !cur.boss && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
+	if (!d && cur && !cur.boss && in_party_cfg() && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&

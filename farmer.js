@@ -5570,7 +5570,7 @@ function apply_verdict(v, from) {
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
 		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_fail") delete state.probe_ok[v.mtype];
+	} else if (v.kind === "probe_fail") { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
 }
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
@@ -5956,7 +5956,7 @@ function probe_check__fighter() {
 	// v24.6: a probe that held widens the party verdict for that monster by the risk it held at (24h), for every fighter:
 	// before, nothing changed — calibration isn't recorded under tank cover — so it was re-probed every 2h, never adopted
 	if (result === "ok") { const mult = +Math.min(P.ratio * 1.05, CFG.probe.max_over * 1.05).toFixed(3); state.probe_ok[P.mtype] = { mult, at: now }; share_verdict({ kind: "probe_ok", mtype: P.mtype, mult }); }
-	else { delete state.probe_ok[P.mtype]; share_verdict({ kind: "probe_fail", mtype: P.mtype }); }
+	else { delete state.probe_ok[P.mtype]; proven_death(P.mtype); share_verdict({ kind: "probe_fail", mtype: P.mtype }); } // (v25.69: an aborted probe's kills prove nothing for 24h)
 	if (result === "fail" && !fled && !dead) incident(P.mtype, 0.8); // a flee/death already recorded its own incident
 	game_log(`probe ${P.mtype}: ${result === "ok" ? "held for " + CFG.probe.minutes + " min" : "aborted (" + (dead ? "death" : fled ? "flee" : "low hp") + ")"}`, result === "ok" ? C.ok : C.warn);
 	state.probe = null;
@@ -6081,6 +6081,7 @@ function live_ok(e) {
 	if (!f) return null;
 	if (f.trusted && !((e.level || 1) > 1)) return f; // guide-judged safe and not levelled up: trust it
 	if (f.probe) return f; // probing this monster on purpose
+	if (f.proven) return f; // v25.69: killed often enough, no death to it in 24h — evidence over the model (Fable)
 	const lf = entity_profile(e);
 	return lf ? { ttk: lf.ttk, xp: lf.xp } : null;
 }
@@ -6503,8 +6504,7 @@ function pick_shared(mine) {
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
 	// nothing in common: turns, rotating through members that have a goal the group can fight
 	const top = (n) => cands.filter((e) => e.w[n]).sort((a, b) => b.w[n] - a.w[n])[0];
-	const mine_ok = mine && (mine.boss || !goal_blocked(mine.monster, mine.map, mine.boundary, mine.guide_safe));
-	if (mine && !mine_ok) blocked.push(`${mine.monster} (${me}): ${goal_blocked(mine.monster, mine.map, mine.boundary, mine.guide_safe)}`);
+	const mine_ok = !!mine; // (refresh_directive passes only a goal the camp pick would take)
 	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine_ok : top(n)));
 	if (!order.length) return mine_ok ? mine : null;
 	// a turn's turn_min counts from arrival at its target (walking there isn't the turn), capped by turn_walk_max_min
@@ -6578,7 +6578,7 @@ function refresh_directive__fighter() {
 	// goal, the tank re-picked the best camp, went to town to turn it in, came back to that camp — and the member's new
 	// hunt (often the same monster) arrived a minute later. While a hunt trip is due, and for 45 s after a town run (the
 	// members' new goals reach us), the current goal stays.
-	if (!d && cur && !cur.boss && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
+	if (!d && cur && !cur.boss && in_party_cfg() && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
@@ -6980,8 +6980,9 @@ function hunt_state() {
 function hunts_trip_due() {
 	// (v25.69: a partner "chasing" a hunt we, the leader, would refuse to farm isn't chasing it)
 	const ps = (p) => (p.hs === "chase" && p.hunt?.id && !hunt_feasible({ id: p.hunt.id, c: p.hunt.c || 1 }) ? "lost" : p.hs);
-	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, ps(p)])].filter(([, s]) => s && s !== "off");
-	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
+	const hs0 = hunt_state();
+	const st = [[character.name, hs0], ...partners().map((p) => [p.name, ps(p)])].filter(([, s]) => s && s !== "off");
+	const mine = character.s.monsterhunt, late = [[character.name, hs0 === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
 		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
 	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
 	if (!st.length || st.some(([, s]) => s === "chase")) return null;

@@ -258,7 +258,7 @@ function apply_verdict(v, from) {
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
 		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_fail") delete state.probe_ok[v.mtype];
+	} else if (v.kind === "probe_fail") { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
 }
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
