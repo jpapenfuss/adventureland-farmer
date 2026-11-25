@@ -4627,6 +4627,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const e3 = R("state.ptown === null");
 		R("state.ptown = null");
 		assert(e1 && e2 && e3, `v25.71: an ended trip isn't rejoined (${e1}); a new one is (${e2}); our own trip echoed back isn't (${e3})`);
+		// v25.71: the tank with a trip due but 6 trips in 10 min doesn't halt its walk (walk, halt, walk… standing still)
+		{ const h0 = R("halt"), cd0 = R("collect_due"), nm0 = character.name, ct0 = character.ctype; Object.assign(character, { name: "Torlis", ctype: "paladin" });
+			R("globalThis.__pp71 = state.partners; state.partners = {}; globalThis.__h71 = 0; smart_depth = 1; halt = () => { __h71++; }; collect_due = () => [{ to: 'Sanala', name: 'x71', level: 0 }]; state.town_runs = Array(6).fill(Date.now())");
+			const r = R("party_trip_check({ plan: { free: 30, bank: [], sell: [], fetch: [] } }, [])"), halts = R("__h71");
+			R("state.town_runs = Array(1).fill(Date.now()); party_trip_check({ plan: { free: 30, bank: [], sell: [], fetch: [] } }, [])");
+			const halts2 = R("__h71");
+			ctx.halt = h0; ctx.collect_due = cd0; R("smart_depth = 0; state.town_runs = []; state.town_block = null; state.partners = __pp71"); Object.assign(character, { name: nm0, ctype: ct0 });
+			assert(r === false && halts === 0 && halts2 === 1, `v25.71: trip cap reached: no halt, the walk goes on (${r}, ${halts} halts); under the cap: halts to go (${halts2})`); }
 		// too late: we couldn't get away within town_join_s
 		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
 		assert(R("ptown_join_tick()") === true && R("state.ptown.joined === true"), "v24.60: no join window — a member that couldn't get away earlier still goes");

@@ -95,7 +95,8 @@ function ptown_recv(msg, from) {
 	// v25.71 (owner's report: 390 one-second party trips in an hour, standing in town): a member still re-announcing a
 	// trip that had just ended (its 5 s resend, a late heartbeat) re-opened it on us, we "joined" it, our announcement
 	// re-opened it on the others — for ever. A trip that ended here, and our own trip we're no longer on, are never rejoined.
-	if (state.ptown_ended?.[msg.id] || (msg.by === character.name && P?.id !== msg.id)) return;
+	// (Fable: a waiter still resending it — we left early, it waits for our "done" — gets it: our heartbeat says done)
+	if (state.ptown_ended?.[msg.id] || (msg.by === character.name && P?.id !== msg.id)) { if (!P) { state.ptown_done_at = Date.now(); try { heartbeat(); } catch (e) {} } return; }
 	// another trip while we're on one: same thing — everyone on any trip waits for everyone (ptown_wait)
 	if (P && P.id !== msg.id && !(P.joined || P.pending)) P = null;
 	if (!P) P = state.ptown = { id: msg.id, by: msg.by || from, at: Date.now(), leavers: [] };
@@ -185,9 +186,12 @@ function party_trip_check(due, what) {
 		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
 	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade (no safe way for it)`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
-		if (walking()) { halt("town_check"); return true; }
 		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
-		if (state.town_runs.length < 6) {
+		// v25.71 (owner: "standing around on the beach"): the cap first — with 6 trips in 10 min it halted the walk every
+		// tick and then didn't go: walk, halt, walk, halt, standing still
+		if (state.town_runs.length >= 6) { state.town_block = { what: asks.join(", "), blockers: ["6 trips in 10 min: next one when the oldest is 10 min old"], at: Date.now() }; return false; }
+		if (walking()) { halt("town_check"); return true; }
+		{
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
 			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
 			if (worn_ask) state.worn_try_at = Date.now();
