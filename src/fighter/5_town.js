@@ -219,14 +219,19 @@ function hunt_state() {
 	const h = character.s.monsterhunt;
 	if (!h) return "none";
 	if (!(h.c > 0)) return "ready";
-	return hunt_feasible(h) ? "chase" : "lost";
+	// v25.69: a hunt the camp pick refuses (unsafe, a danger zone, resting) isn't being chased: counted as one, it held
+	// back every member's turn-in trip (Torlis's pppompom, 7 left)
+	return hunt_feasible(h) ? "chase" : "lost"; // (v25.69: includes the camp pick's refusal — goal_blocked)
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.
 // v25.59: a finished hunt lapses like any other — one with under hunt_turnin_ms left goes now, whoever still chases (Fable)
 function hunts_trip_due() {
-	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, p.hs])].filter(([, s]) => s && s !== "off");
-	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
+	// (v25.69: a partner "chasing" a hunt we, the leader, would refuse to farm isn't chasing it)
+	const ps = (p) => (p.hs === "chase" && p.hunt?.id && !hunt_feasible({ id: p.hunt.id, c: p.hunt.c || 1 }) ? "lost" : p.hs);
+	const hs0 = hunt_state();
+	const st = [[character.name, hs0], ...partners().map((p) => [p.name, ps(p)])].filter(([, s]) => s && s !== "off");
+	const mine = character.s.monsterhunt, late = [[character.name, hs0 === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
 		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
 	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
 	if (!st.length || st.some(([, s]) => s === "chase")) return null;

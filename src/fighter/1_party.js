@@ -253,12 +253,12 @@ function apply_verdict(v, from) {
 		const now = Date.now();
 		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) camp_death(v.key);
 		else if (v.key && v.cd > now) rest_camp(v.key, Math.min(v.cd - now, 3600_000), now);
-		if (v.death) delete state.probe_ok[v.mtype];
+		if (v.death) { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
 		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_fail") delete state.probe_ok[v.mtype];
+	} else if (v.kind === "probe_fail") { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
 }
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.

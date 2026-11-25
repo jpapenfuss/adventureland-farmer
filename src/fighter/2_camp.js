@@ -129,6 +129,19 @@ function set_pack(p, label) {
 	}
 	state.pack = p;
 }
+// v25.69 (owner: "why did we go to squigtoads, kill 2, turn around and leave?"): why pick_pack would refuse a goal at
+// this spot, or null. The goal rotation handed turns to goals refused here, and each such turn sent the party to the
+// best camp for a minute or two, between the goals it could farm.
+function goal_blocked(mt, map, boundary, guide_safe) {
+	// (state.safe: the last pick's verdict; a type it hasn't judged yet: the fight model's)
+	const safe = state.safe[mt] !== undefined ? !!state.safe[mt] : !!fight_profile(mt);
+	if (!safe && !(guide_safe && farmable_type(mt))) return "not safe for us";
+	if (!map || !valid_boundary(boundary)) return null;
+	const area = { map, boundary, mtype: mt };
+	const dz = area_danger(area, mt) || party_route_danger(map);
+	if (dz) return dz;
+	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
+}
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
 // ---- Probing (CFG.probe) ----
@@ -301,7 +314,7 @@ function probe_check() {
 	// v24.6: a probe that held widens the party verdict for that monster by the risk it held at (24h), for every fighter:
 	// before, nothing changed — calibration isn't recorded under tank cover — so it was re-probed every 2h, never adopted
 	if (result === "ok") { const mult = +Math.min(P.ratio * 1.05, CFG.probe.max_over * 1.05).toFixed(3); state.probe_ok[P.mtype] = { mult, at: now }; share_verdict({ kind: "probe_ok", mtype: P.mtype, mult }); }
-	else { delete state.probe_ok[P.mtype]; share_verdict({ kind: "probe_fail", mtype: P.mtype }); }
+	else { delete state.probe_ok[P.mtype]; proven_death(P.mtype); share_verdict({ kind: "probe_fail", mtype: P.mtype }); } // (v25.69: an aborted probe's kills prove nothing for 24h)
 	if (result === "fail" && !fled && !dead) incident(P.mtype, 0.8); // a flee/death already recorded its own incident
 	game_log(`probe ${P.mtype}: ${result === "ok" ? "held for " + CFG.probe.minutes + " min" : "aborted (" + (dead ? "death" : fled ? "flee" : "low hp") + ")"}`, result === "ok" ? C.ok : C.warn);
 	state.probe = null;

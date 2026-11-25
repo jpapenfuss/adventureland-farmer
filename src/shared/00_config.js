@@ -1,4 +1,4 @@
-const VERSION = "25.68"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.69"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -29,6 +29,8 @@ const CFG = {
 	// v25.51: what camps are chosen for — "xp" (xp/s) or "gold" (v25.68: measured looted gold/s only, no estimate: a camp
 	// never fought at scores 0). Gold is measured at every camp the party fights at, whatever the mode. Not enabled.
 	farm_mode: "xp",
+	proven_kills: 10,          // v25.69 (owner: "if we killed 493 of a target, we can kill 7 more"): a type the party has killed
+	                           // this many times, with no death to it in 24h, is fought whatever the fight model says
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	// v24.84 (owner: explore camps for the best return; re-evaluate them as gear and levels improve): the tank reviews
 	// its camp every camp_review_min, or after camp_review_early_min once the party has grown stronger (an average level
@@ -533,6 +535,7 @@ const state = {
 	mspot: null,             // merchant: the stand spot for Merrit { x, y } (saved)
 	stand_since: 0,          // merchant: when the stand was last opened and left still (Merrit's 2-minute timer)
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
+	proven: {},              // v25.69: monster type -> { k: party kills seen (kill_credit), d: [death times to it, 24h] } (saved)
 	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
 	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
