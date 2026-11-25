@@ -204,6 +204,10 @@ function refresh_directive() {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
 		if (changed) state.last_pick = 0;
+		// v25.70 (owner: "fighting cgoo for absolutely no reason"): the camp's reason follows the goal live — it was the
+		// text at the pick ("39 left" while 29 were left)
+		const P = state.pack;
+		if (P?.directive && !P.boss && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
 	} else if (state.directive) {
 		state.directive = null;
 		state.last_pick = 0;

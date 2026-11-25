@@ -718,6 +718,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("!state.directive && state.shared.blocked.some((b) => /tortoise \\(Aspernari\\): not safe/.test(b))", ctx),
 		`v25.69: the partner's refused hunt gets no turn and is listed (${vm.runInContext("JSON.stringify([state.directive, state.shared.blocked])", ctx)})`);
 	vm.runInContext("delete state.safe.tortoise; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
+	// v25.70: the camp's reason follows the live goal (it kept the pick's text: "39 left" while 29 were left)
+	{ vm.runInContext("state.goals_cache = null; state.directive = null; state.dir_lock = null; state.turn = null; refresh_directive(); state.pack = { mtype: 'tortoise', map: 'main', boundary: state.directive.boundary, directive: 'Aspernari: monster hunt 99 left' }; refresh_directive()", ctx);
+		const lab = vm.runInContext("state.pack.directive", ctx);
+		vm.runInContext("state.pack = null; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
+		assert(/20 left/.test(lab || ""), `v25.70: the pack's reason is the live goal's (${lab})`); }
 	// v25.69: a finished hunt drops its goal; while the hunt trip is due (and 45 s after a town run) the goal stays
 	{ const td = vm.runInContext("hunts_trip_due", ctx);
 		vm.runInContext("state.goals_cache = null; refresh_directive()", ctx); // tortoise turn again
