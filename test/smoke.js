@@ -4626,6 +4626,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.ptown = null; ptown_recv({ k: 'ptown', id: 'Sanala:10', by: 'Sanala' }, 'Torlis')"); // (we're Sanala: our own trip, not on it)
 		const e3 = R("state.ptown === null");
 		R("state.ptown = null");
+		// v25.72: an ended trip's resend (a member waiting in town for us) gets our "done": no trip, the heartbeat says done
+		R("state.ptown = null; state.ptown_done_at = 0; ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Aspernari')");
+		const e4 = R("state.ptown === null && Date.now() - state.ptown_done_at < 1000");
+		R("state.ptown_done_at = 0");
+		assert(e4, `v25.72: an ended trip's resend: not rejoined, answered done (${e4})`);
 		assert(e1 && e2 && e3, `v25.71: an ended trip isn't rejoined (${e1}); a new one is (${e2}); our own trip echoed back isn't (${e3})`);
 		// v25.71: the tank with a trip due but 6 trips in 10 min doesn't halt its walk (walk, halt, walk… standing still)
 		{ const h0 = R("halt"), cd0 = R("collect_due"), nm0 = character.name, ct0 = character.ctype; Object.assign(character, { name: "Torlis", ctype: "paladin" });

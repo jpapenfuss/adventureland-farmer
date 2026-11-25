@@ -183,7 +183,7 @@ function town_check() {
 	const due = town_due(townies.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
 	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
-	if (!what.length) return void (state.town_block = null);
+	if (!what.length) { if (!(state.town_block?.cap && Date.now() - state.town_block.at < 5000)) state.town_block = null; return; } // (v25.72: the party trip cap's reason stays)
 	// A member's own hunt never starts a trip by itself: the tank's party trip goes once every completable hunt in the
 	// party is ready (v25.59, owner; party_trip_check). Stat scrolls alone wait too (v24.77).
 	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the party's hunt trip or the next trip"], at: Date.now() });
