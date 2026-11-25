@@ -187,6 +187,7 @@ function facts_shared(F, ctx) {
 	if (!is_follower() && partners().length) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
+		if (state.shared?.blocked?.length) F("goal_blocked", "party", `goals left out (the camp pick would refuse them): ${state.shared.blocked.slice(0, 4).join(" | ")}`);
 		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
 }

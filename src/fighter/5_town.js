@@ -219,7 +219,10 @@ function hunt_state() {
 	const h = character.s.monsterhunt;
 	if (!h) return "none";
 	if (!(h.c > 0)) return "ready";
-	return hunt_feasible(h) ? "chase" : "lost";
+	// v25.69: a hunt the camp pick refuses (unsafe, a danger zone, resting) isn't being chased: counted as one, it held
+	// back every member's turn-in trip (Torlis's pppompom, 7 left)
+	const a = hunt_feasible(h) && resolve_area(h.id);
+	return a && !goal_blocked(h.id, a.map, a.boundary) ? "chase" : "lost";
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.

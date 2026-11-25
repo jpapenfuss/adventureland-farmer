@@ -129,6 +129,19 @@ function set_pack(p, label) {
 	}
 	state.pack = p;
 }
+// v25.69 (owner: "why did we go to squigtoads, kill 2, turn around and leave?"): why pick_pack would refuse a goal at
+// this spot, or null. The goal rotation handed turns to goals refused here, and each such turn sent the party to the
+// best camp for a minute or two, between the goals it could farm.
+function goal_blocked(mt, map, boundary, guide_safe) {
+	// (state.safe: the last pick's verdict; a type it hasn't judged yet: the fight model's)
+	const safe = state.safe[mt] !== undefined ? !!state.safe[mt] : !!fight_profile(mt);
+	if (!safe && !(guide_safe && farmable_type(mt))) return "not safe for us";
+	if (!map || !valid_boundary(boundary)) return null;
+	const area = { map, boundary, mtype: mt };
+	const dz = area_danger(area, mt) || party_route_danger(map);
+	if (dz) return dz;
+	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
+}
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
 // ---- Probing (CFG.probe) ----

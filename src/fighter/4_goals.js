@@ -87,27 +87,37 @@ function pick_shared(mine) {
 		if (!e.src && valid_boundary(g.boundary)) e.src = g;
 		e.why.push(`${m.name}: ${g.reason}${g.eta_h ? ` ~${g.eta_h}h` : ""}`);
 	}
-	const ok = (e) => G.monsters[e.monster] && (fight_profile(e.monster) || (e.src?.guide_safe && farmable_type(e.monster)));
+	// v25.69: and only goals the camp pick would take there (goal_blocked) — a refused goal's turn sent the party to the best camp
+	const area_of = (e) => (e.area === undefined ? (e.area = (e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster)) || null) : e.area);
+	const blocked = [];
+	const ok = (e) => {
+		if (!G.monsters[e.monster] || !(fight_profile(e.monster) || (e.src?.guide_safe && farmable_type(e.monster)))) return false;
+		const a = area_of(e), why = a ? goal_blocked(e.monster, a.map, a.boundary, e.src?.guide_safe) : "no spawn found";
+		if (why) blocked.push(`${e.monster} (${Object.keys(e.w).join(", ")}): ${why}`);
+		return !why;
+	};
 	const names = (e) => Object.keys(e.w);
 	const hours = (e) => Math.max(...names(e).map((n) => e.eta[n]));
 	const weight = (e) => names(e).reduce((t, n) => t + e.w[n], 0);
 	const to_dir = (e, label) => {
-		const area = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster);
+		const area = area_of(e);
 		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.w[me], mutual: names(e).length > 1 };
 	};
 	const cands = [...by.values()].filter((e) => names(e).length && ok(e));
 	// mutual only when the combined weight reaches a hunt's: two guide-farm rows (1+1) don't override members' hunts
 	// an hour of walking counts as travel.weight_h hours of goal time: a near shared goal beats an equal far one
-	const walk_h = (e) => { if (e.walk_h === undefined) { const a = e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster); e.walk_h = a ? travel_s(a.map, a.boundary) / 3600 : 0; } return e.walk_h; };
+	const walk_h = (e) => { if (e.walk_h === undefined) { const a = area_of(e); e.walk_h = a ? travel_s(a.map, a.boundary) / 3600 : 0; } return e.walk_h; };
 	const rank = (e) => weight(e) / (1 + hours(e) + walk_h(e) * CFG.travel.weight_h);
 	const mutual = cands.filter((e) => names(e).length >= 2 && weight(e) >= CFG.goal_w.hunt).sort((a, b) => rank(b) - rank(a));
 	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${hours(e).toFixed(1)}h (${e.why.join("; ")})`),
-		too_slow: [...by.values()].flatMap((e) => e.too_slow.map((w) => `${e.monster}: ${w}`)), at: now };
+		too_slow: [...by.values()].flatMap((e) => e.too_slow.map((w) => `${e.monster}: ${w}`)), blocked, at: now };
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
 	// nothing in common: turns, rotating through members that have a goal the group can fight
 	const top = (n) => cands.filter((e) => e.w[n]).sort((a, b) => b.w[n] - a.w[n])[0];
-	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine : top(n)));
-	if (!order.length) return mine;
+	const mine_ok = mine && (mine.boss || !goal_blocked(mine.monster, mine.map, mine.boundary, mine.guide_safe));
+	if (mine && !mine_ok) blocked.push(`${mine.monster} (${me}): ${goal_blocked(mine.monster, mine.map, mine.boundary, mine.guide_safe)}`);
+	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine_ok : top(n)));
+	if (!order.length) return mine_ok ? mine : null;
 	// a turn's turn_min counts from arrival at its target (walking there isn't the turn), capped by turn_walk_max_min
 	const d0 = state.directive;
 	if (state.turn && !state.turn.arrived && d0 && d0.map === character.map && valid_boundary(d0.boundary) &&
@@ -119,7 +129,7 @@ function pick_shared(mine) {
 		const i = state.turn ? order.indexOf(state.turn.who) : -1;
 		state.turn = { who: order[(i + 1) % order.length], end: now + (CFG.party.turn_min + CFG.travel.turn_walk_max_min) * 60_000 };
 	}
-	if (state.turn.who === me) return mine;
+	if (state.turn.who === me) return mine_ok ? mine : null;
 	const t = top(state.turn.who);
 	return to_dir(t, `${state.turn.who}: ${t.why.find((w) => w.startsWith(state.turn.who + ":"))?.slice(state.turn.who.length + 2) || t.monster}`);
 }
@@ -166,11 +176,13 @@ function refresh_directive() {
 	}
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
 	let mine = null;
-	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) mine = f();
+	// (v25.69: the first the camp pick would take — a refused hunt no longer hides our quest goals)
+	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) { const x = f(); if (x && (x.boss || !goal_blocked(x.monster, x.map, x.boundary, x.guide_safe))) mine = x; }
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
-	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
+	// (v25.69: no "|| mine" — pick_shared leaves out a goal the camp pick would refuse, and that one mustn't come back)
+	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine); // a boss beats every goal
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list

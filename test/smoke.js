@@ -712,6 +712,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari: monster hunt/.test(state.directive.reason)", ctx),
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	// v25.69: a goal the camp pick would refuse (here: judged unsafe) gets no turn — its turn sent the party to the best
+	// camp between goals; it's listed in state.shared.blocked instead
+	vm.runInContext("state.safe.tortoise = false; state.directive = null; state.dir_lock = null; state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
+	assert(vm.runInContext("!state.directive && state.shared.blocked.some((b) => /tortoise \\(Aspernari\\): not safe/.test(b))", ctx),
+		`v25.69: the partner's refused hunt gets no turn and is listed (${vm.runInContext("JSON.stringify([state.directive, state.shared.blocked])", ctx)})`);
+	vm.runInContext("delete state.safe.tortoise; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
 
 	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.bank_full_at = 0; state.needs = new Map(); state.guide = null", ctx);
@@ -3076,6 +3082,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Aspernari to take/.test(r4) && r5 === null,
 				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); lost + none: go (${r4}); all chasing: wait (${r5})`); }
 		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = hunt_state(), CFG.auto_monster_hunt = true, __u59 === 'off'", ctx), "hunts not chased (passive only): no hunt trips");
+		// v25.69: a hunt the camp pick refuses isn't chased ("lost"): it no longer holds back the party's turn-in trip
+		{ const s0 = character.s; character.s = { monsterhunt: { id: "goo", c: 7 } };
+			const st = vm.runInContext("globalThis.__hf69 = hunt_feasible; hunt_feasible = () => true; globalThis.__sg69 = state.safe.goo; state.safe.goo = { ttk: 1, xp: 1 }; [hunt_state(), (state.safe.goo = false, hunt_state())].join()", ctx);
+			vm.runInContext("hunt_feasible = __hf69; state.safe.goo = __sg69; if (__sg69 === undefined) delete state.safe.goo", ctx); character.s = s0;
+			assert(st === "chase,lost", `v25.69: our hunt chased while the camp pick would take it, lost once it's judged unsafe (${st})`); }
 		// Daisy: success is a hunt held; failures pause her 5, 10, 20 min...; a success resets
 		{ const s0 = character.s; character.s = {};
 			const st59 = (n, h) => vm.runInContext(`state.hunt_fails = ${n}; state.gear_skip = {}; hunt_step(async () => { ${h ? "character.s.monsterhunt = { c: 5, id: 'goo' };" : ""} return { success: true }; })`, ctx);
