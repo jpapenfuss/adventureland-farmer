@@ -196,10 +196,20 @@ function over_text(mt) {
 	const inc = state.danger[mt] || 1, cal = calib_factor(mt, f);
 	return `over the safety limit x${(fight_risk(f) / lim).toFixed(2)} (calibration x${cal.toFixed(2)}${inc !== 1 ? `, incidents x${inc.toFixed(2)}` : ""}, ${f.mates} with us${f.priest ? "" : ", no priest"})`;
 }
+var camp_load_at = Date.now(); // (var: pick_pack can run before this file's top level — v25.70's load wait)
 function pick_pack() {
 	state.safe = {};
 	for (const t in G.monsters) { const f = fight_profile(t); if (f) state.safe[t] = f; }
 	const now = Date.now();
+	// v25.70 (owner: "left cgoo, went to a neighboring zone, pathed right back"): a fresh load has no goal yet — the
+	// members' hunts come with their next heartbeats and refresh_directive — so its first pick was the best camp and the
+	// party walked back a minute later. In a party, the first 30 s after a load pick only a goal.
+	if (camp_load_at && in_party_cfg() && !is_follower() && now - camp_load_at < 30_000 && !(state.directive && state.directive.until > now)) {
+		// (from the first call: the loop holds pick_pack until every member is heard from; the 8 s refresh then ends the
+		// wait — the members' goals are in by then; Fable)
+		if (!state.goals_at_load) { state.goals_at_load = true; camp_load_at = now; setTimeout(() => { try { refresh_directive(); } catch (e) {} camp_load_at = 0; }, 8000); }
+		return;
+	}
 	if (state.probe && now < state.probe.until) { // a probe holds the pack until probe_check ends it
 		state.safe[state.probe.mtype] = state.probe.prof;
 		state.last_pick = now;
