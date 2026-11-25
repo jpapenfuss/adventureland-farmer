@@ -4645,6 +4645,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const halts2 = R("__h71");
 			ctx.halt = h0; ctx.collect_due = cd0; R("smart_depth = 0; state.town_runs = []; state.town_block = null; state.partners = __pp71"); Object.assign(character, { name: nm0, ctype: ct0 });
 			assert(r === false && halts === 0 && halts2 === 1, `v25.71: trip cap reached: no halt, the walk goes on (${r}, ${halts} halts); under the cap: halts to go (${halts2})`); }
+		// v25.74: an exception in the wait still ends the trip
+		{ R("globalThis.__pa74 = state.partners; state.partners = new Proxy({}, { get() { throw new Error('x74'); } }); state.ptown = { id: 'T:74', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], joined: true }; globalThis.__hb74 = heartbeat; heartbeat = () => {}");
+			let threw = false;
+			await vm.runInContext("ptown_wait()", ctx).catch(() => { threw = true; });
+			R("state.partners = __pa74; heartbeat = __hb74");
+			const cleared = R("state.ptown === null && !!state.ptown_ended['T:74']");
+			assert(threw && cleared, `v25.74: the wait threw (${threw}) and the trip still ended (${cleared})`); }
 		// too late: we couldn't get away within town_join_s
 		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
 		assert(R("ptown_join_tick()") === true && R("state.ptown.joined === true"), "v24.60: no join window — a member that couldn't get away earlier still goes");

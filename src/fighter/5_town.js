@@ -141,6 +141,9 @@ async function ptown_wait() {
 	P.done = true;
 	try { heartbeat(); } catch (e) {} // tell them now, not at the next beat
 	const t0 = Date.now();
+	let who = [];
+	// v25.74 (Fable): the trip ends whatever happens in the wait — an exception left state.ptown joined and done for good
+	try {
 	// v24.61: a member not yet on the trip counts until it's in town (it's following the tank in, or still fighting)
 	// v24.62: every fighter must say its work is done. A member in town whose heartbeat didn't show the trip yet counted
 	// as done: the tank's trip ended at once and it left for the camp while the others were still at the shops.
@@ -148,7 +151,6 @@ async function ptown_wait() {
 	// nothing of ours took us to town (no work, no teleport): walk there, so we gather with them and leave together
 	const town = dest_point("main"), rt = town && route_to(town.map, town.x, town.y);
 	if (rt && rt.d > CFG.town_hop_px && busy().length) await go(town).catch(() => {});
-	let who = [];
 	while (!character.rip) { // v24.60: no time limit — the party leaves town together or not at all (a member offline or dead is party_break's case)
 		who = busy();
 		if (!who.length) break;
@@ -159,13 +161,16 @@ async function ptown_wait() {
 		set_message(`town: waiting for ${who.join(", ")}`);
 		await sleep_ms(1000);
 	}
+	} finally {
+	// (the trip's end first, then the log — Fable)
+	ptown_end_id(P.id);
+	state.ptown = null;
+	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
 	const waited = Math.round((Date.now() - t0) / 1000);
 	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
 	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
 	if (who.length) game_log(`party trip: waited ${waited}s; going back without ${who.join(", ")}`, C.warn);
-	ptown_end_id(P.id);
-	state.ptown = null;
-	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
+	}
 }
 // ---- town_check's party part (v24.99): the tank takes the party to town for the members' needs and for what the merchant
 // holds for one of them. true = town_check is done for this tick ----
