@@ -70,7 +70,8 @@ function on_kill_credit(d) {
 let gold_last = null;
 function on_chest_opened(d) {
 	if (d?.gone || !(d?.gold > 0)) return;
-	if (state.session) state.session.rg = (state.session.rg || 0) + d.gold;
+	// (v25.76: a chest opened before any kill here is the last camp's — opened on arrival; not this camp's gold)
+	if (state.session) { if (state.session.kc_n > 0) state.session.rg = (state.session.rg || 0) + d.gold; }
 	else if (gold_last && Date.now() - gold_last.at < 20_000 && state.pack && pack_key(state.pack) === gold_last.key && state.measured_gold[gold_last.key]) state.measured_gold[gold_last.key].g += d.gold;
 }
 function spent() {

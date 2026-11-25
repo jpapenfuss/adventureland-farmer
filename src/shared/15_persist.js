@@ -77,7 +77,7 @@ function load_state() {
 		const t0 = Date.now();
 		// v25.68 gold_v 3: per-camp totals of looted gold and seconds; earlier gold rates (table values, averaged
 		// rates) are another unit and are dropped once
-		if (d.gold_v === 3) for (const [k, m] of Object.entries(d.measured_gold || {})) if (m && m.s > 0) state.measured_gold[k] = m;
+		if (d.gold_v === 3) for (const [k, m] of Object.entries(d.measured_gold || {})) if (m && m.s >= CFG.measure_min_s) state.measured_gold[k] = m; // (v25.76: totals from under measure_min_s — short visits' stray loot — dropped)
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);

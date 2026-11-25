@@ -2936,14 +2936,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// v25.68: each session adds the gold really looted in it (chest_opened, our share) and its seconds to the camp's
 		// totals — whatever its length or kills; a chest opened within 20 s of the close, still at that camp, too
 		{ vm.runInContext(`state.measured_gold = {}; state.pack = { map: "main", boundary: [1, 1, 9, 7], mtype: "goo" }; state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
+				on_chest_opened({ id: "prev", gold: 5000 }); // v25.76: opened before any kill here — the last camp's loot: not counted
 				for (let i = 0; i < 10; i++) { on_kill_credit({ mtype: "goo" }); on_chest_opened({ id: "c" + i, gold: 30 }); }
 				on_chest_opened({ id: "x", gone: true }); end_session(); on_chest_opened({ id: "late", gold: 100 })`, ctx);
 			const K = "state.measured_gold['main:1,1,9,7#goo']";
 			ctx.__gm = vm.runInContext(K, ctx);
-			assert(ctx.__gm && ctx.__gm.g === 400 && Math.round(ctx.__gm.s) === 100 && Math.round(vm.runInContext("state.measured['main:1,1,9,7#goo']", ctx)) === 1, `v25.68: 10 chests x 30 + a late one of 100 = 400 gold in 100 s, beside 1 xp/s (${JSON.stringify(ctx.__gm)})`);
-			// a short session with no chest: its seconds count, at 0 gold
-			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() - 20000 }; end_session()`, ctx);
-			assert(Math.round(vm.runInContext(K + ".s", ctx)) === 120 && vm.runInContext(K + ".n", ctx) === 2, "v25.68: a short session without a chest still books its seconds");
+			assert(ctx.__gm && ctx.__gm.g === 400 && Math.round(ctx.__gm.s) === 100 && Math.round(vm.runInContext("state.measured['main:1,1,9,7#goo']", ctx)) === 1, `v25.68: 10 chests x 30 + a late one of 100 = 400 gold in 100 s (a chest before any kill not counted), beside 1 xp/s (${JSON.stringify(ctx.__gm)})`);
+			// v25.76 (owner: frog 1809/s from 45k in ~25 s): a session under measure_min_s books nothing — its gold is stray loot
+			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 1, rg: 45000, start: Date.now() - 25000 }; end_session()`, ctx);
+			assert(Math.round(vm.runInContext(K + ".s", ctx)) === 100 && vm.runInContext(K + ".g", ctx) === 400 && vm.runInContext(K + ".n", ctx) === 1, "v25.76: a 25 s visit with 45k of loot books nothing");
+			// and the report lists only camps with measure_min_s of fighting
+			vm.runInContext(`state.measured_gold['main:2,2,3,3#frog'] = { g: 45000, s: 25, n: 1 }`, ctx);
+			assert(vm.runInContext("!/frog/.test(gold_camps_text()) && /goo@main 4\\.0\\/s/.test(gold_camps_text())", ctx), `v25.76: the report lists camps with enough fighting only (${vm.runInContext("gold_camps_text()", ctx)})`);
 			assert(vm.runInContext("CFG.farm_mode = 'gold', meas()['main:1,1,9,7#goo'] === gold_rate('main:1,1,9,7#goo') && meas_aged('main:1,1,9,7#goo', 0) === gold_rate('main:1,1,9,7#goo') && meas_aged('nowhere', 0) === 0", ctx), "v25.68: gold mode reads the measured totals only");
 			vm.runInContext("CFG.farm_mode = 'xp'; globalThis.__ssg = save_state; save_state = () => {}; forget(); save_state = __ssg", ctx);
 			assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.68: forget() clears the gold totals");

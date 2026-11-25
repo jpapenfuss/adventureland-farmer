@@ -538,7 +538,9 @@ function end_session() {
 	const secs = ((s.end || Date.now()) - s.start - (s.lost || 0)) / 1000;
 	// v25.68 (owner): the gold really looted here (chest_opened, our share) and the seconds fought, added to the camp's
 	// totals whatever the session's length or kills; chests opened just after the close are added too (on_chest_opened)
-	if (secs > 0) {
+	// (v25.76, owner: "frog 1809/s — literally impossible": 45k in ~25 s — a visit that short books only stray loot; the
+	// gold is counted from sessions of measure_min_s, as xp/s is)
+	if (secs >= CFG.measure_min_s) {
 		const m = state.measured_gold[s.key] = state.measured_gold[s.key] || { g: 0, s: 0, n: 0 };
 		m.g += s.rg || 0; m.s = Math.round(m.s + secs); m.n++; m.at = Date.now();
 		gold_last = { key: s.key, at: Date.now() };

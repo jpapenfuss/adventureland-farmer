@@ -235,8 +235,8 @@ function last_hour() {
 // history(hours): in a party, every character's history in one window (like report()); history(hours, "solo") only ours
 // "squigtoad@main 4.2/s (15.1k in 1.0h, 24x)", best first
 function gold_camps_text(n = 8) {
-	return Object.entries(state.measured_gold).filter(([, m]) => m.s > 0).sort((a, b) => b[1].g / b[1].s - a[1].g / a[1].s).slice(0, n)
-		.map(([k, m]) => `${k.split("#")[1] || "?"}@${k.split(":")[0]} ${(m.g / m.s).toFixed(1)}/s (${fmt_k(Math.round(m.g))} in ${(m.s / 3600).toFixed(1)}h, ${m.n}x)`).join(", ");
+	return Object.entries(state.measured_gold).filter(([, m]) => m.s >= CFG.measure_min_s).sort((a, b) => b[1].g / b[1].s - a[1].g / a[1].s).slice(0, n)
+		.map(([k, m]) => `${k.split("#")[1] || "?"}@${k.split(":")[0]} ${(m.g / m.s).toFixed(1)}/s (${fmt_k(Math.round(m.g))} in ${m.s < 5400 ? Math.round(m.s / 60) + " min" : (m.s / 3600).toFixed(1) + "h"}, ${m.n}x)`).join(", ");
 }
 function history(hours = 6, solo) {
 	const targets = party_names_all().filter((n) => n !== character.name);
