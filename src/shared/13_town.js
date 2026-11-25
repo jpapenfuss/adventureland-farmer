@@ -8,7 +8,9 @@ const TOWN_TASKS = ["hunt", "tokens", "craft", "guide", "compound", "upgrade", "
 const due_tasks = (due) => TOWN_TASKS.filter((k) => due[k]);
 // A trip that can't wait: nearly full bags, bags short with something to sell/bank, potions low. (Hunts: the tank's party
 // rule, hunts_trip_due — fighter/5_town.js.)
-const town_urgent = (due) => character.esize <= 3 ? `bags ${character.esize} free` : due.restock ? "potions" :
+// (v25.75, audit: not while the last trip couldn't free bag space — nothing to sell or bank — with a doubling back-off;
+// it sent the party to town back to back)
+const town_urgent = (due) => character.esize <= 3 && !(state.bag_futile?.until > Date.now()) ? `bags ${character.esize} free` : due.restock ? "potions" :
 	(due.plan.free < due.min_free && (due.sell || (due.bank && due.plan.bank.length > 0))) ? `bags short (${due.plan.free} free)` : "";
 // Town trips in the last hour on this version: what triggered each (v18.6) and what was due on them.
 // span: minutes covered (less than 60 right after an update)
@@ -71,6 +73,12 @@ function town_run(due) {
 	return errand("town", async () => {
 		try { await town_body(due); } finally {
 			state.town_end_at = Date.now();
+			// v25.75: bags still nearly full after the run → it can't be fixed in town now; back off (15 min, doubling to 2 h)
+			if (character.esize <= 3) {
+				const n = (state.bag_futile && Date.now() - state.bag_futile.at < 3 * 3600_000 ? state.bag_futile.n : 0) + 1;
+				state.bag_futile = { n, at: Date.now(), until: Date.now() + Math.min(7_200_000, 900_000 * 2 ** (n - 1)) };
+				game_log(`Town: bags still ${character.esize} free after the run (nothing sellable or bankable) — no bag trips for ${Math.round((state.bag_futile.until - Date.now()) / 60_000)} min`, C.warn);
+			} else state.bag_futile = null;
 			await ptown_wait().catch(() => {}); // v24.28: everyone on the trip walks back together
 		}
 	});
@@ -178,16 +186,16 @@ let town_block_logged = 0; // last "town needed but waiting" log (at most every 
 function town_check() {
 	if (ptown_join_tick()) return; // v24.28: a member's trip we're going on
 	if (Date.now() - state.last_town < CFG.town_min_gap_ms) return;
-	if (skipped("town:loop") && character.esize > 3) return;
 	const townies = partners().filter((p) => p.errand === "town").map((p) => p.name);
 	const due = town_due(townies.length > 0); // a member in town → share the trip
 	const what = due_tasks(due);
-	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/)
+	if (party_trip_check(due, what)) return; // v24.99: the tank's party trips (fighter/) — they have their own cap
+	if (skipped("town:loop") && character.esize > 3) return; // (v25.75, audit: after the party trips — the hunt turn-in waited 15 min)
 	if (!what.length) { if (!(state.town_block?.cap && Date.now() - state.town_block.at < 5000)) state.town_block = null; return; } // (v25.72: the party trip cap's reason stays)
 	// A member's own hunt never starts a trip by itself: the tank's party trip goes once every completable hunt in the
 	// party is ready (v25.59, owner; party_trip_check). Stat scrolls alone wait too (v24.77).
 	if (what.every((k) => k === "hunt" || k === "stat")) return void (state.town_block = { what: what.join("+"), blockers: ["a hunt or stat scrolls alone wait for the party's hunt trip or the next trip"], at: Date.now() });
-	const critical = character.esize <= 3; // nearly full bags: go even when attacked or lower on HP
+	const critical = character.esize <= 3 && !(state.bag_futile?.until > Date.now()); // nearly full bags: go even when attacked or lower on HP
 	// deferrable-only work (no bag/potion shortage, no hunt) waits town_soft_gap_ms; the next trip does it anyway
 	if (fighter_defers_town(due, what)) return; // v25.5: fighter/ — work that can wait
 	const attacked = !!get_nearest_monster({ target: character.name });
@@ -229,6 +237,7 @@ function town_check() {
 // doubling each time in a row up to 2 h — a 5-min pause made a party trip every 5 min (Fable)
 async function hunt_step(step) {
 	const r = await step("hunt", run_hunt);
+	state.goals_cache = null; // v25.75 (audit): the new hunt goes out in the next heartbeat, not 10 s later
 	// (the player update with the new hunt can arrive after Daisy's reply — wait for it before judging; Fable)
 	if (r?.started && !(character.s.monsterhunt?.c > 0)) await until(() => character.s.monsterhunt?.c > 0, 2000).catch(() => {});
 	if (character.s.monsterhunt?.c > 0) { state.hunt_fails = 0; return 1; }

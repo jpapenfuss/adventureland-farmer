@@ -140,7 +140,10 @@ function watchdog() {
 	if (!W?.enabled) return;
 	wd.pos.push({ t: now, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc || 0 });
 	wd.pos = wd.pos.filter((p) => now - p.t <= 15 * 60_000);
-	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant()) {
+	// (v25.75, audit: nor while waiting on purpose — a member offline (party_break) or a straggler (group_hold): it rested the
+	// camp and the party went elsewhere when the member came back)
+	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant() ||
+		(typeof party_break === "function" && in_party_cfg() && party_break()) || (state.group_wait && !(state.group_wait.go_until > now))) {
 		wd.lost_since = null;
 		wd.pos = wd.pos.slice(-1); // v24.4: the clocks restart after; a town trip + walk back used to count as 10 min without a kill
 		return;
@@ -158,6 +161,15 @@ function watchdog() {
 		const away = !!pos && !L.rip && !L.errand && (pos.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far) &&
 			!(state.follow_block && now - state.follow_block.at < 60_000); // v24.16: held back on purpose (a deadly way), not lost
 		wd.lost_since = away ? wd.lost_since || now : null;
+		// v25.75 (audit): the documented lost action — away from the leader lost_min: stop, clear the travel block, and the
+		// follower tick walks to it again (the tank waited for it without end)
+		if (away && now - wd.lost_since > (W.lost_min || 5) * 60_000) {
+			wd.lost_since = now;
+			wd_act("lost", `away from ${L.name} for ${W.lost_min || 5} min; walking to it again`);
+			halt("watchdog");
+			state.travel_block_until = 0;
+			return;
+		}
 		const f = since(W.frozen_min);
 		if (still(f) && no_hits(f) && !away) { // a follower glued in place while the leader is near: walk back to it
 			reset();

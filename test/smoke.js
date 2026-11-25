@@ -595,7 +595,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("town_reason.bank = 'every bank pack you can use is full'", ctx);
 
 	// 27) full bag, priest at 65% HP, under attack, mid-patrol smart_move → patrol walk stopped, town run starts
-	vm.runInContext("state.bank_full_at = 0; state.gear_skip = {}; state.errand = null; state.last_town = 0; state.needs = new Map(); smart_depth = 0", ctx);
+	vm.runInContext("state.bank_full_at = 0; state.bag_futile = null; state.gear_skip = {}; state.errand = null; state.last_town = 0; state.needs = new Map(); smart_depth = 0", ctx);
 	character.items = Array(42).fill(null).map(() => ({ name: "hpamulet" })); character.esize = 0;
 	character.hp = character.max_hp * 0.65; character.map = "main";
 	ctx.get_nearest_monster = (a) => (a && a.target ? { id: "bee" } : null);
@@ -720,6 +720,45 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("!state.directive && state.shared.blocked.some((b) => /tortoise \\(Aspernari\\): not safe/.test(b))", ctx),
 		`v25.69: the partner's refused hunt gets no turn and is listed (${vm.runInContext("JSON.stringify([state.directive, state.shared.blocked])", ctx)})`);
 	vm.runInContext("delete state.safe.tortoise; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
+	// v25.75 (audit): a resting area isn't the goal's area while another is open; a refused goal isn't held
+	{ ctx.G.maps.main.monsters.push({ type: "tortoise", count: 3, boundary: [-1300, 1600, -1000, 1900] });
+		const k1 = vm.runInContext("pack_key({ map: 'main', boundary: [-1353, 720, -896, 1516], mtype: 'tortoise' })", ctx);
+		vm.runInContext(`state.pack = null; state.cooldown = { '${k1}': Date.now() + 600000 }`, ctx);
+		const a1 = vm.runInContext("JSON.stringify(resolve_area('tortoise').boundary)", ctx);
+		vm.runInContext(`state.cooldown['${k1}'] = 0`, ctx);
+		const a0 = vm.runInContext("JSON.stringify(resolve_area('tortoise').boundary)", ctx);
+		ctx.G.maps.main.monsters.pop();
+		vm.runInContext(`state.cooldown['${k1}'] = Date.now() + 600000; state.directive = { monster: 'tortoise', map: 'main', boundary: [-1353, 720, -896, 1516], reason: 'x', until: Date.now() + 60000 };
+			state.town_end_at = Date.now(); globalThis.__pp75 = state.partners; state.partners = {}; state.goals_cache = null; character.s = {}; refresh_directive()`, ctx);
+		const held = vm.runInContext("state.directive && state.directive.monster", ctx);
+		vm.runInContext("state.partners = __pp75; state.cooldown = {}; state.directive = null; state.town_end_at = 0", ctx);
+		assert(a1 === "[-1300,1600,-1000,1900]" && a0 === "[-1353,720,-896,1516]" && !held, `v25.75: the open area while the bigger one rests (${a1} / ${a0}); a resting goal isn't held (${held})`); }
+	// v25.75 (audit): bags at 3 free that the last run couldn't empty aren't urgent for a while
+	{ const e0 = character.esize; character.esize = 2;
+		const u0 = vm.runInContext("town_urgent({ plan: { free: 2 }, min_free: 10 })", ctx);
+		vm.runInContext("state.bag_futile = { n: 1, at: Date.now(), until: Date.now() + 900000 }", ctx);
+		const u1 = vm.runInContext("town_urgent({ plan: { free: 2 }, min_free: 10 })", ctx);
+		vm.runInContext("state.bag_futile = null", ctx); character.esize = e0;
+		assert(/bags 2 free/.test(u0) && !u1, `v25.75: bags 2 free urgent (${u0}), not after a run that couldn't empty them (${u1})`); }
+	// v25.75 (audit): at its camp, a type it one-shoots: a member merely far doesn't hold the tank's first hit; one on an errand does
+	{ const os0 = vm.runInContext("oneshot_types", ctx), pm0 = vm.runInContext("party_missing", ctx);
+		vm.runInContext("oneshot_types = () => ['tortoise']; party_missing = () => ['Aspernari']; globalThis.__pk75 = state.pack; state.pack = { mtype: 'tortoise', map: 'main', boundary: [-1353, 720, -896, 1516] }", ctx);
+		const far = vm.runInContext("tank_first({ type: 'monster', mtype: 'tortoise', x: -1000, y: 1000 })", ctx);
+		vm.runInContext("state.partners.Aspernari = { ...state.partners.Aspernari, errand: 'town' }", ctx);
+		const errand = vm.runInContext("tank_first({ type: 'monster', mtype: 'tortoise', x: -1000, y: 1000 })", ctx);
+		vm.runInContext("state.partners.Aspernari.errand = null; oneshot_types = () => []", ctx);
+		const other = vm.runInContext("tank_first({ type: 'monster', mtype: 'tortoise', x: -1000, y: 1000 })", ctx);
+		ctx.oneshot_types = os0; ctx.party_missing = pm0; vm.runInContext("state.pack = __pk75", ctx);
+		assert(far === false && errand === true && other === true, `v25.75: one-shot camp, member far: the tank may start (${far}); member on an errand: holds (${errand}); not one-shot: holds (${other})`); }
+	// v25.75 (audit): a goal change reviews the camp during the walk there (halts, picks)
+	{ const pp0 = vm.runInContext("pick_pack", ctx), ents0 = ctx.parent.entities; ctx.parent.entities = {};
+		vm.runInContext("globalThis.__pk75b = state.pack; globalThis.__picked75 = 0; pick_pack = () => { __picked75++; }; smart_depth = 1; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,50,50] }; state.review_at = Date.now() - 120000; state.review_dir = 'x:main'; state.directive = { monster: 'tortoise', map: 'main', until: Date.now() + 60000 }", ctx);
+		vm.runInContext("camp_review()", ctx);
+		const p1 = vm.runInContext("__picked75", ctx);
+		vm.runInContext("state.review_dir = 'tortoise:main'; camp_review()", ctx);
+		const p2 = vm.runInContext("__picked75", ctx);
+		ctx.pick_pack = pp0; ctx.parent.entities = ents0; vm.runInContext("smart_depth = 0; state.pack = __pk75b; state.directive = null; state.review_dir = ''", ctx);
+		assert(p1 === 1 && p2 === 1, `v25.75: a goal change reviews the camp mid-walk (${p1}); no change: not mid-walk (${p2})`); }
 	// v25.70: right after a load the leader picks only a goal — no "best camp" walk before the members' hunts arrive
 	{ vm.runInContext("globalThis.__st70 = JSON.stringify({ safe: state.safe, best_xp: state.best_xp, best_at: state.best_at, best_ref: state.best_ref, best_score: state.best_score, pick_table: state.pick_table, last_pick: state.last_pick }); state.directive = null; state.pack = null; state.last_pick = 0; camp_load_at = Date.now(); globalThis.__rd70 = refresh_directive; refresh_directive = () => {}; pick_pack()", ctx);
 		const p0 = vm.runInContext("state.pack", ctx);
@@ -838,7 +877,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
 	vm.runInContext("refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.mutual", ctx), `mutual goal (minimush) chosen (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	// v25.75 (owner: hunts first): a member's hunt beats a quest both share — was: the mutual quest won and hunts lapsed
+	assert(vm.runInContext("state.directive.monster === 'tortoise' && /monster hunt/.test(state.directive.reason)", ctx), `v25.75: the hunt (tortoise) beats the shared quest (minimush) (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 	// v18.0: an overlap of guide-farm rows only (1+1 < a hunt's weight) isn't mutual: turns, not "guide goo" for both
 	ctx.G.craft = {};
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
@@ -849,9 +889,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
 	// no overlap → turns between the two tops
 	vm.runInContext("state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive.monster === 'goo' && !state.directive.mutual", ctx), "no overlap: our own goal on our turn");
+	// v25.75 (hunts first): our guide row gets no turn while a member has a hunt — the hunt holds every turn
+	assert(vm.runInContext("state.directive.monster === 'tortoise' && !state.directive.mutual", ctx), "v25.75: no overlap, a member's hunt: the hunt, not our guide row");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive.monster === 'tortoise'", ctx), "no overlap: partner's top goal on its turn");
+	assert(vm.runInContext("state.directive.monster === 'tortoise'", ctx), "v25.75: ...on the next turn too");
 
 	// 39) live report: crab chosen as "mutual" for 200 crab claws at 1/1000 (~forever). Infeasible goals don't count.
 	ctx.G.items.crabclaw = { type: "material" }; ctx.G.items.ascale = { type: "material" };
@@ -1724,6 +1765,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
 	vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; state.recovering = false; smart_depth = 0; hist.ev = []; wd.acts = []; wd.lost_since = null", ctx);
 	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}", ctx);
+	// (v25.75: the watchdog stands down while the party waits for an absent member — the partners here are absent on purpose)
+	vm.runInContext("globalThis.__pb66 = party_break; party_break = () => null; state.group_wait = null", ctx);
 	// v23.0: progress = our own hits/kills (party xp arrives from partners' kills anywhere)
 	const seed = (mins, dx = 0) => vm.runInContext(`wd.pos = [{ t: Date.now() - ${mins} * 60000, map: 'main', x: ${100 + dx}, y: 100, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]`, ctx);
 	const stop66 = []; ctx.stop = (w) => stop66.push(w);
@@ -1750,9 +1793,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	hb("Torlis", { ...tor, map: "main", x: 0, y: 0 });
 	town66.length = 0;
 	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; watchdog()", ctx);
-	assert(!vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) !== "regroup", "v24.58: a follower away from the leader is not sent to town on its own by the watchdog");
+	// v25.75 (audit): the lost action is a fresh walk to the leader — never town on its own (v24.58)
+	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost' && /walking to it again/.test(e.note)) && state.travel_block_until === 0", ctx) && vm.runInContext("state.errand", ctx) !== "regroup" && town66.length === 0,
+		"v25.75: a follower lost for lost_min walks to the leader again (not to town on its own)");
 	vm.runInContext("state.errand = null; state.pack = null; wd.pos = []; wd.acts = []; hist.ev = []", ctx);
 	ctx.stop = (a) => calls.push("stop:" + a);
+	vm.runInContext("party_break = __pb66", ctx);
+	// v25.75 (audit): no frozen/noprog while the party waits for a member on purpose
+	{ Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", x: 100, y: 100, map: "main", rip: false });
+		vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; smart_depth = 0; wd.acts = []", ctx);
+		vm.runInContext("hist.ev = []; state.cooldown = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }", ctx);
+		vm.runInContext(`wd.pos = [{ t: Date.now() - 4 * 60000, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]`, ctx);
+		vm.runInContext("watchdog()", ctx); // the partners are offline: party_break
+		assert(vm.runInContext("!hist.ev.some((e) => e.type === 'stuck') && !Object.keys(state.cooldown).length", ctx), "v25.75: waiting for an absent member: the watchdog doesn't rest the camp"); }
 	// 67) bank housekeeping: free-slot count, purge filter, purged items sold
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 20, gold: 2e6, map: "bank", x: 0, y: 0, rip: false, esize: 30 });
 	character.items = Array(42).fill(null); character.slots = {};

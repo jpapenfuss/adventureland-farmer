@@ -156,7 +156,14 @@ function tank_first(t) {
 	if (!t || t.type !== "monster" || t.target) return false;
 	if (!together_now()) return false;
 	if (!is_tank_class(character.ctype)) return !free_for_all(t); // not the tank: never the first hit (v24.51), unless the tank one-shoots these (v25.20)
-	return party_missing().length > 0; // the tank: not before everyone's here
+	const miss = party_missing();
+	if (!miss.length) return false; // the tank: not before everyone's here
+	// v25.75 (audit): at its camp, a type it one-shoots (the followers start their own fights there — free_for_all): a
+	// member merely far across the camp doesn't hold the tank's first hit; one away (errand, dead, unheard, another map) does
+	const P = state.pack;
+	if (P && t.mtype === P.mtype && P.map === character.map && oneshot_types().includes(t.mtype) &&
+		miss.every((n) => { const q = state.partners[n]; return q && fresh(q) && Date.now() - q.t <= 3 * CFG.party.beat_ms && !q.rip && !q.errand && !q.recovering && q.map === character.map; })) return false;
+	return true;
 }
 // v25.69 (owner): evidence over the model — the party has killed this type proven_kills times (kill_credit, any member)
 // and no member died to it in the last 24h
@@ -438,17 +445,25 @@ function resolve_area(monster, map, boundary, count) {
 	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1, mtype: monster };
 	// v19.1: already at a spawn of this monster → stay (a hunt for the snakes we were farming on main sent the party
 	// across maps to halloween's bigger spawn)
+	// v25.75 (audit): an area the camp pick would refuse (resting after it ran dry, a danger zone) isn't the goal's
+	// area while another is open — a thin hunt camp, rested, made the whole hunt "refused" and the party left for the
+	// best camp for 10 min, then came back: a cycle
+	const refused = (a) => typeof goal_blocked === "function" && !!goal_blocked(monster, a.map, a.boundary);
 	const cur = state.pack;
-	if (cur && cur.mtype === monster && (!map || cur.map === map) && valid_boundary(cur.boundary) && G.maps[cur.map])
+	if (cur && cur.mtype === monster && (!map || cur.map === map) && valid_boundary(cur.boundary) && G.maps[cur.map] && !refused(cur))
 		return { map: cur.map, boundary: cur.boundary.slice(0, 4), count: cur.count || 1, mtype: monster };
-	let best = null;
+	let best = null, any = null;
 	each_area((pack, area) => {
 		if (pack.type !== monster) return;
+		if (!any) any = area;
+		if (refused(area)) return;
 		// more monsters, but a minute of walking costs as much as halving the pack
 		const rank = (area.map === map ? 1e6 : 0) + area.count / (1 + travel_s(area.map, area.boundary) / 60);
 		if (!best || rank > best.rank) best = { ...area, rank };
 	});
-	return best && { map: best.map, boundary: best.boundary, count: best.count, mtype: monster };
+	// (every area refused: the top one, so goal_blocked says why)
+	const r = best || (any && { ...any });
+	return r && { map: r.map, boundary: r.boundary, count: r.count, mtype: monster };
 }
 // Estimated xp/s at an area: xp per kill × kills/s, where kills/s is the lower of how fast we kill (ttk + walking)
 // and how fast the area refills (count / respawn). A measured rate replaces the estimate; unmeasured estimates are

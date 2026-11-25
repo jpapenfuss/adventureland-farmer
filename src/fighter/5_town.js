@@ -166,6 +166,7 @@ async function ptown_wait() {
 	ptown_end_id(P.id);
 	state.ptown = null;
 	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
+	if (!is_follower()) { state.goals_cache = null; try { refresh_directive(); } catch (e) {} } // v25.75: walk out to the current goal
 	const waited = Math.round((Date.now() - t0) / 1000);
 	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
 	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
