@@ -4618,6 +4618,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.ptown = null; CFG.party.town_together = false"); R("ptown_recv({ k: 'ptown', id: 'Aspernari:4', by: 'Aspernari' }, 'Aspernari')");
 		assert(R("!state.ptown.pending"), "town_together off: each goes alone");
 		R("CFG.party.town_together = true");
+		// v25.71: an ended trip's echo is never joined again (390 one-second trips in an hour), nor our own trip we're off
+		R("state.ptown = null; ptown_end_id('Aspernari:2'); ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Aspernari')");
+		const e1 = R("state.ptown === null");
+		R("ptown_recv({ k: 'ptown', id: 'Aspernari:9', by: 'Aspernari' }, 'Torlis')");
+		const e2 = R("!!state.ptown && state.ptown.pending === true");
+		R("state.ptown = null; ptown_recv({ k: 'ptown', id: 'Sanala:10', by: 'Sanala' }, 'Torlis')"); // (we're Sanala: our own trip, not on it)
+		const e3 = R("state.ptown === null");
+		R("state.ptown = null");
+		assert(e1 && e2 && e3, `v25.71: an ended trip isn't rejoined (${e1}); a new one is (${e2}); our own trip echoed back isn't (${e3})`);
 		// too late: we couldn't get away within town_join_s
 		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
 		assert(R("ptown_join_tick()") === true && R("state.ptown.joined === true"), "v24.60: no join window — a member that couldn't get away earlier still goes");

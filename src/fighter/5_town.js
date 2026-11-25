@@ -44,7 +44,7 @@ function ptown_join_tick() {
 	if (!P) return false;
 	const now = Date.now(), late = now - P.at > CFG.party.town_join_s * 1000;
 	// stale: never got going, or our run ended without the wait (cleared there)
-	if (P.joined && !P.done && !errand_busy() && late) { state.ptown = null; return false; }
+	if (P.joined && !P.done && !errand_busy() && late) { ptown_end_id(P.id); state.ptown = null; return false; }
 	if (!P.pending) return false;
 	// v24.60: no join window — a member that can't get away yet (a monster on it) goes as soon as it can; nobody is left out
 	if (errand_busy()) { if (state.errand === "town") ptown_joined(P); return true; }
@@ -73,6 +73,13 @@ function ptown_joined(P, why_) {
 function ptown_reason() {
 	return ptown_on() && !character.rip ? "the party goes to town together" : null;
 }
+// v25.71: remember a trip as ended (30 min) — an echo of it is never joined again
+function ptown_end_id(id) {
+	if (!id) return;
+	const now = Date.now(), E = (state.ptown_ended = state.ptown_ended || {});
+	for (const k in E) if (now - E[k] > 1_800_000) delete E[k];
+	E[id] = now;
+}
 // We start a trip: tell the others (they come)
 function ptown_start(what) {
 	if (!ptown_on() || !others().length) return;
@@ -85,6 +92,10 @@ function ptown_start(what) {
 function ptown_recv(msg, from) {
 	if (!msg?.id || is_merchant()) return;
 	let P = state.ptown;
+	// v25.71 (owner's report: 390 one-second party trips in an hour, standing in town): a member still re-announcing a
+	// trip that had just ended (its 5 s resend, a late heartbeat) re-opened it on us, we "joined" it, our announcement
+	// re-opened it on the others — for ever. A trip that ended here, and our own trip we're no longer on, are never rejoined.
+	if (state.ptown_ended?.[msg.id] || (msg.by === character.name && P?.id !== msg.id)) return;
 	// another trip while we're on one: same thing — everyone on any trip waits for everyone (ptown_wait)
 	if (P && P.id !== msg.id && !(P.joined || P.pending)) P = null;
 	if (!P) P = state.ptown = { id: msg.id, by: msg.by || from, at: Date.now(), leavers: [] };
@@ -119,7 +130,7 @@ async function ptown_lead() {
 		}
 	} finally { state.lead_walk = false; }
 	// no safe way to town: the trip is off for everyone (it used to leave the others waiting for it without end)
-	if (dead_end) { tell_party({ k: "ptown_off" }); state.ptown = null; throw { reason: "deadly_route" }; }
+	if (dead_end) { tell_party({ k: "ptown_off" }); ptown_end_id(state.ptown?.id); state.ptown = null; throw { reason: "deadly_route" }; }
 }
 const hb_in_town = (p) => { const q = partner_pos(p); return q.map === "main" && Math.hypot(q.x, q.y) < CFG.party.town_px; };
 // Our town work is done: wait in town until every member on a trip is done too, then all walk back together
@@ -151,6 +162,7 @@ async function ptown_wait() {
 	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
 	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
 	if (who.length) game_log(`party trip: waited ${waited}s; going back without ${who.join(", ")}`, C.warn);
+	ptown_end_id(P.id);
 	state.ptown = null;
 	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
 }

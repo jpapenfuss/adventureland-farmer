@@ -178,7 +178,7 @@ function fighter_cm(m) {
 	}
 	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) { state.merchant = { ...m.message, name: m.name, t: Date.now() }; return true; }
 	if (m && m.message?.k === "verdict" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { apply_verdict(m.message, m.name); return true; }
-	if (m && m.message?.k === "ptown_off" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { if (state.ptown && !errand_busy()) state.ptown = null; return true; }
+	if (m && m.message?.k === "ptown_off" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { if (state.ptown && !errand_busy()) { ptown_end_id(state.ptown.id); state.ptown = null; } return true; }
 	if (m && m.message?.k === "ptown" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { ptown_recv(m.message, m.name); return true; }
 	if (m && m.message?.k === "bill" && m.name === CFG.merchant?.name && !is_merchant()) { // potions it handed us (v23.0)
 		const g = Math.max(0, Math.round(+m.message.g || 0));
