@@ -136,7 +136,7 @@ function pick_shared(mine) {
 		const all = [me, ...partners().map((p) => p.name).sort()], prev = state.turn?.who;
 		let who = null;
 		if (prev && all.includes(prev)) for (let k = 1; k <= all.length && !who; k++) { const n = all[(all.indexOf(prev) + k) % all.length]; if (order.includes(n)) who = n; }
-		if (!who && !prev && state.pack) who = order.find((n) => (n === me ? mine?.monster : top(n)?.monster) === state.pack.mtype) || null;
+		if (!who && !prev) who = order.find((n) => { const a = n === me ? mine : top(n) && area_of(top(n)); return a && a.map === character.map && valid_boundary(a.boundary) && in_boundary(a.boundary, 300); }) || null;
 		state.turn = { who: who || order[0], end: now + (CFG.party.turn_min + CFG.travel.turn_walk_max_min) * 60_000 };
 	}
 	if (state.turn.who === me) return mine_ok ? mine : null;

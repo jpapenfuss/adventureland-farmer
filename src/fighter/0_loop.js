@@ -103,7 +103,7 @@ function fighter_tick() {
 	// v25.75 (audit): a camp put to rest (idle, the watchdog, a roamer keeping us away) is left — "cool it and pick
 	// again" only cooled it, and the party stayed until the 30-min review
 	const resting_pack = !!state.pack && !state.pack.boss && !state.pack.probe && (state.cooldown[pack_key(state.pack)] || 0) > Date.now();
-	if (resting_pack && Date.now() - (state.rest_pick_at || 0) > 5000 && !errand_busy() && !(in_party_cfg() && party_break())) { state.rest_pick_at = Date.now(); pick_pack(); }
+	if (resting_pack && Date.now() - (state.rest_pick_at || 0) > 5000 && !errand_busy() && !(in_party_cfg() && party_break())) { state.rest_pick_at = Date.now(); if (!is_follower()) try { refresh_directive(); } catch (e) {} pick_pack(); } // (the goal first: its other area — Fable)
 	else if (!state.pack && !(in_party_cfg() && party_break())) pick_pack();
 	else if (state.pack && !(in_party_cfg() && party_break())) camp_review(); // v24.84
 	if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); return 200; }
@@ -153,6 +153,7 @@ function fighter_tick() {
 		} else if (Date.now() - state.last_target_at > Math.max(CFG.idle_giveup_ms, Math.min(CFG.max_respawn, G.monsters[pack.mtype]?.respawn || 0) * 1000 + 5000)) {
 			game_log(`Idle at ${pack.mtype}; cooling down this pack`, C.dim);
 			rest_camp(pack_key(pack), CFG.pack_cooldown_ms);
+			if (!is_follower()) try { refresh_directive(); } catch (e) {} // v25.75 (Fable): the goal moves to its other area first
 			pick_pack();
 		} else patrol();
 	}

@@ -95,13 +95,16 @@ function party_route_danger(to, x, y) {
 // v24.9: a spot's xp/s counting the walk there: over an expected stay of stay_min, travel minutes earn nothing. Spots
 // were picked by rate alone, so a slightly better one maps away beat the one at hand (walk was 72-93% of the time)
 const walk_factor = (area) => { const st = CFG.travel.stay_min * 60, t = travel_s(area.map, area.boundary); return Number.isFinite(t) ? st / (st + t) : 0; };
+// The live goal as the camp review compares it: monster, map and (v25.75, Fable) the box — another area of the same
+// monster on the same map is a new goal too (a rested hunt camp's other area waited for the 30-min review)
+const dir_key = (now = Date.now()) => { const d = state.directive; return d && d.until > now ? `${d.monster}:${d.map}:${valid_boundary(d.boundary) ? d.boundary.join(",") : ""}` : ""; };
 // v24.84: the tank's camp review — on time, or early once the party is stronger than at the last pick
 function camp_review() {
 	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
 	if (!cur || cur.boss || cur.probe || errand_busy() || party_hit()) return false;
 	const pw = party_power(), p0 = state.review_pw;
 	// v24.88: a new goal (a hunt taken, a quest's material) or one ended → review after a minute, not up to 30
-	const dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : "";
+	const dir = dir_key(now);
 	const goal_changed = dir !== (state.review_dir || "") && since >= 60_000;
 	// v25.75 (audit): a walk to the camp no longer blocks a goal change — the party walked all the way to the old hunt's
 	// camp, killed a few, then turned around. Other reviews still wait for the walk's end.
@@ -246,7 +249,7 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
-	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
+	state.review_dir = dir_key(now); // v24.88
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;

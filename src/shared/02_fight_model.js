@@ -455,10 +455,10 @@ function resolve_area(monster, map, boundary, count) {
 	let best = null, any = null;
 	each_area((pack, area) => {
 		if (pack.type !== monster) return;
-		if (!any) any = area;
-		if (refused(area)) return;
 		// more monsters, but a minute of walking costs as much as halving the pack
 		const rank = (area.map === map ? 1e6 : 0) + area.count / (1 + travel_s(area.map, area.boundary) / 60);
+		if (!any || rank > any.rank) any = { ...area, rank };
+		if (refused(area)) return;
 		if (!best || rank > best.rank) best = { ...area, rank };
 	});
 	// (every area refused: the top one, so goal_blocked says why)

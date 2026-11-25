@@ -1227,10 +1227,10 @@ function resolve_area(monster, map, boundary, count) {
 	let best = null, any = null;
 	each_area((pack, area) => {
 		if (pack.type !== monster) return;
-		if (!any) any = area;
-		if (refused(area)) return;
 		// more monsters, but a minute of walking costs as much as halving the pack
 		const rank = (area.map === map ? 1e6 : 0) + area.count / (1 + travel_s(area.map, area.boundary) / 60);
+		if (!any || rank > any.rank) any = { ...area, rank };
+		if (refused(area)) return;
 		if (!best || rank > best.rank) best = { ...area, rank };
 	});
 	// (every area refused: the top one, so goal_blocked says why)
@@ -1504,7 +1504,7 @@ function watchdog() {
 		wd.lost_since = away ? wd.lost_since || now : null;
 		// v25.75 (audit): the documented lost action — away from the leader lost_min: stop, clear the travel block, and the
 		// follower tick walks to it again (the tank waited for it without end)
-		if (away && now - wd.lost_since > (W.lost_min || 5) * 60_000) {
+		if (away && now - wd.lost_since > (W.lost_min || 5) * 60_000 && still(since(1))) { // (and not moving: a long catch-up walk isn't lost — Fable)
 			wd.lost_since = now;
 			wd_act("lost", `away from ${L.name} for ${W.lost_min || 5} min; walking to it again`);
 			halt("watchdog");
@@ -5254,7 +5254,7 @@ function fighter_tick() {
 	// v25.75 (audit): a camp put to rest (idle, the watchdog, a roamer keeping us away) is left — "cool it and pick
 	// again" only cooled it, and the party stayed until the 30-min review
 	const resting_pack = !!state.pack && !state.pack.boss && !state.pack.probe && (state.cooldown[pack_key(state.pack)] || 0) > Date.now();
-	if (resting_pack && Date.now() - (state.rest_pick_at || 0) > 5000 && !errand_busy() && !(in_party_cfg() && party_break())) { state.rest_pick_at = Date.now(); pick_pack(); }
+	if (resting_pack && Date.now() - (state.rest_pick_at || 0) > 5000 && !errand_busy() && !(in_party_cfg() && party_break())) { state.rest_pick_at = Date.now(); if (!is_follower()) try { refresh_directive(); } catch (e) {} pick_pack(); } // (the goal first: its other area — Fable)
 	else if (!state.pack && !(in_party_cfg() && party_break())) pick_pack();
 	else if (state.pack && !(in_party_cfg() && party_break())) camp_review(); // v24.84
 	if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); return 200; }
@@ -5304,6 +5304,7 @@ function fighter_tick() {
 		} else if (Date.now() - state.last_target_at > Math.max(CFG.idle_giveup_ms, Math.min(CFG.max_respawn, G.monsters[pack.mtype]?.respawn || 0) * 1000 + 5000)) {
 			game_log(`Idle at ${pack.mtype}; cooling down this pack`, C.dim);
 			rest_camp(pack_key(pack), CFG.pack_cooldown_ms);
+			if (!is_follower()) try { refresh_directive(); } catch (e) {} // v25.75 (Fable): the goal moves to its other area first
 			pick_pack();
 		} else patrol();
 	}
@@ -5766,13 +5767,16 @@ function party_route_danger(to, x, y) {
 // v24.9: a spot's xp/s counting the walk there: over an expected stay of stay_min, travel minutes earn nothing. Spots
 // were picked by rate alone, so a slightly better one maps away beat the one at hand (walk was 72-93% of the time)
 const walk_factor = (area) => { const st = CFG.travel.stay_min * 60, t = travel_s(area.map, area.boundary); return Number.isFinite(t) ? st / (st + t) : 0; };
+// The live goal as the camp review compares it: monster, map and (v25.75, Fable) the box — another area of the same
+// monster on the same map is a new goal too (a rested hunt camp's other area waited for the 30-min review)
+const dir_key = (now = Date.now()) => { const d = state.directive; return d && d.until > now ? `${d.monster}:${d.map}:${valid_boundary(d.boundary) ? d.boundary.join(",") : ""}` : ""; };
 // v24.84: the tank's camp review — on time, or early once the party is stronger than at the last pick
 function camp_review() {
 	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
 	if (!cur || cur.boss || cur.probe || errand_busy() || party_hit()) return false;
 	const pw = party_power(), p0 = state.review_pw;
 	// v24.88: a new goal (a hunt taken, a quest's material) or one ended → review after a minute, not up to 30
-	const dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : "";
+	const dir = dir_key(now);
 	const goal_changed = dir !== (state.review_dir || "") && since >= 60_000;
 	// v25.75 (audit): a walk to the camp no longer blocks a goal change — the party walked all the way to the old hunt's
 	// camp, killed a few, then turned around. Other reviews still wait for the walk's end.
@@ -5917,7 +5921,7 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
-	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
+	state.review_dir = dir_key(now); // v24.88
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
@@ -6569,7 +6573,7 @@ function pick_shared(mine) {
 		const all = [me, ...partners().map((p) => p.name).sort()], prev = state.turn?.who;
 		let who = null;
 		if (prev && all.includes(prev)) for (let k = 1; k <= all.length && !who; k++) { const n = all[(all.indexOf(prev) + k) % all.length]; if (order.includes(n)) who = n; }
-		if (!who && !prev && state.pack) who = order.find((n) => (n === me ? mine?.monster : top(n)?.monster) === state.pack.mtype) || null;
+		if (!who && !prev) who = order.find((n) => { const a = n === me ? mine : top(n) && area_of(top(n)); return a && a.map === character.map && valid_boundary(a.boundary) && in_boundary(a.boundary, 300); }) || null;
 		state.turn = { who: who || order[0], end: now + (CFG.party.turn_min + CFG.travel.turn_walk_max_min) * 60_000 };
 	}
 	if (state.turn.who === me) return mine_ok ? mine : null;
@@ -7056,7 +7060,9 @@ function hunt_state() {
 	if (!(h.c > 0)) return "ready";
 	// v25.69: a hunt the camp pick refuses (unsafe, a danger zone, resting) isn't being chased: counted as one, it held
 	// back every member's turn-in trip (Torlis's pppompom, 7 left)
-	return hunt_feasible(h) ? "chase" : "lost"; // (v25.69: includes the camp pick's refusal — goal_blocked)
+	// (v25.69: includes the camp pick's refusal — goal_blocked; v25.75: a follower's live hunt is "chase" — the leader judges it, ps())
+	if (is_follower()) return !(h.ms !== undefined && !(h.ms > 0)) ? "chase" : "lost";
+	return hunt_feasible(h) ? "chase" : "lost";
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.

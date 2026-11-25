@@ -163,7 +163,7 @@ function watchdog() {
 		wd.lost_since = away ? wd.lost_since || now : null;
 		// v25.75 (audit): the documented lost action — away from the leader lost_min: stop, clear the travel block, and the
 		// follower tick walks to it again (the tank waited for it without end)
-		if (away && now - wd.lost_since > (W.lost_min || 5) * 60_000) {
+		if (away && now - wd.lost_since > (W.lost_min || 5) * 60_000 && still(since(1))) { // (and not moving: a long catch-up walk isn't lost — Fable)
 			wd.lost_since = now;
 			wd_act("lost", `away from ${L.name} for ${W.lost_min || 5} min; walking to it again`);
 			halt("watchdog");

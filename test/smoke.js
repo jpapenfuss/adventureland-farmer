@@ -755,10 +755,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("globalThis.__pk75b = state.pack; globalThis.__picked75 = 0; pick_pack = () => { __picked75++; }; smart_depth = 1; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,50,50] }; state.review_at = Date.now() - 120000; state.review_dir = 'x:main'; state.directive = { monster: 'tortoise', map: 'main', until: Date.now() + 60000 }", ctx);
 		vm.runInContext("camp_review()", ctx);
 		const p1 = vm.runInContext("__picked75", ctx);
-		vm.runInContext("state.review_dir = 'tortoise:main'; camp_review()", ctx);
+		vm.runInContext("state.review_dir = dir_key(); camp_review()", ctx);
 		const p2 = vm.runInContext("__picked75", ctx);
 		ctx.pick_pack = pp0; ctx.parent.entities = ents0; vm.runInContext("smart_depth = 0; state.pack = __pk75b; state.directive = null; state.review_dir = ''", ctx);
-		assert(p1 === 1 && p2 === 1, `v25.75: a goal change reviews the camp mid-walk (${p1}); no change: not mid-walk (${p2})`); }
+		assert(p1 === 1 && p2 === 1, `v25.75: a goal change reviews the camp mid-walk (${p1}); no change: not mid-walk (${p2})`);
+		// (Fable) the same monster's other area on the same map is a new goal too
+		ctx.parent.entities = {}; vm.runInContext("pick_pack = () => { __picked75++; }; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,50,50] }; state.review_at = Date.now() - 120000; state.directive = { monster: 'tortoise', map: 'main', boundary: [1,1,2,2], until: Date.now() + 60000 }; state.review_dir = dir_key(); state.directive.boundary = [5,5,9,9]; camp_review()", ctx);
+		const p3 = vm.runInContext("__picked75", ctx);
+		ctx.pick_pack = pp0; ctx.parent.entities = ents0; vm.runInContext("state.pack = __pk75b; state.directive = null; state.review_dir = ''", ctx);
+		assert(p3 === 2, `v25.75: the goal's other area on the same map reviews the camp (${p3})`); }
 	// v25.70: right after a load the leader picks only a goal — no "best camp" walk before the members' hunts arrive
 	{ vm.runInContext("globalThis.__st70 = JSON.stringify({ safe: state.safe, best_xp: state.best_xp, best_at: state.best_at, best_ref: state.best_ref, best_score: state.best_score, pick_table: state.pick_table, last_pick: state.last_pick }); state.directive = null; state.pack = null; state.last_pick = 0; camp_load_at = Date.now(); globalThis.__rd70 = refresh_directive; refresh_directive = () => {}; pick_pack()", ctx);
 		const p0 = vm.runInContext("state.pack", ctx);
@@ -1792,10 +1797,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", map: "halloween", x: 0, y: 0 });
 	hb("Torlis", { ...tor, map: "main", x: 0, y: 0 });
 	town66.length = 0;
-	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; watchdog()", ctx);
+	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; wd.pos = [{ t: Date.now() - 2 * 60000, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]; watchdog()", ctx); // (standing still: v25.75)
 	// v25.75 (audit): the lost action is a fresh walk to the leader — never town on its own (v24.58)
 	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost' && /walking to it again/.test(e.note)) && state.travel_block_until === 0", ctx) && vm.runInContext("state.errand", ctx) !== "regroup" && town66.length === 0,
 		"v25.75: a follower lost for lost_min walks to the leader again (not to town on its own)");
+	vm.runInContext("hist.ev = []; wd.lost_since = Date.now() - 6 * 60000; wd.pos = [{ t: Date.now() - 2 * 60000, map: character.map, x: character.x + 300, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]; watchdog()", ctx);
+	assert(!vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx), "v25.75: a follower still walking toward the leader isn't stopped as lost");
 	vm.runInContext("state.errand = null; state.pack = null; wd.pos = []; wd.acts = []; hist.ev = []", ctx);
 	ctx.stop = (a) => calls.push("stop:" + a);
 	vm.runInContext("party_break = __pb66", ctx);
@@ -3167,20 +3174,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		{ const s0 = character.s, now59 = Date.now();
 			vm.runInContext("state.partners = {}; state.gear_skip = {}; globalThis.__hf59 = hunt_feasible; hunt_feasible = (h) => h.id !== 'far'", ctx);
 			const hs = (me, a, s) => { character.s = me ? { monsterhunt: me } : {}; hb("Aspernari", { ...asp, level: 58, hs: a }); hb("Torlis", { ...tor, level: 60, hs: s }); return vm.runInContext("hunts_trip_due()", ctx); };
-			const r1 = hs({ id: "goo", c: 0 }, "chase", "ready"), r2 = hs({ id: "goo", c: 0 }, "ready", "lost"), r3 = hs({ id: "goo", c: 3 }, "ready", "ready"), r4 = hs({ id: "far", c: 9 }, "none", "off");
+			const r1 = hs({ id: "goo", c: 0 }, "chase", "ready"), r2 = hs({ id: "goo", c: 0 }, "ready", "lost"), r3 = hs({ id: "goo", c: 3 }, "ready", "ready"), r4 = hs(null, "lost", "off");
 			const r5 = hs({ id: "goo", c: 3 }, "chase", "chase");
 			hb("Aspernari", { ...asp, level: 58, hs: "ready", hms: 120_000 }); character.s = { monsterhunt: { id: "goo", c: 3 } };
 			const r6 = vm.runInContext("hunts_trip_due()", ctx);
 			assert(/Aspernari to turn in before it lapses/.test(r6 || ""), `a finished hunt with 2 min left goes now, whoever still chases (${r6})`);
 			vm.runInContext("hunt_feasible = __hf59; state.partners = {}", ctx); character.s = s0;
-			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Aspernari to take/.test(r4) && r5 === null,
-				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); lost + none: go (${r4}); all chasing: wait (${r5})`); }
+			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Sanala to take/.test(r4) && r5 === null,
+				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); none + a partner's lost: go (${r4}); all chasing: wait (${r5})`); }
 		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = hunt_state(), CFG.auto_monster_hunt = true, __u59 === 'off'", ctx), "hunts not chased (passive only): no hunt trips");
 		// v25.69: a hunt the camp pick refuses isn't chased ("lost"): it no longer holds back the party's turn-in trip
 		{ const s0 = character.s; character.s = { monsterhunt: { id: "goo", c: 7 } };
 			const st = vm.runInContext("globalThis.__hf69 = hunt_feasible; globalThis.__sg69 = state.safe.goo; state.safe.goo = { ttk: 1, xp: 1 }; [hunt_state(), (state.safe.goo = false, hunt_state())].join()", ctx);
 			vm.runInContext("hunt_feasible = __hf69; state.safe.goo = __sg69; if (__sg69 === undefined) delete state.safe.goo", ctx); character.s = s0;
-			assert(st === "chase,lost", `v25.69: our hunt chased while the camp pick would take it, lost once it's judged unsafe (${st})`); }
+			// v25.75 (Fable): a follower reports its live hunt as chased; the leader judges it (hunts_trip_due's ps)
+			assert(st === "chase,chase", `v25.75: a follower's live hunt reads "chase" whatever it judges (${st})`);
+			character.s = {};
+			hb("Aspernari", { ...asp, level: 58, hs: "chase", hunt: { id: "goo", c: 7 } }); hb("Torlis", { ...tor, level: 60, hs: "off" });
+			const ok69 = vm.runInContext("hunts_trip_due()", ctx);
+			const bad69 = vm.runInContext("globalThis.__sg69b = state.safe.goo; state.safe.goo = false; globalThis.__r69b = hunts_trip_due(); state.safe.goo = __sg69b; if (__sg69b === undefined) delete state.safe.goo; __r69b", ctx);
+			character.s = s0; vm.runInContext("state.partners = {}", ctx);
+			assert(ok69 === null && /Sanala to take/.test(bad69 || ""), `v25.69: a partner chasing a hunt the camp pick takes holds the trip (${ok69}); one it refuses doesn't (${bad69})`); }
 		// Daisy: success is a hunt held; failures pause her 5, 10, 20 min...; a success resets
 		{ const s0 = character.s; character.s = {};
 			const st59 = (n, h) => vm.runInContext(`state.hunt_fails = ${n}; state.gear_skip = {}; hunt_step(async () => { ${h ? "character.s.monsterhunt = { c: 5, id: 'goo' };" : ""} return { success: true }; })`, ctx);
