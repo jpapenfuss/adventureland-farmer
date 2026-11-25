@@ -536,14 +536,15 @@ function end_session() {
 	if (!s) return;
 	// v25.16: less the seconds held for the party (03_history.js): the rate is the camp's, not our waiting
 	const secs = ((s.end || Date.now()) - s.start - (s.lost || 0)) / 1000;
+	// (v25.76, owner: "frog 1809/s — literally impossible": 45k in ~25 s — a visit that short books only stray loot)
+	if (secs < CFG.measure_min_s) return;
 	// v25.68 (owner): the gold really looted here (chest_opened, our share) and the seconds fought, added to the camp's
-	// totals whatever the session's length or kills; chests opened just after the close are added too (on_chest_opened)
-	if (secs > 0) {
+	// totals; a chest opened just after the close is added too (on_chest_opened)
+	{
 		const m = state.measured_gold[s.key] = state.measured_gold[s.key] || { g: 0, s: 0, n: 0 };
 		m.g += s.rg || 0; m.s = Math.round(m.s + secs); m.n++; m.at = Date.now();
 		gold_last = { key: s.key, at: Date.now() };
 	}
-	if (secs < CFG.measure_min_s) return;
 	// v23.0: the unit score_area estimates in: base xp of the kills made at this spot. The xp we receive is a share of
 	// every party kill anywhere (server), so it can't be used: every party kill counts (kill_credit, sent to each
 	// member; the party is here). No kill_credit seen at all (an older client?) → spots aren't measured; estimates stand.

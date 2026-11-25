@@ -235,8 +235,8 @@ function last_hour() {
 // history(hours): in a party, every character's history in one window (like report()); history(hours, "solo") only ours
 // "squigtoad@main 4.2/s (15.1k in 1.0h, 24x)", best first
 function gold_camps_text(n = 8) {
-	return Object.entries(state.measured_gold).filter(([, m]) => m.s > 0).sort((a, b) => b[1].g / b[1].s - a[1].g / a[1].s).slice(0, n)
-		.map(([k, m]) => `${k.split("#")[1] || "?"}@${k.split(":")[0]} ${(m.g / m.s).toFixed(1)}/s (${fmt_k(Math.round(m.g))} in ${(m.s / 3600).toFixed(1)}h, ${m.n}x)`).join(", ");
+	return Object.entries(state.measured_gold).filter(([, m]) => m.s >= CFG.measure_min_s).sort((a, b) => b[1].g / b[1].s - a[1].g / a[1].s).slice(0, n)
+		.map(([k, m]) => `${k.split("#")[1] || "?"}@${k.split(":")[0]} ${(m.g / m.s).toFixed(1)}/s (${fmt_k(Math.round(m.g))} in ${m.s < 5400 ? Math.round(m.s / 60) + " min" : (m.s / 3600).toFixed(1) + "h"}, ${m.n}x)`).join(", ");
 }
 function history(hours = 6, solo) {
 	const targets = party_names_all().filter((n) => n !== character.name);
@@ -391,6 +391,7 @@ let gold_prev = null;
 // Every second: count xp toward the current pack's measurement while we're there (300px slack) and not walking or on
 // an errand. A measurement closes after 2 × measure_min_s so the picker keeps getting fresh numbers.
 // (v25.16: a named function, so the tests can run it)
+let meas_pk = { key: null, at: 0 }; // the camp the measurement is for, and since when (v25.76)
 function meas_tick() {
 	const d = xp_delta(), p = state.pack;
 	stats.xp += d;
@@ -423,7 +424,10 @@ function meas_tick() {
 	const all_here = !in_party_cfg() || (others().every((n) => fresh(state.partners[n])) && partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
-	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
+	// v25.76 (Fable): not in the first loot_wait_ms at a camp — a far chest from the last camp is opened up to then
+	const pk_ = pack_key(p);
+	if (pk_ !== meas_pk.key) meas_pk = { key: pk_, at: Date.now() };
+	if (!state.session && here && !walking() && !errand_busy() && !state.recovering && Date.now() - meas_pk.at > CFG.loot_wait_ms)
 		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kc_n: 0, kcm: 0, kcm_n: 0, rg: 0, start: Date.now() }; // (v25.51: kind: est's unit)
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event

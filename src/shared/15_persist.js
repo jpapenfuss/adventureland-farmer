@@ -9,7 +9,7 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 3, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 4, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
 		cooldown: state.cooldown, camp_deaths: state.camp_deaths, proven: state.proven, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
@@ -77,7 +77,8 @@ function load_state() {
 		const t0 = Date.now();
 		// v25.68 gold_v 3: per-camp totals of looted gold and seconds; earlier gold rates (table values, averaged
 		// rates) are another unit and are dropped once
-		if (d.gold_v === 3) for (const [k, m] of Object.entries(d.measured_gold || {})) if (m && m.s > 0) state.measured_gold[k] = m;
+		// v25.76 gold_v 4: v25.68-25.75 totals may hold stray loot (short visits, loot from the last camp): re-measured clean
+		if (d.gold_v === 4) for (const [k, m] of Object.entries(d.measured_gold || {})) if (m && m.s >= CFG.measure_min_s) state.measured_gold[k] = m; // (v25.76: totals from under measure_min_s — short visits' stray loot — dropped)
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
