@@ -244,9 +244,6 @@ const CFG = {
 	// v25.38: stock_keep — the merchant's gold above this counts as room too (17M sat idle while the 6-hour earnings
 	// rule allowed ~1M a project)
 	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1, stock_keep: 3_000_000 },
-	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
-	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
-	                           //   trips; they're kills at the spot now). A hunt's tokens aren't worth a third of our xp.
 	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
 	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],

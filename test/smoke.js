@@ -42,6 +42,8 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
+// v25.70: the leader's 30 s wait for a goal after a load — tested on its own (v25.70 below); off for the other tests
+vm.runInContext("globalThis.__cla = camp_load_at; camp_load_at = 0", ctx);
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 vm.runInContext("globalThis.__collect0 = CFG.merchant.collect", ctx); // v25.43: the shipped default, before the fixtures override it
 vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
@@ -718,6 +720,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("!state.directive && state.shared.blocked.some((b) => /tortoise \\(Aspernari\\): not safe/.test(b))", ctx),
 		`v25.69: the partner's refused hunt gets no turn and is listed (${vm.runInContext("JSON.stringify([state.directive, state.shared.blocked])", ctx)})`);
 	vm.runInContext("delete state.safe.tortoise; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
+	// v25.70: right after a load the leader picks only a goal — no "best camp" walk before the members' hunts arrive
+	{ vm.runInContext("globalThis.__st70 = JSON.stringify({ safe: state.safe, best_xp: state.best_xp, best_at: state.best_at, best_ref: state.best_ref, best_score: state.best_score, pick_table: state.pick_table, last_pick: state.last_pick }); state.directive = null; state.pack = null; state.last_pick = 0; camp_load_at = Date.now(); globalThis.__rd70 = refresh_directive; refresh_directive = () => {}; pick_pack()", ctx);
+		const p0 = vm.runInContext("state.pack", ctx);
+		vm.runInContext("camp_load_at = 0; refresh_directive = __rd70; pick_pack()", ctx);
+		const p1 = vm.runInContext("!!state.pack", ctx);
+		vm.runInContext("state.pack = null; Object.assign(state, JSON.parse(__st70))", ctx);
+		assert(p0 === null && p1, `v25.70: no camp picked in the first 30 s without a goal, then the pick runs (${p0} / ${p1})`); }
 	// v25.70: the camp's reason follows the live goal (it kept the pick's text: "39 left" while 29 were left)
 	{ vm.runInContext("state.goals_cache = null; state.directive = null; state.dir_lock = null; state.turn = null; refresh_directive(); state.pack = { mtype: 'tortoise', map: 'main', boundary: state.directive.boundary, directive: 'Aspernari: monster hunt 99 left' }; refresh_directive()", ctx);
 		const lab = vm.runInContext("state.pack.directive", ctx);

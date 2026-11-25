@@ -245,9 +245,6 @@ const CFG = {
 	// v25.38: stock_keep — the merchant's gold above this counts as room too (17M sat idle while the 6-hour earnings
 	// rule allowed ~1M a project)
 	spend: { enabled: true, window_h: 6, share: 0.9, min_data_h: 1, stock_keep: 3_000_000 },
-	// a monster hunt is chased only if its monster gives at least this share of the best xp/s we know. 0 = off (v18.8:
-	// measured rates include time lost to town trips, so the comparison misjudged fast-killing monsters like bees)
-	                           //   trips; they're kills at the spot now). A hunt's tokens aren't worth a third of our xp.
 	report_history_h: 1,       // v22.2: report() includes every character's history() of this many hours (0 = none)
 	// game-log lines hidden: heartbeats' "Received a code message from" (v18.4), smart_move's path chatter (v18.5)
 	quiet_logs: [/code message from/i, /Searching for a path\.\.\./i, /Path found[!~]/i],
@@ -5837,10 +5834,18 @@ function over_text(mt) {
 	const inc = state.danger[mt] || 1, cal = calib_factor(mt, f);
 	return `over the safety limit x${(fight_risk(f) / lim).toFixed(2)} (calibration x${cal.toFixed(2)}${inc !== 1 ? `, incidents x${inc.toFixed(2)}` : ""}, ${f.mates} with us${f.priest ? "" : ", no priest"})`;
 }
+var camp_load_at = Date.now(); // (var: pick_pack can run before this file's top level — v25.70's load wait)
 function pick_pack() {
 	state.safe = {};
 	for (const t in G.monsters) { const f = fight_profile(t); if (f) state.safe[t] = f; }
 	const now = Date.now();
+	// v25.70 (owner: "left cgoo, went to a neighboring zone, pathed right back"): a fresh load has no goal yet — the
+	// members' hunts come with their next heartbeats and refresh_directive — so its first pick was the best camp and the
+	// party walked back a minute later. In a party, the first 30 s after a load pick only a goal.
+	if (camp_load_at && in_party_cfg() && !is_follower() && now - camp_load_at < 30_000 && !(state.directive && state.directive.until > now)) {
+		if (state.goals_at_load === undefined) { state.goals_at_load = true; setTimeout(refresh_directive, 8000); }
+		return;
+	}
 	if (state.probe && now < state.probe.until) { // a probe holds the pack until probe_check ends it
 		state.safe[state.probe.mtype] = state.probe.prof;
 		state.last_pick = now;
@@ -6596,7 +6601,7 @@ function refresh_directive__fighter() {
 		// v25.70 (owner: "fighting cgoo for absolutely no reason"): the camp's reason follows the goal live — it was the
 		// text at the pick ("39 left" while 29 were left)
 		const P = state.pack;
-		if (P?.directive && !P.boss && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
+		if (P?.directive && !P.boss && !P.probe && !is_follower() && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
 	} else if (state.directive) {
 		state.directive = null;
 		state.last_pick = 0;
