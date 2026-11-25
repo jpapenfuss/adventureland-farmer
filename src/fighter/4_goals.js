@@ -188,7 +188,9 @@ function refresh_directive() {
 	// goal, the tank re-picked the best camp, went to town to turn it in, came back to that camp — and the member's new
 	// hunt (often the same monster) arrived a minute later. While a hunt trip is due, and for 45 s after a town run (the
 	// members' new goals reach us), the current goal stays.
-	if (!d && cur && !cur.boss && in_party_cfg() && (hunts_trip_due() || now - (state.town_end_at || 0) < 45_000)) d = cur;
+	// (v25.73: through the whole party trip and 45 s after it ends — counted from our own town run's end, the 34 s wait
+	// in town for the others used it up and the party still went to the best camp first)
+	if (!d && cur && !cur.boss && in_party_cfg() && (hunts_trip_due() || state.ptown?.joined || now - Math.max(state.town_end_at || 0, state.ptown_done_at || 0) < 45_000)) d = cur;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&

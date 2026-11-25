@@ -741,8 +741,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const held = vm.runInContext("state.directive && state.directive.monster", ctx);
 		vm.runInContext("hunts_trip_due = () => null; state.town_end_at = Date.now() - 10000; refresh_directive()", ctx);
 		const after_town = vm.runInContext("state.directive && state.directive.monster", ctx);
-		vm.runInContext("state.town_end_at = Date.now() - 60000; refresh_directive()", ctx);
+		vm.runInContext("state.town_end_at = Date.now() - 60000; state.ptown = { id: 'T:1', joined: true }; refresh_directive()", ctx);
+		const on_trip = vm.runInContext("state.directive && state.directive.monster", ctx);
+		vm.runInContext("state.ptown = null; state.ptown_done_at = Date.now() - 20000; refresh_directive()", ctx);
+		const after_wait = vm.runInContext("state.directive && state.directive.monster", ctx);
+		vm.runInContext("state.ptown_done_at = Date.now() - 60000; refresh_directive()", ctx);
 		const later = vm.runInContext("state.directive && state.directive.monster", ctx);
+		assert(on_trip === "tortoise" && after_wait === "tortoise", `v25.73: held through the party trip and 45 s after it ends (${on_trip}/${after_wait})`);
 		ctx.hunts_trip_due = td; vm.runInContext("state.directive = null; state.dir_lock = null; state.turn = null; state.partners = {}", ctx);
 		assert(before === "tortoise" && held === "tortoise" && after_town === "tortoise" && !later,
 			`v25.69: the finished hunt's camp is kept while the trip is due and 45 s after town, then dropped (${before}/${held}/${after_town}/${later})`); }
