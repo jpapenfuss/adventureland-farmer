@@ -205,7 +205,9 @@ function pick_pack() {
 	// members' hunts come with their next heartbeats and refresh_directive — so its first pick was the best camp and the
 	// party walked back a minute later. In a party, the first 30 s after a load pick only a goal.
 	if (camp_load_at && in_party_cfg() && !is_follower() && now - camp_load_at < 30_000 && !(state.directive && state.directive.until > now)) {
-		if (state.goals_at_load === undefined) { state.goals_at_load = true; setTimeout(refresh_directive, 8000); }
+		// (from the first call: the loop holds pick_pack until every member is heard from; the 8 s refresh then ends the
+		// wait — the members' goals are in by then; Fable)
+		if (!state.goals_at_load) { state.goals_at_load = true; camp_load_at = now; setTimeout(() => { try { refresh_directive(); } catch (e) {} camp_load_at = 0; }, 8000); }
 		return;
 	}
 	if (state.probe && now < state.probe.until) { // a probe holds the pack until probe_check ends it
