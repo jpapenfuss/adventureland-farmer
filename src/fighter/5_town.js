@@ -162,13 +162,14 @@ async function ptown_wait() {
 		await sleep_ms(1000);
 	}
 	} finally {
+	// (the trip's end first, then the log — Fable)
+	ptown_end_id(P.id);
+	state.ptown = null;
+	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
 	const waited = Math.round((Date.now() - t0) / 1000);
 	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
 	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
 	if (who.length) game_log(`party trip: waited ${waited}s; going back without ${who.join(", ")}`, C.warn);
-	ptown_end_id(P.id);
-	state.ptown = null;
-	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
 	}
 }
 // ---- town_check's party part (v24.99): the tank takes the party to town for the members' needs and for what the merchant
