@@ -239,7 +239,9 @@ function route_graph(map, x, y, safe = false) {
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
-	const in_danger_here = safe && deadly_areas(map).some((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
+	// (v25.80, Fable: not for a ranged burner's zone — desertland's transporter arrival stands in the fire spirits' reach,
+	// and the exemption let the first stretch be the death walk north; their path-length budget already lets us leave)
+	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -307,7 +309,7 @@ function deadly_areas(map) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
-		else if (merchant_threat(t, v)) { const T_ = threat_dps(t); list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 120, dps: T_.dps, hp: T_.hp, v }); } // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
+		else if (merchant_threat(t, v)) { const T_ = threat_dps(t); list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 40, dps: T_.dps, hp: T_.hp, v }); } // (v25.80: its reach plus the sprites' size — the time spent there is what's counted, so no extra margin) // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
 	return list;
@@ -374,6 +376,7 @@ function seg_danger(map, x1, y1, x2, y2) {
 		pts = Array.from({ length: n + 1 }, (_, i) => [x1 + ((x2 - x1) * i) / n, y1 + ((y2 - y1) * i) / n]);
 	}
 	const inside = (z, x, y) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px;
+	let burn_dmg = 0, burn_hp = Infinity, burn_t = null; // (summed over overlapping zones: two spawns' reach on one stretch)
 	for (const z of zs) {
 		// v25.80 (Fable): a ranged attacker that can't chase is judged by the time this walk spends in its reach — the
 		// whole damage over that stretch against the HP budget — not by touching its zone: desertland's transporter
@@ -381,7 +384,9 @@ function seg_danger(map, x1, y1, x2, y2) {
 		if (z.dps) {
 			let px = 0;
 			for (let i = 1; i < pts.length; i++) if (inside(z, pts[i][0], pts[i][1]) || inside(z, pts[i - 1][0], pts[i - 1][1])) px += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-			if (z.dps * (px / Math.max(z.v || 10, 10)) >= z.hp) return `${z.t} @ ${map}`;
+			const dmg = z.dps * (px / Math.max(z.v || 10, 10));
+			if (dmg > 0) { burn_dmg += dmg; burn_hp = Math.min(burn_hp, z.hp); burn_t = burn_t || z.t; }
+			if (burn_dmg >= burn_hp) return `${burn_t} @ ${map}`;
 			continue;
 		}
 		for (const [x, y] of pts) if (inside(z, x, y)) return `${z.t} @ ${map}`;
@@ -397,6 +402,9 @@ function route_plain(to_map, tx, ty) {
 function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
 	const r = route_to(to_map, tx, ty, from);
 	if (!r) return null;
+	// v25.80 (Fable): a walk on the map we're on was never judged — in desertland, gscorpion is a straight walk through
+	// the fire spirits
+	if (to_map === from.map) { const w = seg_danger(to_map, from.x, from.y, tx, ty); return { d: r.d, legs: null, danger: w, around: null }; }
 	let why = null;
 	for (const L of r.legs) if (L.fx !== undefined && (why = seg_danger(L.map, L.fx, L.fy, L.x, L.y))) break;
 	if (!why && r.last) why = seg_danger(to_map, r.last.x, r.last.y, tx, ty);
