@@ -2520,9 +2520,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// wall was tried (and measured): the next is edge; a measured camp ranks by its rate like any other
 		assert(R("state.explore.next && state.explore.next.mtype") === "edge" && R(`state.pick_table.find((c) => c.key === '${wall}').m`) === 3, "v25.82: next untried: edge; the tried camp is ranked by its measured rate");
 		// a live hunt wins over exploration: due, but the hunt's camp is picked and no trial starts
-		R("state.explore.last_end = Date.now() - (CFG.explore.every_min * 60_000 + 1000); state.directive = { monster: 'meh', map: 'main', boundary: [1100, 1100, 1200, 1200], count: 6, reason: 'monster hunt 5 left', hunt: true, until: Date.now() + 1e6 }; state.last_pick = 0; pick_pack(); explore_check()");
+		R("state.explore.last_end = Date.now() - (CFG.explore.every_min * 60_000 + 1000); state.directive = { monster: 'meh', map: 'main', boundary: [1100, 1100, 1200, 1200], count: 6, reason: 'monster hunt 5 left', hunt: true, until: Date.now() + 1e6 }; state.last_pick = 0; pick_pack()");
+		const h0 = R("state.pack && state.pack.mtype"), c0 = !!R("state.explore.cur");
+		R("explore_check()");
 		const h1 = R("state.pack && state.pack.mtype");
-		assert(h1 === "meh" && !R("state.explore.cur"), `v25.82: a live hunt wins over exploration (${h1})`);
+		assert(h0 === "meh" && !c0 && h1 === "meh" && !R("state.explore.cur"), `v25.82: a live hunt wins over exploration, in the pick and in explore_check (${h0}, ${h1})`);
 		// ...and a hunt arriving mid-trial ends the trial
 		R("state.directive = null; state.last_pick = 0; pick_pack()");
 		assert(R("state.pack.explore && state.pack.mtype === 'edge'"), "v25.82: no hunt: the trial starts (edge)");
