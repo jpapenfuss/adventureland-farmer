@@ -1863,6 +1863,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(e1["setpants:0"] === 2 && !e1["setpants:1"], `no NPC sells it: 3 + 3 failure stock of 8 kept, 2 go (${JSON.stringify(e1)})`);
 		assert(e1["rcoat:3"] === 2 && !e1["rcoat:5"], "a recipe's level (+5) kept, the +3s sold");
 		assert(!e1["goodhelm:0"], "5 copies of a helmet a fighter would wear now: none sold (past the cap of 3)");
+		// v25.77 (owner: the bought Vowkeeper Gloves were sold at once): a piece of a set a party class can wear is never sold
+		{ const sets0 = ctx.G.sets; ctx.G.sets = { ...(sets0 || {}), okset: { 2: { armor: 50 }, items: ["oathgl"] }, warset: { items: ["wargl"] } };
+			Object.assign(ctx.G.items, { oathgl: { type: "helmet", g: 100, armor: 1, set: "okset", class: ["paladin"] }, wargl: { type: "helmet", g: 100, armor: 1, set: "warset", class: ["warrior"] } }); // (a slot the fighter wears: not "useful" by filling an empty one)
+			pack[pack.indexOf(null)] = { name: "oathgl", level: 0 }; pack[pack.indexOf(null)] = { name: "wargl", level: 0 };
+			const e3 = ex();
+			// the live failure: a copy marked by an earlier purge, at the shop — the paladin piece isn't sold, the warrior's is
+			character.items[0] = { name: "oathgl", level: 0 }; character.items[1] = { name: "wargl", level: 0 };
+			R("state.purge['oathgl:0'] = Date.now(); state.purge['wargl:0'] = Date.now(); gx_cache = null");
+			const s3 = [R("gear_sell_ok(character.items[0])"), R("gear_sell_ok(character.items[1])")];
+			character.items[0] = null; character.items[1] = null; ctx.G.sets = sets0;
+			assert(!e3["oathgl:0"] && e3["wargl:0"] === 1 && s3[0] === false && s3[1] === true, `v25.77: a paladin set piece is kept (also when marked), another class's sold (${JSON.stringify(e3)} ${s3})`); }
 		R("state.upg = { name: 'okhelm', to: 7 }");
 		assert(!ex()["okhelm:2"], "the current project's piece: none sold");
 		R("state.upg = null");
