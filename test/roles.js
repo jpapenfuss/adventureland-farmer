@@ -42,6 +42,13 @@ async function run(role) {
 	for (const c of ["report_lines(false)", "town_due()", "bag_plan()", "my_gear()", "heartbeat()", "upgrade_due()", "history_lines(1)"]) {
 		try { vm.runInContext(c, ctx); } catch (e) { log.push(`${c}: ${e}`); }
 	}
+	// v25.78 (owner): the merchant's report classes every non-stackable bank item; nothing placeable → UNCLASSIFIED
+	if (role === "merchant") {
+		Object.assign(G.items, { quiver: { type: "quiver", g: 100 }, mystery: { type: "misc", g: 100 }, shell9: { type: "material", s: 9999 } });
+		vm.runInContext("state.bank_dump = { quiver: 3, mystery: 1, shell9: 500 }; state.bank_at = Date.now(); state.partners = { Torlis: { name: 'Torlis', ctype: 'paladin', t: Date.now(), gear: { w: {} } } }", ctx);
+		const bt = vm.runInContext("bank_classes_text()", ctx);
+		assert(/no party class can use: quiver x3/.test(bt) && /UNCLASSIFIED: mystery/.test(bt) && !/shell9/.test(bt) && bt.indexOf("UNCLASSIFIED") < bt.indexOf("no party"), `merchant: bank items classed, UNCLASSIFIED first, stackables left out (${bt})`);
+	}
 	// the xp/gold sampling (rates() in reports) runs on every character — it had been carried to fighter.js (v24.95–v25.0)
 	assert(vm.runInContext("stats.samples.length", ctx) > 0, `${role}: xp/gold samples are taken (rates in the report)`);
 	// what the game and the console call must exist on every character, whatever its role
