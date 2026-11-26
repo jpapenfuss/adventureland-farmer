@@ -2541,19 +2541,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(!R("state.explore.tried.edge"), "v25.82 (N6): a trial cut short isn't stamped tried");
 		R("state.directive = null; state.explore.last_end = Date.now(); pick_pack()");
 		assert(R("state.explore.next && state.explore.next.mtype") === "edge", "v25.82 (N6): ...so edge is still next");
-		// a second trial in a row that records nothing (cut short again): edge waits 24 h, "no kills in 2 trials"
+		// two full-length trials in a row that record nothing: edge waits 24 h, "no kills in 2 trials" — the one cut short
+		// by the hunt above doesn't count (review N6)
 		R(`${due}; state.directive = null; pick_pack()`);
-		assert(R("state.pack.explore && state.pack.mtype === 'edge'"), "v25.82: edge's second trial starts");
+		assert(R("state.pack.explore && state.pack.mtype === 'edge'"), "v25.82: edge's next trial starts");
 		R("state.explore.cur.until = Date.now() - 1; explore_check()");
-		assert(R("state.explore.tried.edge > 0"), "v25.82: two trials in a row with no rate: edge is marked tried for 24 h");
+		assert(!R("state.explore.tried.edge"), "v25.82 (N6): a cut-short trial and one full dry trial: not marked yet");
+		R(`${due}; state.directive = null; pick_pack()`);
+		assert(R("state.pack.explore && state.pack.mtype === 'edge'"), "v25.82: edge's third trial starts");
+		R("state.explore.cur.until = Date.now() - 1; explore_check()");
+		assert(R("state.explore.tried.edge > 0"), "v25.82: two full-length trials in a row with no rate: edge is marked tried for 24 h");
 		assert(R("state.explore.why.edge") === "no kills in 2 trials", "v25.82: ...with the reason");
 		R("pick_pack()");
 		assert(R("!state.explore.next || state.explore.next.mtype !== 'edge'"), "v25.82: ...so it isn't next any more");
 		R("delete state.explore.tried.edge; delete state.explore.why.edge; state.explore.last_end = Date.now(); pick_pack()");
 		// N8: a camp whose ceiling (count / respawn × xp) can't beat the best measured rate isn't a trial target
-		R(`state.measured['${goo}'] = 9000`);
+		R(`state.measured['${goo}'] = 9000`); character.xpm = 2;
 		R("pick_pack()");
-		assert(R("state.explore.next === null"), `v25.82 (N8): best measured 9000 xp/s: edge (ceiling ~8800) is no candidate (${R("JSON.stringify(state.explore.next)")})`);
+		assert(R("state.explore.next === null"), `v25.82 (N8, review N5): best measured 9000 base xp/s: edge (ceiling ~8800 base xp/s; x2 with our xp multiplier) is no candidate (${R("JSON.stringify(state.explore.next)")})`);
+		delete character.xpm;
 		R(`state.measured['${goo}'] = 5000`);
 		// N9: the camp we stand at, unmeasured, is measured in place — not a trial target
 		R(`delete state.measured['${goo}']; state.pack = { mtype: 'edge', map: 'main', boundary: [600, 600, 800, 800], count: 6 }`);
@@ -2645,6 +2651,30 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		reset(); gather(false); ctx.parent.entities = {}; mon("o6", 5000); open("o6"); ctx.parent.entities.o6.hp = 2000;
 		assert(R("judge_death('ogre82', 'Torlis')").why === "target at 40%", "v25.82: the monsters on the party at 40%: not counted");
 		assert(!R("state.type_skip.ogre82"), "v25.82: ...neither skips the type");
+		// review N1: one long episode — spread when it began, a lull (nothing on the party), then a new pull with the party
+		// gathered: the standing is taken again
+		reset(); gather(true); ctx.parent.entities = {}; mon("p1", 5000, "Sanala"); R("engage_scan()");
+		assert(R("state.fight_start && !state.fight_start.gathered"), "v25.82 (N1): setup: spread at the episode's start");
+		delete ctx.parent.entities.p1; R("engage_scan()"); gather(false);
+		mon("p2", 4500, "Torlis"); R("engage_scan()");
+		assert(R("state.fight_start.gathered"), "v25.82 (N1): a new pull after a lull re-takes the standing (gathered now)");
+		assert(R("judge_death('ogre82', 'Torlis')").counted, "v25.82 (N1): ...so the tank's death at 90% counts");
+		// ...and the tank's opener after a lull too
+		reset(); gather(true); ctx.parent.entities = {}; mon("p3", 5000, "Sanala"); R("engage_scan()");
+		delete ctx.parent.entities.p3; R("engage_scan()"); gather(false); mon("p4", 5000); open("p4");
+		assert(R("state.fight_start.gathered"), "v25.82 (N1): the tank's opener after a lull re-takes it as well");
+		// review N2: the tank keeps scanning while the party is broken, so a member's late verdict still finds the fight
+		reset(); gather(false); ctx.parent.entities = {}; mon("q1", 4500, "Aspernari"); R("engage_scan()");
+		R("state.fight_start.last -= 14000; state.fight_start.at -= 14000"); // (14 s since the last fighter_tick scan)
+		hb("Sanala", { ...san, ctype: "mage", x: 20, y: 0, hp: 0, max_hp: 3000, rip: true });
+		R("globalThis.__su2 = suicide; suicide = () => {}; seen.since = Date.now() - 60_000; party_break_tick(); suicide = __su2");
+		assert(R("Date.now() - state.fight_start.last") < 2000, "v25.82 (N2): party_break_tick scans the monsters on the party");
+		assert(R("judge_death('ogre82', 'Aspernari')").counted, "v25.82 (N2): ...the priest's verdict is judged against the fight still running");
+		// review N3: a skipped type's monster near the camp isn't something to keep away from (handles)
+		R("state.type_skip.ogre82 = Date.now() + 3600000; for (const k in deadly_c) delete deadly_c[k]; for (const k in handle_c) delete handle_c[k]");
+		ctx.G.monsters.ogre82.aggro = 1;
+		assert(!R("deadly_type('ogre82')"), "v25.82 (N3): looming: a skipped type the party handles isn't deadly");
+		delete ctx.G.monsters.ogre82.aggro; R("state.type_skip = {}; for (const k in deadly_c) delete deadly_c[k]");
 		// a member's death reaches the tank as a verdict; the skip is shared; N12: the tank leaves the camp at once
 		reset(); gather(false); ctx.parent.entities = {}; mon("o7", 5000); open("o7"); ctx.parent.entities.o7.hp = 4000; ctx.parent.entities.o7.target = "Aspernari";
 		R("state.pack = { mtype: 'ogre82', map: 'main', boundary: [-200, -200, 200, 200] }; state.safe.ogre82 = { ttk: 5, xp: 500 }"); sent.length = 0;
@@ -2684,6 +2714,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.pack = { mtype: 'goo', map: 'main', boundary: [100, 100, 400, 400] }");
 		const other = walk({ map: "dl82", x: 400, y: 0 });
 		assert(/fr82 @ dl82/.test(other || ""), `v25.82 (B1): camped elsewhere, the walk past them is still refused (${other})`);
+		// B3: standing inside the fireroamer camp, every other camp and a hunt can still be picked and walked to — the walk
+		// starts inside the burners' reach, the only way out is through it
+		ctx.G.monsters.sq82 = { xp: 800, hp: 300, attack: 5, frequency: 1, range: 20, speed: 10, respawn: 5 };
+		ctx.G.monsters.gs82 = { xp: 700, hp: 300, attack: 5, frequency: 1, range: 20, speed: 10, respawn: 5 };
+		ctx.G.maps.main.monsters = [...maps0.main.monsters, { type: "sq82", count: 4, boundary: [2000, 2000, 2100, 2100] }];
+		ctx.G.maps.dl82.monsters.push({ type: "gs82", count: 4, boundary: [-350, 600, -250, 700] });
+		Object.assign(character, { map: "dl82", x: 400, y: 0 });
+		R("state.pack = { mtype: 'fr82', map: 'dl82', boundary: [300, -100, 500, 100] }; state.directive = null; state.cooldown = {}; dz_cache.clear(); rt_cache.clear()");
+		assert(R("start_zones('dl82', 400, 0).includes('fr82')"), "v25.82 (B3): setup: the tank stands inside the burners' reach");
+		assert(R("goal_blocked('sq82', 'main', [2000, 2000, 2100, 2100])") === null, `v25.82 (B3): from inside, a camp on another map isn't blocked (${R("goal_blocked('sq82', 'main', [2000, 2000, 2100, 2100])")})`);
+		assert(R("goal_blocked('gs82', 'dl82', [-350, 600, -250, 700])") === null, `v25.82 (B3): ...nor one on the same map (${R("goal_blocked('gs82', 'dl82', [-350, 600, -250, 700])")})`);
+		R("pick_pack()");
+		const out3 = R("JSON.stringify(state.pick_table.filter((c) => c.mtype === 'sq82' || c.mtype === 'gs82').map((c) => c.out))");
+		assert(out3 === "[null,null]", `v25.82 (B3): the pick keeps both as candidates (${out3})`);
+		R("state.directive = { monster: 'sq82', map: 'main', boundary: [2000, 2000, 2100, 2100], count: 4, reason: 'monster hunt 9 left', hunt: true, until: Date.now() + 1e6 }; state.pack = { mtype: 'fr82', map: 'dl82', boundary: [300, -100, 500, 100] }; pick_pack()");
+		assert(R("state.pack && state.pack.mtype") === "sq82", `v25.82 (B3): a hunt is picked from inside (${R("state.pack && state.pack.mtype")})`);
+		const out_walk = walk({ map: "main", x: 2050, y: 2050 });
+		assert(out_walk === null, `v25.82 (B3): ...and walked to, the pack no longer the burner camp (${out_walk})`);
+		R("state.directive = null"); ctx.G.maps.main.monsters = maps0.main.monsters; delete ctx.G.monsters.sq82; delete ctx.G.monsters.gs82;
+		Object.assign(character, { map: "main", x: 0, y: 0 });
 		ctx.G.maps.main = maps0.main; if (maps0.dl82) ctx.G.maps.dl82 = maps0.dl82; else delete ctx.G.maps.dl82; delete ctx.G.monsters.fr82; ctx.smart_move = sm0;
 		R("state.pack = null; state.walk_refused = null; smart_depth = 0; dz_cache.clear(); rt_cache.clear(); for (const k in hops_cache) delete hops_cache[k]"); }
 	// 88c) v25.82 sustain test (prior art: earthiverse gates a setup on the priest out-healing it): out of reach only when
@@ -2757,6 +2807,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("goal_blocked('agg82', 'main', [2150, 2000, 2200, 2100])"), "v25.82 (N4): ...its own camp is closed");
 		ctx.G.maps.main.monsters.splice(-2, 2); for (const t of ["jr82", "big82", "camp82", "agg82"]) delete ctx.G.monsters[t];
 		R("state.type_skip = {}; state.partners = {}; for (const k in handle_c) delete handle_c[k]; dz_cache.clear()"); delete ctx.__c82; }
+	// review N4: a camp monster the party can't damage at all (it out-heals us) is reported as such
+	{ const R = (c) => vm.runInContext(c, ctx), sv = ctx.parent.entities;
+		Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", hp: 1000, max_hp: 1000, attack: 100, frequency: 1, map: "main", x: 0, y: 0, rip: false });
+		ctx.G.monsters.imm82 = { xp: 1, hp: 1000, attack: 5, frequency: 1, range: 20, speed: 10, respawn: 5, abilities: { self_healing: { heal: 1e9, cooldown: 1000 } } };
+		ctx.parent.entities = { i1: { id: "i1", type: "monster", mtype: "imm82", visible: true, hp: 1000, max_hp: 1000, x: 50, y: 50, target: null } };
+		R("state.partners = {}; state.pack = { mtype: 'imm82', map: 'main', boundary: [0, 0, 100, 100] }; state.safe.imm82 = { ttk: 1, xp: 1 }; state.bad_ids = {}; live_cache.clear()");
+		const out = []; ctx.__F4 = (k, w, t) => out.push(t);
+		R("facts_targets(__F4, { p: state.pack, d: null, now: Date.now() })");
+		assert(/1 the party can't damage — never taken/.test(out.join()), `v25.82 (review N4): a monster the party can't damage is reported so (${out.join()})`);
+		R("state.pack = null; delete state.safe.imm82; live_cache.clear()"); delete ctx.__F4; delete ctx.G.monsters.imm82; ctx.parent.entities = sv; }
 	character.items = Array(42).fill(null);
 	// 89) v18.0: the merchant never spends tokens (hands them to the fighter with the fewest); a town task that is due but
 	// achieves nothing pauses itself (town:<task>) instead of tripping the loop brake; guide-only overlaps aren't mutual

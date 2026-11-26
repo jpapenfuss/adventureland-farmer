@@ -986,17 +986,22 @@ function fight_started(t) {
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || !together_now() || !is_tank_class(character.ctype)) return;
 	const now = Date.now();
 	let fs = state.fight_start;
-	if (!fs || now - (fs.last || fs.at) > FIGHT_GAP_MS) fs = state.fight_start = { at: now, ...party_standing(), ids: {} };
+	if (!fs || now - (fs.last || fs.at) > FIGHT_GAP_MS) fs = state.fight_start = { at: now, ...party_standing(), ids: {}, on: 0 };
+	// (review N1) a new pull with nothing on the party — the tank's opener, or the first monster on a member after a
+	// lull: the standing is taken again (one long episode at a busy camp kept the standing of its first minute)
+	else if (!fs.judged && !fs.on && !(t.target && fs.ids[t.id])) Object.assign(fs, party_standing());
 	fs.ids[t.id] = t.mtype; fs.last = now;
 }
 // The tank, each tick: every monster on a member is part of the fight (the first one starts it)
 function engage_scan() {
 	if (!together_now() || !is_tank_class(character.ctype) || character.rip) return;
-	const party = party_names();
+	const party = party_names(), on = [];
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
-		if (e?.type === "monster" && !e.dead && e.target && party.has(e.target)) fight_started(e);
+		if (e?.type === "monster" && !e.dead && e.target && party.has(e.target)) on.push(e);
 	}
+	for (const e of on) fight_started(e);
+	if (state.fight_start) state.fight_start.on = on.length; // (fight_started reads it: 0 → the next pull re-takes the standing)
 }
 // The tank (it picks the camps) judges the first death of each fight: { counted, mtype | why }. who: the member that
 // died; killer: the type that did it the most damage (null: unknown). It counts only when the party was gathered at the
@@ -1085,15 +1090,18 @@ function map_hops(from, to) {
 // where its NPC stands — Dijkstra over map spawns, cached per start (map, 200px cell) for 60s. The hop count (v24.9-v24.15)
 // predicted other paths than smart_move took: it walked through level1's vampire rats, which killed all three.
 const rt_cache = new Map();
-// (v25.82: except — the destination camp's own type: the walk goes to fight it, its zones are no danger on the way)
+// (v25.82: except — types whose zones are no danger on this walk: the destination camp's own (the walk goes to fight
+// it) and the ones whose reach the walk starts inside (start_zones; a string or a list)
+const ex_list = (except) => (except == null ? [] : [].concat(except));
 function route_graph(map, x, y, safe = false, except = null) {
-	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${safe ? 1 : 0}|${except || ""}`, now = Date.now(), c = rt_cache.get(key);
+	const exl = ex_list(except);
+	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${safe ? 1 : 0}|${exl.join(",")}`, now = Date.now(), c = rt_cache.get(key);
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
 	// (v25.80, Fable: not for a ranged burner's zone — desertland's transporter arrival stands in the fire spirits' reach,
 	// and the exemption let the first stretch be the death walk north; their path-length budget already lets us leave)
-	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && z.t !== except && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
+	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && !exl.includes(z.t) && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -1216,7 +1224,7 @@ function walk_path(map, x1, y1, x2, y2) {
 // "mt @ map" if the walk from (x1,y1) to (x2,y2) on a map passes within danger_px of such a spawn: along the real path
 // (walk_path), or the straight line sampled every 40px where the map has no geometry
 function seg_danger(map, x1, y1, x2, y2, except = null) {
-	const zs = except ? deadly_areas(map).filter((z) => z.t !== except) : deadly_areas(map);
+	const exl = ex_list(except), zs = exl.length ? deadly_areas(map).filter((z) => !exl.includes(z.t)) : deadly_areas(map);
 	if (!zs.length) return null;
 	// only where a detour could matter: a spawn within danger_px of the stretch's box grown by 500px (the walk bends
 	// round cliffs and water, but not across the map); elsewhere the straight line will do, and costs nothing
@@ -1251,7 +1259,13 @@ function route_plain(to_map, tx, ty) {
 	const r = route_to(to_map, tx, ty);
 	return r ? { d: r.d, legs: r.legs.some((l) => l.kind === "tp") ? r.legs : null, danger: null, around: null } : null;
 }
+// v25.82 (review B3): the types whose reach (deadly_areas) contains a point — a walk that starts there can only leave
+// through them (the party standing in the fireroamer camp could pick no other camp, nor a hunt)
+function start_zones(map, x, y) {
+	return [...new Set(deadly_areas(map).filter((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px).map((z) => z.t))];
+}
 function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }, except = null) {
+	except = [...new Set([...ex_list(except), ...start_zones(from.map, from.x, from.y)])];
 	const r = route_to(to_map, tx, ty, from, false, except);
 	if (!r) return null;
 	// v25.80 (Fable): a walk on the map we're on was never judged — in desertland, gscorpion is a straight walk through
@@ -5762,6 +5776,7 @@ function party_break_tick__fighter() {
 	if (is_merchant() || !in_party_cfg() || Date.now() - seen.since < 30_000) return false;
 	const why_ = party_break();
 	if (!why_) return false;
+	engage_scan(); // v25.82 (review N2): the tank keeps the fight fresh for the members' death verdicts (judge_death)
 	// v24.56: ONLY a member's death sends the others by suicide. A member offline: walk to town and wait there.
 	const dead = partners_any().some((q) => q.rip);
 	if (!in_town()) {
@@ -5946,7 +5961,7 @@ function deadly_type(mt) {
 	const c = deadly_c[mt], now = Date.now();
 	if (c && now - c.at < 30_000) return c.v;
 	const m = G.monsters[mt];
-	const v = !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !state.safe[mt] && !fight_profile(mt);
+	const v = !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !handles(mt); // (v25.82, review N3: any type; a skip doesn't count)
 	deadly_c[mt] = { at: now, v };
 	return v;
 }
@@ -6063,7 +6078,7 @@ const untried = (key) => state.measured[key] === undefined && !state.measured_go
 const is_hunt_goal = (d) => !!d && (!!d.hunt || /monster hunt/.test(d.reason || ""));
 const explore_xp = (mt) => (G.monsters[mt]?.xp || 0) * (xp_mult() || 1);
 // A camp's hard ceiling in xp/s: all its monsters killed as fast as they respawn (review N8)
-const explore_ceiling = (c) => { const pk = (G.maps[c.map]?.monsters || []).find((p) => p.type === c.mtype) || {}; return (c.count / expected_respawn(c.mtype, pk)) * explore_xp(c.mtype); };
+const explore_ceiling = (c) => { const pk = (G.maps[c.map]?.monsters || []).find((p) => p.type === c.mtype) || {}; return (c.count / expected_respawn(c.mtype, pk)) * (G.monsters[c.mtype]?.xp || 0); }; // (base xp/s, state.measured's unit)
 // The next untried camp, from this pick's candidates (they passed the pick's own checks: a spawn worth farming, not
 // resting, no danger next to it or on the way, reachable). Not the camp we stand at (it's measured in place, review
 // N9), nor one whose ceiling can't beat the best measured xp rate (review N8).
@@ -6079,11 +6094,11 @@ function explore_end(why_, now = Date.now()) {
 	// (review N6) the trial's session closes here, so its rate is booked now; only a trial that recorded one counts as tried
 	if (state.session?.key === c.key) end_session();
 	const rated = !untried(c.key);
-	// a type whose trials record nothing twice in a row (cut short, or no kills) waits 24 h too, so it can't take a
-	// trial every 30 min forever
+	// a type whose full-length trials record nothing twice in a row waits 24 h too, so it can't take a trial every
+	// 30 min forever; a trial cut short (a hunt, a death) proves nothing (review N6)
 	E.dry = E.dry || {}; E.why = E.why || {};
 	if (rated) { E.tried[c.mtype] = now; delete E.dry[c.mtype]; delete E.why[c.mtype]; }
-	else if ((E.dry[c.mtype] = (E.dry[c.mtype] || 0) + 1) >= 2) { E.tried[c.mtype] = now; E.why[c.mtype] = "no kills in 2 trials"; delete E.dry[c.mtype]; }
+	else if (why_ === "time" && (E.dry[c.mtype] = (E.dry[c.mtype] || 0) + 1) >= 2) { E.tried[c.mtype] = now; E.why[c.mtype] = "no kills in 2 trials"; delete E.dry[c.mtype]; }
 	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null, rated });
 	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})${rated ? "" : " — nothing measured, it stays untried"}`, C.info);
 	E.cur = null; E.last_end = now; E.none_at = 0;
@@ -7571,7 +7586,7 @@ function facts_targets__fighter(F, ctx) {
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !in_time(f) ? c.slow : c.heal).push(e.level || 1); }
+		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !f ? c.beyond : !in_time(f) ? c.slow : c.heal).push(e.level || 1); }
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
 	const n = c.ok + c.skipped.length + c.heal.length + c.slow.length + c.beyond.length + c.far + c.taken + c.ignored;

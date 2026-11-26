@@ -207,17 +207,22 @@ function fight_started(t) {
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || !together_now() || !is_tank_class(character.ctype)) return;
 	const now = Date.now();
 	let fs = state.fight_start;
-	if (!fs || now - (fs.last || fs.at) > FIGHT_GAP_MS) fs = state.fight_start = { at: now, ...party_standing(), ids: {} };
+	if (!fs || now - (fs.last || fs.at) > FIGHT_GAP_MS) fs = state.fight_start = { at: now, ...party_standing(), ids: {}, on: 0 };
+	// (review N1) a new pull with nothing on the party — the tank's opener, or the first monster on a member after a
+	// lull: the standing is taken again (one long episode at a busy camp kept the standing of its first minute)
+	else if (!fs.judged && !fs.on && !(t.target && fs.ids[t.id])) Object.assign(fs, party_standing());
 	fs.ids[t.id] = t.mtype; fs.last = now;
 }
 // The tank, each tick: every monster on a member is part of the fight (the first one starts it)
 function engage_scan() {
 	if (!together_now() || !is_tank_class(character.ctype) || character.rip) return;
-	const party = party_names();
+	const party = party_names(), on = [];
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
-		if (e?.type === "monster" && !e.dead && e.target && party.has(e.target)) fight_started(e);
+		if (e?.type === "monster" && !e.dead && e.target && party.has(e.target)) on.push(e);
 	}
+	for (const e of on) fight_started(e);
+	if (state.fight_start) state.fight_start.on = on.length; // (fight_started reads it: 0 → the next pull re-takes the standing)
 }
 // The tank (it picks the camps) judges the first death of each fight: { counted, mtype | why }. who: the member that
 // died; killer: the type that did it the most damage (null: unknown). It counts only when the party was gathered at the
@@ -306,15 +311,18 @@ function map_hops(from, to) {
 // where its NPC stands — Dijkstra over map spawns, cached per start (map, 200px cell) for 60s. The hop count (v24.9-v24.15)
 // predicted other paths than smart_move took: it walked through level1's vampire rats, which killed all three.
 const rt_cache = new Map();
-// (v25.82: except — the destination camp's own type: the walk goes to fight it, its zones are no danger on the way)
+// (v25.82: except — types whose zones are no danger on this walk: the destination camp's own (the walk goes to fight
+// it) and the ones whose reach the walk starts inside (start_zones; a string or a list)
+const ex_list = (except) => (except == null ? [] : [].concat(except));
 function route_graph(map, x, y, safe = false, except = null) {
-	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${safe ? 1 : 0}|${except || ""}`, now = Date.now(), c = rt_cache.get(key);
+	const exl = ex_list(except);
+	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${safe ? 1 : 0}|${exl.join(",")}`, now = Date.now(), c = rt_cache.get(key);
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
 	// (v25.80, Fable: not for a ranged burner's zone — desertland's transporter arrival stands in the fire spirits' reach,
 	// and the exemption let the first stretch be the death walk north; their path-length budget already lets us leave)
-	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && z.t !== except && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
+	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && !exl.includes(z.t) && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -437,7 +445,7 @@ function walk_path(map, x1, y1, x2, y2) {
 // "mt @ map" if the walk from (x1,y1) to (x2,y2) on a map passes within danger_px of such a spawn: along the real path
 // (walk_path), or the straight line sampled every 40px where the map has no geometry
 function seg_danger(map, x1, y1, x2, y2, except = null) {
-	const zs = except ? deadly_areas(map).filter((z) => z.t !== except) : deadly_areas(map);
+	const exl = ex_list(except), zs = exl.length ? deadly_areas(map).filter((z) => !exl.includes(z.t)) : deadly_areas(map);
 	if (!zs.length) return null;
 	// only where a detour could matter: a spawn within danger_px of the stretch's box grown by 500px (the walk bends
 	// round cliffs and water, but not across the map); elsewhere the straight line will do, and costs nothing
@@ -472,7 +480,13 @@ function route_plain(to_map, tx, ty) {
 	const r = route_to(to_map, tx, ty);
 	return r ? { d: r.d, legs: r.legs.some((l) => l.kind === "tp") ? r.legs : null, danger: null, around: null } : null;
 }
+// v25.82 (review B3): the types whose reach (deadly_areas) contains a point — a walk that starts there can only leave
+// through them (the party standing in the fireroamer camp could pick no other camp, nor a hunt)
+function start_zones(map, x, y) {
+	return [...new Set(deadly_areas(map).filter((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px).map((z) => z.t))];
+}
 function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }, except = null) {
+	except = [...new Set([...ex_list(except), ...start_zones(from.map, from.x, from.y)])];
 	const r = route_to(to_map, tx, ty, from, false, except);
 	if (!r) return null;
 	// v25.80 (Fable): a walk on the map we're on was never judged — in desertland, gscorpion is a straight walk through

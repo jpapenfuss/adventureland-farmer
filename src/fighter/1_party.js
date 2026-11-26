@@ -173,6 +173,7 @@ function party_break_tick() {
 	if (is_merchant() || !in_party_cfg() || Date.now() - seen.since < 30_000) return false;
 	const why_ = party_break();
 	if (!why_) return false;
+	engage_scan(); // v25.82 (review N2): the tank keeps the fight fresh for the members' death verdicts (judge_death)
 	// v24.56: ONLY a member's death sends the others by suicide. A member offline: walk to town and wait there.
 	const dead = partners_any().some((q) => q.rip);
 	if (!in_town()) {

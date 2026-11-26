@@ -44,7 +44,7 @@ function deadly_type(mt) {
 	const c = deadly_c[mt], now = Date.now();
 	if (c && now - c.at < 30_000) return c.v;
 	const m = G.monsters[mt];
-	const v = !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !state.safe[mt] && !fight_profile(mt);
+	const v = !!m && ((m.aggro || 0) > 0 || (m.rage || 0) > 0) && !handles(mt); // (v25.82, review N3: any type; a skip doesn't count)
 	deadly_c[mt] = { at: now, v };
 	return v;
 }
@@ -161,7 +161,7 @@ const untried = (key) => state.measured[key] === undefined && !state.measured_go
 const is_hunt_goal = (d) => !!d && (!!d.hunt || /monster hunt/.test(d.reason || ""));
 const explore_xp = (mt) => (G.monsters[mt]?.xp || 0) * (xp_mult() || 1);
 // A camp's hard ceiling in xp/s: all its monsters killed as fast as they respawn (review N8)
-const explore_ceiling = (c) => { const pk = (G.maps[c.map]?.monsters || []).find((p) => p.type === c.mtype) || {}; return (c.count / expected_respawn(c.mtype, pk)) * explore_xp(c.mtype); };
+const explore_ceiling = (c) => { const pk = (G.maps[c.map]?.monsters || []).find((p) => p.type === c.mtype) || {}; return (c.count / expected_respawn(c.mtype, pk)) * (G.monsters[c.mtype]?.xp || 0); }; // (base xp/s, state.measured's unit)
 // The next untried camp, from this pick's candidates (they passed the pick's own checks: a spawn worth farming, not
 // resting, no danger next to it or on the way, reachable). Not the camp we stand at (it's measured in place, review
 // N9), nor one whose ceiling can't beat the best measured xp rate (review N8).
@@ -177,11 +177,11 @@ function explore_end(why_, now = Date.now()) {
 	// (review N6) the trial's session closes here, so its rate is booked now; only a trial that recorded one counts as tried
 	if (state.session?.key === c.key) end_session();
 	const rated = !untried(c.key);
-	// a type whose trials record nothing twice in a row (cut short, or no kills) waits 24 h too, so it can't take a
-	// trial every 30 min forever
+	// a type whose full-length trials record nothing twice in a row waits 24 h too, so it can't take a trial every
+	// 30 min forever; a trial cut short (a hunt, a death) proves nothing (review N6)
 	E.dry = E.dry || {}; E.why = E.why || {};
 	if (rated) { E.tried[c.mtype] = now; delete E.dry[c.mtype]; delete E.why[c.mtype]; }
-	else if ((E.dry[c.mtype] = (E.dry[c.mtype] || 0) + 1) >= 2) { E.tried[c.mtype] = now; E.why[c.mtype] = "no kills in 2 trials"; delete E.dry[c.mtype]; }
+	else if (why_ === "time" && (E.dry[c.mtype] = (E.dry[c.mtype] || 0) + 1) >= 2) { E.tried[c.mtype] = now; E.why[c.mtype] = "no kills in 2 trials"; delete E.dry[c.mtype]; }
 	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null, rated });
 	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})${rated ? "" : " — nothing measured, it stays untried"}`, C.info);
 	E.cur = null; E.last_end = now; E.none_at = 0;

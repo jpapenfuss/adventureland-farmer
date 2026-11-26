@@ -104,7 +104,7 @@ function facts_targets(F, ctx) {
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !in_time(f) ? c.slow : c.heal).push(e.level || 1); }
+		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !f ? c.beyond : !in_time(f) ? c.slow : c.heal).push(e.level || 1); }
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
 	const n = c.ok + c.skipped.length + c.heal.length + c.slow.length + c.beyond.length + c.far + c.taken + c.ignored;
