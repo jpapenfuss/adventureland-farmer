@@ -7,8 +7,9 @@ function can_wear(name) {
 	const def = G.items[name], cls = G.classes[character.ctype] || {};
 	if (!def) return false;
 	if (def.class && !def.class.includes(character.ctype)) return false;
-	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand))
-		return !!((cls.mainhand || {})[def.wtype] || (cls.offhand || {})[def.wtype]);
+	// v25.81: two-handers too (G.classes[c].doublehand), as slots_for counts them — a warrior's axe, a rogue's bow
+	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand || cls.doublehand))
+		return !!(cls.mainhand?.[def.wtype] || cls.doublehand?.[def.wtype] || cls.offhand?.[def.wtype]);
 	if (["quiver", "source", "shield", "misc_offhand"].includes(def.type) && cls.offhand) return !!cls.offhand[def.type];
 	return true;
 }
@@ -65,20 +66,27 @@ function gear_weights(ctype) {
 	for (const k of STAT_KEYS) { const w = stat_weight(k, ctype); if (w) out[k] = Math.round(w * 1000) / 1000; }
 	return out;
 }
+// What one stat point of a stat-scrolled piece gives, per attribute (common_functions.js calculate_item_properties: mult)
+const STAT_SCROLL_MULT = { gold: 0.5, luck: 1, xp: 0.5, int: 1, str: 1, dex: 1, vit: 1, for: 1, armor: 2.25, resistance: 2.25, speed: 0.325, evasion: 0.325,
+	reflection: 0.15, lifesteal: 0.15, manasteal: 0.04, rpiercing: 2.25, apiercing: 2.25, crit: 0.125, dreturn: 0.5, frequency: 0.325, mp_cost: -0.6, output: 0.175 };
 // Item stats at its level: the game's own calculator when the runner exposes it, else base + per-level increments
 function item_props(item, ctype) {
 	const f = typeof calculate_item_properties === "function" ? calculate_item_properties
 		: typeof parent !== "undefined" && typeof parent.calculate_item_properties === "function" ? parent.calculate_item_properties : null;
 	if (f) try { return f(item, { class: ctype }); } catch (e) {}
 	const def = G.items[item.name] || {}, out = {}, lv = item.level || 0, inc = def.upgrade || def.compound || {};
-	for (const k of STAT_KEYS) if (typeof def[k] === "number") out[k] = def[k];
+	for (const k of [...STAT_KEYS, "stat"]) if (typeof def[k] === "number") out[k] = def[k];
 	for (const k in inc) if (typeof inc[k] === "number") out[k] = (out[k] || 0) + inc[k] * lv;
+	// v25.81: a stat-scrolled piece's stat points are that attribute, as the game counts them (calculate_item_properties:
+	// prop[stat_type] += stat x its multiplier)
+	if (out.stat && item.stat_type) { out[item.stat_type] = (out[item.stat_type] || 0) + out.stat * (STAT_SCROLL_MULT[item.stat_type] ?? 1); out.stat = 0; }
 	return out;
 }
-// What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type
-function gear_stats(item, ctype) {
+// What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type; v25.81: a
+// weapon held in the offhand (slot "offhand": a rogue's second dagger) takes the class's offhand modifier for its type
+function gear_stats(item, ctype, slot) {
 	const p = { ...item_props(item, ctype) }, d = G.items[item.name], cls = G.classes[ctype];
-	const mod = !cls || !d ? null : d.type === "weapon" ? cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype]
+	const mod = !cls || !d ? null : d.type === "weapon" ? (slot === "offhand" ? cls.offhand?.[d.wtype] : cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype])
 		: OFFHAND_TYPES.has(d.type) ? cls.offhand?.[d.wtype] || cls.offhand?.[d.type] : null;
 	for (const [k, v] of Object.entries(mod || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
 	// v25.55: the server floors MP per attack at 1 — a saving counts only down to there: the class's own cost at our
@@ -114,9 +122,9 @@ function stat_points(p, ctype) {
 	return s;
 }
 // A piece on its own (no set bonus): the same for every slot it fits
-function gear_score(item, ctype = character.ctype) {
+function gear_score(item, ctype = character.ctype, slot) {
 	if (!item || !G.items[item.name]) return 0;
-	return round1(stat_points(gear_stats(item, ctype), ctype));
+	return round1(stat_points(gear_stats(item, ctype, slot), ctype));
 }
 // Set bonus with n pieces worn: the server adds up the levels 1..n of G.sets[set] (server_functions.js, at boot; the
 // client's G holds them per level)
@@ -137,10 +145,10 @@ function set_gain(item, ctype, g, slot) {
 // (a partner on an older version sends off: true/false — the offhand flag that field used to be)
 const dps_ctx = (g) => (CFG.gear_dps && g && typeof g.off === "object" && g.off && g.off.mult > 0 && g.off.A > 0 && g.off.F > 0 ? g.off : null);
 function slot_value(item, ctype, g, slot) {
-	let v = gear_score(item, ctype);
+	let v = gear_score(item, ctype, slot);
 	const O = dps_ctx(g);
 	if (O && slot && item && G.items[item.name]) {
-		const p = gear_stats(item, ctype), lin = (p.attack || 0) * stat_weight("attack", ctype) + (p.frequency || 0) * stat_weight("frequency", ctype);
+		const p = gear_stats(item, ctype, slot), lin = (p.attack || 0) * stat_weight("attack", ctype) + (p.frequency || 0) * stat_weight("frequency", ctype);
 		if (lin) v += offense_points(p, O, slot) - lin; // its attack and speed as damage, instead of the flat weights
 	}
 	return round1(v + set_gain(item, ctype, g, slot));
@@ -155,7 +163,7 @@ function offense_ctx(sl) {
 	if (character.ctype === "priest") mult *= 1.6;
 	if (!(mult > 0)) return null;
 	const ia = {}, fr = {};
-	for (const s of GEAR_SLOTS) if (sl[s]) { const p = gear_stats(sl[s], character.ctype); if (p.attack) ia[s] = p.attack; if (p.frequency) fr[s] = p.frequency; }
+	for (const s of GEAR_SLOTS) if (sl[s]) { const p = gear_stats(sl[s], character.ctype, s); if (p.attack) ia[s] = p.attack; if (p.frequency) fr[s] = p.frequency; }
 	return { A: Math.round(character.attack), F: +character.frequency.toFixed(3), mult: +mult.toFixed(3), ia, fr };
 }
 // Points a piece's attack and frequency are worth in a slot: the damage per second it adds over that slot EMPTY (so
@@ -174,9 +182,9 @@ function worn_sets(sl) {
 // "int 10×1.2=12, vit 4×0.48=1.9 (+set wanderers 2pc 20)": why a piece scores what it does
 function gear_why(item, ctype = character.ctype, g = null, slot = null) {
 	if (!item || !G.items[item.name]) return "";
-	const t = stat_terms(gear_stats(item, ctype), ctype).slice(0, 4).map((x) => `${x.k} ${round1(x.v)}×${+x.w.toFixed(2)}=${round1(x.pts)}`);
+	const t = stat_terms(gear_stats(item, ctype, slot), ctype).slice(0, 4).map((x) => `${x.k} ${round1(x.v)}×${+x.w.toFixed(2)}=${round1(x.pts)}`);
 	const sg = g && slot ? round1(set_gain(item, ctype, g, slot)) : 0;
-	const p_ = gear_stats(item, ctype), dps = dps_ctx(g) && slot && (p_.attack || p_.frequency) ? ` [attack+speed as damage: ${round1(offense_points(p_, g.off, slot))} pts, not the two weights]` : "";
+	const p_ = gear_stats(item, ctype, slot), dps = dps_ctx(g) && slot && (p_.attack || p_.frequency) ? ` [attack+speed as damage: ${round1(offense_points(p_, g.off, slot))} pts, not the two weights]` : "";
 	return t.join(", ") + (sg ? ` (+set ${G.items[item.name].set} ${sg})` : "") + dps;
 }
 // "weights paladin (G.classes lstats, main str, side int): str 1.2 int 1.2 vit 0.96 ... | attack 1 armor 0.6 ..."

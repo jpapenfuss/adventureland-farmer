@@ -69,4 +69,10 @@ async function run(role) {
 	assert(fns.length && fns.every((n) => all.includes(`function ${n}(...a) { return (is_merchant() ? ${n}__merchant : ${n}__fighter)`) && all.includes(`function ${n}__fighter(`) && all.includes(`function ${n}__merchant(`)),
 		`farmer.js dispatches the role functions by role (${fns.join(", ")})`);
 }
-(async () => { await run("fighter"); await run("merchant"); console.log("ROLES ALL PASS"); })().catch((e) => { console.error("FAIL:", e); process.exit(1); });
+// v25.81: the gear table (generator, committed data/gear files, run-time lookups) — test/gear_table.js, run from here
+function gear_table_tests() {
+	const r = require("child_process").spawnSync(process.execPath, [path.join(__dirname, "gear_table.js")], { encoding: "utf8" });
+	process.stdout.write(r.stdout.split("\n").filter((l) => !/^ok - /.test(l)).join("\n"));
+	assert(r.status === 0, `gear table tests (test/gear_table.js): ${(r.stdout.match(/^ok - /gm) || []).length} passed${r.status ? "\n" + r.stdout + r.stderr : ""}`);
+}
+(async () => { await run("fighter"); await run("merchant"); gear_table_tests(); console.log("ROLES ALL PASS"); })().catch((e) => { console.error("FAIL:", e); process.exit(1); });
