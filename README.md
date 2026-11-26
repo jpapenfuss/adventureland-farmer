@@ -22,9 +22,7 @@ bot does is at the bottom of `src/main.js`.
 ## Tests
 `node test/smoke.js`, `node test/loader.js` and `node test/roles.js` (a mocked game client; no game connection).
 `roles.js` checks that `farmer.js` is the current build, that no role uses a name only the other role declares
-(`tools/split_check.js`), that each role's file set loads, ticks and reports on its own, and runs `test/gear_table.js`
-(the gear table generator, the committed `data/gear` files, and the run-time lookups; set `AL_DATA` to a data.js to
-check coverage against it).
+(`tools/split_check.js`), and that each role's file set loads, ticks and reports on its own.
 
 ## Changes
 Every change goes on a branch with a pull request, bumps `VERSION`, passes the three test suites, and is reviewed
@@ -35,7 +33,7 @@ GitHub serves the new version.
 - `src/` — the bot's source. `manifest.json` lists the load order per role:
   - `shared/` (every character), numbered files by subject: config, infrastructure, fight model, history, combat,
     gear, travel gear (off), upgrade runs, upgrade choice, crafting, bags, quests, guide (off), town, recovery,
-    persistence, report, party, the fighters' view of the merchant, the gear table;
+    persistence, report, party, the fighters' view of the merchant;
   - `fighter/`: loop, party, camp, combat, goals, town, gear, report, its answers to the merchant's functions, the cave;
   - `merchant/`: loop, serve, stand, Ponty, bank, report, its answers to the fighters' functions;
   - `main.js`: death handling, the main loop, start-up, and the overview.
@@ -46,9 +44,6 @@ GitHub serves the new version.
 - `farmer.js` — GENERATED: every file in one (`node tools/build.js`; `--check` verifies it). Loaders v1–v3 and the
   tests run it. Edit `src/`, never `farmer.js`.
 - `loader.js` — the paste-once loader (v4).
-- `data/gear/` — GENERATED gear table (every equipment piece: stats, value per class and level, odds, sources; the bot
-  fetches it, `gt_item` / `gt_slot` / `gt_best`). Regenerate after a game update: `node tools/gear_table.js <data.js>`
-  (data.js from https://adventure.land/data.js), then commit `data/gear/`.
 - `test/` — `smoke.js` (the bot against a mocked game client), `loader.js`, `roles.js`, `fixtures/`.
 - `tools/` — the build, the split check and diagnostic scripts. See `tools/README.md`.
 - `REFACTOR.md` — the design the code follows (the tank decides; the party stays together) and its history.

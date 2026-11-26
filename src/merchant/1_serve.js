@@ -56,11 +56,10 @@ function gold_target() {
 	const spare = (p) => (p.gold || 0) - M.fund_keep;
 	return partners().filter((p) => p.ctype !== "merchant" && spare(p) >= min && merchant_reach_ok(p)).sort((a, b) => spare(b) - spare(a))[0] || null;
 }
-// Tokens the merchant holds go to the fighters' pool holder (v25.66: the first configured member online — fighter/6_gear
-// token_holder); one delivery per 30 min
+// Tokens the merchant holds go to the fighter with the fewest (merchant never spends them); one delivery per 30 min
 let token_trip_at = 0;
 const token_target = () => (is_merchant() && held_any("monstertoken") > 0 && Date.now() - token_trip_at > 1_800_000 ?
-	(CFG.party.members || []).map((n) => state.partners[n]).find((p) => p && fresh(p) && p.ctype !== "merchant" && !p.rip) : null) || null;
+	partners().filter((p) => fresh(p) && p.ctype !== "merchant" && !p.rip).sort((a, b) => (a.tokens || 0) - (b.tokens || 0))[0] : null) || null;
 // Bag slot of a potion of this kind, preferring the configured tier, never the last self_pots
 function pot_slot(kind) {
 	let best = -1;
@@ -244,7 +243,7 @@ function merchant_asks_funds(P, step) {
 	if (!merchant_awaits_funds()) state.fund_at = Date.now();
 	state.fund_step = step;
 	if (!P) { state.fund_need = step; return true; }
-	state.fund_need = step; // v25.66: one step, one scroll
+	state.fund_need = P.weapon ? Math.max(step * 3, (P.cost || 0) - (P.spent || 0)) : Math.min(P.cost, step * 3); // v24.86: a weapon asks for what's left
 	game_log(`upgrade ${P.name}: waiting for ${fmt_k(state.fund_need)} gold from the fighters`, C.dim);
 	return true;
 }

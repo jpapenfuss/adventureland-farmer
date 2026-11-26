@@ -264,7 +264,6 @@ async function run_row(row) {
 			if (k < 0) throw { reason: "input_missing" };
 			await go_npc(a.npc || "craftsman");
 			await wait_budget(1, RESERVE.errand);
-			tag_spend("crafting"); // (v25.80: dismantling costs gold)
 			return T(dismantle(k));
 		}
 		case "retrieve": {

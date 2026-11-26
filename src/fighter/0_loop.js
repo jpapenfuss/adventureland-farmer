@@ -94,17 +94,20 @@ function fighter_tick() {
 		return 150;
 	}
 	if (cave_entry_tick()) { loot_chests(); return 200; } // v25.22: once a day, the party goes into the Cave of Many Dreams
+	// v24.8: with the party waiting at our pack while we're on an errand or walking back: no re-pick (the periodic
+	// one, town_body's reset) — that switched to another pack and moved them
+	const cp = state.pack, waiting = in_party_cfg() && !!cp && partners().length > 0 && !partners_near().length &&
+		partners().every((q) => q.pack && valid_boundary(q.pack.boundary) && pack_key(q.pack) === pack_key(cp));
+	// v24.45: nor while a member is in town (a town run, a party trip): it's back in a minute, and a pick made
+	// without it ("1 with us") ruled out the party's spot and walked the rest to a weaker one each time
+	const member_in_town = in_party_cfg() && !!cp && partners().some((q) => q.errand === "town" || q.pt);
 	probe_check();
 	// v24.60: the party sits at its camp. No re-pick every repick_ms (estimates within a few % of each other moved
 	// it between camps: 18 changes in an hour). A camp is left only when it's gone: a death there, nothing to
 	// fight for the idle time, or no safe way to it — each of those clears state.pack or picks again itself.
 	// v24.62: and it's chosen by the whole party: not before every member has been heard from (the tank used to
 	// pick on the first tick after loading, judging every monster for itself alone, and the party sat there)
-	// v25.75 (audit): a camp put to rest (idle, the watchdog, a roamer keeping us away) is left — "cool it and pick
-	// again" only cooled it, and the party stayed until the 30-min review
-	const resting_pack = !!state.pack && !state.pack.boss && !state.pack.probe && (state.cooldown[pack_key(state.pack)] || 0) > Date.now();
-	if (resting_pack && Date.now() - (state.rest_pick_at || 0) > 5000 && !errand_busy() && !(in_party_cfg() && party_break())) { state.rest_pick_at = Date.now(); if (!is_follower()) try { refresh_directive(); } catch (e) {} pick_pack(); } // (the goal first: its other area — Fable)
-	else if (!state.pack && !(in_party_cfg() && party_break())) pick_pack();
+	if (!state.pack && !(in_party_cfg() && party_break())) pick_pack();
 	else if (state.pack && !(in_party_cfg() && party_break())) camp_review(); // v24.84
 	if (state.pack?.boss && boss_tick(state.pack)) { loot_chests(); return 200; }
 	const pack = state.pack;
@@ -153,7 +156,6 @@ function fighter_tick() {
 		} else if (Date.now() - state.last_target_at > Math.max(CFG.idle_giveup_ms, Math.min(CFG.max_respawn, G.monsters[pack.mtype]?.respawn || 0) * 1000 + 5000)) {
 			game_log(`Idle at ${pack.mtype}; cooling down this pack`, C.dim);
 			rest_camp(pack_key(pack), CFG.pack_cooldown_ms);
-			if (!is_follower()) try { refresh_directive(); } catch (e) {} // v25.75 (Fable): the goal moves to its other area first
 			pick_pack();
 		} else patrol();
 	}
@@ -176,7 +178,7 @@ function fighter_cm(m) {
 	}
 	if (m && m.message?.k === "mhb" && m.name === CFG.merchant?.name) { state.merchant = { ...m.message, name: m.name, t: Date.now() }; return true; }
 	if (m && m.message?.k === "verdict" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { apply_verdict(m.message, m.name); return true; }
-	if (m && m.message?.k === "ptown_off" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { if (state.ptown && !errand_busy()) { ptown_end_id(state.ptown.id); state.ptown = null; } return true; }
+	if (m && m.message?.k === "ptown_off" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { if (state.ptown && !errand_busy()) state.ptown = null; return true; }
 	if (m && m.message?.k === "ptown" && (CFG.party.members || []).includes(m.name) && m.name !== character.name) { ptown_recv(m.message, m.name); return true; }
 	if (m && m.message?.k === "bill" && m.name === CFG.merchant?.name && !is_merchant()) { // potions it handed us (v23.0)
 		const g = Math.max(0, Math.round(+m.message.g || 0));

@@ -102,7 +102,6 @@ function live_ok(e) {
 	if (!f) return null;
 	if (f.trusted && !((e.level || 1) > 1)) return f; // guide-judged safe and not levelled up: trust it
 	if (f.probe) return f; // probing this monster on purpose
-	if (f.proven) return f; // v25.69: killed often enough, no death to it in 24h — evidence over the model (Fable)
 	const lf = entity_profile(e);
 	return lf ? { ttk: lf.ttk, xp: lf.xp } : null;
 }

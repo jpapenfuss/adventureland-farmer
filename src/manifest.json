@@ -19,8 +19,7 @@
   "shared/15_persist.js",
   "shared/16_report.js",
   "shared/17_party.js",
-  "shared/18_merchant_view.js",
-  "shared/19_gear_table.js"
+  "shared/18_merchant_view.js"
  ],
  "fighter": [
   "fighter/0_loop.js",

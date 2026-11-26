@@ -156,25 +156,7 @@ function tank_first(t) {
 	if (!t || t.type !== "monster" || t.target) return false;
 	if (!together_now()) return false;
 	if (!is_tank_class(character.ctype)) return !free_for_all(t); // not the tank: never the first hit (v24.51), unless the tank one-shoots these (v25.20)
-	const miss = party_missing();
-	if (!miss.length) return false; // the tank: not before everyone's here
-	// v25.75 (audit): at its camp, a type it one-shoots (the followers start their own fights there — free_for_all): a
-	// member merely far across the camp doesn't hold the tank's first hit; one away (errand, dead, unheard, another map) does
-	const P = state.pack;
-	if (P && t.mtype === P.mtype && P.map === character.map && oneshot_types().includes(t.mtype) &&
-		miss.every((n) => { const q = state.partners[n]; return q && fresh(q) && Date.now() - q.t <= 3 * CFG.party.beat_ms && !q.rip && !q.errand && !q.recovering && q.map === character.map; })) return false;
-	return true;
-}
-// v25.69 (owner): evidence over the model — the party has killed this type proven_kills times (kill_credit, any member)
-// and no member died to it in the last 24h
-function proven(mtype) {
-	const p = state.proven[mtype], now = Date.now();
-	return !!p && p.k >= (CFG.proven_kills || Infinity) && !(p.d || []).some((t) => now - t < 86_400_000);
-}
-function proven_death(mtype, at = Date.now()) {
-	if (!mtype) return;
-	const p = (state.proven[mtype] = state.proven[mtype] || { k: 0, d: [] });
-	p.d = [...(p.d || []).filter((t) => at - t < 86_400_000 && Math.abs(t - at) > 60_000), at];
+	return party_missing().length > 0; // the tank: not before everyone's here
 }
 function fight_profile(mtype) {
 	if (!farmable_type(mtype)) return null;
@@ -182,8 +164,7 @@ function fight_profile(mtype) {
 	// through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another spot and
 	// walked back — at every door.
 	const f = fight_math(G.monsters[mtype]);
-	if (safe_enough(f, mtype)) return { ttk: f.ttk, xp: f.xp };
-	return f && proven(mtype) ? { ttk: f.ttk, xp: f.xp, proven: true } : null;
+	return safe_enough(f, mtype) ? { ttk: f.ttk, xp: f.xp } : null;
 }
 // Seconds between respawns, as the server schedules them: respawn + 0..0.9s random (mean +0.45); respawns over 200s
 // are instead scaled by 0.72..1.2 (mean ×0.96). "grow" packs refill almost instantly (0.1s here).
@@ -239,9 +220,7 @@ function route_graph(map, x, y, safe = false) {
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
-	// (v25.80, Fable: not for a ranged burner's zone — desertland's transporter arrival stands in the fire spirits' reach,
-	// and the exemption let the first stretch be the death walk north; their path-length budget already lets us leave)
-	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
+	const in_danger_here = safe && deadly_areas(map).some((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -309,7 +288,7 @@ function deadly_areas(map) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
-		else if (merchant_threat(t, v)) { const T_ = threat_dps(t); list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 40, dps: T_.dps, hp: T_.hp, v }); } // (v25.80: its reach plus the sprites' size — the time spent there is what's counted, so no extra margin) // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
+		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 120 }); // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
 	return list;
@@ -375,22 +354,8 @@ function seg_danger(map, x1, y1, x2, y2) {
 		const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 40));
 		pts = Array.from({ length: n + 1 }, (_, i) => [x1 + ((x2 - x1) * i) / n, y1 + ((y2 - y1) * i) / n]);
 	}
-	const inside = (z, x, y) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px;
-	let burn_dmg = 0, burn_hp = Infinity, burn_t = null; // (summed over overlapping zones: two spawns' reach on one stretch)
-	for (const z of zs) {
-		// v25.80 (Fable): a ranged attacker that can't chase is judged by the time this walk spends in its reach — the
-		// whole damage over that stretch against the HP budget — not by touching its zone: desertland's transporter
-		// arrival brushes the fire spirits' reach, the way north crosses it for 16 s
-		if (z.dps) {
-			let px = 0;
-			for (let i = 1; i < pts.length; i++) if (inside(z, pts[i][0], pts[i][1]) || inside(z, pts[i - 1][0], pts[i - 1][1])) px += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
-			const dmg = z.dps * (px / Math.max(z.v || 10, 10));
-			if (dmg > 0) { burn_dmg += dmg; burn_hp = Math.min(burn_hp, z.hp); burn_t = burn_t || z.t; }
-			if (burn_dmg >= burn_hp) return `${burn_t} @ ${map}`;
-			continue;
-		}
-		for (const [x, y] of pts) if (inside(z, x, y)) return `${z.t} @ ${map}`;
-	}
+	for (const z of zs) for (const [x, y] of pts)
+		if (Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px) return `${z.t} @ ${map}`;
 	return null;
 }
 // The way smart_move would walk, or if that passes deadly spawns, the shortest way around them: { d, legs, danger,
@@ -402,9 +367,6 @@ function route_plain(to_map, tx, ty) {
 function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
 	const r = route_to(to_map, tx, ty, from);
 	if (!r) return null;
-	// v25.80 (Fable): a walk on the map we're on was never judged — in desertland, gscorpion is a straight walk through
-	// the fire spirits
-	if (to_map === from.map) { const w = seg_danger(to_map, from.x, from.y, tx, ty); return { d: r.d, legs: null, danger: w, around: null }; }
 	let why = null;
 	for (const L of r.legs) if (L.fx !== undefined && (why = seg_danger(L.map, L.fx, L.fy, L.x, L.y))) break;
 	if (!why && r.last) why = seg_danger(to_map, r.last.x, r.last.y, tx, ty);
@@ -441,29 +403,14 @@ const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
 // rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed). Such a
 // monster can't chase us, so deadly_areas keeps the walk out of its range (+120 px), not danger_px.
-// v25.80 (a fighter, Sanala, died the same way: the only walk from desertland's transporter to the level2s door runs
-// through those fire spirits, 16 s in reach; they attack anyone in range untargeted — so nothing reacted — and every hit
-// stacks burn): for everyone. A fighter judges it for the party's weakest member against that member's whole HP (the
-// merchant: half its own), burn counted at ~3x the hit (it stacks to about that), and never for a type the party farms
-// (state.safe: the camp's own monster, fought, not walked past).
-// threat_dps: { dps, hp } — its damage per second in reach (burn ~3x) and the HP budget a walk past it may spend — or null
-// (Fable on v25.80: a fighter ignores a monster that almost never attacks unprovoked, aggro under 0.1 — halloween's
-// mrpumpkin closed the minimush camp)
-function threat_dps(t) {
+function merchant_threat(t, v) {
 	const m = G.monsters[t];
-	if (!m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return null;
-	if (!is_merchant() && (state.safe?.[t] || ((m.aggro || 0) < 0.1 && !((m.rage || 0) > 0)))) return null;
+	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const magic = m.damage_type === "magical";
 	const hit = (m.attack || 0) * dm(((magic ? character.resistance : character.armor) || 0) - ((magic ? m.rpiercing : m.apiercing) || 0));
-	const burn = m.abilities?.burn ? 3 : 1;
-	const hp = is_merchant() ? (character.max_hp || 1) / 2 : Math.min(character.max_hp || Infinity, ...partners_any().map((p) => p.max_hp || Infinity));
-	return { dps: hit * burn * (m.frequency || 0), hp: Number.isFinite(hp) ? hp : character.max_hp || 1 };
-}
-// A walk straight through its reach would cost that budget
-function merchant_threat(t, v) {
-	const T_ = threat_dps(t), m = G.monsters[t];
-	return !!T_ && T_.dps * ((2 * (m.range || 0) + 100) / Math.max(v, 10)) >= T_.hp;
+	const exposed_s = (2 * (m.range || 0) + 100) / Math.max(v, 10);
+	return hit * (m.frequency || 0) * exposed_s >= (character.max_hp || 1) / 2;
 }
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }
@@ -479,25 +426,17 @@ function resolve_area(monster, map, boundary, count) {
 	if (map && G.maps[map] && valid_boundary(boundary)) return { map, boundary: boundary.slice(0, 4), count: count || 1, mtype: monster };
 	// v19.1: already at a spawn of this monster → stay (a hunt for the snakes we were farming on main sent the party
 	// across maps to halloween's bigger spawn)
-	// v25.75 (audit): an area the camp pick would refuse (resting after it ran dry, a danger zone) isn't the goal's
-	// area while another is open — a thin hunt camp, rested, made the whole hunt "refused" and the party left for the
-	// best camp for 10 min, then came back: a cycle
-	const refused = (a) => typeof goal_blocked === "function" && !!goal_blocked(monster, a.map, a.boundary);
 	const cur = state.pack;
-	if (cur && cur.mtype === monster && (!map || cur.map === map) && valid_boundary(cur.boundary) && G.maps[cur.map] && !refused(cur))
+	if (cur && cur.mtype === monster && (!map || cur.map === map) && valid_boundary(cur.boundary) && G.maps[cur.map])
 		return { map: cur.map, boundary: cur.boundary.slice(0, 4), count: cur.count || 1, mtype: monster };
-	let best = null, any = null;
+	let best = null;
 	each_area((pack, area) => {
 		if (pack.type !== monster) return;
 		// more monsters, but a minute of walking costs as much as halving the pack
 		const rank = (area.map === map ? 1e6 : 0) + area.count / (1 + travel_s(area.map, area.boundary) / 60);
-		if (!any || rank > any.rank) any = { ...area, rank };
-		if (refused(area)) return;
 		if (!best || rank > best.rank) best = { ...area, rank };
 	});
-	// (every area refused: the top one, so goal_blocked says why)
-	const r = best || (any && { ...any });
-	return r && { map: r.map, boundary: r.boundary, count: r.count, mtype: monster };
+	return best && { map: best.map, boundary: best.boundary, count: best.count, mtype: monster };
 }
 // Estimated xp/s at an area: xp per kill × kills/s, where kills/s is the lower of how fast we kill (ttk + walking)
 // and how fast the area refills (count / respawn). A measured rate replaces the estimate; unmeasured estimates are
@@ -512,8 +451,7 @@ function score_area(t, pack, area) {
 // Rates had no age: one measured in a bad hour (a fighter offline, other players there, several levels ago) kept the
 // spot out of every pick for good, since it was never visited again to re-measure it.
 function meas_aged(key, est, kind = farm_kind()) {
-	if (kind === "gold") return gold_rate(key) ?? est; // v25.68: measured totals, not aged into an estimate
-	const v = state.measured[key], pre = "";
+	const v = meas(kind)[key], pre = kind === "gold" ? "g" : "";
 	if (v === undefined) return est;
 	const at = state.meas_at[pre + "p:" + key];
 	let w = at && CFG.meas_half_h > 0 ? Math.pow(0.5, Math.max(0, Date.now() - at) / (CFG.meas_half_h * 3600_000)) : 1;
@@ -538,19 +476,16 @@ function party_power() {
 	pw_cache = { at: Date.now(), v };
 	return v;
 }
-// Measured rate per spot with the party there: base xp of the party's kills at it (kill_credit); gold (v25.67): the gold
-// we really looted there (chest_opened). v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is
-// chosen for. Both rates are measured at every camp the party fights at (state.measured / state.measured_gold).
-// (gold mode with no camp measured above 0 gold/s yet: xp picks the camp — nothing would be fought, so nothing measured; Fable)
-const farm_kind = () => (CFG.farm_mode === "gold" && Object.keys(state.measured_gold).some((k) => gold_rate(k) > 0) ? "gold" : "xp");
-// v25.68 (owner: no projections without evidence): gold is only ever measured — state.measured_gold holds each camp's
-// totals { g: gold looted, s: seconds fought, n: sessions, at } and its rate is g / s; there is no gold estimate
-// (counted once CFG.measure_min_s seconds were fought there — one chest in a 5 s session isn't a rate)
-const gold_rate = (key) => { const m = state.measured_gold[key]; return m && m.s >= CFG.measure_min_s ? m.g / m.s : undefined; };
-const meas = (kind = farm_kind()) => (kind === "gold" ? Object.fromEntries(Object.keys(state.measured_gold).map((k) => [k, gold_rate(k)]).filter((x) => x[1] !== undefined)) : state.measured);
-// a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set). Gold: none —
-// a camp's gold is only what was measured there (v25.68)
-const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? 0 : f?.xp ?? G.monsters[t]?.xp ?? 0);
+// Measured rate per spot with the party there: base xp (or, v25.51, base gold) of the party's kills at it (kill_credit)
+// v25.51: farm mode (CFG.farm_mode): "xp" (default) or "gold" — what a camp is chosen for. Both rates are measured
+// at every camp all the time (state.measured / state.measured_gold), so switching modes starts with data. The unit
+// is the monster's base value per kill (G.monsters[].xp, or G.monster_gold[]): the same for every camp, as base xp is.
+const farm_kind = () => (CFG.farm_mode === "gold" ? "gold" : "xp");
+const meas = (kind = farm_kind()) => (kind === "gold" ? state.measured_gold : state.measured);
+// Base gold per kill: G.monster_gold[mtype] (G.monsters[] has no gold field — Fable on v25.51)
+const monster_gold = (t) => G.monster_gold?.[t] || 0;
+// a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set)
+const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? monster_gold(t) : f?.xp ?? G.monsters[t]?.xp ?? 0);
 const rate_unit = () => (farm_kind() === "gold" ? "gold/s" : "xp/s");
 
 // xp/s measurement per pack (feeds the picker)
@@ -570,35 +505,28 @@ function end_session() {
 	if (!s) return;
 	// v25.16: less the seconds held for the party (03_history.js): the rate is the camp's, not our waiting
 	const secs = ((s.end || Date.now()) - s.start - (s.lost || 0)) / 1000;
-	// (v25.76, owner: "frog 1809/s — literally impossible": 45k in ~25 s — a visit that short books only stray loot)
 	if (secs < CFG.measure_min_s) return;
-	// v25.68 (owner): the gold really looted here (chest_opened, our share) and the seconds fought, added to the camp's
-	// totals; a chest opened just after the close is added too (on_chest_opened)
-	{
-		const m = state.measured_gold[s.key] = state.measured_gold[s.key] || { g: 0, s: 0, n: 0 };
-		m.g += s.rg || 0; m.s = Math.round(m.s + secs); m.n++; m.at = Date.now();
-		gold_last = { key: s.key, at: Date.now() };
-	}
 	// v23.0: the unit score_area estimates in: base xp of the kills made at this spot. The xp we receive is a share of
 	// every party kill anywhere (server), so it can't be used: every party kill counts (kill_credit, sent to each
 	// member; the party is here). No kill_credit seen at all (an older client?) → spots aren't measured; estimates stand.
 	let rate;
 	if (s.kc_n > 0) rate = s.kc / secs;
 	else { if (s.kx > 0 && !seen.kc) log_error("no kill_credit events: together-mode xp/s not measured"); return; }
-	const grate = (s.rg || 0) / secs, pw = party_power();
-	{
-		const tab = state.measured, prev = tab[s.key];
+	const grate = (s.kg || 0) / secs; // v25.51: base gold/s, measured beside xp/s whatever the mode
+	const pw = party_power();
+	for (const [kind, r] of [["xp", rate], ["gold", grate]]) {
+		const tab = meas(kind), prev = tab[s.key], pre = kind === "gold" ? "g" : "";
 		// average with the previous measurement — aged (v24.7): averaged raw, a 3-day-old bad rate came back at full weight
-		tab[s.key] = prev === undefined ? rate : meas_aged(s.key, rate, "xp") * 0.5 + rate * 0.5;
-		state.meas_at["p:" + s.key] = Date.now();
-		if (pw) state.meas_at["w:" + s.key] = { lv: pw.lv, gs: pw.gs }; // v24.84
+		tab[s.key] = prev === undefined ? r : meas_aged(s.key, r, kind) * 0.5 + r * 0.5;
+		state.meas_at[pre + "p:" + s.key] = Date.now();
+		if (pw) state.meas_at[pre + "w:" + s.key] = { lv: pw.lv, gs: pw.gs }; // v24.84
 	}
 	log_ev("rate", { pack: `${s.mtype || "?"}@${s.key.split(":")[0]}`, key: s.key, xp_s: Math.round(rate), gold_s: +grate.toFixed(1), secs: Math.round(secs) });
 	// slow-moving average of measured ÷ estimate; one sample counts between 0.2x and 5x, the average stays in 0.1-3.
 	// (v25.51: in the unit the session's estimate was made in — s.kind — so the ratio is the kill rate's either way)
 	// (v25.57: the camp's own type's kills only — fillers aren't in the estimate; an old session without the split: all)
-	const r_est = (s.kcm ?? s.kc) / secs;
+	const r_est = (s.kind === "gold" ? (s.kgm ?? s.kg ?? 0) : (s.kcm ?? s.kc)) / secs;
 	// (no kill of the camp's own type — a contested camp, fillers only: says nothing of the estimate; an old session: kc_n)
-	if (s.kind !== "gold" && s.est > 0 && (s.kcm_n ?? s.kc_n) > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
-	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s looted over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
+	if (s.est > 0 && (s.kcm_n ?? s.kc_n) > 0) state.realism = Math.min(3, Math.max(0.1, state.realism * 0.7 + Math.min(5, Math.max(0.2, r_est / s.est)) * 0.3));
+	game_log(`${s.mtype || "?"}@${s.key.split(":")[0]}: ${rate.toFixed(1)} xp/s, ${grate.toFixed(1)} gold/s over ${secs.toFixed(0)}s${s.lost ? ` (${Math.round(s.lost / 1000)}s holding for the party left out)` : ""}`, C.dim);
 }

@@ -74,13 +74,13 @@ function on_cm_message(m) {
 	}
 	if (fighter_cm(m)) return; // v25.1: tgt, mhb, verdict, ptown, ptown_off, bill (fighter/)
 	if (m && m.message?.k === "bank" && party_names_all().includes(m.name)) return void adopt_bank(m);
-	if (m && m.message?.k === "bankq" && party_names_all().includes(m.name)) return void answer_bankq(m.name); // v25.64
 	if (m && (m.message?.k === "rreq" || m.message?.k === "rrep") && party_names_all().includes(m.name)) {
 		if (m.message.k === "rreq") report_reply(m); else report_collect(m);
 		return;
 	}
 	if (m && m.message?.k === "gold" && ((CFG.party.members || []).includes(m.name) || m.name === CFG.merchant?.name)) {
-		log_ev("gold", { from: m.name, g: +m.message.g || 0 }); // (v25.80: the ledger adjustment comes from the game's gold_received event)
+		stats.adj -= +m.message.g || 0; // a transfer from one of ours: not income
+		log_ev("gold", { from: m.name, g: +m.message.g || 0 });
 		return;
 	}
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;

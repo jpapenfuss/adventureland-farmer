@@ -49,10 +49,7 @@ function quest_skip_why(id) {
 	if (qskip_cache.m.has(id)) return qskip_cache.m.get(id);
 	const out = G.craft[id]?.output?.name || id, d = G.items[out];
 	let why = null;
-	// v25.65 (owner: get more Orbs of Beginnings): a compoundable piece is worth copies while a member would wear one it
-	// compounds into (everyone wears an orbg +0: a second +0 is "no upgrade", three make a +1)
-	if (d && GEAR.has(d.type) && CFG.gear_auto && d.compound && typeof cmp_wanted === "function") why = cmp_wanted(out, 0) ? null : "no member would wear a compounded copy";
-	else if (d && GEAR.has(d.type) && CFG.gear_auto) {
+	if (d && GEAR.has(d.type) && CFG.gear_auto) {
 		if (held_any(out) > 0 || (state.bank_seen[out] || 0) > 0 || (state.bank_gear || []).some((i) => i.name === out)) why = "a copy is in our bags or the bank";
 		else if (!gear_gain({ name: out, level: 0 }, character.ctype, my_gear())) why = "not an upgrade for us";
 	}

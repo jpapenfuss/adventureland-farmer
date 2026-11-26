@@ -9,13 +9,13 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 4, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
-		cooldown: state.cooldown, camp_deaths: state.camp_deaths, proven: state.proven, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
+		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
-		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
+		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, upg_caps: state.upg_caps, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, hunt_fails: state.hunt_fails || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -64,7 +64,7 @@ function load_state() {
 	// and realism scaled every estimate down with it. Spot xp/s and realism are dropped once (calibration, safety and
 	// everything else are kept), and re-measured on the seconds the camp itself is responsible for.
 	if ((d.rates_v || 1) !== RATES_V) {
-		for (const k of ["measured", "meas_at", "realism"]) delete d[k]; // (v25.68: gold totals are kept)
+		for (const k of ["measured", "measured_gold", "meas_at", "realism"]) delete d[k];
 		game_log(`farmer v${VERSION}: learned spot rates and realism cleared once (measured while held for missing members) — re-measuring`, C.warn);
 	}
 	if ((d.key_v || 1) < 2) migrate_pack_keys(d);
@@ -75,10 +75,12 @@ function load_state() {
 		Object.assign(state.measured, d.measured || {});
 		// measurements saved before v24.3 have no time: they start ageing now
 		const t0 = Date.now();
-		// v25.68 gold_v 3: per-camp totals of looted gold and seconds; earlier gold rates (table values, averaged
-		// rates) are another unit and are dropped once
-		// v25.76 gold_v 4: v25.68-25.75 totals may hold stray loot (short visits, loot from the last camp): re-measured clean
-		if (d.gold_v === 4) for (const [k, m] of Object.entries(d.measured_gold || {})) if (m && m.s >= CFG.measure_min_s) state.measured_gold[k] = m; // (v25.76: totals from under measure_min_s — short visits' stray loot — dropped)
+		// v25.51: gold rates (their times: meas_at "gp:"/"gw:"). gold_v 1: base gold from G.monster_gold — the first
+		// v25.51 build read a field that doesn't exist and saved 0 for every camp; those are dropped once
+		if (d.gold_v === 1) {
+			Object.assign(state.measured_gold, d.measured_gold || {});
+			for (const k in state.measured_gold) { state.meas_at["gp:" + k] = d.meas_at?.["gp:" + k] || t0; if (d.meas_at?.["gw:" + k]) state.meas_at["gw:" + k] = d.meas_at["gw:" + k]; }
+		}
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
@@ -95,7 +97,6 @@ function load_state() {
 	if (d.calib_all?.n) state.calib_all = d.calib_all;
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.camp_deaths, d.camp_deaths || {}); // v25.29
-	Object.assign(state.proven, d.proven || {}); // v25.69
 	if (d.cave_block) state.cave_block = d.cave_block;
 	Object.assign(state.gear_skip, live(d.gear_skip));
 	Object.assign(state.crafted, d.crafted || {});
@@ -119,6 +120,7 @@ function load_state() {
 	if (d.bank_dump && typeof d.bank_dump === "object") state.bank_dump = d.bank_dump;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
+	if (d.upg_caps && typeof d.upg_caps === "object") state.upg_caps = d.upg_caps;
 	if (d.cmp_caps && typeof d.cmp_caps === "object") state.cmp_caps = d.cmp_caps;
 	if (d.probe_ok && typeof d.probe_ok === "object") state.probe_ok = d.probe_ok;
 	if (d.donated) state.donated = d.donated;
@@ -147,11 +149,10 @@ function load_state() {
 	if (d.cmp_v !== 3 && d.cmp_v !== 4) { state.cmp_caps = {}; for (const k in state.gear_skip) if (k.startsWith("cmp:")) delete state.gear_skip[k]; } // v24.87: caps from the 75% rule
 	// (v25.37: a day's input_missing pause sat on the shield with copies in the bank — the upg: pauses are cleared once
 	// more; the ceilings only when coming from before v25.32's floors, as before)
-	if (d.upg_v !== 6) { state.upg = null; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; } // (v25.66: an old multi-level project isn't run)
+	if (d.upg_v !== 5) { if (d.upg_v !== 4) state.upg_caps = {}; for (const k in state.gear_skip) if (k.startsWith("upg:")) delete state.gear_skip[k]; }
 	game_log(`farmer v${VERSION}: loaded ${Object.keys(state.measured).length} measured packs, ${Object.keys(state.crafted).length} crafts`, C.dim);
 }
 load_state();
-if (typeof setTimeout === "function") setTimeout(() => { try { ask_bank_view(); } catch (e) {} }, 3000); // v25.64: the others' newer bank view
 // v24.2: the commit this build came from (loader v2 passes it on); a version number alone can't tell two builds apart
 const BUILD = (() => { const s = typeof window !== "undefined" ? window.farmer_loaded?.sha : null; return typeof s === "string" ? s.slice(0, 7) : null; })();
 const build_txt = (v, b) => `v${v || "?"}${b ? "@" + b : ""}`;

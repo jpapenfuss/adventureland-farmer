@@ -43,9 +43,7 @@ async function merchant_handoff() {
 		const WW = worn_for_me();
 		// (v25.43: also at the camp — the merchant comes to us — between fights: nothing on us or the party)
 		if (WW && (in_town() || !party_hit()) && !Object.values(parent.entities || {}).some((e) => e?.type === "monster" && e.target === character.name) && can_spend(2, RESERVE.errand)) {
-			// (v25.62: not by stat_type — a stat scroll applied between the merchant's pick and the hand-over kept it from ever
-			// matching; the slot names the piece)
-			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b;
+			const is_it = (i) => i && i.name === WW.name && (i.level || 0) === WW.level && !i.p && !i.l && !i.b && (i.stat_type || null) === (WW.stat_type || null);
 			const w = character.slots?.[WW.slot];
 			if (is_it(w) && character.esize >= 1) {
 				skip(`equip:${WW.name}:${WW.level}`, 600_000, "handed to the merchant to upgrade"); // (before the unequip: equip_upgrades runs every 5 s)
@@ -125,9 +123,9 @@ setInterval(() => { try { gold_balance(); } catch (e) {} }, 15_000);
 
 // Send gold to one of our characters and tell it, so both sides leave the transfer out of their gold/h
 function send_own_gold(name, g) {
-	tag_spend("transfer tax"); // (the server keeps 2.5% of a transfer: Fable on v25.80)
 	return T(send_gold(name, g)).then((r) => {
-		log_ev("gold", { to: name, g }); // (v25.80: the ledger adjustment comes from the game's gold_sent event)
+		stats.adj += g;
+		log_ev("gold", { to: name, g });
 		if (typeof send_cm === "function") Promise.resolve(send_cm([name], { k: "gold", g })).catch(() => {});
 		return r;
 	});
@@ -253,12 +251,12 @@ function apply_verdict(v, from) {
 		const now = Date.now();
 		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) camp_death(v.key);
 		else if (v.key && v.cd > now) rest_camp(v.key, Math.min(v.cd - now, 3600_000), now);
-		if (v.death) { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
+		if (v.death) delete state.probe_ok[v.mtype];
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
 	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
 		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_fail") { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
+	} else if (v.kind === "probe_fail") delete state.probe_ok[v.mtype];
 }
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.

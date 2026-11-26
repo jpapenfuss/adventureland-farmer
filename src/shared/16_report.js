@@ -205,7 +205,7 @@ function report_facts() {
 			const pr = hold_price(n);
 			return M_ ? `${n} missing — a fighter buys it (${pr} tokens)` : `${n} missing — ${tok >= pr ? `buying (${pr} tokens)` : `${tok}/${pr} tokens`}`;
 		});
-		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}`);
+		if (!M_ && tok > 0 && b && !b.hold) parts.push(`tokens ${tok} → next: ${b.name} (${b.price}) for ${b.for}${b.to ? ` (to upgrade to +${b.to})` : ""}`);
 		else parts.push(`monster tokens: ${tok}`); // v24.68: always shown
 		if (Object.keys(state.hold_for).length) parts.push(`for the merchant: ${Object.keys(state.hold_for).join(", ")}`);
 		if (parts.length) F("hold", "self", `hold: ${parts.join(" | ")}`, !miss.length && !(b && !b.hold) && !Object.keys(state.hold_for).length && !(tok > 0));
@@ -214,7 +214,6 @@ function report_facts() {
 		const c = CFG.craft_power && craft_pick();
 		if (c) F("craft", "self", `craft: ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts${c.cost ? `, ${fmt_k(c.cost)} gold` : ""})${craft_inputs_in_bags(c.id) ? " — ready" : " — fetching inputs"}`);
 	}
-	F("gear_table", "self", gt_report_text(), gt.status === "loaded" && !gt.stale); // v25.81: the prebuilt gear table
 	// v24.81: the character's own numbers (the server's totals, as the client shows them)
 	{
 		const c = character, pick = ["level", "int", "str", "dex", "vit", "for", "attack", "frequency", "range", "speed", "armor", "resistance", "max_hp", "max_mp", "mp_cost", "crit", "critdamage",
@@ -230,7 +229,7 @@ function report_facts() {
 	facts_stat(F, c);
 	if (CFG.upgrade_auto) {
 		const P = state.upg;
-		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "projects are the merchant's (ours too: it gets the copy)" : "no project") + upgrade_why()}`);
+		F("upgrade", "self", `upgrade: ${P ? `${P.name} +${Math.max(0, best_level_held(P.name))}/+${P.to}${P.high ? " (high)" : ""} for ${P.for}'s ${P.slot} (+${P.gain} pts, ~${fmt_k(P.cost)})${P.own ? " — our own (while the merchant is away)" : ""}${state.fund_need > 0 ? ` | waiting for ${fmt_k(state.fund_need)} gold` : ""}` : (merchant_does_it() ? "projects are the merchant's (ours too: it gets the copy)" : "no project") + upgrade_why()}`);
 	}
 	facts_elixir(F, c);
 	if (CFG.compound_auto) {

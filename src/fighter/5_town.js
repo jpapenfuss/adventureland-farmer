@@ -44,7 +44,7 @@ function ptown_join_tick() {
 	if (!P) return false;
 	const now = Date.now(), late = now - P.at > CFG.party.town_join_s * 1000;
 	// stale: never got going, or our run ended without the wait (cleared there)
-	if (P.joined && !P.done && !errand_busy() && late) { ptown_end_id(P.id); state.ptown = null; return false; }
+	if (P.joined && !P.done && !errand_busy() && late) { state.ptown = null; return false; }
 	if (!P.pending) return false;
 	// v24.60: no join window — a member that can't get away yet (a monster on it) goes as soon as it can; nobody is left out
 	if (errand_busy()) { if (state.errand === "town") ptown_joined(P); return true; }
@@ -73,13 +73,6 @@ function ptown_joined(P, why_) {
 function ptown_reason() {
 	return ptown_on() && !character.rip ? "the party goes to town together" : null;
 }
-// v25.71: remember a trip as ended (30 min) — an echo of it is never joined again
-function ptown_end_id(id) {
-	if (!id) return;
-	const now = Date.now(), E = (state.ptown_ended = state.ptown_ended || {});
-	for (const k in E) if (now - E[k] > 1_800_000) delete E[k];
-	E[id] = now;
-}
 // We start a trip: tell the others (they come)
 function ptown_start(what) {
 	if (!ptown_on() || !others().length) return;
@@ -92,11 +85,6 @@ function ptown_start(what) {
 function ptown_recv(msg, from) {
 	if (!msg?.id || is_merchant()) return;
 	let P = state.ptown;
-	// v25.71 (owner's report: 390 one-second party trips in an hour, standing in town): a member still re-announcing a
-	// trip that had just ended (its 5 s resend, a late heartbeat) re-opened it on us, we "joined" it, our announcement
-	// re-opened it on the others — for ever. A trip that ended here, and our own trip we're no longer on, are never rejoined.
-	// (Fable: a waiter still resending it — we left early, it waits for our "done" — gets it: our heartbeat says done)
-	if (state.ptown_ended?.[msg.id] || (msg.by === character.name && P?.id !== msg.id)) { if (!P) { state.ptown_done_at = Date.now(); try { heartbeat(); } catch (e) {} } return; }
 	// another trip while we're on one: same thing — everyone on any trip waits for everyone (ptown_wait)
 	if (P && P.id !== msg.id && !(P.joined || P.pending)) P = null;
 	if (!P) P = state.ptown = { id: msg.id, by: msg.by || from, at: Date.now(), leavers: [] };
@@ -131,7 +119,7 @@ async function ptown_lead() {
 		}
 	} finally { state.lead_walk = false; }
 	// no safe way to town: the trip is off for everyone (it used to leave the others waiting for it without end)
-	if (dead_end) { tell_party({ k: "ptown_off" }); ptown_end_id(state.ptown?.id); state.ptown = null; throw { reason: "deadly_route" }; }
+	if (dead_end) { tell_party({ k: "ptown_off" }); state.ptown = null; throw { reason: "deadly_route" }; }
 }
 const hb_in_town = (p) => { const q = partner_pos(p); return q.map === "main" && Math.hypot(q.x, q.y) < CFG.party.town_px; };
 // Our town work is done: wait in town until every member on a trip is done too, then all walk back together
@@ -141,9 +129,6 @@ async function ptown_wait() {
 	P.done = true;
 	try { heartbeat(); } catch (e) {} // tell them now, not at the next beat
 	const t0 = Date.now();
-	let who = [];
-	// v25.74 (Fable): the trip ends whatever happens in the wait — an exception left state.ptown joined and done for good
-	try {
 	// v24.61: a member not yet on the trip counts until it's in town (it's following the tank in, or still fighting)
 	// v24.62: every fighter must say its work is done. A member in town whose heartbeat didn't show the trip yet counted
 	// as done: the tank's trip ended at once and it left for the camp while the others were still at the shops.
@@ -151,6 +136,7 @@ async function ptown_wait() {
 	// nothing of ours took us to town (no work, no teleport): walk there, so we gather with them and leave together
 	const town = dest_point("main"), rt = town && route_to(town.map, town.x, town.y);
 	if (rt && rt.d > CFG.town_hop_px && busy().length) await go(town).catch(() => {});
+	let who = [];
 	while (!character.rip) { // v24.60: no time limit — the party leaves town together or not at all (a member offline or dead is party_break's case)
 		who = busy();
 		if (!who.length) break;
@@ -161,17 +147,12 @@ async function ptown_wait() {
 		set_message(`town: waiting for ${who.join(", ")}`);
 		await sleep_ms(1000);
 	}
-	} finally {
-	// (the trip's end first, then the log — Fable)
-	ptown_end_id(P.id);
-	state.ptown = null;
-	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
-	if (!is_follower()) { state.goals_cache = null; try { refresh_directive(); } catch (e) {} } // v25.75: walk out to the current goal
 	const waited = Math.round((Date.now() - t0) / 1000);
 	state.ptown_last = { by: P.by, at: P.at, why: P.why, leavers: P.leavers, waited, left_without: who };
 	log_ev("ptown_back", { by: P.by, waited, left_without: who.join(",") });
 	if (who.length) game_log(`party trip: waited ${waited}s; going back without ${who.join(", ")}`, C.warn);
-	}
+	state.ptown = null;
+	state.ptown_done_at = Date.now(); // our heartbeat says "done" a little longer: the others may not have read it yet
 }
 // ---- town_check's party part (v24.99): the tank takes the party to town for the members' needs and for what the merchant
 // holds for one of them. true = town_check is done for this tick ----
@@ -192,12 +173,9 @@ function party_trip_check(due, what) {
 		(CFG.party.members || []).includes(WW.to) && Date.now() - (state.worn_try_at || 0) > CFG.merchant.collect_retry_min * 60_000;
 	if (worn_ask) asks.push(`${WW.to}: hand ${WW.name}+${WW.level} to the merchant to upgrade (no safe way for it)`);
 	if (asks.length && !errand_busy() && !character.rip && !hit_on_me()) {
-		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
-		// v25.71 (owner: "standing around on the beach"): the cap first — with 6 trips in 10 min it halted the walk every
-		// tick and then didn't go: walk, halt, walk, halt, standing still
-		if (state.town_runs.length >= 6) { state.town_block = { what: asks.join(", "), blockers: ["6 trips in 10 min: next one when the oldest is 10 min old"], at: Date.now(), cap: true }; return false; }
 		if (walking()) { halt("town_check"); return true; }
-		{
+		state.town_runs = (state.town_runs || []).filter((t) => Date.now() - t < 600_000);
+		if (state.town_runs.length < 6) {
 			state.town_runs.push(Date.now()); state.last_town = Date.now(); state.town_trig = `for ${asks.join(", ")}`;
 			state.collect_try = state.collect_try || {}; for (const g of coll) state.collect_try[collect_key(g)] = Date.now();
 			if (worn_ask) state.worn_try_at = Date.now();
@@ -241,21 +219,14 @@ function hunt_state() {
 	const h = character.s.monsterhunt;
 	if (!h) return "none";
 	if (!(h.c > 0)) return "ready";
-	// v25.69: a hunt the camp pick refuses (unsafe, a danger zone, resting) isn't being chased: counted as one, it held
-	// back every member's turn-in trip (Torlis's pppompom, 7 left)
-	// (v25.69: includes the camp pick's refusal — goal_blocked; v25.75: a follower's live hunt is "chase" — the leader judges it, ps())
-	if (is_follower()) return !(h.ms !== undefined && !(h.ms > 0)) ? "chase" : "lost";
 	return hunt_feasible(h) ? "chase" : "lost";
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.
 // v25.59: a finished hunt lapses like any other — one with under hunt_turnin_ms left goes now, whoever still chases (Fable)
 function hunts_trip_due() {
-	// (v25.69: a partner "chasing" a hunt we, the leader, would refuse to farm isn't chasing it)
-	const ps = (p) => (p.hs === "chase" && p.hunt?.id && !hunt_feasible({ id: p.hunt.id, c: p.hunt.c || 1 }) ? "lost" : p.hs);
-	const hs0 = hunt_state();
-	const st = [[character.name, hs0], ...partners().map((p) => [p.name, ps(p)])].filter(([, s]) => s && s !== "off");
-	const mine = character.s.monsterhunt, late = [[character.name, hs0 === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
+	const st = [[character.name, hunt_state()], ...partners().map((p) => [p.name, p.hs])].filter(([, s]) => s && s !== "off");
+	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
 		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
 	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
 	if (!st.length || st.some(([, s]) => s === "chase")) return null;

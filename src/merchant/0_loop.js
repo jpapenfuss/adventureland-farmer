@@ -13,11 +13,7 @@ function merchant_beat() {
 		// (collect mode: every piece; else only those for fighters we can't safely walk to — the party comes for those)
 		...(() => { const cr = CFG.merchant.collect ? null : cant_reach(); return { cant_reach: cr, give: CFG.merchant.collect ? gear_to_give() : cr.length ? gear_to_give().filter((g) => cr.includes(g.to)) : null }; })(),
 		// v25.39: the worn piece our upgrade project needs, until it arrives
-		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null,
-		// v25.62: the project and the level caps past projects left, for the fighters' "still being upgraded?" (stat scrolls)
-		upg: state.upg ? { name: state.upg.name, for: state.upg.for, to: state.upg.to } : null,
-		// v25.63: the gear copies it can hand over (not locked, bound, or held for a project) — bag_lv counts every copy (Fable)
-		give_lv: (() => { const nd = needed_slots(), o = {}; character.items.forEach((i, k) => { if (i && !i.l && !i.b && !nd.has(k) && GEAR.has(G.items[i.name]?.type)) o[i.name] = Math.max(o[i.name] ?? -1, i.level || 0); }); return o; })() };
+		want_worn: state.upg?.worn && !state.upg.worn.got ? { to: state.upg.worn.who, name: state.upg.name, level: state.upg.worn.level, slot: state.upg.worn.slot, stat_type: state.upg.worn.stat_type || null } : null };
 	Promise.resolve(send_cm(CFG.party.members || [], msg)).catch(() => {});
 }
 setInterval(() => { if (spent() < BUDGET.soft - RESERVE.chat) merchant_beat(); }, CFG.party.beat_ms);
@@ -158,7 +154,7 @@ function fight_back() { // v25.11: role function (the fighters' is in fighter/3_
 	if (!t) return false;
 	if (character.c.town) return true; // channelling the town teleport: an attack would cancel it
 	if (get_targeted_monster() !== t) change_target(t);
-	if (can_attack(t)) { tag_spend("combat"); fire("attack", t); } // (a merchant's attack costs gold: v25.80)
+	if (can_attack(t)) fire("attack", t);
 	return true;
 }
 // ---- role functions (v25.11): the fighters' versions are in fighter/1_party.js, 5_town.js and 6_gear.js ----
@@ -182,5 +178,6 @@ function flee_tick() {
 function role_tick() { merchant_tick(); loot_chests(); return 250; }
 // Gold for an upgrade project: the fighters' gold above fund_keep counts too (they send it on supply runs)
 function fund_pool() { return partners().reduce((g, p) => g + Math.max(0, (p.gold || 0) - CFG.merchant.fund_keep), 0); }
+function upgrade_steps() { return CFG.merchant_upgrade_steps; }
 // A bank piece: the members' it would help; ours only if none would and merchant.wear_gear (v24.5)
 function bank_cands(own, theirs) { const t = theirs(); return t.length ? t : own && CFG.merchant.wear_gear ? [[character.name, own]] : []; }

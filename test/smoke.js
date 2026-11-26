@@ -42,8 +42,6 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
-// v25.70: the leader's 30 s wait for a goal after a load — tested on its own (v25.70 below); off for the other tests
-vm.runInContext("globalThis.__cla = camp_load_at; camp_load_at = 0", ctx);
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 vm.runInContext("globalThis.__collect0 = CFG.merchant.collect", ctx); // v25.43: the shipped default, before the fixtures override it
 vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
@@ -170,26 +168,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 13) fight model
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("!!state.safe.goo", ctx), "level-1 goo is safe");
-	// v25.51: the farm mode picks the camp; v25.68: gold is only what was measured there (looted totals, g / s) — the
-	// table's gold (richgoo 5000) is no estimate; the measured camp wins in gold mode, the xp camp in xp mode
-	{ ctx.G.monsters.richgoo = { ...ctx.G.monsters.goo, xp: 5 }; ctx.G.monster_gold = { goo: 2, richgoo: 5000 };
+	// v25.51: the farm mode picks the camp — a twin of goo with less xp and more gold wins only in gold mode
+	{ ctx.G.monsters.richgoo = { ...ctx.G.monsters.goo, xp: 5 }; ctx.G.monster_gold = { goo: 2, richgoo: 50 }; // (base gold: G.monster_gold, as in the game's data)
 		ctx.G.maps.main.monsters.push({ type: "richgoo", count: 5, boundary: [500, 100, 800, 400] });
-		const RG = "main:500,100,800,400#richgoo", GO = "main:100,100,400,400#goo";
 		vm.runInContext("state.measured = {}; state.measured_gold = {}; state.cooldown = {}; CFG.farm_mode = 'xp'; pick_pack()", ctx);
 		const px = vm.runInContext("state.pack && state.pack.mtype", ctx);
-		const e0 = vm.runInContext("kill_value('richgoo', null, 'gold')", ctx);
-		// gold mode with nothing measured (or under measure_min_s): xp picks the camp, so the party fights and measures
-		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 10, n: 1 } }; state.last_pick = 0; state.pack = null; pick_pack()`, ctx);
-		const p0 = vm.runInContext("[farm_kind(), state.pack && state.pack.mtype].join()", ctx);
-		assert(p0 === "xp,goo", `v25.68: gold mode, no camp measured for long enough: xp picks (${p0})`);
-		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 600, n: 4 }, '${GO}': { g: 60, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
+		vm.runInContext("CFG.farm_mode = 'gold'; state.last_pick = 0; pick_pack()", ctx);
 		const pg = vm.runInContext("state.pack && state.pack.mtype", ctx);
-		vm.runInContext(`state.measured_gold = { '${RG}': { g: 60, s: 600, n: 4 }, '${GO}': { g: 3000, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
-		const pg2 = vm.runInContext("state.pack && state.pack.mtype", ctx);
-		vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
+		vm.runInContext("CFG.farm_mode = 'xp'", ctx);
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; delete ctx.G.monster_gold;
 		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
-		assert(e0 === 0 && px === "goo" && pg === "richgoo" && pg2 === "goo", `v25.68: no gold estimate (${e0}); xp mode goo, gold mode the camp measured richer (${px} / ${pg} / ${pg2})`); }
+		assert(px === "goo" && pg === "richgoo", `v25.51: xp mode picks goo, gold mode the gold-rich twin (${px} / ${pg})`); }
 	// v25.56: two types sharing a box (main's squigs and squigtoads) are two camps — the first type seen no longer
 	// claims the box; each type's rates, rests and deaths have their own key; an old save's keys are migrated
 	{ const B = [100, 100, 400, 400];
@@ -220,12 +209,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.toad56; delete ctx.__d56;
 		vm.runInContext("state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx); }
 	// v25.52: the report's units follow the mode
-	vm.runInContext("CFG.farm_mode = 'gold'; state.measured_gold = { 'main:1,1,2,2#goo': { g: 500, s: 100, n: 1 } }", ctx); // (v25.68: a camp measured)
+	vm.runInContext("CFG.farm_mode = 'gold'", ctx);
 	{ const out = []; ctx.__F52 = (k, w, t) => out.push(t);
 		vm.runInContext("state.directive = null; state.probe_none = { at: Date.now(), best: 5 }; facts_doing(__F52, { p: state.pack, d: null, now: Date.now() }); facts_probe(__F52, { p: state.pack, d: null, now: Date.now() })", ctx);
 		const txt = out.join(" | ");
 		assert(/best gold\/s/.test(txt) && !/xp\/s/.test(txt), `v25.52: in gold mode the doing and probe lines say gold/s (${txt})`); }
-	vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
+	vm.runInContext("CFG.farm_mode = 'xp'", ctx);
 	const elite = { id: "e1", type: "monster", mtype: "goo", level: 12, hp: 650, max_hp: 650, attack: 450, frequency: 0.8, speed: 15, xp: 1200 };
 	assert(!vm.runInContext("live_ok", ctx)(elite), "levelled goo with 450 attack rejected by live check");
 	const normal = { id: "n1", type: "monster", mtype: "goo", hp: 100, max_hp: 100, attack: 5, speed: 6, xp: 10 };
@@ -403,13 +392,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		state.measured = {}; state.danger = {}; state.cooldown = {}; load_state();`, ctx);
 	assert(vm.runInContext(`state.measured["main:1,2,3,4"] === 12.5 && state.danger.bee === 0.6 && state.cooldown.x > 0 && !("old" in state.cooldown)`, ctx),
 		"learned state survives reload; expired cooldowns dropped");
-	// v25.68: each camp's gold totals survive a reload; a save with older gold rates (gold_v 1/2: a number per camp) drops them once
-	vm.runInContext(`state.measured_gold["main:1,2,3,4"] = { g: 900, s: 300, n: 3, at: 5 }; save_state(); state.measured_gold = {}; load_state();`, ctx);
-	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"].g === 900 && state.measured_gold["main:1,2,3,4"].s === 300 && gold_rate("main:1,2,3,4") === 3`, ctx),
-		"v25.68: a camp's looted gold and seconds survive a reload (3 gold/s)");
-	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); d.gold_v = 3; d.measured_gold = { "main:1,2,3,4": { g: 900, s: 300, n: 3 } }; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
+	// v25.51: gold rates and their times survive a reload; a save without gold_v (the first build's zeros) drops them once
+	vm.runInContext(`state.measured_gold["main:1,2,3,4"] = 3.5; state.meas_at["gp:main:1,2,3,4"] = Date.now() - 3600000; state.meas_at["gw:main:1,2,3,4"] = { lv: 50, gs: 400 }; save_state();
+		state.measured_gold = {}; state.meas_at = {}; load_state();`, ctx);
+	assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === 3.5 && Date.now() - state.meas_at["gp:main:1,2,3,4"] >= 3600000 && state.meas_at["gw:main:1,2,3,4"].lv === 50`, ctx),
+		"v25.51: gold rates and their times (gp:/gw:) survive a reload");
+	{ const d = vm.runInContext("get(SAVE_KEY)", ctx); delete d.gold_v; vm.runInContext("state.measured_gold = {}", ctx); ctx.__d51 = d;
 		vm.runInContext("globalThis.__g51 = get; get = (k) => (k === SAVE_KEY ? __d51 : __g51(k)); load_state(); get = __g51", ctx);
-		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.76: a save with gold totals from before v25.76 (gold_v 3, may hold stray loot): dropped, xp rates kept"); }
+		assert(vm.runInContext(`state.measured_gold["main:1,2,3,4"] === undefined && state.measured["main:1,2,3,4"] === 12.5`, ctx), "v25.51: a save from before gold_v: its gold rates dropped, xp rates kept"); }
 	vm.runInContext(`state.measured_gold = { x: 1 }; globalThis.__ss51 = save_state; save_state = () => {}; forget(); save_state = __ss51`, ctx);
 	assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.51: forget() clears the gold rates too");
 	vm.runInContext(`state.measured = { "main:1,2,3,4": 12.5 }; state.danger.bee = 0.6`, ctx);
@@ -595,7 +585,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("town_reason.bank = 'every bank pack you can use is full'", ctx);
 
 	// 27) full bag, priest at 65% HP, under attack, mid-patrol smart_move → patrol walk stopped, town run starts
-	vm.runInContext("state.bank_full_at = 0; state.bag_futile = null; state.gear_skip = {}; state.errand = null; state.last_town = 0; state.needs = new Map(); smart_depth = 0", ctx);
+	vm.runInContext("state.bank_full_at = 0; state.gear_skip = {}; state.errand = null; state.last_town = 0; state.needs = new Map(); smart_depth = 0", ctx);
 	character.items = Array(42).fill(null).map(() => ({ name: "hpamulet" })); character.esize = 0;
 	character.hp = character.max_hp * 0.65; character.map = "main";
 	ctx.get_nearest_monster = (a) => (a && a.target ? { id: "bee" } : null);
@@ -714,97 +704,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari: monster hunt/.test(state.directive.reason)", ctx),
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
-	// v25.69: a goal the camp pick would refuse (here: judged unsafe) gets no turn — its turn sent the party to the best
-	// camp between goals; it's listed in state.shared.blocked instead
-	vm.runInContext("state.safe.tortoise = false; state.directive = null; state.dir_lock = null; state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
-	assert(vm.runInContext("!state.directive && state.shared.blocked.some((b) => /tortoise \\(Aspernari\\): not safe/.test(b))", ctx),
-		`v25.69: the partner's refused hunt gets no turn and is listed (${vm.runInContext("JSON.stringify([state.directive, state.shared.blocked])", ctx)})`);
-	vm.runInContext("delete state.safe.tortoise; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
-	// v25.75 (audit): a resting area isn't the goal's area while another is open; a refused goal isn't held
-	{ ctx.G.maps.main.monsters.push({ type: "tortoise", count: 3, boundary: [-1300, 1600, -1000, 1900] });
-		const k1 = vm.runInContext("pack_key({ map: 'main', boundary: [-1353, 720, -896, 1516], mtype: 'tortoise' })", ctx);
-		vm.runInContext(`state.pack = null; state.cooldown = { '${k1}': Date.now() + 600000 }`, ctx);
-		const a1 = vm.runInContext("JSON.stringify(resolve_area('tortoise').boundary)", ctx);
-		vm.runInContext(`state.cooldown['${k1}'] = 0`, ctx);
-		const a0 = vm.runInContext("JSON.stringify(resolve_area('tortoise').boundary)", ctx);
-		ctx.G.maps.main.monsters.pop();
-		vm.runInContext(`state.cooldown['${k1}'] = Date.now() + 600000; state.directive = { monster: 'tortoise', map: 'main', boundary: [-1353, 720, -896, 1516], reason: 'x', until: Date.now() + 60000 };
-			state.town_end_at = Date.now(); globalThis.__pp75 = state.partners; state.partners = {}; state.goals_cache = null; character.s = {}; refresh_directive()`, ctx);
-		const held = vm.runInContext("state.directive && state.directive.monster", ctx);
-		vm.runInContext("state.partners = __pp75; state.cooldown = {}; state.directive = null; state.town_end_at = 0", ctx);
-		assert(a1 === "[-1300,1600,-1000,1900]" && a0 === "[-1353,720,-896,1516]" && !held, `v25.75: the open area while the bigger one rests (${a1} / ${a0}); a resting goal isn't held (${held})`); }
-	// v25.75 (audit): bags at 3 free that the last run couldn't empty aren't urgent for a while
-	{ const e0 = character.esize; character.esize = 2;
-		const u0 = vm.runInContext("town_urgent({ plan: { free: 2 }, min_free: 10 })", ctx);
-		vm.runInContext("state.bag_futile = { n: 1, at: Date.now(), until: Date.now() + 900000 }", ctx);
-		const u1 = vm.runInContext("town_urgent({ plan: { free: 2 }, min_free: 10 })", ctx);
-		vm.runInContext("state.bag_futile = null", ctx); character.esize = e0;
-		assert(/bags 2 free/.test(u0) && !u1, `v25.75: bags 2 free urgent (${u0}), not after a run that couldn't empty them (${u1})`); }
-	// v25.75 (audit): at its camp, a type it one-shoots: a member merely far doesn't hold the tank's first hit; one on an errand does
-	{ const os0 = vm.runInContext("oneshot_types", ctx), pm0 = vm.runInContext("party_missing", ctx);
-		vm.runInContext("oneshot_types = () => ['tortoise']; party_missing = () => ['Aspernari']; globalThis.__pk75 = state.pack; state.pack = { mtype: 'tortoise', map: 'main', boundary: [-1353, 720, -896, 1516] }", ctx);
-		const far = vm.runInContext("tank_first({ type: 'monster', mtype: 'tortoise', x: -1000, y: 1000 })", ctx);
-		vm.runInContext("state.partners.Aspernari = { ...state.partners.Aspernari, errand: 'town' }", ctx);
-		const errand = vm.runInContext("tank_first({ type: 'monster', mtype: 'tortoise', x: -1000, y: 1000 })", ctx);
-		vm.runInContext("state.partners.Aspernari.errand = null; oneshot_types = () => []", ctx);
-		const other = vm.runInContext("tank_first({ type: 'monster', mtype: 'tortoise', x: -1000, y: 1000 })", ctx);
-		ctx.oneshot_types = os0; ctx.party_missing = pm0; vm.runInContext("state.pack = __pk75", ctx);
-		assert(far === false && errand === true && other === true, `v25.75: one-shot camp, member far: the tank may start (${far}); member on an errand: holds (${errand}); not one-shot: holds (${other})`); }
-	// v25.75 (audit): a goal change reviews the camp during the walk there (halts, picks)
-	{ const pp0 = vm.runInContext("pick_pack", ctx), ents0 = ctx.parent.entities; ctx.parent.entities = {};
-		vm.runInContext("globalThis.__pk75b = state.pack; globalThis.__picked75 = 0; pick_pack = () => { __picked75++; }; smart_depth = 1; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,50,50] }; state.review_at = Date.now() - 120000; state.review_dir = 'x:main'; state.directive = { monster: 'tortoise', map: 'main', until: Date.now() + 60000 }", ctx);
-		vm.runInContext("camp_review()", ctx);
-		const p1 = vm.runInContext("__picked75", ctx);
-		vm.runInContext("state.review_dir = dir_key(); camp_review()", ctx);
-		const p2 = vm.runInContext("__picked75", ctx);
-		ctx.pick_pack = pp0; ctx.parent.entities = ents0; vm.runInContext("smart_depth = 0; state.pack = __pk75b; state.directive = null; state.review_dir = ''", ctx);
-		assert(p1 === 1 && p2 === 1, `v25.75: a goal change reviews the camp mid-walk (${p1}); no change: not mid-walk (${p2})`);
-		// (Fable) the same monster's other area on the same map is a new goal too
-		ctx.parent.entities = {}; vm.runInContext("pick_pack = () => { __picked75++; }; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,50,50] }; state.review_at = Date.now() - 120000; state.directive = { monster: 'tortoise', map: 'main', boundary: [1,1,2,2], until: Date.now() + 60000 }; state.review_dir = dir_key(); state.directive.boundary = [5,5,9,9]; camp_review()", ctx);
-		const p3 = vm.runInContext("__picked75", ctx);
-		ctx.pick_pack = pp0; ctx.parent.entities = ents0; vm.runInContext("state.pack = __pk75b; state.directive = null; state.review_dir = ''", ctx);
-		assert(p3 === 2, `v25.75: the goal's other area on the same map reviews the camp (${p3})`); }
-	// v25.70: right after a load the leader picks only a goal — no "best camp" walk before the members' hunts arrive
-	{ vm.runInContext("globalThis.__st70 = JSON.stringify({ safe: state.safe, best_xp: state.best_xp, best_at: state.best_at, best_ref: state.best_ref, best_score: state.best_score, pick_table: state.pick_table, last_pick: state.last_pick }); state.directive = null; state.pack = null; state.last_pick = 0; camp_load_at = Date.now(); globalThis.__rd70 = refresh_directive; refresh_directive = () => {}; pick_pack()", ctx);
-		const p0 = vm.runInContext("state.pack", ctx);
-		vm.runInContext("camp_load_at = 0; refresh_directive = __rd70; pick_pack()", ctx);
-		const p1 = vm.runInContext("!!state.pack", ctx);
-		vm.runInContext("state.pack = null; Object.assign(state, JSON.parse(__st70))", ctx);
-		assert(p0 === null && p1, `v25.70: no camp picked in the first 30 s without a goal, then the pick runs (${p0} / ${p1})`); }
-	// v25.70: the camp's reason follows the live goal (it kept the pick's text: "39 left" while 29 were left)
-	{ vm.runInContext("state.goals_cache = null; state.directive = null; state.dir_lock = null; state.turn = null; refresh_directive(); state.pack = { mtype: 'tortoise', map: 'main', boundary: state.directive.boundary, directive: 'Aspernari: monster hunt 99 left' }; refresh_directive()", ctx);
-		const lab = vm.runInContext("state.pack.directive", ctx);
-		vm.runInContext("state.pack = null; state.directive = null; state.dir_lock = null; state.turn = null", ctx);
-		assert(/20 left/.test(lab || ""), `v25.70: the pack's reason is the live goal's (${lab})`); }
-	// v25.69: a finished hunt drops its goal; while the hunt trip is due (and 45 s after a town run) the goal stays
-	{ const td = vm.runInContext("hunts_trip_due", ctx);
-		vm.runInContext("state.goals_cache = null; refresh_directive()", ctx); // tortoise turn again
-		const before = vm.runInContext("state.directive && state.directive.monster", ctx);
-		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 56, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical", hunt: null, hs: "ready", goals: [] } });
-		vm.runInContext("state.town_end_at = 0; hunts_trip_due = () => 'monster hunts (Aspernari to turn in)'; state.goals_cache = null; refresh_directive()", ctx);
-		const held = vm.runInContext("state.directive && state.directive.monster", ctx);
-		vm.runInContext("hunts_trip_due = () => null; state.town_end_at = Date.now() - 10000; refresh_directive()", ctx);
-		const after_town = vm.runInContext("state.directive && state.directive.monster", ctx);
-		vm.runInContext("state.town_end_at = Date.now() - 60000; state.ptown = { id: 'T:1', joined: true }; refresh_directive()", ctx);
-		const on_trip = vm.runInContext("state.directive && state.directive.monster", ctx);
-		vm.runInContext("state.ptown = null; state.ptown_done_at = Date.now() - 20000; refresh_directive()", ctx);
-		const after_wait = vm.runInContext("state.directive && state.directive.monster", ctx);
-		vm.runInContext("state.ptown_done_at = Date.now() - 60000; refresh_directive()", ctx);
-		const later = vm.runInContext("state.directive && state.directive.monster", ctx);
-		assert(on_trip === "tortoise" && after_wait === "tortoise", `v25.73: held through the party trip and 45 s after it ends (${on_trip}/${after_wait})`);
-		ctx.hunts_trip_due = td; vm.runInContext("state.directive = null; state.dir_lock = null; state.turn = null; state.partners = {}", ctx);
-		assert(before === "tortoise" && held === "tortoise" && after_town === "tortoise" && !later,
-			`v25.69: the finished hunt's camp is kept while the trip is due and 45 s after town, then dropped (${before}/${held}/${after_town}/${later})`); }
-	// v25.69 (owner): evidence over the model — a type killed proven_kills times with no death to it in 24h is fought
-	{ ctx.G.monsters.brute69 = { xp: 900, hp: 90000, attack: 2000, respawn: 10, range: 300, speed: 10, frequency: 1.5, resistance: 0, armor: 0 };
-		const r0 = vm.runInContext("!!fight_profile('brute69')", ctx);
-		vm.runInContext("for (let i = 0; i < 10; i++) on_kill_credit({ mtype: 'brute69' })", ctx);
-		const r1 = vm.runInContext("fight_profile('brute69')?.proven === true && (state.safe.brute69 = fight_profile('brute69'), !!live_ok({ mtype: 'brute69', level: 5, hp: 90000, max_hp: 90000, attack: 2000 }))", ctx);
-		vm.runInContext("delete state.safe.brute69", ctx);
-		vm.runInContext("proven_death('brute69')", ctx);
-		const r2 = vm.runInContext("!!fight_profile('brute69')", ctx);
-		vm.runInContext("delete state.proven.brute69", ctx); delete ctx.G.monsters.brute69;
-		assert(!r0 && r1 && !r2, `v25.69: unsafe by the model (${r0}); 10 party kills: fought (${r1}); a death to it: not for 24h (${r2})`); }
 
 	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
 	vm.runInContext("state.errand = null; smart_depth = 0; state.last_town = 0; state.gear_skip = {}; state.bank_full_at = 0; state.needs = new Map(); state.guide = null", ctx);
@@ -882,8 +781,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
 	vm.runInContext("refresh_directive()", ctx);
-	// v25.75 (owner: hunts first): a member's hunt beats a quest both share — was: the mutual quest won and hunts lapsed
-	assert(vm.runInContext("state.directive.monster === 'tortoise' && /monster hunt/.test(state.directive.reason)", ctx), `v25.75: the hunt (tortoise) beats the shared quest (minimush) (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.mutual", ctx), `mutual goal (minimush) chosen (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 	// v18.0: an overlap of guide-farm rows only (1+1 < a hunt's weight) isn't mutual: turns, not "guide goo" for both
 	ctx.G.craft = {};
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
@@ -894,10 +792,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		goals: [{ monster: "tortoise", w: 3, reason: "monster hunt 20 left" }, { monster: "minimush", w: 2, reason: "wgloves: spores 0/20" }] } });
 	// no overlap → turns between the two tops
 	vm.runInContext("state.turn = null; state.goals_cache = null; refresh_directive()", ctx);
-	// v25.75 (hunts first): our guide row gets no turn while a member has a hunt — the hunt holds every turn
-	assert(vm.runInContext("state.directive.monster === 'tortoise' && !state.directive.mutual", ctx), "v25.75: no overlap, a member's hunt: the hunt, not our guide row");
+	assert(vm.runInContext("state.directive.monster === 'goo' && !state.directive.mutual", ctx), "no overlap: our own goal on our turn");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive.monster === 'tortoise'", ctx), "v25.75: ...on the next turn too");
+	assert(vm.runInContext("state.directive.monster === 'tortoise'", ctx), "no overlap: partner's top goal on its turn");
 
 	// 39) live report: crab chosen as "mutual" for 200 crab claws at 1/1000 (~forever). Infeasible goals don't count.
 	ctx.G.items.crabclaw = { type: "material" }; ctx.G.items.ascale = { type: "material" };
@@ -1285,58 +1182,57 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.items.ringx.compound = { attack: 1 }; // (back: later tests need a level win)
 	character.slots = {}; character.items = Array(42).fill(null);
 	vm.runInContext("state.gear_skip = {}; cmp_cache = null", ctx);
-	// 49) v25.66 (owner: one rule): the best single +1 step on a piece a fighter wears — here a spare copy at the worn
-	// level (a fighter only works on its own spares; worn hand-overs are the merchant's)
+	// 49) upgrade project: pick the NPC piece that beats Torlis's worn helmet most per gold, upgrade a spare to target
 	ctx.G.items.scroll0 = { type: "uscroll", g: 1000 }; ctx.G.items.scroll1 = { type: "uscroll", g: 40000 };
 	ctx.G.items.nhelm = { type: "helmet", armor: 5, upgrade: { armor: 6 }, g: 2000 };
 	ctx.G.npcs.armorer = { items: ["nhelm"] };
+	ctx.G.items.xhelm49 = { type: "helmet", armor: 50, upgrade: { armor: 20 }, g: 1000 }; // v24.71: far better per gold, but nobody sells it
 	const fn_save = ctx.find_npc; ctx.find_npc = () => ({ map: "main", x: 0, y: 0 });
 	Object.assign(character, { name: "Torlis", ...tor, gold: 5e6, rip: false });
-	character.slots = { helmet: { name: "nhelm", level: 0 } }; character.items = Array(42).fill(null);
+	character.slots = { helmet: { name: "helm1", level: 0 } }; character.items = Array(42).fill(null);
 	character.items[0] = { name: "computer" }; character.items[1] = { name: "scroll0", q: 20 }; character.items[2] = { name: "nhelm", level: 0 };
-	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null; my_gear_cache = null", ctx);
-	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("JSON.stringify([state.upg.name, state.upg.to, state.upg.from_copy, !!state.upg.worn, state.upg.floor])", ctx) === '["nhelm",1,0,false,0.2]',
-		`a spare at the worn level: one +1 step at the spare floor (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
-	// v25.79 (owner: more risk with a spare): +5→+6 at 40% backed by a spare passes, +7→+8 at 15% doesn't; a stat-scrolled
-	// copy is never a spare (a failed low-odds roll would lose its stat scroll)
-	{ const st = (from, copies) => vm.runInContext(`JSON.stringify(upgrade_step({ name: "nhelm", level: ${from} }, "paladin", my_gear(), "helmet", ${copies}))`, ctx);
-		const s6 = JSON.parse(st(5, 5) || "null"), s8 = JSON.parse(st(7, 7) || "null");
-		const sp0 = vm.runInContext("owned_level('nhelm')", ctx);
-		character.items[2] = { name: "nhelm", level: 0, stat_type: "str" };
-		const sp1 = vm.runInContext("owned_level('nhelm')", ctx);
-		character.items[2] = { name: "nhelm", level: 0 };
-		character.items[3] = { name: "nhelm", level: 0, stat_type: "str" };
-		const rh = vm.runInContext("[rollable_held({ name: 'nhelm', to: 1 }), rollable_held({ name: 'nhelm', to: 1, worn: { who: 'Torlis' } })].join()", ctx);
-		character.items[3] = null; character.items[2] = { name: "nhelm", level: 0 };
-		assert(rh === "0,0", `v25.79: the plain copy is rollable either way (${rh})`);
-		character.items[2] = null; character.items[3] = { name: "nhelm", level: 0, stat_type: "str" };
-		const rh2 = vm.runInContext("[rollable_held({ name: 'nhelm', to: 1 }), rollable_held({ name: 'nhelm', to: 1, worn: { who: 'Torlis' } })].join()", ctx);
-		character.items[3] = null; character.items[2] = { name: "nhelm", level: 0 };
-		assert(rh2 === "-1,0", `v25.79: a stat-scrolled copy is never a spare's roll, but is the worn piece handed over (${rh2})`);
-		assert(s6 && s6.ok && s6.floor === 0.2 && s6.p === 0.4 && s8 && !s8.ok && /odds 15%/.test(s8.why) && sp0 === 0 && sp1 === -1,
-			`v25.79: a spare-backed 40% step isn't refused for odds, a 15% one is; a stat-scrolled copy isn't a spare (${JSON.stringify([s6, s8, sp0, sp1])})`); }
-	assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 50_000, `a fighter's budget is its gold above gold_reserve (${vm.runInContext("upgrade_gold()", ctx)})`);
-	{ const nm = character.name, ct = character.ctype; Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
-		assert(vm.runInContext("upgrade_keep()", ctx) === 1e6, `the merchant keeps upgrade_keep (1M) (${vm.runInContext("upgrade_keep()", ctx)})`);
-		Object.assign(character, { name: nm, ctype: ct }); }
-	{ vm.runInContext("globalThis.__up49 = state.upg; globalThis.__uk46 = CFG.gold_reserve; CFG.gold_reserve = 5e6 - 500", ctx);
-		assert(vm.runInContext("pick_upgrade()", ctx) === null, "no gold above the floor for the scroll: no step");
-		vm.runInContext("CFG.gold_reserve = __uk46", ctx);
-		// no spare at the worn level: a fighter doesn't hand its own worn piece anywhere — no step
-		character.items[2] = null; vm.runInContext("my_gear_cache = null", ctx);
-		assert(vm.runInContext("pick_upgrade()", ctx) === null, "a fighter with no spare: no step (worn hand-overs are the merchant's)");
-		// the last copy needs floor_last: odds under it → the step isn't taken (the report says why)
-		character.items[2] = { name: "nhelm", level: 0 };
-		vm.runInContext("globalThis.__fs49 = CFG.upgrade_step.floor_spare; CFG.upgrade_step.floor_spare = 1.01", ctx);
-		const w49 = vm.runInContext("pick_upgrade()", ctx), why49 = vm.runInContext("upgrade_why()", ctx);
-		vm.runInContext("CFG.upgrade_step.floor_spare = __fs49; state.upg = __up49", ctx);
-		assert(w49 === null && /odds 100% < 101%/.test(why49), `odds under the floor: no step, and why (${why49})`); }
+	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null", ctx);
+	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("state.upg.name", ctx) === "nhelm", `project picked — the best piece an NPC sells, though one nobody sells scores higher (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
+	// v25.46: recent earnings no longer cap a project — gold_room() spent out, the project is still picked; only the
+	// gold above upgrade_keep counts, and the steps need nothing else
+	{ vm.runInContext("globalThis.__gr46 = gold_room; globalThis.__up46 = state.upg; gold_room = () => -1e9; state.upg = null; state.gear_skip = {}; cmp_cache = null", ctx);
+		const p46 = vm.runInContext("JSON.stringify(pick_upgrade())", ctx);
+		assert(/"name":"nhelm"/.test(p46), `v25.46: a project with recent earnings spent out (${p46})`);
+		assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 50_000, `v25.46: a fighter's budget is its gold above gold_reserve (${vm.runInContext("upgrade_gold()", ctx)})`);
+		assert(vm.runInContext("upg_gold_ok(5e6 - 50000) && !upg_gold_ok(5e6 - 49999)", ctx), "v25.46: a step needs only gold above the reserve");
+		{ const nm = character.name, ct = character.ctype; Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
+			assert(vm.runInContext("upgrade_keep()", ctx) === 1e6, `v25.46: the merchant keeps upgrade_keep (1M) (${vm.runInContext("upgrade_keep()", ctx)})`);
+			Object.assign(character, { name: nm, ctype: ct }); }
+		vm.runInContext("globalThis.__uk46 = CFG.gold_reserve; CFG.gold_reserve = 5e6; state.gear_skip = {}; cmp_cache = null", ctx);
+		assert(vm.runInContext("pick_upgrade()", ctx) === null, "v25.46: no gold above the floor: no project");
+		vm.runInContext("CFG.gold_reserve = __uk46; gold_room = __gr46; state.upg = __up46; state.gear_skip = {}; cmp_cache = null", ctx); }
+	// v24.86: a shop weapon a fighter would hold goes to +7 first, with no budget
+	ctx.G.items.nmace = { type: "weapon", wtype: "mace", attack: 20, upgrade: { attack: 4 }, g: 3700 };
+	ctx.G.npcs.armorer.items.push("nmace");
+	{ const cls = ctx.G.classes.paladin; ctx.G.classes.paladin = { ...(cls || {}), mainhand: { mace: {} } }; vm.runInContext("sold_c.clear()", ctx);
+		vm.runInContext("globalThis.__gr86 = CFG.upgrade_keep; CFG.upgrade_keep = 1e15", ctx);
+		const pw = vm.runInContext("JSON.stringify(pick_upgrade())", ctx);
+		vm.runInContext("CFG.upgrade_keep = __gr86", ctx);
+		assert(/"name":"nmace","to":7/.test(pw) && /"weapon":true/.test(pw), `a weapon project goes to +7 ahead of the helmet, with the budget at 0 (${pw})`);
+		ctx.G.classes.paladin = cls; }
+	ctx.G.npcs.armorer.items.pop(); delete ctx.G.items.nmace; vm.runInContext("sold_c.clear()", ctx);
+	delete ctx.G.items.xhelm49;
+	// v24.82: the target comes from the expected cost with failures (2000 gold copy, 1000 scrolls, base odds 100/98/95/70%)
+	assert(vm.runInContext("upgrade_expected('nhelm', 1)", ctx) === 3000 && vm.runInContext("upgrade_expected('nhelm', 4)", ctx) === 9070 && vm.runInContext("upgrade_expected('nhelm', 7)", ctx) > 150_000,
+		`expected cost counts the copies lost on the way (+1 ${vm.runInContext("upgrade_expected('nhelm', 1)", ctx)}, +4 ${vm.runInContext("upgrade_expected('nhelm', 4)", ctx)}, +7 ${vm.runInContext("upgrade_expected('nhelm', 7)", ctx)})`);
+	{ const gpp = vm.runInContext("CFG.upgrade_gold_per_pt", ctx);
+		vm.runInContext("CFG.upgrade_gold_per_pt = 2000; globalThis.__p49 = pick_upgrade()", ctx);
+		const lo = vm.runInContext("__p49 && __p49.to", ctx);
+		vm.runInContext(`CFG.upgrade_gold_per_pt = ${gpp}; globalThis.__q49 = pick_upgrade()`, ctx);
+		const hi = vm.runInContext("__q49 && __q49.to", ctx);
+		assert(lo >= 1 && hi > lo, `a point worth more gold takes the project to a higher level (${lo} → ${hi})`);
+	}
 	const to49 = vm.runInContext("state.upg.to", ctx);
 	assert(vm.runInContext("needed_slots().has(2)", ctx), "project copy protected (not equipped/sent/banked mid-project)");
-	// a spare in the bank at the worn level is fetched for the step
-	vm.runInContext("state.bank_gear = [{ name: 'nhelm', level: 0 }]; state.fetch_try = {}", ctx); character.items[2] = null;
-	assert(/"key":"upgin:nhelm"/.test(vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx)), `the step fetches the banked spare (${vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx)})`);
-	vm.runInContext("state.bank_gear = []", ctx); character.items[2] = { name: "nhelm", level: 0 };
+	// v24.85: a better copy in the bank (below the target) is fetched to start from, not a +0 upgraded from scratch
+	vm.runInContext("state.bank_gear = [{ name: 'nhelm', level: Math.max(1, state.upg.to - 1) }]; state.fetch_try = {}", ctx);
+	assert(/"key":"upgin:nhelm"/.test(vm.runInContext("JSON.stringify(bag_plan().fetch)", ctx)), `the project fetches the banked copy below its target to start from (${vm.runInContext("JSON.stringify([state.upg, bag_plan().fetch])", ctx)})`);
+	vm.runInContext("state.bank_gear = []", ctx);
 	const ups49 = [];
 	ctx.upgrade = (k, sk, off, preview) => {
 		if (preview) return Promise.resolve({ chance: 0.95 });
@@ -1344,33 +1240,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		return Promise.resolve({ success: true });
 	};
 	await vm.runInContext("task_upgrade()", ctx);
-	assert(JSON.stringify(ups49) === "[0]" && character.items[2].level === to49, `one step: +0 → +1 (${ups49} → +${character.items[2].level})`);
-	await vm.runInContext("task_upgrade()", ctx); assert(vm.runInContext("state.upg", ctx) === null, "step done: project closed");
-	// v25.66 (Fable): a failed roll ends the project — no chain rebuilt from another copy; a copy above the worn level
-	// goes first (no step, no fake hand-over); a titled piece is never handed over; an old saved project isn't run
-	{ character.items[2] = { name: "nhelm", level: 0 }; character.items[3] = { name: "nhelm", level: 0 };
-		const rolls = []; ctx.upgrade = (k, sk, off, preview) => preview ? Promise.resolve({ chance: 0.95 }) : (rolls.push(k), character.items[k] = null, Promise.resolve({ success: false }));
-		vm.runInContext("state.upg = { name: 'nhelm', to: 1, for: 'Torlis', slot: 'helmet', gain: 5, cost: 1000, floor: 0.5, from_copy: 0 }; state.gear_skip = {}", ctx);
-		await vm.runInContext("task_upgrade()", ctx);
-		assert(rolls.length === 1 && vm.runInContext("state.upg", ctx) === null && character.items[3]?.name === "nhelm", `a failed roll: one roll, project ended, the other copy untouched (${rolls.length})`);
-		character.items[2] = { name: "nhelm", level: 1 }; character.items[3] = null; vm.runInContext("my_gear_cache = null", ctx);
-		const st = vm.runInContext("JSON.stringify(upgrade_step({ name: 'nhelm', level: 0 }, 'paladin', my_gear(), 'helmet', 1))", ctx);
-		assert(/"ok":false/.test(st) && /\+1 copy held goes to it first/.test(st) && vm.runInContext("pick_upgrade()", ctx) === null, `a +1 held over the worn +0: no step (${st})`);
-		const tt = vm.runInContext("JSON.stringify(upgrade_step({ name: 'nhelm', level: 0, p: 'shiny' }, 'paladin', my_gear(), 'helmet', -1))", ctx);
-		assert(/titled: never handed over/.test(tt), `a titled worn piece with no spare: no hand-over (${tt})`);
-		// a titled copy in our bags is neither the hand-over received nor the copy rolled
-		character.items[2] = { name: "nhelm", level: 0, p: "shiny" };
-		vm.runInContext("state.upg = { name: 'nhelm', to: 1, for: 'Torlis', slot: 'helmet', gain: 5, cost: 1000, floor: 0.8, from_copy: 0, worn: { who: 'Torlis', slot: 'helmet', level: 0, at: Date.now() } }", ctx);
-		const ww = vm.runInContext("worn_waiting()", ctx), got = vm.runInContext("!!state.upg.worn.got", ctx);
-		character.items[3] = { name: "nhelm", level: 0 }; rolls.length = 0;
-		ctx.upgrade = (k, sk, off, preview) => preview ? Promise.resolve({ chance: 0.95 }) : (rolls.push(k), Promise.resolve({ success: true }));
-		await vm.runInContext("task_upgrade()", ctx);
-		assert(ww === true && !got && JSON.stringify(rolls) === "[3]", `a titled copy: not "handed over" (${ww}, ${got}); the plain one is rolled (${rolls})`);
-		character.items[2] = character.items[3] = null; vm.runInContext("state.upg = null", ctx);
-		character.items[2] = null;
-		const g0 = ctx.get; ctx.get = () => ({ v: 1, meas_v: 3, data_v: vm.runInContext("DATA_V", ctx), rates_v: vm.runInContext("RATES_V", ctx), upg_v: 5, at: Date.now(), upg: { name: "nhelm", to: 7, for: "Torlis" } });
-		vm.runInContext("state.upg = null; load_state()", ctx); ctx.get = g0;
-		assert(vm.runInContext("state.upg", ctx) === null, "an old multi-level project (upg_v 5) isn't loaded"); }
+	assert(character.items[2].level === Math.min(to49, 8) || ups49.length === 8, `upgraded step by step (${ups49} → +${character.items[2].level}, target +${to49})`);
+	if (character.items[2].level >= to49) { await vm.runInContext("task_upgrade()", ctx); assert(vm.runInContext("state.upg", ctx) === null, "project closed at target"); }
 	// low odds stop the project at the level reached and pause that item
 	vm.runInContext("state.upg = { name: 'nhelm', to: 9, for: 'Torlis', slot: 'helmet', gain: 10, cost: 1000 }", ctx);
 	character.items[2] = { name: "nhelm", level: 2 };
@@ -1380,6 +1251,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// with the merchant online, fighters leave projects to it
 	vm.runInContext("state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 9999, y: 0, esize: 30, gold: 0 }", ctx);
 	assert(!vm.runInContext("upgrade_due()", ctx), "fighter skips upgrade projects while the merchant is online");
+	// v25.13: the report says when a project is the fighter's own (kept while the merchant is online)
+	{
+		const P = "state.upg = { name: 'slimestaff', to: 7, for: 'Torlis', slot: 'mainhand', gain: 10, cost: 80000, own: true }";
+		vm.runInContext(P, ctx);
+		const line = vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx);
+		assert(/slimestaff .* — our own \(while the merchant is away\)$/.test(line || ""), `report marks an own project (${line})`);
+		vm.runInContext(P.replace("own: true", "own: false"), ctx);
+		assert(!/our own/.test(vm.runInContext("report_lines(false).find((l) => /^upgrade: /.test(l))", ctx) || ""), "and not a shared one");
+		vm.runInContext("state.upg = null", ctx);
+	}
 	vm.runInContext("state.merchant = null", ctx);
 	ctx.find_npc = fn_save;
 
@@ -1507,25 +1388,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("inflight.attack = false; change_target(null); follower_tick()", ctx);
 	assert(!atk55.includes("g55"), "...but not one beyond wait_radius of the leader");
 	delete ctx.parent.entities.g55; ctx.distance = dist_save;
-	// v25.80: a ranged burner that attacks untargeted is a no-walk spawn for fighters too (Sanala died crossing desertland's
-	// fire spirits), judged for the weakest member; never for a type the party farms
-	{ ctx.G.monsters.fsp80 = { aggro: 0.2, range: 280, attack: 320, frequency: 1.2, damage_type: "magical", abilities: { burn: {} }, speed: 24, hp: 5000, xp: 10 };
-		ctx.G.monsters.weak80 = { aggro: 0.2, range: 280, attack: 10, frequency: 1, damage_type: "magical", speed: 24, hp: 50, xp: 1 };
-		const pm0 = vm.runInContext("JSON.stringify(state.partners)", ctx);
-		vm.runInContext("state.partners = { Sanala: { name: 'Sanala', ctype: 'mage', max_hp: 3500, t: Date.now(), map: 'main', x: 0, y: 0 } }", ctx);
-		const r = vm.runInContext("[merchant_threat('fsp80', 55), merchant_threat('weak80', 55), (state.safe.fsp80 = { ttk: 1, xp: 1 }, merchant_threat('fsp80', 55))].join()", ctx);
-		vm.runInContext(`delete state.safe.fsp80; state.partners = ${pm0}`, ctx); delete ctx.G.monsters.fsp80; delete ctx.G.monsters.weak80;
-		assert(r === "true,false,false", `v25.80: fire spirits are a no-walk spawn for a fighter party (weakest 3.5k HP); a weak one isn't; a farmed type isn't (${r})`); }
 	// 56) transfers between our characters don't count as income/spending
 	ctx.send_cm = () => Promise.resolve();
 	vm.runInContext("stats.adj = 0", ctx);
-	// v25.80: from the game's own gold events (the code message arrived a tick late: earned, then "other" spending)
-	handlers.gold_sent({ amount: 5000, to: "Torlis" });
-	handlers.gold_received({ amount: 2000, from: "Sanala" });
-	handlers.gold_received({ amount: 999, from: "Stranger" }); // a stranger's gold is income
-	assert(vm.runInContext("stats.adj", ctx) === 3000, "v25.80: sent +5000 / received −2000 tracked as transfers from the game's events, a stranger's not");
+	await vm.runInContext("send_own_gold('Torlis', 5000)", ctx);
 	handlers.cm({ name: "Sanala", message: { k: "gold", g: 2000 } });
-	assert(vm.runInContext("stats.adj", ctx) === 3000, "v25.80: the code message no longer moves the ledger (no double count)");
+	assert(vm.runInContext("stats.adj", ctx) === 3000, "sent +5000 / received −2000 tracked as transfers");
 	// 57) merchant donates gold above keep for XP, capped per day, stops at to_level
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 5, gold: 1_300_000, map: "main", rip: false });
 	const emits = []; ctx.parent.socket.emit = (ev, d) => emits.push([ev, d && d.gold]);
@@ -1594,24 +1462,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		await vm.runInContext("task_secondhands()", ctx);
 		ctx.parent.socket.emit = () => {};
 		assert(JSON.stringify(sb50) === '["y"]', `v25.50: a 24M copy for a 3-point +1 isn't bought; a cheap one is (${JSON.stringify(sb50)})`);
-		// v25.63: a buy that doesn't land pauses that listing (10 min) instead of being retried every poll
-		{ const sb63 = []; ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") sb63.push(d.rid); }; // nothing arrives
-			character.items[1] = { name: "ringx", level: 0 }; character.items[2] = null; vm.runInContext("cmp_cache = null", ctx);
-			ctx.parent.secondhands = [{ name: "ringx", level: 0, rid: "x63" }];
-			await vm.runInContext("task_secondhands()", ctx); await vm.runInContext("task_secondhands()", ctx);
-			ctx.parent.socket.emit = () => {};
-			assert(JSON.stringify(sb63) === '["x63"]' && vm.runInContext("skipped('sbuy:x63')", ctx), `v25.63: a buy that didn't land: tried once, then paused (${JSON.stringify(sb63)})`);
-			// a buy that lands while a slot frees (free slots unchanged) is still seen: one more copy in the bags
-			ctx.parent.socket.emit = (ev, d) => { if (ev === "sbuy") { const k = character.items.findIndex((x) => !x); character.items[k] = { name: "ringx", level: 0 }; character.items[10] = null; character.esize = character.items.filter((x) => !x).length; } }; // (and a potion stack used up: free slots unchanged)
-			character.items[10] = { name: "hpot0", q: 1 }; character.esize = character.items.filter((x) => !x).length;
-			character.items[0] = null; character.items[1] = { name: "ringx", level: 0 }; character.items[2] = { name: "ringx", level: 0 }; character.items[3] = null; vm.runInContext("cmp_cache = null; state.gear_skip = {}", ctx);
-			ctx.parent.secondhands = [{ name: "ringx", level: 0 }]; // (no rid: keyed by name, level and price)
-			const l0 = log.length;
-			await vm.runInContext("task_secondhands()", ctx);
-			const said63 = log.slice(l0).join(" | ");
-			ctx.parent.socket.emit = () => {};
-			assert(/bought ringx/.test(said63) && !/didn't land/.test(said63) && character.items.filter((x) => x?.name === "ringx").length === 3,
-				`v25.63: a landed buy counted by copies, not free slots — no "didn't land" (${said63})`); }
 		// v25.50 (Fable): a poll in Ponty's range leaves the stand open (a close restarts Merrit's 2 min)
 		{ let closed = 0; vm.runInContext("globalThis.__sc50 = stand_close", ctx); ctx.__closed = () => closed++; vm.runInContext("stand_close = async () => __closed()", ctx);
 			ctx.parent.secondhands = []; await vm.runInContext("task_secondhands()", ctx);
@@ -1801,8 +1651,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
 	vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; state.recovering = false; smart_depth = 0; hist.ev = []; wd.acts = []; wd.lost_since = null", ctx);
 	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}", ctx);
-	// (v25.75: the watchdog stands down while the party waits for an absent member — the partners here are absent on purpose)
-	vm.runInContext("globalThis.__pb66 = party_break; party_break = () => null; state.group_wait = null", ctx);
 	// v23.0: progress = our own hits/kills (party xp arrives from partners' kills anywhere)
 	const seed = (mins, dx = 0) => vm.runInContext(`wd.pos = [{ t: Date.now() - ${mins} * 60000, map: 'main', x: ${100 + dx}, y: 100, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]`, ctx);
 	const stop66 = []; ctx.stop = (w) => stop66.push(w);
@@ -1828,22 +1676,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Aspernari", ...asp, ctype: "priest", map: "halloween", x: 0, y: 0 });
 	hb("Torlis", { ...tor, map: "main", x: 0, y: 0 });
 	town66.length = 0;
-	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; wd.pos = [{ t: Date.now() - 2 * 60000, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]; watchdog()", ctx); // (standing still: v25.75)
-	// v25.75 (audit): the lost action is a fresh walk to the leader — never town on its own (v24.58)
-	assert(vm.runInContext("hist.ev.some((e) => e.kind === 'lost' && /walking to it again/.test(e.note)) && state.travel_block_until === 0", ctx) && vm.runInContext("state.errand", ctx) !== "regroup" && town66.length === 0,
-		"v25.75: a follower lost for lost_min walks to the leader again (not to town on its own)");
-	vm.runInContext("hist.ev = []; wd.lost_since = Date.now() - 6 * 60000; wd.pos = [{ t: Date.now() - 2 * 60000, map: character.map, x: character.x + 300, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]; watchdog()", ctx);
-	assert(!vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx), "v25.75: a follower still walking toward the leader isn't stopped as lost");
+	vm.runInContext("wd.lost_since = Date.now() - 6 * 60000; watchdog()", ctx);
+	assert(!vm.runInContext("hist.ev.some((e) => e.kind === 'lost')", ctx) && vm.runInContext("state.errand", ctx) !== "regroup", "v24.58: a follower away from the leader is not sent to town on its own by the watchdog");
 	vm.runInContext("state.errand = null; state.pack = null; wd.pos = []; wd.acts = []; hist.ev = []", ctx);
 	ctx.stop = (a) => calls.push("stop:" + a);
-	vm.runInContext("party_break = __pb66", ctx);
-	// v25.75 (audit): no frozen/noprog while the party waits for a member on purpose
-	{ Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", x: 100, y: 100, map: "main", rip: false });
-		vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; smart_depth = 0; wd.acts = []", ctx);
-		vm.runInContext("hist.ev = []; state.cooldown = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }", ctx);
-		vm.runInContext(`wd.pos = [{ t: Date.now() - 4 * 60000, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]`, ctx);
-		vm.runInContext("watchdog()", ctx); // the partners are offline: party_break
-		assert(vm.runInContext("!hist.ev.some((e) => e.type === 'stuck') && !Object.keys(state.cooldown).length", ctx), "v25.75: waiting for an absent member: the watchdog doesn't rest the camp"); }
 	// 67) bank housekeeping: free-slot count, purge filter, purged items sold
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 20, gold: 2e6, map: "bank", x: 0, y: 0, rip: false, esize: 30 });
 	character.items = Array(42).fill(null); character.slots = {};
@@ -1894,17 +1730,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(e1["setpants:0"] === 2 && !e1["setpants:1"], `no NPC sells it: 3 + 3 failure stock of 8 kept, 2 go (${JSON.stringify(e1)})`);
 		assert(e1["rcoat:3"] === 2 && !e1["rcoat:5"], "a recipe's level (+5) kept, the +3s sold");
 		assert(!e1["goodhelm:0"], "5 copies of a helmet a fighter would wear now: none sold (past the cap of 3)");
-		// v25.77 (owner: the bought Vowkeeper Gloves were sold at once): a piece of a set a party class can wear is never sold
-		{ const sets0 = ctx.G.sets; ctx.G.sets = { ...(sets0 || {}), okset: { 2: { armor: 50 }, items: ["oathgl"] }, warset: { items: ["wargl"] } };
-			Object.assign(ctx.G.items, { oathgl: { type: "helmet", g: 100, armor: 1, set: "okset", class: ["paladin"] }, wargl: { type: "helmet", g: 100, armor: 1, set: "warset", class: ["warrior"] } }); // (a slot the fighter wears: not "useful" by filling an empty one)
-			pack[pack.indexOf(null)] = { name: "oathgl", level: 0 }; pack[pack.indexOf(null)] = { name: "wargl", level: 0 };
-			const e3 = ex();
-			// the live failure: a copy marked by an earlier purge, at the shop — the paladin piece isn't sold, the warrior's is
-			character.items[0] = { name: "oathgl", level: 0 }; character.items[1] = { name: "wargl", level: 0 };
-			R("state.purge['oathgl:0'] = Date.now(); state.purge['wargl:0'] = Date.now(); gx_cache = null");
-			const s3 = [R("gear_sell_ok(character.items[0])"), R("gear_sell_ok(character.items[1])")];
-			character.items[0] = null; character.items[1] = null; ctx.G.sets = sets0;
-			assert(!e3["oathgl:0"] && e3["wargl:0"] === 1 && s3[0] === false && s3[1] === true, `v25.77: a paladin set piece is kept (also when marked), another class's sold (${JSON.stringify(e3)} ${s3})`); }
 		R("state.upg = { name: 'okhelm', to: 7 }");
 		assert(!ex()["okhelm:2"], "the current project's piece: none sold");
 		R("state.upg = null");
@@ -2131,12 +1956,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	handlers.cm({ name: "Aspernari", message: { k: "ping", id: "p1" } });
 	assert(pings.some(([to, k, id]) => to === "Aspernari" && k === "pong" && id === "p1"), "answers pings");
 
-	// 75) an offering lifts a step's odds over its floor (v25.66: the step's own floor)
+	// 75) high upgrades: weapon slot may target +9 (scroll2), others stop at scroll0/1 levels; offering lifts odds
 	ctx.G.items.scroll2 = { type: "uscroll", g: 1600000 };
 	ctx.G.items.wbow = { type: "weapon", wtype: "bow", attack: 20, upgrade: { attack: 10 }, g: 5000, grades: [3, 6] };
 	ctx.G.items.lhelm = { type: "helmet", armor: 5, upgrade: { armor: 6 }, g: 2000, grades: [3, 6] };
 	ctx.G.classes.ranger = { damage_type: "physical", mainhand: { bow: {} } };
 	const ig_save = ctx.item_grade; ctx.item_grade = (it) => ((it.level || 0) >= 6 ? 2 : (it.level || 0) >= 3 ? 1 : 0);
+	assert(vm.runInContext("upgrade_target('wbow')", ctx) === 6 && vm.runInContext("upgrade_target('wbow', true)", ctx) === 9, "normal target stops before scroll2; high goes to +9");
 	// offering lifts a too-low preview over the floor
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", gold: 5e6, esize: 30, map: "main" });
 	character.items = Array(42).fill(null);
@@ -2145,19 +1971,18 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.G.npcs.weaponsmith = { items: ["wbow"] }; const fn75 = ctx.find_npc; ctx.find_npc = () => ({ map: "main", x: 0, y: 0 }); // NPC-sold: 55% floor applies
 	const up75 = [];
 	ctx.upgrade = (k, sk, off, preview) => { if (preview) return Promise.resolve({ chance: off != null ? 0.62 : 0.4 }); up75.push(off); return Promise.resolve({ success: true }); };
-	await vm.runInContext("run_upgrade({ name: 'wbow', floor: 0.55 }, { request: { name: 'wbow', level: 7 } })", ctx);
+	await vm.runInContext("run_upgrade({ name: 'wbow' }, { request: { name: 'wbow', level: 7 } })", ctx);
 	assert(JSON.stringify(up75) === "[3]", `40% preview < 55% floor → the Primling (62%) is used (${JSON.stringify(up75)})`);
 	ctx.upgrade = (k, sk, off, preview) => Promise.resolve(preview ? { chance: 0.4 } : { success: true });
 	character.items[3] = null; character.items[2] = { name: "wbow", level: 6 };
-	let threw75 = null; await vm.runInContext("run_upgrade({ name: 'wbow', floor: 0.55 }, { request: { name: 'wbow', level: 7 } })", ctx).catch((e) => (threw75 = e));
+	let threw75 = null; await vm.runInContext("run_upgrade({ name: 'wbow' }, { request: { name: 'wbow', level: 7 } })", ctx).catch((e) => (threw75 = e));
 	assert(threw75 && threw75.reason === "low_chance", "without an offering a 40% scroll2 step is refused");
 	ctx.item_grade = ig_save; ctx.find_npc = fn75;
 	// merchant funding: a project step beyond its gold → fund request in the heartbeat; the richest fighter near sends it
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", gold: 1002000, map: "main", x: 0, y: 0, esize: 30 }); // 2k over upgrade_keep (1M) < the 6k first step
-	character.items = Array(42).fill(null); character.items[1] = { name: "wbow", level: 3 }; // (v25.66: one step, the copy at +3)
-	const sc0g75 = ctx.G.items.scroll0.g; ctx.G.items.scroll0.g = 60000; // a 60k step
+	character.items = Array(42).fill(null);
 	// v25.46: nobody can fund the step (no fighter above fund_keep): the project is dropped for 30 min, not waited on
-	vm.runInContext("state.partners = {}; state.upg = { name: 'wbow', to: 4, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 60000 }; state.fund_need = 0; state.gear_skip = {}", ctx);
+	vm.runInContext("state.partners = {}; state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
 	assert(vm.runInContext("state.upg !== null && !skipped('upg:wbow')", ctx), "v25.48: members not heard from: not dropped (a stale heartbeat isn't 'no gold')");
 	vm.runInContext("globalThis.__ss49 = seen.since; seen.since = Date.now() - 200_000", ctx);
@@ -2178,7 +2003,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	assert(vm.runInContext("state.upg === null && state.fund_need === 0 && skipped('upg:wbow')", ctx), "v25.46: no gold anywhere for the step: project dropped for 30 min");
 	vm.runInContext("state.partners = {}", ctx);
 	hb("Aspernari", { ...asp, x: 0, y: 0, gold: 7.7e6 });
-	vm.runInContext("state.upg = { name: 'wbow', to: 4, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 60000 }; state.fund_need = 0; state.gear_skip = {}", ctx);
+	vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 9e6, high: true }; state.fund_need = 0; state.gear_skip = {}", ctx);
 	await vm.runInContext("task_upgrade()", ctx);
 	const fund75 = vm.runInContext("state.fund_need", ctx);
 	assert(fund75 > 0 && !vm.runInContext("upgrade_due()", ctx), `merchant waits for funding (${fund75})`);
@@ -2201,7 +2026,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	await vm.runInContext("merchant_handoff()", ctx);
 	assert(g75.length === 1 && g75[0][0] === "DoWhatNow" && g75[0][1] === Math.round(fund75), `richest fighter funds the project (${JSON.stringify(g75)})`);
 	vm.runInContext("state.merchant = null; state.upg = null; state.fund_need = 0", ctx);
-	ctx.G.items.scroll0.g = sc0g75;
 
 	// 76) crafting for power: a non-quest recipe of plain materials whose output a member wears as an upgrade
 	ctx.G.items.cloth = { type: "material", s: true }; ctx.G.items.silkhat = { type: "helmet", armor: 90, g: 1000 };
@@ -2611,12 +2435,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 95) v18.6: an unfinishable hunt is ignored; Ponty buys cap price per point; the merchant delivers held gear
 	vm.runInContext("state.partners = {}; state.merchant = null", ctx);
 	vm.runInContext("globalThis.__kps = kills_per_s; kills_per_s = () => 0.05; globalThis.__ms = state.measured; state.measured = {}; state.best_xp = 0", ctx); // 3 kills/min
-	// v25.69 (owner): a hunt is chased while it lasts and the camp pick would fight it — no finish-in-time estimate, no xp floor
-	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_xp = 800, state.best_at = Date.now()); CFG.hunt_min_xp = 0.7", ctx);
-	assert(vm.runInContext("hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 10 }) && !hunt_feasible({ id: 'bee', c: 10, ms: 0 }) && !hunt_feasible({ id: 'bee', c: 0 })", ctx),
-		"v25.69: 417 left in 30 min at 3 kills/min: chased; a low-xp hunt: chased; expired or done: not");
-	assert(vm.runInContext("globalThis.__sb = state.safe.bee; state.safe.bee = false; globalThis.__r69 = hunt_feasible({ id: 'bee', c: 10 }); state.safe.bee = __sb; if (__sb === undefined) delete state.safe.bee; !__r69", ctx), "v25.69: a hunt the camp pick refuses: not chased");
-	vm.runInContext("CFG.hunt_min_xp = 0.6", ctx);
+	assert(vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__h95 = !hunt_feasible({ id: 'bee', c: 417, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 40, ms: 1800000 }) && hunt_feasible({ id: 'bee', c: 417 }); CFG.hunt_min_xp = 0.7; globalThis.__h95", ctx),
+		"417 kills in 30 min at 3/min: ignored; 40: kept; no expiry known: kept (xp floor off: this is about expiry)");
+	// v18.7: a hunt monster far below the best xp/s we know isn't chased
+	vm.runInContext("globalThis.__mx = mt_xps; mt_xps = (mt) => (mt === 'bee' ? 300 : 800); (state.best_xp = 800, state.best_at = Date.now())", ctx);
+	assert(!vm.runInContext("hunt_feasible({ id: 'bee', c: 10 })", ctx), "v23.5: hunt_min_xp 70% by default — a bee hunt at 300 vs best 800 isn't chased");
+	vm.runInContext("CFG.hunt_min_xp = 0; globalThis.__ok0 = hunt_feasible({ id: 'bee', c: 10 }); CFG.hunt_min_xp = 0.6", ctx);
+	assert(vm.runInContext("globalThis.__ok0", ctx), "hunt_min_xp 0: chased");
+	assert(vm.runInContext("!hunt_feasible({ id: 'bee', c: 10 }) && hunt_feasible({ id: 'croc', c: 10 })", ctx), "hunt_min_xp 0.6: bee hunt at 300 xp/s vs best 800 not chased; croc chased");
 	vm.runInContext("CFG.hunt_min_xp = 0.7", ctx); // back to the default
 	vm.runInContext("mt_xps = globalThis.__mx; kills_per_s = globalThis.__kps; state.measured = globalThis.__ms; state.best_xp = 0", ctx);
 	// v18.7 gold budget: party spending held under 90% of income
@@ -2905,27 +2731,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.map = "main"; character.bank = { items0: [{ name: "lingering", level: 0 }] };
 		vm.runInContext("remember_bank()", ctx);
 		assert(vm.runInContext("state.bank_gear[0].name === 'fresh'", ctx), "off a bank floor, a lingering character.bank doesn't overwrite the snapshot");
-		// v25.64: asked for its view (a character that was offline), one answers with its own; a change within a minute of
-		// the last send goes when the minute is up
-		{ const cm64 = [], sc0 = ctx.send_cm; ctx.send_cm = (to, m) => (cm64.push([to.join(), m.k, m.gear?.[0]?.name]), Promise.resolve());
-			handlers.cm({ name: "Sanala", message: { k: "bankq" } });
-			const ans = JSON.stringify(cm64);
-			handlers.cm({ name: "Sanala", message: { k: "bankq" } }); // a second ask inside 30 s isn't answered
-			assert(cm64.length === 1, `v25.64: a bankq answered at most every 30 s per asker (${cm64.length})`);
-			const nr0 = ctx.G.items.newring; ctx.G.items.newring = nr0 || { type: "ring" };
-			const st64 = ctx.setTimeout, tm64 = []; ctx.setTimeout = (fn, ms) => (tm64.push({ fn, ms }), tm64.length);
-			character.map = "bank"; character.bank = { items0: [{ name: "newring", level: 0 }] };
-			vm.runInContext("bank_hash = ''; bank_sent_at = Date.now() - 20000; bank_send_timer = null; remember_bank()", ctx);
-			ctx.setTimeout = st64;
-			const held = cm64.length, sched = tm64.find((t) => t.ms > 30000 && t.ms < 45000);
-			if (sched) sched.fn();
-			ctx.send_cm = sc0; character.map = "main"; character.bank = undefined; if (!nr0) delete ctx.G.items.newring;
-			// an answer relays who read the view
-			handlers.cm({ name: "Torlis", message: { k: "bank", at: Date.now() + 1000, by: "DoWhatNow", seen: { r: 1 }, gear: [] } });
-			assert(vm.runInContext("state.bank_by", ctx) === "DoWhatNow", "v25.64: a relayed view keeps who read it");
-			vm.runInContext("state.bank_free = null; state.bank_dump = null; bank_hash = ''; bank_sent_at = 0; bank_send_timer = null; for (const k in bankq_at) delete bankq_at[k]", ctx);
-			assert(ans === '[["Sanala","bank","fresh"]]' && held === 1 && !!sched && cm64.length === 2 && cm64[1][1] === "bank" && cm64[1][2] === "newring",
-				`asked: answered with our view (${ans}); a change 20 s after a send held (${held}), sent when the minute is up (${JSON.stringify(cm64)})`); }
 		character.bank = undefined; vm.runInContext("state.bank_gear = []; state.bank_seen = {}; state.bank_at = 0; state.bank_by = null", ctx);
 	}
 	// 104) v21.2: a fighter's own upgrade project is dropped once the merchant runs projects (its copies are freed)
@@ -2975,32 +2780,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext(`state.session = { key: "main:1,1,9,9", mtype: "goo", est: 0, xp: 99999, kx: 0, kc: 0, kc_n: 0, start: Date.now() - 100000 };
 			for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
 		assert(Math.round(vm.runInContext("state.measured['main:1,1,9,9']", ctx)) === 1, `together: 10 party kills x 10 xp / 100s = 1 (received xp ignored) (${vm.runInContext("state.measured['main:1,1,9,9']", ctx)})`);
-		// v25.68: each session adds the gold really looted in it (chest_opened, our share) and its seconds to the camp's
-		// totals — whatever its length or kills; a chest opened within 20 s of the close, still at that camp, too
-		{ vm.runInContext(`state.measured_gold = {}; state.pack = { map: "main", boundary: [1, 1, 9, 7], mtype: "goo" }; state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() - 100000 };
-				on_chest_opened({ id: "prev", gold: 5000 }); // v25.76: opened before any kill here — the last camp's loot: not counted
-				for (let i = 0; i < 10; i++) { on_kill_credit({ mtype: "goo" }); on_chest_opened({ id: "c" + i, gold: 30 }); }
-				on_chest_opened({ id: "x", gone: true }); end_session(); on_chest_opened({ id: "late", gold: 100 })`, ctx);
-			const K = "state.measured_gold['main:1,1,9,7#goo']";
-			ctx.__gm = vm.runInContext(K, ctx);
-			assert(ctx.__gm && ctx.__gm.g === 400 && Math.round(ctx.__gm.s) === 100 && Math.round(vm.runInContext("state.measured['main:1,1,9,7#goo']", ctx)) === 1, `v25.68: 10 chests x 30 + a late one of 100 = 400 gold in 100 s (a chest before any kill not counted), beside 1 xp/s (${JSON.stringify(ctx.__gm)})`);
-			// v25.76 (Fable): the next session at the same camp, just rolled over: the last kill's chest still counts there
-			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 0, rg: 0, start: Date.now() }; on_chest_opened({ id: "roll", gold: 7 })`, ctx);
-			const roll = vm.runInContext("state.session.rg", ctx);
-			vm.runInContext(`state.session.key = "main:9,9,9,9#goo"; state.session.rg = 0; on_chest_opened({ id: "other", gold: 7 })`, ctx);
-			const other = vm.runInContext("state.session.rg", ctx);
-			vm.runInContext("state.session = null", ctx);
-			assert(roll === 7 && other === 0, `v25.76: a chest right after a roll-over at the same camp counts (${roll}); at another camp before a kill it doesn't (${other})`);
-			// v25.76 (owner: frog 1809/s from 45k in ~25 s): a session under measure_min_s books nothing — its gold is stray loot
-			vm.runInContext(`state.session = { key: "main:1,1,9,7#goo", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kc_n: 1, rg: 45000, start: Date.now() - 25000 }; end_session()`, ctx);
-			assert(Math.round(vm.runInContext(K + ".s", ctx)) === 100 && vm.runInContext(K + ".g", ctx) === 400 && vm.runInContext(K + ".n", ctx) === 1, "v25.76: a 25 s visit with 45k of loot books nothing");
-			// and the report lists only camps with measure_min_s of fighting
-			vm.runInContext(`state.measured_gold['main:2,2,3,3#frog'] = { g: 45000, s: 25, n: 1 }`, ctx);
-			assert(vm.runInContext("!/frog/.test(gold_camps_text()) && /goo@main 4\\.0\\/s/.test(gold_camps_text())", ctx), `v25.76: the report lists camps with enough fighting only (${vm.runInContext("gold_camps_text()", ctx)})`);
-			assert(vm.runInContext("CFG.farm_mode = 'gold', meas()['main:1,1,9,7#goo'] === gold_rate('main:1,1,9,7#goo') && meas_aged('main:1,1,9,7#goo', 0) === gold_rate('main:1,1,9,7#goo') && meas_aged('nowhere', 0) === 0", ctx), "v25.68: gold mode reads the measured totals only");
-			vm.runInContext("CFG.farm_mode = 'xp'; globalThis.__ssg = save_state; save_state = () => {}; forget(); save_state = __ssg", ctx);
-			assert(vm.runInContext("Object.keys(state.measured_gold).length === 0", ctx), "v25.68: forget() clears the gold totals");
-			vm.runInContext("state.pack = null", ctx); }
+		// v25.51: base gold/s measured beside it, whatever the farm mode
+		{ ctx.G.monster_gold = { goo: 20 };
+			vm.runInContext(`state.measured_gold = {}; state.session = { key: "main:1,1,9,7", mtype: "goo", est: 0, kind: "xp", xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, start: Date.now() - 100000 };
+				for (let i = 0; i < 10; i++) on_kill_credit({ mtype: "goo" }); end_session()`, ctx);
+			assert(Math.round(vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)) === 2 && Math.round(vm.runInContext("state.measured['main:1,1,9,7']", ctx)) === 1, `v25.51: 10 kills x 20 gold / 100s = 2 gold/s beside 1 xp/s (${vm.runInContext("state.measured_gold['main:1,1,9,7']", ctx)})`);
+			assert(vm.runInContext("meas()['main:1,1,9,7'] === state.measured['main:1,1,9,7'] && (CFG.farm_mode = 'gold', meas()['main:1,1,9,7'] === state.measured_gold['main:1,1,9,7'])", ctx), "v25.51: meas() follows the farm mode");
+			vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
+			delete ctx.G.monster_gold; }
 		vm.runInContext(`state.session = { key: "main:1,1,9,8", mtype: "goo", est: 0, xp: 99999, kx: 50, kc: 0, kc_n: 0, start: Date.now() - 100000 }; end_session()`, ctx);
 		assert(vm.runInContext("state.measured['main:1,1,9,8'] === undefined", ctx), "together with no kill_credit in the session: not measured");
 		vm.runInContext("state.measured = {}", ctx);
@@ -3010,10 +2797,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const sock = { emit() { real++; }, on(ev, f) { on.push([ev, f]); }, off(ev, f) { off.push([ev, f]); } };
 			ctx.parent.socket = sock;
 			vm.runInContext("meter_socket(); meter_socket()", ctx);
-			assert(on.length === 2 && on[0][0] === "kill_credit" && on[1][0] === "chest_opened", `kill_credit and chest_opened listeners registered once (${on.length})`);
+			assert(on.length === 1 && on[0][0] === "kill_credit", `kill_credit listener registered once (${on.length})`);
 			const old = () => {}; sock.__farmer_kc = old;
 			vm.runInContext("meter_socket()", ctx);
-			assert(off.length === 1 && off[0][1] === old && on.length === 3, "the previous script's listener is removed and ours added");
+			assert(off.length === 1 && off[0][1] === old && on.length === 2, "the previous script's listener is removed and ours added");
 			sock.__xp_meter = []; // what a previous script leaves behind
 			vm.runInContext("meter_socket(); sent.length = 0; parent.socket.emit('x')", ctx);
 			assert(vm.runInContext("sent.length", ctx) === 1 && real === 1, `after a reload our meter counts again, one wrapper deep (${vm.runInContext("sent.length", ctx)} counted, ${real} sent)`);
@@ -3102,7 +2889,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(JSON.stringify(gv) === '[["DoWhatNow","plate2"]]', `an upgrade for Sanala (away) goes to the merchant to deliver (${JSON.stringify(gv)})`);
 		ctx.send_item = si_s; character.items = Array(42).fill(null); character.slots = {};
 		vm.runInContext("state.merchant = null; state.partners = {}", ctx);
+		// upgrade projects count what their steps cost, not total gold changes
+		vm.runInContext("globalThis.__usw = upg_still_wanted; upg_still_wanted = () => true", ctx); // (these test the spending, not the target)
+		vm.runInContext(`state.upg = { name: 'wbow', to: 3, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 3e6 }; state.gear_skip = {};
+			globalThis.__ru = run_upgrade; run_upgrade = async () => ({ success: true });`, ctx);
+		Object.assign(character, { gold: 9e6 });
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg === null && skipped('upg:wbow')", ctx), "3M spent on a 1M project → stopped, whatever our gold");
+		// v24.85: gold that leaves during a step for something else (a transfer to the merchant) isn't the project's
+		vm.runInContext(`state.upg = { name: 'wbow', to: 3, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6, spent: 0 }; state.gear_skip = {};
+			run_upgrade = async () => { character.gold -= 971316; return { success: true }; };`, ctx);
+		Object.assign(character, { gold: 9e6 });
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg !== null && state.upg.spent < 1e6 && !skipped('upg:wbow')", ctx), `a 971k transfer during the steps isn't counted as the project's spending (spent ${vm.runInContext("JSON.stringify([state.upg, best_level_held('wbow'), Object.keys(state.gear_skip)])", ctx)} ${JSON.stringify(log.slice(-4))})`);
 		vm.runInContext("state.upg = null; state.gear_skip = {}", ctx);
+		vm.runInContext("state.upg = { name: 'wbow', to: 9, for: 'Torlis', slot: 'mainhand', gain: 50, cost: 1e6 }; state.gear_skip = {}; run_upgrade = async () => { character.gold -= 4000; return { success: true }; }", ctx);
+		character.items = Array(42).fill(null); character.items[0] = { name: "computer" };
+		await vm.runInContext("task_upgrade()", ctx);
+		assert(vm.runInContext("state.upg && state.upg.spent >= 4000", ctx), `each step's cost is added (${vm.runInContext("state.upg && state.upg.spent", ctx)})`);
+		vm.runInContext("run_upgrade = globalThis.__ru; upg_still_wanted = __usw; state.upg = null; state.gear_skip = {}", ctx);
 		// v24.91: a project whose target no longer beats what its member wears is dropped
 		vm.runInContext("state.upg = { name: 'wbow', to: 3, for: character.name, slot: 'mainhand', gain: 5, cost: 1e5, spent: 0 }; my_gear_cache = null; upgrade_due()", ctx);
 		assert(vm.runInContext("!state.upg || state.upg.name !== 'wbow'", ctx), `a project for a piece its member can't use (or has something better than) is dropped (${vm.runInContext("JSON.stringify([character.name, character.ctype, gear_takers().map((m) => m.name + ':' + m.ctype + ':' + !!(m.g && m.g.w)), !!gear_gain({ name: 'wbow', level: 3 }, character.ctype, my_gear()), CFG.upgrade_auto])", ctx)})`);
@@ -3227,27 +3032,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		{ const s0 = character.s, now59 = Date.now();
 			vm.runInContext("state.partners = {}; state.gear_skip = {}; globalThis.__hf59 = hunt_feasible; hunt_feasible = (h) => h.id !== 'far'", ctx);
 			const hs = (me, a, s) => { character.s = me ? { monsterhunt: me } : {}; hb("Aspernari", { ...asp, level: 58, hs: a }); hb("Torlis", { ...tor, level: 60, hs: s }); return vm.runInContext("hunts_trip_due()", ctx); };
-			const r1 = hs({ id: "goo", c: 0 }, "chase", "ready"), r2 = hs({ id: "goo", c: 0 }, "ready", "lost"), r3 = hs({ id: "goo", c: 3 }, "ready", "ready"), r4 = hs(null, "lost", "off");
+			const r1 = hs({ id: "goo", c: 0 }, "chase", "ready"), r2 = hs({ id: "goo", c: 0 }, "ready", "lost"), r3 = hs({ id: "goo", c: 3 }, "ready", "ready"), r4 = hs({ id: "far", c: 9 }, "none", "off");
 			const r5 = hs({ id: "goo", c: 3 }, "chase", "chase");
 			hb("Aspernari", { ...asp, level: 58, hs: "ready", hms: 120_000 }); character.s = { monsterhunt: { id: "goo", c: 3 } };
 			const r6 = vm.runInContext("hunts_trip_due()", ctx);
 			assert(/Aspernari to turn in before it lapses/.test(r6 || ""), `a finished hunt with 2 min left goes now, whoever still chases (${r6})`);
 			vm.runInContext("hunt_feasible = __hf59; state.partners = {}", ctx); character.s = s0;
-			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Sanala to take/.test(r4) && r5 === null,
-				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); none + a partner's lost: go (${r4}); all chasing: wait (${r5})`); }
+			assert(r1 === null && /Sanala to turn in, Aspernari to turn in/.test(r2) && !/Torlis/.test(r2) && r3 === null && /Aspernari to take/.test(r4) && r5 === null,
+				`one still chasing: wait (${r1}); all completable ready (a lost one aside): go (${r2}); we're still chasing: wait (${r3}); lost + none: go (${r4}); all chasing: wait (${r5})`); }
 		assert(vm.runInContext("CFG.auto_monster_hunt = false, globalThis.__u59 = hunt_state(), CFG.auto_monster_hunt = true, __u59 === 'off'", ctx), "hunts not chased (passive only): no hunt trips");
-		// v25.69: a hunt the camp pick refuses isn't chased ("lost"): it no longer holds back the party's turn-in trip
-		{ const s0 = character.s; character.s = { monsterhunt: { id: "goo", c: 7 } };
-			const st = vm.runInContext("globalThis.__hf69 = hunt_feasible; globalThis.__sg69 = state.safe.goo; state.safe.goo = { ttk: 1, xp: 1 }; [hunt_state(), (state.safe.goo = false, hunt_state())].join()", ctx);
-			vm.runInContext("hunt_feasible = __hf69; state.safe.goo = __sg69; if (__sg69 === undefined) delete state.safe.goo", ctx); character.s = s0;
-			// v25.75 (Fable): a follower reports its live hunt as chased; the leader judges it (hunts_trip_due's ps)
-			assert(st === "chase,chase", `v25.75: a follower's live hunt reads "chase" whatever it judges (${st})`);
-			character.s = {};
-			hb("Aspernari", { ...asp, level: 58, hs: "chase", hunt: { id: "goo", c: 7 } }); hb("Torlis", { ...tor, level: 60, hs: "off" });
-			const ok69 = vm.runInContext("hunts_trip_due()", ctx);
-			const bad69 = vm.runInContext("globalThis.__sg69b = state.safe.goo; state.safe.goo = false; globalThis.__r69b = hunts_trip_due(); state.safe.goo = __sg69b; if (__sg69b === undefined) delete state.safe.goo; __r69b", ctx);
-			character.s = s0; vm.runInContext("state.partners = {}", ctx);
-			assert(ok69 === null && /Sanala to take/.test(bad69 || ""), `v25.69: a partner chasing a hunt the camp pick takes holds the trip (${ok69}); one it refuses doesn't (${bad69})`); }
 		// Daisy: success is a hunt held; failures pause her 5, 10, 20 min...; a success resets
 		{ const s0 = character.s; character.s = {};
 			const st59 = (n, h) => vm.runInContext(`state.hunt_fails = ${n}; state.gear_skip = {}; hunt_step(async () => { ${h ? "character.s.monsterhunt = { c: 5, id: 'goo' };" : ""} return { success: true }; })`, ctx);
@@ -3307,8 +3100,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// #7: together, the hunt rate is already the party's
 		vm.runInContext("CFG.hunt_min_xp = 0; kills_per_s = () => 0.05", ctx);
 		hb("Torlis", { ...tor, level: 60, x: 30, y: 0 }); hb("Aspernari", { ...asp, level: 58, x: -30, y: 0 });
-		assert(vm.runInContext("partners_near().length === 2 && hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
-			"v25.69: 100 kills that an estimate says won't fit in 30 min are still chased (no finish-in-time estimate)");
+		assert(vm.runInContext("partners_near().length === 2 && !hunt_feasible({ id: 'goo', c: 100, ms: 1800000 })", ctx),
+			"100 kills at the party's 0.05/s (2000s) don't fit in 30 min — not x2.2 for the members near");
 		// #10: a measurement's weight halves every meas_half_h
 		vm.runInContext("state.measured['main:9,9,9,9'] = 100; state.meas_at['p:main:9,9,9,9'] = Date.now() - CFG.meas_half_h * 3600000", ctx);
 		assert(Math.abs(vm.runInContext("meas_aged('main:9,9,9,9', 300)", ctx) - 200) < 0.5, "12h old: half measured (100), half estimate (300)");
@@ -3553,7 +3346,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			vm.runInContext("state.stand = {}", ctx);
 		}
 		ctx.trade = trade0; character.stand = false; character.slots = {}; character.items = Array(42).fill(null); vm.runInContext("state.stand = {}", ctx);
-		vm.runInContext("state.partners = {}; my_gear_cache = null", ctx);
+		// a project stopped by its odds: remembered, and a re-pick aims no higher
+		vm.runInContext("state.upg_caps = {}; upg_cap('helm117', 6)", ctx);
+		assert(vm.runInContext("upg_cap_level('helm117') === 6 && upg_cap_level('other') === Infinity", ctx), "the level a stopped project reached is its ceiling");
+		vm.runInContext("state.upg_caps.helm117.at = Date.now() - 8 * 86400000", ctx);
+		assert(vm.runInContext("upg_cap_level('helm117') === Infinity", ctx), "...for 7 days");
+		vm.runInContext("state.upg_caps = {}; state.partners = {}; my_gear_cache = null", ctx);
 		delete ctx.G.items.helm117; delete ctx.G.items.gem117;
 	}
 	// v25.34: pure damage ignores armour; a spawn with a rage box counts every monster of it (booboo: 5 at once)
@@ -3598,6 +3396,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		delete ctx.G.maps.ragemap; delete ctx.G.monsters.purex; delete ctx.G.monsters.physx; delete ctx.G.monsters.ragex;
 		R("rage_c = null; def_name = null"); Object.assign(character, sv);
 	}
+	// v25.38 (owner: upgrades must happen): a set piece at grade 2 from +0 (scroll2 every step) in a non-weapon slot is a
+	// project when its gain pays for the expected cost at upgrade_gold_per_pt; at the old 40k it wasn't
+	{
+		const R = (c) => vm.runInContext(c, ctx), sv = { name: character.name, ctype: character.ctype, level: character.level, items: character.items, slots: character.slots, gold: character.gold };
+		const ig = ctx.item_grade; ctx.item_grade = (it) => (it?.name === "setp138" ? 2 : ig ? ig(it) : 0);
+		Object.assign(ctx.G.items, { setp138: { type: "pants", g: 50000, armor: 30, upgrade: { armor: 12 } }, basep138: { type: "pants", armor: 30 }, scroll2: ctx.G.items.scroll2 || { type: "uscroll", g: 1600000 } });
+		Object.assign(character, { name: "Torlis", ctype: "paladin", level: 58 }); character.slots = { pants: { name: "basep138" } }; R("my_gear_cache = null");
+		const g = JSON.parse(R("JSON.stringify(my_gear())"));
+		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {}, gold: 20e6 });
+		ctx.__g138 = g;
+		R("state.partners = { Torlis: { name: 'Torlis', ctype: 'paladin', level: 58, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g138 } }; state.merchant = null; state.upg = null; state.upg_caps = {}; state.gear_skip = {}; state.bank_gear = [{ name: 'setp138', level: 0 }]; sold_c.set('setp138', false); my_gear_cache = null");
+		const gp0 = R("CFG.upgrade_gold_per_pt");
+		R("for (const n in G.items) if (n !== 'setp138' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test')"); // (only this piece in play)
+		const pk = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
+		assert(pk && pk.name === "setp138" && pk.high && pk.slot === "pants" && pk.to >= 1, `a grade-2 pants piece (scroll2 steps) for Torlis is a project at ${gp0 / 1000}k/pt (${JSON.stringify(pk)})`);
+		R("CFG.upgrade_gold_per_pt = 40000");
+		assert(!/setp138/.test(R("JSON.stringify(pick_upgrade())") || ""), "...and wasn't at the old 40k/pt");
+		R(`CFG.upgrade_gold_per_pt = ${gp0}; state.partners = {}; state.bank_gear = []; sold_c.delete('setp138'); state.upg = null; state.gear_skip = {}; my_gear_cache = null`);
+		delete ctx.G.items.setp138; delete ctx.G.items.basep138; ctx.item_grade = ig; Object.assign(character, sv);
+	}
 	// v25.39 (owner: the easy, reliable upgrades must happen): a fighter's worn piece, with no spare copy, is the merchant's
 	// project for the steps at 90%+; the fighter hands it over in town; the project waits for it, then gives up
 	{
@@ -3607,10 +3425,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const g = JSON.parse(R("JSON.stringify(my_gear())")), worn = JSON.parse(R("JSON.stringify(worn_items())"));
 		Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {}, gold: 20e6 });
 		ctx.__g139 = g; ctx.__w139 = worn;
-		R("state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g139, worn: __w139 } }; state.merchant = null; state.upg = null; state.gear_skip = {}; state.bank_gear = []; sold_c.set('mpg139', false); my_gear_cache = null");
+		R("state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g139, worn: __w139 } }; state.merchant = null; state.upg = null; state.upg_caps = {}; state.gear_skip = {}; state.bank_gear = []; sold_c.set('mpg139', false); my_gear_cache = null");
 		R("for (const n in G.items) if (n !== 'mpg139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test')");
 		const pk = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
-		assert(pk && pk.name === "mpg139" && pk.worn?.who === "Aspernari" && pk.worn.slot === "gloves" && pk.to === 1 && pk.floor === 0.8, `v25.66: the worn gloves, no spare: one +1 step at the last-copy floor (${JSON.stringify(pk)})`);
+		const odds = [1, 2, 3, 4].map((L) => R(`upg_odds('mpg139', ${L})`));
+		const last = odds.findIndex((o) => o < 0.9); // the first step under 90%
+		assert(pk && pk.name === "mpg139" && pk.worn?.who === "Aspernari" && pk.worn.slot === "gloves" && pk.to === last, `the worn gloves: a project up to the last 90%+ step (+${pk && pk.to}; odds ${odds.map((o) => Math.round(o * 100)).join("/")})`);
 		R("state.upg = pick_upgrade()");
 		assert(R("worn_waiting()") === true && R("upgrade_due()") === false, "waiting for the hand-over: no town trip for it");
 		assert(R("__collect0") === false, "v25.43: shipped with collect off — the merchant delivers at the camp");
@@ -3692,7 +3512,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items[3] = null;
 		R("state.upg.worn.got = 0; state.upg.worn.at = Date.now() - 2 * 3600e3");
 		assert(R("worn_waiting()") === false && R("state.upg") === null && R("skipped('upg:mpg139')"), "never handed over: dropped after wait_ms, paused an hour");
-		// v25.66 (Fable): a worn weapon is never handed over (the fighter would fight without it): it steps from a spare only
+		// v25.39 (Fable): a worn weapon is never a project (the fighter would fight without it)
 		{
 			ctx.G.items.stf139 = { type: "weapon", wtype: "staff", g: 12400, attack: 20, upgrade: { attack: 6 } };
 			Object.assign(character, { name: "Aspernari", ctype: "priest", level: 60, slots: { mainhand: { name: "stf139", level: 0 } } }); R("my_gear_cache = null");
@@ -3701,27 +3521,23 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			ctx.__g2 = g2; ctx.__w2 = w2;
 			R("globalThis.__pa = state.partners; state.partners = { Aspernari: { name: 'Aspernari', ctype: 'priest', level: 60, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: __g2, worn: __w2 } }; state.gear_skip = {}; sold_c.set('stf139', false)");
 			R("for (const n in G.items) if (n !== 'stf139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test')");
-			const pw = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
-			R("state.bank_gear = [{ name: 'stf139', level: 0 }]");
-			const ps = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
-			R("state.bank_gear = []");
-			assert(pw === null && ps?.name === "stf139" && !ps.worn && ps.floor === 0.2, `a worn staff: no hand-over (${JSON.stringify(pw)}); a spare +0 in the bank: stepped (${JSON.stringify(ps)})`);
+			assert(!/stf139/.test(R("JSON.stringify(pick_upgrade())") || ""), "a worn staff: never a worn-piece project");
 			R("state.partners = __pa; sold_c.delete('stf139'); state.gear_skip = {}"); delete ctx.G.items.stf139;
 		}
-		// v25.66: the step's floor is the whole floor at the roll
+		// v25.39 (Fable): the 90% floor at the roll itself
 		{
 			const up0 = ctx.upgrade, rolls = []; let pv = 0.85;
 			ctx.upgrade = (k, sk, off, calc) => calc ? Promise.resolve({ chance: pv }) : (rolls.push(k), Promise.resolve({ success: true }));
 			character.items = Array(42).fill(null); character.items[1] = { name: "mpg139", level: 1 }; character.items[2] = { name: "computer" }; character.items[3] = { name: "scroll0", q: 5 }; character.items[4] = { name: "scroll1", q: 5 };
-			const r1 = await R("run_upgrade({ name: 'mpg139', level: 1, floor: 0.9 })").then(() => "ok", (e) => e.reason);
-			const r2 = await R("run_upgrade({ name: 'mpg139', level: 1, floor: 0.8 })").then(() => "ok", (e) => e.reason);
-			assert(r1 === "low_chance" && r2 === "ok" && rolls.length === 1, `a step at 85%: refused at floor 0.9 (${r1}), taken at 0.8 (${r2})`);
+			const r1 = await R("run_upgrade({ name: 'mpg139', level: 1, min_chance: 0.9 })").then(() => "ok", (e) => e.reason);
+			const r2 = await R("run_upgrade({ name: 'mpg139', level: 1 })").then(() => "ok", (e) => e.reason);
+			assert(r1 === "low_chance" && r2 === "ok" && rolls.length === 1, `a worn piece's step at 85%: refused with min_chance 0.9 (${r1}), taken without (${r2})`);
 			ctx.upgrade = up0; character.items = Array(42).fill(null);
 		}
 		// a spare copy in the bank: the normal project, not the worn piece
 		R("state.gear_skip = {}; for (const n in G.items) if (n !== 'mpg139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test'); state.bank_gear = [{ name: 'mpg139', level: 0 }]");
 		const pk2 = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
-		assert(pk2 && pk2.name === "mpg139" && !pk2.worn && pk2.from_copy === 0 && pk2.floor === 0.2, "with a spare copy at the worn level: the spare is stepped (spare floor), the worn one is left alone");
+		assert(pk2 && pk2.name === "mpg139" && !pk2.worn && pk2.from_copy === 0, "with a spare copy owned: the spare is the project, the worn one is left alone");
 		R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; state.gear_skip = {}; sold_c.delete('mpg139'); my_gear_cache = null");
 		delete ctx.G.items.mpg139; Object.assign(character, sv);
 	}
@@ -3840,8 +3656,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("meas_tick()");
 			assert(R("state.session") === null, "Sanala unheard: no measurement session");
 			R("state.partners.Sanala = { name: 'Sanala', ctype: 'mage', map: 'main', x: 40, y: 40, t: Date.now() }; meas_tick()");
-			assert(R("state.session") === null, "v25.76: within loot_wait_ms of arriving at the camp: no session yet (the last camp's chests)");
-			R("meas_pk.at = 0; meas_tick()");
 			assert(R("!!state.session"), "everyone heard and here: the session starts");
 			// a member out of the tank's engage range: the elapsed seconds are left out (not just 1 s a tick)
 			R("state.session.last_here = Date.now() - 3000; state.partners.Sanala.x = 50 + CFG.party.engage_px + 50; state.partners.Sanala.y = 50; meas_tick()");
@@ -3893,17 +3707,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// v24.26: the docs' lstats weigh a paladin's int (its side_stat) the same as str
 		assert(vm.runInContext("gear_score({ name: 'intorb119', level: 0 }, 'paladin') === gear_score({ name: 'strorb119', level: 0 }, 'paladin')", ctx), "paladin: int counts as much as str (lstats)");
 		ctx.G.classes.paladin = pc;
-		// upgrade step: a transient error pauses it; refused odds end it (paused)
+		// upgrade project: a transient error pauses it; the odds cap is the highest level reached
 		character.items[1] = { name: "helm119", level: 3 };
 		ctx.G.items.scroll0 = { g: 1000, type: "uscroll" };
-		vm.runInContext(`state.upg = { name: 'helm119', to: 4, cost: 1000, for: 'Torlis', floor: 0.5 }; state.gear_skip = {}; state.fund_need = 0;
+		vm.runInContext(`state.upg = { name: 'helm119', to: 7, cost: 100000, for: 'Torlis', spent: 0 }; state.upg_caps = {}; state.gear_skip = {}; state.fund_need = 0;
 			globalThis.__ru = run_upgrade; run_upgrade = async () => { throw { reason: "timeout" }; }`, ctx);
 		await vm.runInContext("task_upgrade()", ctx);
 		assert(vm.runInContext("state.upg && state.upg.name === 'helm119' && skipped('upg:helm119')", ctx), "a timeout pauses the project, it doesn't drop it");
 		vm.runInContext("state.gear_skip = {}; state.upg.max = 5; run_upgrade = async () => { throw { reason: 'low_chance', chance: 0.3 }; }", ctx);
 		await vm.runInContext("task_upgrade()", ctx);
-		assert(vm.runInContext("!state.upg && skipped('upg:helm119')", ctx), "refused for its odds: the step ends and the piece is paused");
-		vm.runInContext("run_upgrade = globalThis.__ru; state.gear_skip = {}; state.upg = null", ctx);
+		assert(vm.runInContext("!state.upg && upg_cap_level('helm119') === 5", ctx), `refused for its odds: capped at the highest level reached (+5), not the copy now held (+3) (${vm.runInContext("upg_cap_level('helm119')", ctx)})`);
+		vm.runInContext("run_upgrade = globalThis.__ru; state.upg_caps = {}; state.gear_skip = {}; state.upg = null", ctx);
 		character.items = Array(42).fill(null); delete ctx.G.items.scroll0;
 		// Ponty: a lower copy held doesn't block buying a better one
 		ctx.G.items.amulet119 = { type: "amulet", int: 5, upgrade: { int: 3 } };
@@ -3919,6 +3733,85 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("state.bank_gear = [{ name: 'amulet119', level: 6, p: 'shiny' }]", ctx);
 		assert(!/upgrade for/.test(vm.runInContext("secondhand_reason({ name: 'amulet119', level: 5, p: 'shiny' }, {}) || ''", ctx)), "...a shiny +6 blocks it");
 		vm.runInContext("state.bank_gear = []", ctx);
+		// v25.18: a head start — a +1 that doesn't win as it is, but wins at +3, and nobody sells one: bought to be upgraded
+		{
+			const R = (c) => vm.runInContext(c, ctx);
+			const sc0 = ctx.G.items.scroll0; ctx.G.items.scroll0 = { g: 1000, type: "uscroll", grade: 0 };
+			const g2 = R("gear_gain({ name: 'amulet119', level: 2 }, 'mage', { w: { amulet: 0 }, own: {} }).gain");
+			const parts0 = R("JSON.stringify(state.partners)"); R("state.partners = {}");
+			hb("Sanala", { ...san, ctype: "mage", level: 51, gear: { w: { amulet: g2 + 0.1 }, own: {} } });
+			R("CFG.secondhand_gold_per_pt = 15000; state.upg_caps = {}; state.gear_skip = {}; sold_c.set('amulet119', false)");
+			const why1 = R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''");
+			assert(/start for an upgrade: \+1 → \+\d+ for Sanala/.test(why1), `a +1 that wins once upgraded is a head start (${why1}; target ${R("upgrade_target('amulet119')")})`);
+			character.items[7] = { name: "amulet119", level: 2 };
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not when our own copy is as far along");
+			character.items[7] = null;
+			R("CFG.secondhand_upgrade_starts = false");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...and not when switched off");
+			R("CFG.secondhand_upgrade_starts = true");
+			// the planner's gates: not for a paused piece, the current project's piece, or over the project budget
+			R("skip('upg:amulet119', 60000, 'test')");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not for a piece the planner has paused");
+			R("state.gear_skip = {}; state.upg = { name: 'amulet119', to: 6, for: 'Sanala' }");
+			// (v25.36: the current project's piece is no longer refused outright — with no copy held and no NPC selling it,
+			// it goes through this head-start rule and its bound, not priced as skipped steps)
+			assert(!/skips the project/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...the project's piece with no copy held: the head-start rule, not 'skips the project's steps'");
+			// v25.36: a copy of the project's piece above our best one, cheaper than the steps it skips, is bought
+			{
+				const k0 = character.items.findIndex((i) => !i); character.items[k0] = { name: "amulet119", level: 0 };
+				const steps = R("upgrade_expected('amulet119', 3) - upgrade_expected('amulet119', 0)");
+				ctx.__sp = (it) => R(`upgrade_start_reason(${JSON.stringify(it)}, shop_price(${JSON.stringify(it)}), []) || ''`); // (the rule itself: a direct upgrade would be bought earlier anyway)
+				const cheap = { name: "amulet119", level: 3, price: Math.floor(steps / 2) };
+				const civ0 = ctx.calculate_item_value; ctx.calculate_item_value = (it) => (it.price !== undefined ? it.price / 2 : civ0 ? civ0(it) : 0); // (Ponty asks 2x value)
+				assert(/skips the project's steps: \+0 → \+3/.test(ctx.__sp(cheap)), `a +3 of the project's piece at half the steps' cost: bought (${ctx.__sp(cheap)})`);
+				assert(!/skips/.test(ctx.__sp({ ...cheap, price: steps * 2 })), "...not at twice the steps' cost");
+				assert(!/skips/.test(ctx.__sp({ name: "amulet119", level: 0, price: 1 })), "...nor one no better than ours");
+				character.items[k0] = null; R("sold_c.set('amulet119', false)");
+				assert(!/skips/.test(ctx.__sp({ name: "amulet119", level: 0, price: 480000 })), "no copy held, no NPC sells it: not priced as skipped steps (the head-start rule's bound applies)");
+				R("sold_c.delete('amulet119')"); character.items[k0] = { name: "amulet119", level: 0 };
+				ctx.calculate_item_value = civ0; if (civ0 === undefined) delete ctx.calculate_item_value; character.items[k0] = null;
+			}
+			R("state.upg = null; globalThis.__us = CFG.upgrade_keep; CFG.upgrade_keep = 1e15");
+			assert(!/start for/.test(R("secondhand_reason({ name: 'amulet119', level: 1 }, {}) || ''")), "...not over the planner's budget");
+			R("CFG.upgrade_keep = globalThis.__us; sold_c.delete('amulet119')");
+			// v25.19: the planner aims no higher than the run will go: grade 0, not sold, scroll1 within the boost —
+			// +4 70%→85% passes the 80% floor, +5 60%→73% doesn't; with a second copy owned (bank), the 60% spare floor: +5 passes
+			{
+				const s1 = ctx.G.items.scroll1; ctx.G.items.scroll1 = { g: 40000, type: "uscroll", grade: 1 };
+				ctx.G.items.xs138 = { type: "shoes", armor: 5, upgrade: { armor: 2 } };
+				R("sold_c.set('xs138', false); state.bank_gear = []; character.items[9] = { name: 'xs138', level: 3 }");
+				assert(R("upg_reach('xs138')") === 4, `one copy: reach +4 (${R("upg_reach('xs138')")})`);
+				R("state.bank_gear = [{ name: 'xs138', level: 0 }]");
+				assert(R("upg_reach('xs138')") === 5, `a spare in the bank: reach +5 (${R("upg_reach('xs138')")})`);
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare"), "the run's floor counts the bank spare (+0) too");
+				R("state.bank_gear = []");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance"), "...and without one, the full floor");
+				R("character.items[10] = { name: 'xs138', level: 0 }");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_chance_spare") && R("upg_reach('xs138')") === 5, "a lower copy in the bags is a spare too");
+				R("character.items[10] = { name: 'xs138', level: 0, p: 'shiny' }; state.bank_gear = [{ name: 'xs138', level: 0, p: 'shiny' }]");
+				assert(R("chance_floor('xs138', CFG.min_upgrade_chance, 9, 3)") === R("CFG.min_upgrade_chance") && R("upg_reach('xs138')") === 4, "titled copies aren't spares (a project never uses one)");
+				// v25.32 (owner): the shipped floors (10%) — one copy, no spare: the planner aims as high as scroll0/1 go
+				// (+7; which level wins is then the expected-cost test), and the run takes a 70% step on the only copy
+				R("character.items[10] = null; state.bank_gear = []; globalThis.__fl = [CFG.min_upgrade_chance, CFG.min_chance_spare, CFG.min_chance_rebuyable]; CFG.min_upgrade_chance = __floors0.u; CFG.min_chance_spare = __floors0.s; CFG.min_chance_rebuyable = __floors0.r");
+				assert(R("__floors0.u") === 0.1 && R("upg_reach('xs138')") === 7, `shipped floors: one copy reaches +7, no further — a step past +7 needs upgrade_high's floor (${R("upg_reach('xs138')")}; was +4)`);
+				{ // the run itself: a 70% preview on the only copy goes ahead; a 15% one past +7 doesn't
+					const up0 = ctx.upgrade, rolls = []; let pv = 0.7;
+					ctx.upgrade = (k, sk, off, calc) => calc ? Promise.resolve({ chance: pv }) : (rolls.push(k), Promise.resolve({ success: true }));
+					R("character.items[11] = { name: 'computer' }; character.items[12] = { name: 'scroll1', q: 5 }; character.items[13] = { name: 'scroll0', q: 5 }");
+					const r1 = await R("run_upgrade({ name: 'xs138', level: 3 })").then(() => "ok", (e) => e.reason);
+					assert(r1 === "ok" && rolls.length === 1, `shipped floors: a 70% step on the only copy is taken (${r1}, ${rolls.length} roll)`);
+					R("character.items[9] = { name: 'xs138', level: 7 }"); pv = 0.15;
+					const r2 = await R("run_upgrade({ name: 'xs138', level: 7 })").then(() => "ok", (e) => e.reason);
+					assert(r2 === "low_chance" && rolls.length === 1, `shipped floors: +7 → +8 at 15% is refused (${r2})`);
+					R("character.items[11] = character.items[12] = character.items[13] = null; character.items[9] = { name: 'xs138', level: 3 }"); ctx.upgrade = up0;
+				}
+				R("[CFG.min_upgrade_chance, CFG.min_chance_spare, CFG.min_chance_rebuyable] = __fl");
+				R("character.items[9] = null; character.items[10] = null; state.bank_gear = []; sold_c.delete('xs138')"); delete ctx.G.items.xs138;
+				if (s1) ctx.G.items.scroll1 = s1; else delete ctx.G.items.scroll1;
+			}
+			if (sc0) ctx.G.items.scroll0 = sc0; else delete ctx.G.items.scroll0;
+			R(`state.partners = ${parts0}`);
+		}
 		// stand: a partial sale is logged and the listing's quantity follows
 		character.stand = true; character.slots = { trade1: { name: "gem119", q: 3, price: 100 } };
 		vm.runInContext("hist.ev = []; state.stand = { trade1: { name: 'gem119', level: 0, q: 5, price: 100, value: 30, at: Date.now(), per_unit: true } }; stand_busy = false; CFG.merchant.stand.list = ['gem119']", ctx);
@@ -4246,9 +4139,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const dz = R("deadly_areas('dz555').map((z) => z.t).join()");
 		assert(dz === "fire555", `merchant: fire spirits are no place to walk, the scorpions it visits are (${dz})`);
 		assert(/fire555/.test(R("seg_danger('dz555', 0, 0, 0, -800) || ''")), "merchant: a walk through the fire spirits is dangerous");
-		// (v25.80: the time a walk spends within their reach + 40 px is what counts — no wider margin)
-		assert(R("seg_danger('dz555', -240, 0, -240, -800)") === null && /fire555/.test(R("seg_danger('dz555', -150, 0, -150, -800) || ''")),
-			"merchant: outside their reach (280 + 40 px) is fine, a walk well inside it is not — not the 400 px of a monster that chases");
+		assert(R("seg_danger('dz555', -330, 0, -330, -800)") === null && /fire555/.test(R("seg_danger('dz555', -290, 0, -290, -800) || ''")),
+			"merchant: out of their range (280 + 120 px) is fine, inside it is not — not the 400 px of a monster that chases");
 		ctx.G.maps.dz555.monsters.push({ type: "fire555", count: 0, boundary: [2000, 2000, 2200, 2200] });
 		R("dz_cache.clear()");
 		assert(R("seg_danger('dz555', 2100, 1500, 2100, 2500)") === null, "an empty spawn (count 0: an event boss's) isn't there");
@@ -4460,41 +4352,121 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			`gear_why explains the points (${R("gear_why({ name: 'wcap136', level: 0 }, 'mage', { sets: { wan136: 1 }, sset: { chest: 'wan136' } }, 'helmet')")})`);
 		const gc = R("gear_check_lines()").join("\n");
 		assert(/weights mage \(G\.classes lstats/.test(gc) && /worn: armor 5×0\.3=1\.5 \(\+set wan136 10\)/.test(gc), "gear_check shows the weights and where each worn piece's points come from");
-		// v25.66: tokens buy what wins at +0, from the party's pool (one holder); the report lists each worn piece's next step
+		// v24.67: the missing piece of a set that only wins once upgraded is bought with tokens and becomes our own project
 		{
-			const I = ctx.G.items, keep = { tokens: ctx.G.tokens, items: character.items, ctype: character.ctype, gold: character.gold, slots: character.slots, name: character.name };
-			I.tk137 = { type: "shoes", armor: 60, resistance: 30, g: 1 }; I.monstertoken = I.monstertoken || { type: "token", s: true };
-			I.gl137 = { type: "gloves", armor: 16, upgrade: { armor: 2.5 }, grades: [0, 7, 10, 12], g: 34000 }; I.scroll1 = I.scroll1 || { g: 40000 };
-			ctx.G.tokens = { monstertoken: { tk137: 15 } };
-			Object.assign(character, { ctype: "mage", gold: 5_000_000 });
-			character.slots = { gloves: { name: "gl137", level: 5 } };
+			const I = ctx.G.items, keep = { tokens: ctx.G.tokens, items: character.items, ctype: character.ctype, gold: character.gold, upg: R("state.upg") };
+			const up = { stat: 1, resistance: 4, armor: 4 }, gr = [0, 7, 10, 12];
+			for (const [n, t] of [["mmh137", "helmet"], ["mma137", "chest"], ["mmp137", "pants"], ["mms137", "shoes"], ["mmg137", "gloves"]]) I[n] = { type: t, set: "mm137", armor: 22, resistance: 11, upgrade: up, grades: gr, g: 68000 };
+			I.gl137 = { type: "gloves", armor: 16, resistance: 8, upgrade: { stat: 1, resistance: 2.5, armor: 2.5 }, grades: gr, g: 34000 };
+			I.scroll0 = I.scroll0 || { g: 1000 }; I.scroll1 = I.scroll1 || { g: 40000 }; I.monstertoken = I.monstertoken || { type: "token", s: true };
+			ctx.G.sets.mm137 = { items: ["mmh137", "mma137", "mmg137", "mmp137", "mms137"], 1: {}, 2: { int: 2 }, 3: { int: 3 }, 4: { rpiercing: 40 }, 5: { crit: 2 } };
+			ctx.G.tokens = { monstertoken: { mmg137: 8 } };
+			character.ctype = "mage"; character.gold = 5_000_000;
+			character.slots = { helmet: { name: "mmh137", level: 3 }, chest: { name: "mma137", level: 3 }, pants: { name: "mmp137", level: 1 }, shoes: { name: "mms137", level: 0 }, gloves: { name: "gl137", level: 5 } };
 			character.items = Array(42).fill(null); character.items[0] = { name: "monstertoken", q: 9 };
-			R("state.upg = null; state.bank_gear = []; my_gear_cache = null");
-			assert(R("token_pick()") === null, "9 tokens: the 15-token shoes wait");
-			character.items[0].q = 15;
-			assert(/"name":"tk137"/.test(R("JSON.stringify(token_pick())")), `15 tokens (the pool): bought — they win at +0 (${R("JSON.stringify(token_pick())")})`);
-			// the pool: a fighter that isn't the holder sends its spare tokens to the holder beside it
-			{ const sent = [], si0 = ctx.send_item, mem = R("JSON.stringify(CFG.party.members)");
-				R("CFG.party.members = ['Torlis', 'Sanala', 'Aspernari']");
-				Object.assign(character, { name: "Sanala", map: "main", x: 0, y: 0 });
-				hb("Torlis", { ...tor, level: 60, map: "main", x: 50, y: 0 });
-				ctx.send_item = (to, k, q) => (sent.push([to, character.items[k].name, q]), Promise.resolve());
-				R("tok_sent_at = 0"); await R("send_tokens()");
-				ctx.send_item = si0; R(`CFG.party.members = ${mem}; state.partners = {}`);
-				assert(JSON.stringify(sent) === '[["Torlis","monstertoken",15]]', `tokens pooled with the holder (${JSON.stringify(sent)})`); }
+			R("state.upg = null; state.bank_gear = []; state.upg_caps = {}");
+			assert(R("gear_gain({ name: 'mmg137', level: 0 }, 'mage', my_gear())") === null, "setup: the set's fifth piece at +0 doesn't beat the worn +5 gloves");
+			const tp = R("JSON.stringify(token_pick())");
+			assert(/"name":"mmg137"/.test(tp) && R("token_pick().to") >= 1, `...but it's bought with tokens to be upgraded to the level where it wins (${tp})`);
+			R("state.upg = { name: 'mmg137', to: token_pick().to, for: character.name, own: true }; state.upg_pick_at = Date.now()");
+			character.items[1] = { name: "mmg137", level: 0 };
+			assert(R("upgrade_due()") === true && R("state.upg.own") === true, "our own project on it is upgrade work for the next town trip, merchant or not");
+			assert(R("token_pick()") === null, "...and no second copy is bought meanwhile");
+			// v24.69: the same piece lying in the bank at +0: fetched, then our own project
+			character.items[1] = null; character.items[0] = null;
+			R("state.upg = null; state.upg_pick_at = Date.now(); state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.fetch_try = {}");
+			assert(R("JSON.stringify(set_piece_fetch().map((f) => f.name + '+' + f.level))") === '["mmg137+0"]', `a set piece in the bank that wins once upgraded is fetched (${R("JSON.stringify(set_piece_fetch())")})`);
+			assert(R("bag_plan().fetch.some((f) => f.key === 'setp:mmg137')"), "...it's on the bank visit's fetch list");
+			assert(/ours next: mmg137\+0 \(bank\) → \+\d/.test(R("upgrade_why()")), `v24.70: the report says which piece of ours is next (${R("upgrade_why()")})`);
+			{ R("globalThis.__mdi61 = merchant_recent; merchant_recent = () => false; globalThis.__gp61 = CFG.upgrade_gold_per_pt; CFG.upgrade_gold_per_pt = 1");
+				const w61 = R("upgrade_why()"); R("CFG.upgrade_gold_per_pt = __gp61; merchant_recent = __mdi61");
+				assert(/not worth it \(× /.test(w61) && /judged for/.test(w61), `v25.61: a piece that wins but not for its cost is listed with why, and who it was judged for (${w61})`); }
 			assert(/"gloves":"gl137\+5"/.test(R("report_facts().find((f) => f.key === 'worn_json').text")), "v24.70: the report dumps what's worn as JSON");
-			{ R("globalThis.__mdi61 = merchant_recent; merchant_recent = () => false");
-				const w66 = R("upgrade_why()"); R("merchant_recent = __mdi61");
-				assert(/steps: .*gl137\+5→\+6/.test(w66), `v25.66: the report lists each worn piece's next step and what it waits on (${w66})`); }
-			delete I.tk137; delete I.gl137; ctx.G.tokens = keep.tokens;
-			Object.assign(character, { items: keep.items, ctype: keep.ctype, gold: keep.gold, slots: keep.slots, name: keep.name });
-			R("state.upg = null; state.upg_pick_at = 0; my_gear_cache = null");
+			character.items[1] = { name: "mmg137", level: 0 };
+			assert(R("set_piece_fetch().length") === 0, "...not fetched again once a copy is in the bags");
+			assert(R("upgrade_due()") === true && R("state.upg && state.upg.own && state.upg.name") === "mmg137" && R("state.upg.to") >= 1, `...and in the bags it becomes our own upgrade project (${R("JSON.stringify(state.upg)")})`);
+			// v25.17: with the merchant online, our pieces are its projects: the own project is handed over, none is started
+			{
+				const gm = R("JSON.parse(JSON.stringify(my_gear()))"), me = character.name;
+				R("state.merchant = { name: CFG.merchant.name, t: Date.now(), map: 'main', x: 0, y: 0, esize: 30, gold: 9e6 }; spp_cache.clear()");
+				assert(R("upgrade_due()") === false && R("state.upg") === null, "merchant online: our own project is handed to it");
+				assert(R("set_piece_plan('mmg137', 0)") === null && R("set_piece_fetch().length") === 0, "...and none is started or fetched");
+				assert(R("bag_class(character.items[1])") !== "keep" && !R("needed_slots().has(1)"), `...the copy isn't kept for one (${R("bag_class(character.items[1])")})`);
+				// the merchant: the fighter's piece in the bank becomes its project for her
+				const sv = { name: character.name, ctype: character.ctype, items: character.items, slots: character.slots };
+				Object.assign(character, { name: R("CFG.merchant.name"), ctype: "merchant", items: Array(42).fill(null), slots: {} });
+				R(`state.merchant = null; state.upg = null; state.upg_caps = {}; state.gear_skip = {}; state.bank_gear = [{ name: 'mmg137', level: 0 }];
+					state.partners = { ${JSON.stringify(me)}: { name: ${JSON.stringify(me)}, ctype: 'mage', level: 54, map: 'main', x: 0, y: 0, t: Date.now(), gold: 0, gear: ${JSON.stringify(gm)} } }`);
+				const pk = R("JSON.stringify(pick_upgrade())");
+				assert(/"name":"mmg137"/.test(pk) && /"from_copy":0/.test(pk) && new RegExp(`"for":"${me}"`).test(pk), `the merchant picks the bank copy as a project for ${me} (${pk})`);
+				R("state.upg = pick_upgrade(); state.fetch_try = {}");
+				assert(R("bag_plan().fetch.some((f) => f.key === 'upgin:mmg137')"), "...and fetches that copy from the bank for it");
+				// the run fetches the bank copy before its first step (the bank step comes later in a town run); an unsold
+				// piece gone from the bank ends the project instead of pausing it a day
+				{
+					const tb = ctx.task_bank, ru = ctx.run_upgrade, calls = [];
+					ctx.task_bank = async (f) => { calls.push("bank:" + f.map((x) => x.key).join()); character.items[5] = { name: "mmg137", level: 0 }; return 1; };
+					ctx.run_upgrade = async (a) => { calls.push("upgrade:" + a.name + "@" + R("best_level_held('mmg137')")); character.items[5].level++; return 1; };
+					R("state.gear_skip = {}; sold_c.set('mmg137', false)");
+					await R("task_upgrade()");
+					assert(calls[0] === "bank:upgin:mmg137" && calls[1] === "upgrade:mmg137@0", `copy fetched from the bank first, then upgraded (${calls})`);
+					character.items[5] = null; calls.length = 0;
+					ctx.task_bank = async (f) => { calls.push("bank"); return 0; };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 0 }; state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(R("state.upg") === null && !R("skipped('upg:mmg137')") && calls.length === 1 && R("state.bank_gear.length") === 0, "a copy gone from the bank (unsold piece): project ended, not paused 24h");
+					ctx.task_bank = async () => { throw { reason: "weird" }; };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 0 }; state.bank_gear = [{ name: 'mmg137', level: 0 }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(R("!!state.upg && skipped('upg:mmg137') && state.bank_gear.length === 1"), "a failed bank visit pauses the project, keeps the copy on record");
+					// v25.37: a failed step destroys the copy mid-run → the bank's next copy is fetched and the run goes on
+					calls.length = 0;
+					ctx.task_bank = async (f) => { calls.push("bank:" + f.map((x) => x.key).join()); character.items[5] = { name: "mmg137", level: 3 }; R("state.bank_gear = []"); return 1; };
+					let rolls = 0;
+					ctx.run_upgrade = async (a) => { rolls++; calls.push("upgrade@" + R("best_level_held('mmg137')")); if (rolls === 1) { character.items[5] = null; return { success: false }; } character.items[5].level++; return 1; };
+					character.items[5] = { name: "mmg137", level: 4 };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, from_copy: 4, spent: 0 }; state.bank_gear = [{ name: 'mmg137', level: 3 }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(calls[0] === "upgrade@4" && calls[1] === "bank:upgin:mmg137" && calls[2] === "upgrade@3", `the +4 lost: the bank's +3 fetched and upgraded in the same run (${calls})`);
+					// a +0 left in the bags while the bank has a +3: the +3 is fetched, not the +0 rolled
+					calls.length = 0; rolls = 1;
+					character.items[5] = { name: "mmg137", level: 0 };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, spent: 0 }; state.bank_gear = [{ name: 'mmg137', level: 3 }]; state.gear_skip = {}");
+					ctx.task_bank = async (f) => { calls.push("bank"); character.items[6] = { name: "mmg137", level: 3 }; R("state.bank_gear = []"); return 1; };
+					ctx.run_upgrade = async () => { const k = character.items.findIndex((i) => i?.name === "mmg137" && i.level === R("best_level_held('mmg137')")); calls.push("upgrade@" + character.items[k].level); character.items[k].level++; return 1; };
+					await R("task_upgrade()");
+					assert(calls[0] === "bank" && calls[1] === "upgrade@3", `a +0 in the bags, a +3 in the bank: the +3 fetched first (${calls})`);
+					character.items[6] = null;
+					// a bank copy that doesn't arrive: dropped from the record, not fetched again after every failed step
+					calls.length = 0; character.items[5] = null;
+					ctx.task_bank = async () => { calls.push("bank"); return 0; };
+					ctx.run_upgrade = async () => { calls.push("upgrade"); throw { reason: "input_missing" }; };
+					R("sold_c.set('mmg137', true); state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, spent: 0 }; state.bank_gear = [{ name: 'mmg137', level: 3, stat_type: 'int' }]; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(calls.filter((c) => c === "bank").length === 1 && R("state.bank_gear.length") === 0, `an unfetchable bank copy: one bank trip, then off the record (${calls})`);
+					R("sold_c.set('mmg137', false)");
+					// no copy anywhere: ended, paused 10 min (not a day)
+					character.items[5] = null;
+					ctx.run_upgrade = async () => { throw { reason: "input_missing" }; };
+					R("state.upg = { name: 'mmg137', to: 5, for: 'Sanala', slot: 'gloves', gain: 11, cost: 1, spent: 0 }; state.bank_gear = []; state.gear_skip = {}");
+					await R("task_upgrade()");
+					assert(R("state.upg === null && skipped('upg:mmg137') && state.gear_skip['upg:mmg137'] - Date.now() <= 600000"), "no copy left: project ended, paused 10 min, not 24 h");
+					character.items[5] = null;
+					ctx.task_bank = tb; ctx.run_upgrade = ru; R("sold_c.delete('mmg137')");
+				}
+				Object.assign(character, sv);
+				R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; spp_cache.clear()");
+			}
+			R("state.bank_gear = []");
+			for (const n of ["mmh137", "mma137", "mmp137", "mms137", "mmg137", "gl137"]) delete I[n];
+			delete ctx.G.sets.mm137; ctx.G.tokens = keep.tokens; character.items = keep.items; character.ctype = keep.ctype; character.gold = keep.gold;
+			R("state.upg = null; state.upg_pick_at = 0");
 		}
 		// v24.72: with sell_junk off nothing is sold as junk, bank full or not
 		{
 			const it = { name: "helm1", level: 0 }, items0 = character.items;
 			character.items = Array(42).fill(null); character.items[0] = it; character.slots = { helmet: { name: "helm3", level: 5 } };
-			R("state.bank_full_at = Date.now(); state.upg = null");
+			R("state.bank_full_at = Date.now(); state.upg = null; spp_cache.clear()");
 			const on = R("is_junk(character.items[0])");
 			R("CFG.sell_junk = false");
 			assert(R("is_junk(character.items[0])") === false && R("bag_class(character.items[0])") !== "sell", `sell_junk off: a plain +0 piece isn't sold even with the bank full (it was junk before: ${on})`);
@@ -4505,7 +4477,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		{
 			const items0 = character.items, I = ctx.G.items; I.stf137 = { type: "weapon", wtype: "staff", attack: 25, upgrade: { attack: 5 }, g: 12400 };
 			character.items = Array(42).fill(null); character.items[0] = { name: "stf137", level: 0 }; character.items[1] = { name: "stf137", level: 5 }; character.items[2] = { name: "stf137", level: 0, p: "shiny" };
-			R("globalThis.__sp137 = CFG.sell_plain; CFG.sell_plain = ['stf137']; CFG.sell_junk = false; state.fetched.stf137 = Date.now(); state.upg = null; cmp_cache = null");
+			R("globalThis.__sp137 = CFG.sell_plain; CFG.sell_plain = ['stf137']; CFG.sell_junk = false; state.fetched.stf137 = Date.now(); state.upg = null; spp_cache.clear(); cmp_cache = null");
 			assert(R("bag_class(character.items[0])") === "sell" && R("bag_class(character.items[1])") !== "sell" && R("bag_class(character.items[2])") !== "sell", `sell_plain: the +0 copy is sold, the +5 and the titled one aren't (${R("[0,1,2].map((k) => bag_class(character.items[k])).join()")})`);
 			R("CFG.sell_plain = __sp137; CFG.sell_junk = true; delete state.fetched.stf137");
 			delete I.stf137; character.items = items0;
@@ -4522,41 +4494,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			Object.assign(character, { ctype: "paladin", gold: 5_000_000 });
 			character.slots = { gloves: { name: "sg0_137", level: 3 }, pants: { name: "sg1_137", level: 0 }, chest: { name: "sg2_137", level: 0 }, helmet: { name: "sgx_137", level: 0 }, shoes: { name: "sg0_137", level: 0, stat_type: "str" } };
 			R("state.gear_skip = Object.fromEntries(Object.entries(state.gear_skip).filter(([k]) => !k.startsWith('stat:')))");
-			R("globalThis.__ss137 = { ...CFG.stat_scroll }; CFG.stat_scroll.max_cost = Infinity; CFG.stat_scroll.max_gold_per_pt = 100000; globalThis.__ua137 = upgrade_ahead; upgrade_ahead = () => null");
+			R("globalThis.__ss137 = { ...CFG.stat_scroll }; CFG.stat_scroll.min_level = 0; CFG.stat_scroll.max_cost = Infinity");
 			const L = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.stat, r.q, r.cost, r.ok]))"));
 			assert(JSON.stringify(L) === '[["gloves","str",1,8000,true],["pants","str",10,80000,true],["chest","str",100,800000,false]]',
 				`stat scrolls: the class's main stat; 1/10/100 scrolls by grade; the rare piece is over the price cap; scrolled and stat-less pieces aren't listed (${JSON.stringify(L)})`);
 			assert(R("town_due().stat") === true && /chest.*not done: 800k/.test(R("report_facts().find((f) => f.key === 'stat').text").replace(/sg2_137/, "chest")), "...due on a town trip, and the report says what is left and why");
-			// v25.62 (owner): no +7 rule — a piece is scrolled once no upgrade of it is ahead; at 300k per point (the rare one too)
-			R("Object.assign(CFG.stat_scroll, __ss137); upgrade_ahead = (it) => (it.name === 'sg1_137' ? '+3 would be worth it (+5 pts)' : null)");
-			const L62 = JSON.parse(R("JSON.stringify(stat_scroll_list().map((r) => [r.slot, r.ok, r.why]))"));
-			assert(JSON.stringify(L62) === '[["gloves",true,null],["pants",false,"still being upgraded: +3 would be worth it (+5 pts)"],["chest",true,null]]',
-				`v25.62: done pieces scrolled (the 800k rare one too: 222k/pt), one still being upgraded waits (${JSON.stringify(L62)})`);
-			R("upgrade_ahead = __ua137");
-			// upgrade_ahead itself: the merchant's project on it; else a worthwhile level within reach; else nothing ahead
-			{ const g62 = R("JSON.stringify(my_gear())"), M0 = R("JSON.stringify(state.merchant || null)");
-				R(`state.merchant = { name: CFG.merchant.name, t: Date.now(), upg: { name: 'sg0_137', for: character.name, to: 9 } }`);
-				const a1 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${g62}, character.name)`);
-				R("state.merchant = null");
-				const a2 = R(`upgrade_ahead({ name: 'sgx_137', level: 12 }, 'paladin', ${g62}, character.name)`);
-				R(`state.merchant = ${M0}`);
-				assert(/merchant's project/.test(a1 || "") && a2 === null, `upgrade_ahead: the merchant's project (${a1}); a piece at its top: nothing ahead (${a2})`);
-				// v25.66: a +1 step passing the rule is ahead — worn at +0 (99%): with the merchant (it upgrades the worn piece)
-				// yes; with no merchant and no spare, no; with a spare at the worn level, yes. Worn at +3 (+4 at 70%), no spare:
-				// under the last-copy floor (80%) → nothing ahead; a spare at +3 (20% floor) → ahead
-				const w0 = `{ ...${g62}, w: { ...${g62}.w, gloves: 0 } }`;
-				const scs = [ctx.G.items.scroll0, ctx.G.items.scroll1]; ctx.G.items.scroll0 = { g: 1000 }; ctx.G.items.scroll1 = { g: 40000 };
-				R(`state.merchant = { name: CFG.merchant.name, t: Date.now() }; state.bank_gear = []`);
-				const a3 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
-				const a4 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
-				R("state.merchant = null");
-				const a5 = R(`upgrade_ahead({ name: 'sg0_137', level: 0 }, 'paladin', ${w0}, character.name, 'gloves')`);
-				R("state.bank_gear = [{ name: 'sg0_137', level: 3 }]");
-				const a6 = R(`upgrade_ahead({ name: 'sg0_137', level: 3 }, 'paladin', ${w0}, character.name, 'gloves')`);
-				R(`state.bank_gear = []; state.merchant = ${M0}`);
-				if (scs[0]) ctx.G.items.scroll0 = scs[0]; else delete ctx.G.items.scroll0; if (scs[1]) ctx.G.items.scroll1 = scs[1]; else delete ctx.G.items.scroll1;
-				assert(/\+1 at/.test(a3 || "") && a4 === null && a5 === null && /\+4 at 70%/.test(a6 || ""),
-					`+0 with the merchant: ahead (${a3}); +3 last copy at 70%: not (${a4}); no merchant, no spare: not (${a5}); a spare at +3: ahead (${a6})`); }
+			// v24.78: only at +7 or higher, and never more than max_cost for one piece
+			R("Object.assign(CFG.stat_scroll, __ss137)");
+			assert(R("stat_scroll_list().every((r) => !r.ok && /only at \\+7/.test(r.why))") && R("town_due().stat") === false, "by default nothing under +7 is scrolled");
+			character.slots.gloves.level = 7; character.slots.chest.level = 7;
+			const L7 = JSON.parse(R("JSON.stringify(stat_scroll_list().filter((r) => r.level >= 7).map((r) => [r.slot, r.q, r.ok]))"));
+			assert(JSON.stringify(L7) === '[["gloves",10,true],["chest",100,false]]', `at +7: the piece that turned high grade takes 10 scrolls and is done; the rare one (800k) is over max_cost (${JSON.stringify(L7)})`);
 			for (const n of ["sg0_137", "sg1_137", "sg2_137", "sgx_137"]) delete I[n];
 			ctx.item_grade = ig137;
 			character.slots = keep.slots; character.ctype = keep.ctype; character.gold = keep.gold;
@@ -4746,35 +4694,6 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("state.ptown = null; CFG.party.town_together = false"); R("ptown_recv({ k: 'ptown', id: 'Aspernari:4', by: 'Aspernari' }, 'Aspernari')");
 		assert(R("!state.ptown.pending"), "town_together off: each goes alone");
 		R("CFG.party.town_together = true");
-		// v25.71: an ended trip's echo is never joined again (390 one-second trips in an hour), nor our own trip we're off
-		R("state.ptown = null; ptown_end_id('Aspernari:2'); ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Aspernari')");
-		const e1 = R("state.ptown === null");
-		R("ptown_recv({ k: 'ptown', id: 'Aspernari:9', by: 'Aspernari' }, 'Torlis')");
-		const e2 = R("!!state.ptown && state.ptown.pending === true");
-		R("state.ptown = null; ptown_recv({ k: 'ptown', id: 'Sanala:10', by: 'Sanala' }, 'Torlis')"); // (we're Sanala: our own trip, not on it)
-		const e3 = R("state.ptown === null");
-		R("state.ptown = null");
-		// v25.72: an ended trip's resend (a member waiting in town for us) gets our "done": no trip, the heartbeat says done
-		R("state.ptown = null; state.ptown_done_at = 0; ptown_recv({ k: 'ptown', id: 'Aspernari:2', by: 'Aspernari' }, 'Aspernari')");
-		const e4 = R("state.ptown === null && Date.now() - state.ptown_done_at < 1000");
-		R("state.ptown_done_at = 0");
-		assert(e4, `v25.72: an ended trip's resend: not rejoined, answered done (${e4})`);
-		assert(e1 && e2 && e3, `v25.71: an ended trip isn't rejoined (${e1}); a new one is (${e2}); our own trip echoed back isn't (${e3})`);
-		// v25.71: the tank with a trip due but 6 trips in 10 min doesn't halt its walk (walk, halt, walk… standing still)
-		{ const h0 = R("halt"), cd0 = R("collect_due"), nm0 = character.name, ct0 = character.ctype; Object.assign(character, { name: "Torlis", ctype: "paladin" });
-			R("globalThis.__pp71 = state.partners; state.partners = {}; globalThis.__h71 = 0; smart_depth = 1; halt = () => { __h71++; }; collect_due = () => [{ to: 'Sanala', name: 'x71', level: 0 }]; state.town_runs = Array(6).fill(Date.now())");
-			const r = R("party_trip_check({ plan: { free: 30, bank: [], sell: [], fetch: [] } }, [])"), halts = R("__h71");
-			R("state.town_runs = Array(1).fill(Date.now()); party_trip_check({ plan: { free: 30, bank: [], sell: [], fetch: [] } }, [])");
-			const halts2 = R("__h71");
-			ctx.halt = h0; ctx.collect_due = cd0; R("smart_depth = 0; state.town_runs = []; state.town_block = null; state.partners = __pp71"); Object.assign(character, { name: nm0, ctype: ct0 });
-			assert(r === false && halts === 0 && halts2 === 1, `v25.71: trip cap reached: no halt, the walk goes on (${r}, ${halts} halts); under the cap: halts to go (${halts2})`); }
-		// v25.74: an exception in the wait still ends the trip
-		{ R("globalThis.__pa74 = state.partners; state.partners = new Proxy({}, { get() { throw new Error('x74'); } }); state.ptown = { id: 'T:74', by: 'Torlis', at: Date.now(), leavers: ['Torlis'], joined: true }; globalThis.__hb74 = heartbeat; heartbeat = () => {}");
-			let threw = false;
-			await vm.runInContext("ptown_wait()", ctx).catch(() => { threw = true; });
-			R("state.partners = __pa74; heartbeat = __hb74");
-			const cleared = R("state.ptown === null && !!state.ptown_ended['T:74']");
-			assert(threw && cleared, `v25.74: the wait threw (${threw}) and the trip still ended (${cleared})`); }
 		// too late: we couldn't get away within town_join_s
 		R("state.ptown = { id: 'x', by: 'Torlis', at: Date.now() - CFG.party.town_join_s * 1000 - 1, leavers: ['Torlis'], pending: true, why: 'w' }");
 		assert(R("ptown_join_tick()") === true && R("state.ptown.joined === true"), "v24.60: no join window — a member that couldn't get away earlier still goes");

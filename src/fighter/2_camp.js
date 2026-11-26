@@ -81,13 +81,12 @@ function keep_away(e) {
 	state.keep_at = now;
 }
 // v24.16: together, a spot is only as safe as the way there for every member (one in another map walks its own route)
-// (v25.75, audit: x/y — the camp itself; without, the map's spawn)
-function party_route_danger(to, x, y) {
-	const own = route_danger(to, x, y);
+function party_route_danger(to) {
+	const own = route_danger(to);
 	if (own || !in_party_cfg()) return own;
 	for (const p of partners()) {
 		if (p.map === character.map || p.errand) continue;
-		const q = partner_pos(p), rd = route_danger(to, x, y, { map: q.map, x: q.x, y: q.y });
+		const q = partner_pos(p), rd = route_danger(to, undefined, undefined, { map: q.map, x: q.x, y: q.y });
 		if (rd) return `${rd} (${p.name}'s way)`;
 	}
 	return null;
@@ -95,20 +94,14 @@ function party_route_danger(to, x, y) {
 // v24.9: a spot's xp/s counting the walk there: over an expected stay of stay_min, travel minutes earn nothing. Spots
 // were picked by rate alone, so a slightly better one maps away beat the one at hand (walk was 72-93% of the time)
 const walk_factor = (area) => { const st = CFG.travel.stay_min * 60, t = travel_s(area.map, area.boundary); return Number.isFinite(t) ? st / (st + t) : 0; };
-// The live goal as the camp review compares it: monster, map and (v25.75, Fable) the box — another area of the same
-// monster on the same map is a new goal too (a rested hunt camp's other area waited for the 30-min review)
-const dir_key = (now = Date.now()) => { const d = state.directive; return d && d.until > now ? `${d.monster}:${d.map}:${valid_boundary(d.boundary) ? d.boundary.join(",") : ""}` : ""; };
 // v24.84: the tank's camp review — on time, or early once the party is stronger than at the last pick
 function camp_review() {
 	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
-	if (!cur || cur.boss || cur.probe || errand_busy() || party_hit()) return false;
+	if (!cur || cur.boss || cur.probe || errand_busy() || walking() || party_hit()) return false;
 	const pw = party_power(), p0 = state.review_pw;
 	// v24.88: a new goal (a hunt taken, a quest's material) or one ended → review after a minute, not up to 30
-	const dir = dir_key(now);
+	const dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : "";
 	const goal_changed = dir !== (state.review_dir || "") && since >= 60_000;
-	// v25.75 (audit): a walk to the camp no longer blocks a goal change — the party walked all the way to the old hunt's
-	// camp, killed a few, then turned around. Other reviews still wait for the walk's end.
-	if (walking()) { if (!goal_changed) return false; halt("camp_review"); }
 	const stronger = !!(pw && p0 && (pw.lv - p0.lv >= 1 || (p0.gs > 0 && pw.gs / p0.gs - 1 >= CFG.camp_review_gear)));
 	if (!(goal_changed || since >= CFG.camp_review_min * 60_000 || (stronger && since >= CFG.camp_review_early_min * 60_000))) return false;
 	const before = pack_key(cur);
@@ -135,19 +128,6 @@ function set_pack(p, label) {
 		state.last_target_at = Date.now();
 	}
 	state.pack = p;
-}
-// v25.69 (owner: "why did we go to squigtoads, kill 2, turn around and leave?"): why pick_pack would refuse a goal at
-// this spot, or null. The goal rotation handed turns to goals refused here, and each such turn sent the party to the
-// best camp for a minute or two, between the goals it could farm.
-function goal_blocked(mt, map, boundary, guide_safe) {
-	// (state.safe: the last pick's verdict; a type it hasn't judged yet: the fight model's)
-	const safe = state.safe[mt] !== undefined ? !!state.safe[mt] : !!fight_profile(mt);
-	if (!safe && !(guide_safe && farmable_type(mt))) return "not safe for us";
-	if (!map || !valid_boundary(boundary)) return null;
-	const area = { map, boundary, mtype: mt };
-	const dz = area_danger(area, mt) || party_route_danger(map, (boundary[0] + boundary[2]) / 2, (boundary[1] + boundary[3]) / 2);
-	if (dz) return dz;
-	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
 }
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
@@ -188,7 +168,7 @@ function probe_pick() {
 			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
 			const raw = kill_value(mt, null) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
 			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
-			if (est > 0 && est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
+			if (est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
 		});
 	}
 	return best;
@@ -203,20 +183,10 @@ function over_text(mt) {
 	const inc = state.danger[mt] || 1, cal = calib_factor(mt, f);
 	return `over the safety limit x${(fight_risk(f) / lim).toFixed(2)} (calibration x${cal.toFixed(2)}${inc !== 1 ? `, incidents x${inc.toFixed(2)}` : ""}, ${f.mates} with us${f.priest ? "" : ", no priest"})`;
 }
-var camp_load_at = Date.now(); // (var: pick_pack can run before this file's top level — v25.70's load wait)
 function pick_pack() {
 	state.safe = {};
 	for (const t in G.monsters) { const f = fight_profile(t); if (f) state.safe[t] = f; }
 	const now = Date.now();
-	// v25.70 (owner: "left cgoo, went to a neighboring zone, pathed right back"): a fresh load has no goal yet — the
-	// members' hunts come with their next heartbeats and refresh_directive — so its first pick was the best camp and the
-	// party walked back a minute later. In a party, the first 30 s after a load pick only a goal.
-	if (camp_load_at && in_party_cfg() && !is_follower() && now - camp_load_at < 30_000 && !(state.directive && state.directive.until > now)) {
-		// (from the first call: the loop holds pick_pack until every member is heard from; the 8 s refresh then ends the
-		// wait — the members' goals are in by then; Fable)
-		if (!state.goals_at_load) { state.goals_at_load = true; camp_load_at = now; setTimeout(() => { try { refresh_directive(); } catch (e) {} camp_load_at = 0; }, 8000); }
-		return;
-	}
 	if (state.probe && now < state.probe.until) { // a probe holds the pack until probe_check ends it
 		state.safe[state.probe.mtype] = state.probe.prof;
 		state.last_pick = now;
@@ -249,7 +219,7 @@ function pick_pack() {
 	});
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
-	state.review_dir = dir_key(now); // v24.88
+	state.review_dir = state.directive && state.directive.until > now ? `${state.directive.monster}:${state.directive.map}` : ""; // v24.88
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
@@ -277,7 +247,7 @@ function pick_pack() {
 	if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map, (area.boundary[0] + area.boundary[2]) / 2, (area.boundary[1] + area.boundary[3]) / 2));
+		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
 		if (!dz && !((state.cooldown[pack_key(area)] || 0) > now)) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
@@ -331,7 +301,7 @@ function probe_check() {
 	// v24.6: a probe that held widens the party verdict for that monster by the risk it held at (24h), for every fighter:
 	// before, nothing changed — calibration isn't recorded under tank cover — so it was re-probed every 2h, never adopted
 	if (result === "ok") { const mult = +Math.min(P.ratio * 1.05, CFG.probe.max_over * 1.05).toFixed(3); state.probe_ok[P.mtype] = { mult, at: now }; share_verdict({ kind: "probe_ok", mtype: P.mtype, mult }); }
-	else { delete state.probe_ok[P.mtype]; proven_death(P.mtype); share_verdict({ kind: "probe_fail", mtype: P.mtype }); } // (v25.69: an aborted probe's kills prove nothing for 24h)
+	else { delete state.probe_ok[P.mtype]; share_verdict({ kind: "probe_fail", mtype: P.mtype }); }
 	if (result === "fail" && !fled && !dead) incident(P.mtype, 0.8); // a flee/death already recorded its own incident
 	game_log(`probe ${P.mtype}: ${result === "ok" ? "held for " + CFG.probe.minutes + " min" : "aborted (" + (dead ? "death" : fled ? "flee" : "low hp") + ")"}`, result === "ok" ? C.ok : C.warn);
 	state.probe = null;
