@@ -1,0 +1,91 @@
+{
+ "built_from": "25.81",
+ "classes": [
+  "mage",
+  "paladin",
+  "priest",
+  "ranger",
+  "rogue",
+  "warrior"
+ ],
+ "g_version": "18285",
+ "g_version_from": "G.version",
+ "generator": "tools/gear_table.js",
+ "items": 384,
+ "odds_note": "odds[L]: the bot's chance for the step that reaches +L (upg_odds/cmp_odds); null past the bot's tables",
+ "rounding": "stats and values 2 decimals, odds 4 decimals, drop/box probabilities 4 significant digits",
+ "sets": "sets.json",
+ "sets_bytes": 21225,
+ "sets_count": 22,
+ "slots": {
+  "amulet": {
+   "bytes": 33259,
+   "file": "amulet.json",
+   "items": 21
+  },
+  "belt": {
+   "bytes": 21878,
+   "file": "belt.json",
+   "items": 15
+  },
+  "cape": {
+   "bytes": 31944,
+   "file": "cape.json",
+   "items": 16
+  },
+  "chest": {
+   "bytes": 69044,
+   "file": "chest.json",
+   "items": 36
+  },
+  "earring": {
+   "bytes": 23801,
+   "file": "earring.json",
+   "items": 17
+  },
+  "gloves": {
+   "bytes": 53712,
+   "file": "gloves.json",
+   "items": 26
+  },
+  "helmet": {
+   "bytes": 68360,
+   "file": "helmet.json",
+   "items": 34
+  },
+  "mainhand": {
+   "bytes": 171154,
+   "file": "mainhand.json",
+   "items": 98
+  },
+  "offhand": {
+   "bytes": 47948,
+   "file": "offhand.json",
+   "items": 28
+  },
+  "orb": {
+   "bytes": 37669,
+   "file": "orb.json",
+   "items": 28
+  },
+  "pants": {
+   "bytes": 32305,
+   "file": "pants.json",
+   "items": 16
+  },
+  "ring": {
+   "bytes": 41540,
+   "file": "ring.json",
+   "items": 26
+  },
+  "shoes": {
+   "bytes": 47694,
+   "file": "shoes.json",
+   "items": 23
+  }
+ },
+ "value_ctx": {
+  "attack": 100,
+  "level": 60
+ }
+}
