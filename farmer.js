@@ -3274,8 +3274,6 @@ async function task_sell() {
 			n++;
 			// v25.33: each sale on the record (the owner allows gear sales by rule now — gear_purge)
 			log_ev("npc_sold", { item: `${it.name}+${it.level || 0}${it.p ? ":" + it.p : ""}`, q: it.q || 1 });
-			// v25.77: a purge mark is spent by its sale — a copy bought later (the owner's, from Ponty) isn't sold on the old mark
-			if (state.purge) delete state.purge[purge_key(it)];
 			if (GEAR.has(G.items[it.name]?.type)) game_log(`sold ${it.name}+${it.level || 0}${(it.q || 1) > 1 ? " x" + it.q : ""} to an NPC`, C.dim);
 		}).catch((e) => game_log("sell: " + why(e)));
 		await sleep_ms(PACE_MS);
@@ -8727,7 +8725,7 @@ function purge_ok(it) {
 	const d = it && G.items[it.name];
 	if (!recipe_inputs) { recipe_inputs = new Set(); for (const id in G.craft || {}) for (const [, n] of G.craft[id].items || []) recipe_inputs.add(n); }
 	if (!d || it.l || it.b || d.e || !tradeable(it.name) || CFG.keep.includes(it.name) || state.needs.has(it.name) ||
-		recipe_inputs.has(it.name) || gear_wanted_by(it)) return false;
+		recipe_inputs.has(it.name) || gear_wanted_by(it) || (d.set && Array.isArray(d.class) && gear_takers().some((m) => d.class.includes(m.ctype)))) return false; // (v25.77: a party class's set piece)
 	if (d.compound && compound_groups().some((g) => g.name === it.name && g.level === (it.level || 0))) return false;
 	return true;
 }
@@ -8749,9 +8747,11 @@ const gear_useful = (name, top, takers) => { for (let L = 0; L <= top; L++) if (
 // (G.craft rows are [qty, name, level], level 0 when left out; the server matches the level exactly): coat+5 and
 // coat+0 are inputs (ratworkcoat, cave_ambercoat), the 17 coat+3 in the bank aren't.
 let recipe_lv = null;
-// v25.77 (owner: "sells the Vowkeeper gloves as soon as I buy them"): a piece of a set a fighter's class can wear is
-// never sold — the gear model judges one piece at a time and can't see a set's bonus, so every set piece looked useless
-const party_set_piece = (d, takers) => !!d?.set && !!G.sets?.[d.set] && takers.some((m) => !d.class || d.class.includes(m.ctype));
+// v25.77 (owner: "sells the Vowkeeper gloves as soon as I buy them"): a piece of a class set a fighter's class can wear
+// is never sold — the gear model can't value the first piece of a set nobody wears yet (its bonus needs more pieces).
+// A set any class wears (no class list) counts as useful instead: its usual copies are kept (gear_excess).
+const party_set_piece = (d, takers) => !!d?.set && !!G.sets?.[d.set] && Array.isArray(d.class) && takers.some((m) => d.class.includes(m.ctype));
+const any_class_set_piece = (d) => !!d?.set && !!G.sets?.[d.set] && !d.class;
 function gear_protected(it, takers) {
 	const d = it && G.items[it.name];
 	if (party_set_piece(d, takers)) return true;
@@ -8772,7 +8772,7 @@ function gear_excess(bank, takers) {
 	const out = new Map();
 	for (const name in by) {
 		const L = by[name].sort((a, b) => (b.level || 0) - (a.level || 0) || (b.stat_type ? 1 : 0) - (a.stat_type ? 1 : 0)), t = G.items[name].type;
-		const keep = !gear_useful(name, Math.max(7, L[0].level || 0), takers) ? 0
+		const keep = !gear_useful(name, Math.max(7, L[0].level || 0), takers) && !any_class_set_piece(G.items[name]) ? 0
 			: (t === "ring" || t === "earring" ? P.ring_earring : P.other) + (sold_by_npc(name) ? 0 : P.failure_stock);
 		for (const it of L.slice(keep)) out.set(purge_key(it), (out.get(purge_key(it)) || 0) + 1);
 	}

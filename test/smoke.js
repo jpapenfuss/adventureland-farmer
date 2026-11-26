@@ -1867,8 +1867,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		{ const sets0 = ctx.G.sets; ctx.G.sets = { ...(sets0 || {}), okset: { 2: { armor: 50 }, items: ["oathgl"] }, warset: { items: ["wargl"] } };
 			Object.assign(ctx.G.items, { oathgl: { type: "gloves", g: 100, armor: 1, set: "okset", class: ["paladin"] }, wargl: { type: "gloves", g: 100, armor: 1, set: "warset", class: ["warrior"] } });
 			pack[pack.indexOf(null)] = { name: "oathgl", level: 0 }; pack[pack.indexOf(null)] = { name: "wargl", level: 0 };
-			const e3 = ex(); ctx.G.sets = sets0;
-			assert(!e3["oathgl:0"] && e3["wargl:0"] === 1, `v25.77: a paladin set piece is kept, another class's sold (${JSON.stringify(e3)})`); }
+			const e3 = ex();
+			// the live failure: a copy marked by an earlier purge, at the shop — the paladin piece isn't sold, the warrior's is
+			character.items[0] = { name: "oathgl", level: 0 }; character.items[1] = { name: "wargl", level: 0 };
+			R("state.purge['oathgl:0'] = Date.now(); state.purge['wargl:0'] = Date.now(); gx_cache = null");
+			const s3 = [R("gear_sell_ok(character.items[0])"), R("gear_sell_ok(character.items[1])")];
+			character.items[0] = null; character.items[1] = null; ctx.G.sets = sets0;
+			assert(!e3["oathgl:0"] && e3["wargl:0"] === 1 && s3[0] === false && s3[1] === true, `v25.77: a paladin set piece is kept (also when marked), another class's sold (${JSON.stringify(e3)} ${s3})`); }
 		R("state.upg = { name: 'okhelm', to: 7 }");
 		assert(!ex()["okhelm:2"], "the current project's piece: none sold");
 		R("state.upg = null");
