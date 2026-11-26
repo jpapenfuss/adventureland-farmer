@@ -45,36 +45,19 @@ function meter_socket() {
 		s.on("kill_credit", on_kill_credit);
 		s.__farmer_kc = on_kill_credit;
 	}
-	if (typeof s.on === "function" && s.__farmer_co !== on_chest_opened) {
-		if (s.__farmer_co && typeof s.off === "function") try { s.off("chest_opened", s.__farmer_co); } catch (e) {}
-		s.on("chest_opened", on_chest_opened);
-		s.__farmer_co = on_chest_opened;
-	}
 }
 // Server "kill_credit" { mtype }: sent to every party member for every party kill, wherever they are (and to a solo
 // player for its own). Counts the party's kills for pack measurements (together) and the watchdog (v23.0).
 function on_kill_credit(d) {
 	seen.kc = (seen.kc || 0) + 1;
-	if (d?.mtype && G.monsters[d.mtype]) { const p = (state.proven[d.mtype] = state.proven[d.mtype] || { k: 0, d: [] }); p.k++; } // v25.69
 	const xp = (d?.mtype && G.monsters[d.mtype]?.xp) || 0;
+	const gold = (d?.mtype && G.monster_gold?.[d.mtype]) || 0; // v25.51: base gold, for the gold farm mode's rates
 	if (state.session) {
 		const s = state.session;
-		s.kc = (s.kc || 0) + xp; s.kc_n = (s.kc_n || 0) + 1;
+		s.kc = (s.kc || 0) + xp; s.kg = (s.kg || 0) + gold; s.kc_n = (s.kc_n || 0) + 1;
 		// v25.57: the camp's own type apart (fillers count in the camp's rate, not in realism: the estimate is for its type)
-		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kcm_n = (s.kcm_n || 0) + 1; }
+		if (d?.mtype && d.mtype === s.mtype) { s.kcm = (s.kcm || 0) + xp; s.kgm = (s.kgm || 0) + gold; s.kcm_n = (s.kcm_n || 0) + 1; }
 	}
-}
-// v25.67 (owner: gold earned per unit of time, from real fights at the camp): server "chest_opened" { gold } is sent to
-// each party member with its own share of the chest's gold (goldm and tax applied) — the gold this character really got
-// v25.68: a chest opened within 20 s of a session's close, still at that camp, is that camp's (kills just before it)
-let gold_last = null;
-function on_chest_opened(d) {
-	if (d?.gone || !(d?.gold > 0)) return;
-	// (v25.76: a chest opened before any kill in the session is the last camp's — not this camp's gold; unless the last
-	// session was this camp's and just closed: its last kill's chest — Fable)
-	const S = state.session, cont = !!S && !!gold_last && gold_last.key === S.key && Date.now() - gold_last.at < 20_000;
-	if (S) { if (S.kc_n > 0 || cont) S.rg = (S.rg || 0) + d.gold; }
-	else if (gold_last && Date.now() - gold_last.at < 20_000 && state.pack && pack_key(state.pack) === gold_last.key && state.measured_gold[gold_last.key]) state.measured_gold[gold_last.key].g += d.gold;
 }
 function spent() {
 	const cut = Date.now() - BUDGET.window_ms;

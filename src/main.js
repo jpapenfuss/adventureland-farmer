@@ -31,7 +31,6 @@ function on_death() {
 		// that sent the party away from its best spot, through the caves, and back 30 min later
 		const roamer = !!killer && killer !== p.mtype;
 		incident(killer || p.mtype, 0.6);
-		proven_death(killer || p.mtype); // v25.69: a death to it: no longer proven for 24h
 		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
 		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
 		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p));
@@ -159,11 +158,12 @@ tick();
 //   modifiers, set bonuses; item titles via the game's own stat calc). Every 5s wear the best bag upgrade, drink the
 //   best elixir, else hand a spare to a nearby member it upgrades. The bank is account-wide: upgrades seen there are
 //   fetched for whoever they fit. Must-hold items (CFG.hold) are kept by every character.
-//   Upgrades and compounds are the merchant's while it's online. v25.66: one rule — the best single +1 step on a piece
-//   a fighter wears (a spare copy at that level, or the worn piece handed over; weapons in town), by gain per gold of
-//   the scroll, at the server's odds ≥ upgrade_step.floor_spare (spare behind it) / floor_last. A worn piece's Stat gets
-//   the main stat once no step for it passes. Tokens (pooled) buy class gear a member would wear at +0; recipes whose
-//   output a member would wear are crafted; exchangeables are opened.
+//   Upgrades and compounds are the merchant's while it's online (v25.17: the fighters' own pieces too — they're banked
+//   or handed over and it upgrades them from the copy). A project is the piece (NPC-sold, or a copy we own) whose
+//   upgraded copy beats a member's worn piece most per gold, aimed no higher than the run will go (v25.19: base odds,
+//   the next scroll's boost, the floor — 80%, 60% with a spare copy, 20% for shop pieces); weapons go to +7 with no
+//   budget (upgrade_weapon). Stat scrolls only on +7 pieces or higher. Tokens buy class gear for a member; recipes
+//   whose output a member would wear are crafted; exchangeables are opened.
 //
 // Party (CFG.party): the tank leads; members talk via send_cm heartbeats every beat_ms, invite each other without
 //   splitting a party; fighters near the merchant hand it all gold above merchant.fund_keep (500k). The watchdog

@@ -45,7 +45,6 @@ function gap_kind() { return null; }
 function follower_tick() {}
 function party_heal() { return false; }
 function token_pick() { return null; }
-function send_tokens() { return false; }
 function task_tokens() { return 0; }
 function collect_list() { return []; }
 function collect_due() { return []; }
@@ -53,12 +52,11 @@ function collect_key() { return ""; }
 async function task_collect() { return 0; }
 async function task_worn_handover() { return 0; } // v25.39: fighters only
 function worn_for_me() { return null; }
+function set_piece_plan() { return null; }
+function set_piece_fetch() { return []; }
+function set_piece_start() {}
 function cave_tick() { return 250; }
 function cave_died() {}
 function cave_watch_deaths() {} // v25.41: fighters only
 function facts_cave() {}
 function cave_entry_tick() { return false; }
-// v25.75: the merchant never picks camps nor waits for a party
-function goal_blocked() { return null; }
-function party_break() { return null; }
-function oneshot_types() { return []; }

@@ -89,7 +89,7 @@ function facts_picks(F, ctx) {
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
 			(RL ? ` | last ${ago(RL.at)} ago (${RL.why}): ${RL.text}` : ""));
 	}
-	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: measured looted gold/s only" : CFG.farm_mode === "gold" ? ", GOLD mode on xp/s until a camp's gold is measured" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: base gold/s" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 		(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 }
 
@@ -187,9 +187,6 @@ function facts_shared(F, ctx) {
 	if (!is_follower() && partners().length) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
-		const pv = Object.entries(state.safe || {}).filter(([, f]) => f?.proven).map(([t]) => `${t} (${state.proven[t].k} kills)`);
-		if (pv.length) F("proven", "party", `fought on evidence (the model calls them unsafe; killed ${CFG.proven_kills}+ times, no death to them in 24h): ${pv.slice(0, 6).join(", ")}`);
-		if (state.shared?.blocked?.length) F("goal_blocked", "party", `goals left out (the camp pick would refuse them): ${state.shared.blocked.slice(0, 4).join(" | ")}`);
 		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
 }
@@ -200,7 +197,7 @@ function facts_goals(F, ctx) {
 function facts_hunt(F, ctx) {
 	const { p, d, now } = ctx;
 	const h = character.s.monsterhunt;
-	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : ` — not chased: ${(() => { const a = resolve_area(h.id); return a ? goal_blocked(h.id, a.map, a.boundary) || "expired" : "no spawn found"; })()}`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
+	F("hunt", "party", `hunt: ${h ? (h.c > 0 ? `${h.c}x ${h.id} left${hunt_feasible(h) ? "" : CFG.hunt_min_xp > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best_known_xps() ? ` — ${h.id} pays ${Math.round(mt_xps(h.id))} xp/s vs best ${Math.round(best_known_xps())}: not chased` : ` — can't finish in ${Math.round((h.ms || 0) / 60_000)}m left: ignored until it lapses`}` : `${h.id} done, turn in`) : "none"}${skipped("hunt:auto") ? ` (Daisy paused ${mins(state.gear_skip["hunt:auto"])})` : ""}`);
 }
 function facts_owe(F, ctx) {
 	const { p, d, now } = ctx;

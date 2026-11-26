@@ -60,12 +60,6 @@ if (typeof character.on === "function") {
 		if (a?.mtype && G.monsters[a.mtype]) cal.cur[a.mtype] = (cal.cur[a.mtype] || 0) + d.damage;
 		if (pmring.hits.length > 200) pmring.hits.shift();
 	});
-	// v25.80: transfers between our characters, from the game's own events (same socket as the gold itself) — the code
-	// message that used to carry them could arrive a tick later: +g booked as earned, then -g as "other" spending
-	// (the generic game_response handler fires these first with { response, name, gold } — no from/to/amount: skipped)
-	const ours = (n) => (CFG.party.members || []).includes(n) || n === CFG.merchant?.name;
-	character.on("gold_received", (d) => { if (d && ours(d.from) && d.amount > 0) stats.adj -= d.amount; });
-	character.on("gold_sent", (d) => { if (d && ours(d.to) && d.amount > 0) stats.adj += d.amount; });
 	character.on("target_hit", (d) => {
 		seen.target_hit++;
 		if (!d?.kill) return;
@@ -146,10 +140,7 @@ function watchdog() {
 	if (!W?.enabled) return;
 	wd.pos.push({ t: now, map: character.map, x: character.x, y: character.y, hits: seen.target_hit, kills: seen.kill, kc: seen.kc || 0 });
 	wd.pos = wd.pos.filter((p) => now - p.t <= 15 * 60_000);
-	// (v25.75, audit: nor while waiting on purpose — a member offline (party_break) or a straggler (group_hold): it rested the
-	// camp and the party went elsewhere when the member came back)
-	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant() ||
-		(typeof party_break === "function" && in_party_cfg() && party_break()) || (state.group_wait && !(state.group_wait.go_until > now))) {
+	if (character.rip || state.recovering || state.parked || character.map === "bank" || errand_busy() || state.pack?.boss || is_merchant()) {
 		wd.lost_since = null;
 		wd.pos = wd.pos.slice(-1); // v24.4: the clocks restart after; a town trip + walk back used to count as 10 min without a kill
 		return;
@@ -167,15 +158,6 @@ function watchdog() {
 		const away = !!pos && !L.rip && !L.errand && (pos.map !== character.map || Math.hypot(pos.x - character.x, pos.y - character.y) > CFG.party.follow_far) &&
 			!(state.follow_block && now - state.follow_block.at < 60_000); // v24.16: held back on purpose (a deadly way), not lost
 		wd.lost_since = away ? wd.lost_since || now : null;
-		// v25.75 (audit): the documented lost action — away from the leader lost_min: stop, clear the travel block, and the
-		// follower tick walks to it again (the tank waited for it without end)
-		if (away && now - wd.lost_since > (W.lost_min || 5) * 60_000 && still(since(1))) { // (and not moving: a long catch-up walk isn't lost — Fable)
-			wd.lost_since = now;
-			wd_act("lost", `away from ${L.name} for ${W.lost_min || 5} min; walking to it again`);
-			halt("watchdog");
-			state.travel_block_until = 0;
-			return;
-		}
 		const f = since(W.frozen_min);
 		if (still(f) && no_hits(f) && !away) { // a follower glued in place while the leader is near: walk back to it
 			reset();
@@ -239,11 +221,6 @@ function last_hour() {
 		xph: Math.round((b.xp || 0) + (pb.xp || 0) * (1 - frac)), town: ev.filter((e) => e.type === "town").length };
 }
 // history(hours): in a party, every character's history in one window (like report()); history(hours, "solo") only ours
-// "squigtoad@main 4.2/s (15.1k in 1.0h, 24x)", best first
-function gold_camps_text(n = 8) {
-	return Object.entries(state.measured_gold).filter(([, m]) => m.s >= CFG.measure_min_s).sort((a, b) => b[1].g / b[1].s - a[1].g / a[1].s).slice(0, n)
-		.map(([k, m]) => `${k.split("#")[1] || "?"}@${k.split(":")[0]} ${(m.g / m.s).toFixed(1)}/s (${fmt_k(Math.round(m.g))} in ${m.s < 5400 ? Math.round(m.s / 60) + " min" : (m.s / 3600).toFixed(1) + "h"}, ${m.n}x)`).join(", ");
-}
 function history(hours = 6, solo) {
 	const targets = party_names_all().filter((n) => n !== character.name);
 	if (solo === "solo" || hours === "solo" || !targets.length || typeof send_cm !== "function")
@@ -271,8 +248,6 @@ function history_lines(hours = 6) {
 	for (const e of ev) if (e.type === "rate") (rates[e.pack] = rates[e.pack] || []).push(e.xp_s);
 	const top = Object.entries(rates).map(([k, v]) => [k, v.reduce((a, b) => a + b, 0) / v.length, v.length]).sort((a, b) => b[1] - a[1]).slice(0, 6);
 	L.push(`packs (measured xp/s): ${top.map(([k, r, n]) => `${k} ${r.toFixed(0)} (${n}x)`).join(", ") || "none measured"}`);
-	// v25.68 (owner): each camp's gold really looted by us there over the time fought there, all saved sessions
-	L.push(`camp gold (looted, our share; all time): ${gold_camps_text() || "none measured"}`);
 	for (const e of ev.filter((x) => x.type === "death" || x.type === "flee").slice(-10))
 		L.push(`${e.type.toUpperCase()}${e.unexplained ? " (unexplained: no damage seen" + (e.watched_s !== undefined ? `, script up ${e.watched_s}s` : "") + ")" : ""} ${ago(e.t)} ago: ${e.killer || "?"} @ ${e.map} | hp ${e.hp?.[0] ?? "?"}→${e.hp?.[e.hp.length - 1] ?? "?"}/${e.max_hp} | ` +
 			`10s dmg ${Object.entries(e.dmg10 || {}).map(([m, d]) => `${m} ${Math.round(d)}`).join(", ") || "none seen"} | predicted ${e.predicted ?? "?"} of ${e.pool ?? "?"} hp` +
@@ -291,8 +266,6 @@ function history_lines(hours = 6) {
 	const bosses = ev.filter((e) => e.type === "boss");
 	if (bosses.length) L.push(`bosses: ${bosses.slice(-4).map((e) => `${e.name} ${ago(e.t)} ago`).join(", ")}`);
 	{ const lg = my_ledger(Math.max(1, Math.ceil(hours))); L.push(`gold ${Math.ceil(hours)}h: earned ${fmt_k(lg.earn)}, spent ${fmt_k(lg.spend)} — ${cats_text(lg.cats)}`); }
-	const drops = ev.filter((e) => e.type === "gold_drop");
-	if (drops.length) L.push(`untracked gold drops (>20k): ${drops.slice(-5).map((e) => `${fmt_k(e.g)} ${ago(e.t)} ago (${e.errand || "idle"}${e.serving ? ", serving " + e.serving : ""}${e.last_tag ? `, last tag ${e.last_tag} ${e.tag_age_s}s before` : ""}${e.stand ? ", stand open" : ""})`).join(" | ")}`);
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
 	const probes = ev.filter((e) => e.type === "probe");
@@ -399,7 +372,6 @@ let gold_prev = null;
 // Every second: count xp toward the current pack's measurement while we're there (300px slack) and not walking or on
 // an errand. A measurement closes after 2 × measure_min_s so the picker keeps getting fresh numbers.
 // (v25.16: a named function, so the tests can run it)
-let meas_pk = { key: null, at: 0 }; // the camp the measurement is for, and since when (v25.76)
 function meas_tick() {
 	const d = xp_delta(), p = state.pack;
 	stats.xp += d;
@@ -418,9 +390,6 @@ function meas_tick() {
 			const cat = spend_tag && Date.now() < spend_tag.until ? spend_tag.cat : "other";
 			b.cats = b.cats || {};
 			b.cats[cat] = (b.cats[cat] || 0) - dg;
-			// v25.80: an untagged drop over 20k is logged with what we were doing (the merchant's "other" was 3.5M in 6h)
-			if (cat === "other" && -dg > 20_000) log_ev("gold_drop", { g: -dg, errand: state.errand || null, serving: state.serving || null, last_tag: spend_tag?.cat || null,
-				tag_age_s: spend_tag ? Math.round((Date.now() - (spend_tag.until - 5000)) / 1000) : null, map: character.map, stand: !!character.stand });
 		}
 		b.ls = (b.ls || 0) + 1;
 	}
@@ -435,11 +404,8 @@ function meas_tick() {
 	const all_here = !in_party_cfg() || (others().every((n) => fresh(state.partners[n])) && partners_any().every((q) => !q.rip && !q.errand && !q.recovering && q.map === p.map &&
 		Math.hypot(partner_pos(q).x - character.x, partner_pos(q).y - character.y) <= 700));
 	const here = character.map === p.map && in_boundary(p.boundary, 300) && all_here;
-	// v25.76 (Fable): not in the first loot_wait_ms at a camp — a far chest from the last camp is opened up to then
-	const pk_ = pack_key(p);
-	if (pk_ !== meas_pk.key) meas_pk = { key: pk_, at: Date.now() };
-	if (!state.session && here && !walking() && !errand_busy() && !state.recovering && Date.now() - meas_pk.at > CFG.loot_wait_ms)
-		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kc_n: 0, kcm: 0, kcm_n: 0, rg: 0, start: Date.now() }; // (v25.51: kind: est's unit)
+	if (!state.session && here && !walking() && !errand_busy() && !state.recovering)
+		state.session = { key: pack_key(p), mtype: p.mtype, est: p.est, kind: farm_kind(), xp: 0, kx: 0, kc: 0, kg: 0, kc_n: 0, kcm: 0, kgm: 0, kcm_n: 0, start: Date.now() }; // (v25.51: kind: est's unit)
 	// v24.6: a session ends the moment we leave its spot (town run, event, errand, recovery, a follower's leader moving
 	// on): it used to run on, booking the time away (no kills: the rate fell) and kill credits from elsewhere (an event
 	// goo's full xp: one put realism at 42), until the 180s close

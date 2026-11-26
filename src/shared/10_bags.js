@@ -25,6 +25,7 @@ function bag_class(item, needed = needed_slots(), held_cmp) {
 		item.name === CFG.hp_pot || item.name === CFG.mp_pot || needed.has(character.items.indexOf(item)) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 3600_000 && !(def.compound && (merchant_does_it() || is_merchant()))) ||
 		(Date.now() - (state.fetched[item.name] || 0) < 7200_000 && GEAR.has(def.type) && !equip_paused(item) && self_taker_ok() && gear_gain(item, character.ctype, my_gear())) ||
+		(GEAR.has(def.type) && !is_merchant() && !state.upg && set_piece_plan(item.name, item.level || 0)) ||
 		(GEAR.has(def.type) && wanted_by_member(item))) return "keep"; // fetched within the hour (except compound copies the merchant handles), or an upgrade for one of us (v19.7)
 	// bank purge (v24.7: after the keep rules, by the exact copy — a purge of a plain helmet+3 sold the project's helmet+3,
 	// and a titled copy fetched for a fighter)
@@ -85,7 +86,7 @@ function bag_plan() {
 		}
 	}
 	const bu_ = bank_upgrades(); // a piece that wins as it is comes first: nothing is fetched to be upgraded meanwhile
-	for (const u of [...bu_, ...compound_fetches(compound_groups())])
+	for (const u of [...bu_, ...(bu_.length ? [] : set_piece_fetch()), ...compound_fetches(compound_groups())])
 		if (Date.now() - (state.fetch_try[u.key] || 0) > (u.key.startsWith("cmp:") ? 600_000 : 2 * 3600_000)) fetch.push(u);
 	merchant_fetch_sale(fetch); // v25.0: merchant/
 	return { sell, bank, fetch, free: character.esize };
@@ -154,40 +155,17 @@ function remember_bank() {
 	state.bank_at = Date.now();
 	state.bank_by = character.name;
 	const h = JSON.stringify([seen, gear.map((i) => i.name + i.level)]);
-	if (h === bank_hash) return;
-	const wait = 60_000 - (Date.now() - bank_sent_at);
-	if (wait <= 0) return void send_bank_view(h);
-	// v25.64 (Fable): a change within a minute of the last send went unsent if we left the bank before reading it again —
-	// it goes when the minute is up (the newest view then)
-	if (!bank_send_timer) bank_send_timer = setTimeout(() => { bank_send_timer = null; send_bank_view(JSON.stringify([state.bank_seen, (state.bank_gear || []).map((i) => i.name + i.level)])); }, wait + 50);
-}
-let bank_send_timer = null;
-// Our bank view to the others (all of them, or `to`)
-function send_bank_view(h, to = party_names_all().filter((n) => n !== character.name)) {
-	if (typeof send_cm !== "function" || !state.bank_at || !to.length) return;
-	if (h) { bank_hash = h; bank_sent_at = Date.now(); if (bank_send_timer) { clearTimeout(bank_send_timer); bank_send_timer = null; } } // (no second send — Fable)
-	// by: who read it (an answer can relay another character's view — Fable)
-	Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, by: state.bank_by || character.name, seen: state.bank_seen, gear: state.bank_gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
-}
-// v25.64 (Fable): a character offline when a view was sent never got it — on load it asks the others for theirs (each
-// answers with its own; adopt_bank keeps the newest)
-function ask_bank_view() {
-	const to = party_names_all().filter((n) => n !== character.name);
-	if (typeof send_cm === "function" && to.length) Promise.resolve(send_cm(to, { k: "bankq" })).catch(() => {});
-	send_bank_view(null); // and ours to them: a held change, or a newer view, isn't lost to a reload or a late loader (Fable)
-}
-// A bankq answered at most every 30 s per asker (the view can be large)
-const bankq_at = {};
-function answer_bankq(name) {
-	if (Date.now() - (bankq_at[name] || 0) < 30_000) return;
-	bankq_at[name] = Date.now();
-	send_bank_view(null, [name]);
+	if (h !== bank_hash && Date.now() - bank_sent_at > 60_000 && typeof send_cm === "function") {
+		bank_hash = h; bank_sent_at = Date.now();
+		const to = party_names_all().filter((n) => n !== character.name);
+		if (to.length) Promise.resolve(send_cm(to, { k: "bank", at: state.bank_at, seen, gear, free: state.bank_free, dump: state.bank_dump })).catch(() => {});
+	}
 }
 // Another character's bank snapshot: adopt it if it's newer than ours
 function adopt_bank(m) {
 	const b = m.message;
 	if (!(b.at > (state.bank_at || 0)) || !b.seen || !Array.isArray(b.gear)) return;
-	Object.assign(state, { bank_seen: b.seen, bank_gear: b.gear, bank_at: b.at, bank_by: b.by || m.name });
+	Object.assign(state, { bank_seen: b.seen, bank_gear: b.gear, bank_at: b.at, bank_by: m.name });
 	if (b.free) state.bank_free = b.free;
 	if (b.dump && typeof b.dump === "object") state.bank_dump = b.dump;
 	cmp_cache = null;

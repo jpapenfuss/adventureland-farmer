@@ -22,6 +22,11 @@ function secondhand_reason(it, groups) {
 		const r = gear_gain(it, x.ctype, x.g);
 		if (r && price <= r.gain * CFG.secondhand_gold_per_pt) return `upgrade for ${x.name} (+${Math.round(r.gain)} pts)`;
 	}
+	// v25.18 (owner: "watch Ponty more closely and buy opportunistically"): a head start for an upgrade — a piece that wins
+	// for a fighter once upgraded, when its price plus the expected upgrades above its level is worth the gain and cheaper
+	// than our other way there (our own copy, or an NPC copy from +0). Pieces no NPC sells only come this way or as drops.
+	const head = CFG.secondhand_upgrade_starts && upgrade_start_reason(it, price, fighters);
+	if (head) return head;
 	// v25.47: stock for compounding (CFG.ponty_stock): plain +0 copies up to n held, at up to max_price
 	const S = CFG.ponty_stock?.[it.name];
 	// v25.48: only while compounding runs and a fighter would wear a result (v25.60: at any level up to the item's reachable
@@ -29,14 +34,10 @@ function secondhand_reason(it, groups) {
 	// anything; and only plain, unlocked copies count (what compounding uses)
 	// (up to cmp_top: no stock for levels the server's odds have ruled out — Fable)
 	const useful = S && CFG.compound_auto && fighters.some((x) => { for (let L = 1; L <= cmp_top(it.name); L++) if (gear_gain_min({ name: it.name, level: L }, x.ctype, x.g)) return true; return false; });
-	const have0 = () => character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
 	if (useful && lv === 0 && !it.p && price <= S.max_price) {
-		const have = have0();
+		const have = character.items.filter((b) => b && b.name === it.name && !(b.level > 0) && !b.p && !b.l).length + (state.bank_gear || []).filter((b) => b.name === it.name && !(b.level > 0) && !b.p).length;
 		if (have < S.n) return `stock for compounding (${have + 1}/${S.n})`;
 	}
-	// v25.65: a stocked item's plain copies stop at n by any route — 15 ringsj+0 piled up through "completes a set" while
-	// compounding waited on gold (the 10:50 PM report: Ponty 5.5M in 6 h)
-	if (S && lv === 0 && have0() >= S.n) return null;
 	const g = G.items[it.name].compound && (it.level || 0) < cmp_max(it.name) &&
 		groups[compound_key(it.name, it.level || 0)];
 	// v24.15: only when the result would be worn — compounding for its own sake roughly breaks even at an NPC, and a Ponty
@@ -49,7 +50,45 @@ function secondhand_reason(it, groups) {
 	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
-// (CMP_ODDS / cmp_odds: shared/08_upgrade_pick.js)
+function upgrade_start_reason(it, price, fighters) {
+	const d = G.items[it.name], lv = it.level || 0;
+	if (!d?.upgrade || !GEAR.has(d.type) || it.p || !CFG.upgrade_auto) return null; // (titled copies aren't project inputs)
+	// the planner's own gates (pick_upgrade): a copy it would refuse to take on isn't bought
+	if (d.cash || skipped("upg:" + it.name) || CFG.quest_craft_skip.includes(it.name)) return null;
+	// v25.36 (owner: too many exceptions): a copy of the piece the current project builds is bought when it's already
+	// above the project's best copy (bags or bank) and cheaper than the expected steps it skips — at the project's
+	// target or above, it ends the project. (Before, every copy of it was refused: "its steps would be paid twice".)
+	// (with no copy held of a piece no NPC sells — the only one was lost to a failed step — there are no steps to price
+	// it against: it goes through the head-start rule below, bounded by gold per point)
+	if (state.upg?.name === it.name && (owned_level(it.name) >= 0 || sold_by_npc(it.name))) {
+		const P = state.upg, have = owned_level(it.name), to = Math.min(lv, P.to);
+		if (lv <= have) return null;
+		const skips = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, Math.max(0, have))) + (have < 0 ? G.items[it.name].g || 0 : 0);
+		return price < skips ? `skips the project's steps: +${Math.max(0, have)} → +${to} for ${P.for} (~${fmt_k(skips)} of steps, ${fmt_k(price)} here)` : null;
+	}
+	const WP = CFG.upgrade_weapon?.enabled && d.type === "weapon";
+	const budget = WP ? Infinity : upgrade_gold(); // v25.46: the planner's budget
+	const own = owned_level(it.name), top = Math.min(upgrade_target(it.name), upg_cap_level(it.name), upg_reach(it.name));
+	if (own >= lv) return null; // ours is as far along already
+	let best = null;
+	for (let to = lv + 1; to <= top; to++) {
+		if (best_level_held(it.name) >= to || (state.bank_gear || []).some((b) => b.name === it.name && (b.level || 0) >= to) || party_holds_level(it.name, to, true)) break;
+		const steps = Math.max(0, upgrade_expected(it.name, to) - upgrade_expected(it.name, lv)), total = price + steps;
+		if (total > budget) break; // the copy and its project would be over the planner's budget (v25.50: the copy counted too)
+		const alt = own >= 0 ? upgrade_expected(it.name, to) - upgrade_expected(it.name, own) : sold_by_npc(it.name) ? upgrade_expected(it.name, to) : Infinity;
+		if (total >= alt) continue;
+		for (const x of fighters) {
+			const r = gear_gain({ name: it.name, level: to }, x.ctype, x.g);
+			if (!r || total > r.gain * CFG.secondhand_gold_per_pt) continue;
+			const v = r.gain * CFG.secondhand_gold_per_pt - total;
+			if (!best || v > best.v) best = { v, to, who: x.name, gain: Math.round(r.gain), total };
+		}
+	}
+	return best ? `start for an upgrade: +${lv} → +${best.to} for ${best.who} (+${best.gain} pts, ~${fmt_k(best.total)} in all)` : null;
+}
+// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..4
+const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25], 1: [0.90, 0.70, 0.40, 0.20], 2: [0.80, 0.60, 0.32, 0.16] };
+const cmp_odds = (name, to) => (CMP_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || CMP_ODDS[0])[to - 1] || 0;
 // Routes through Ponty's stock: for a compound item, the copies to buy there so that — with ours (bags + bank) — three
 // make a +1 or a +2 a fighter would wear. A +1 for the last step comes from ours, from Ponty, or from three +0s (ours
 // first, then Ponty's cheapest). Only steps at or over compound_min_chance; cost = Ponty prices + scrolls.
@@ -135,13 +174,11 @@ async function task_secondhands() {
 				if (need <= 0) break;
 				const price = shop_price(it);
 				if (price > CFG.ponty_material_max || character.gold - price < CFG.merchant.donate.keep || character.esize < 3) continue;
-				if (skipped(sbuy_key(it))) continue;
 				await wait_budget(1, RESERVE.errand);
 				const before = held_any(nm);
 				tag_spend("ponty");
 				parent.socket.emit("sbuy", { rid: it.rid });
 				await until(() => held_any(nm) > before, 3000);
-				if (!(held_any(nm) > before)) sbuy_missed(it, price);
 				if (held_any(nm) > before) {
 					n++; need -= it.q || 1;
 					game_log(`secondhands: bought ${it.q || 1} ${nm} for ${fmt_k(price)} (quest material the fighters are short of)`, C.ok);
@@ -155,16 +192,12 @@ async function task_secondhands() {
 		const rt = route_of.get(it);
 		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
 		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !upg_gold_ok(price)) continue; // v25.46: every reason here is gear for the party: no earnings test
-		if (skipped(sbuy_key(it))) continue; // v25.63: a listing whose buy didn't land waits 10 min
 		await wait_budget(1, RESERVE.errand);
-		// (v25.63: landed = one more copy of it at that level in the bags — not a free slot fewer, which a slot freed in the
-		// same 3 s hid — Fable)
-		const copies = () => character.items.filter((b) => b && b.name === it.name && (b.level || 0) === (it.level || 0)).length, before = copies();
+		const before = character.esize;
 		tag_spend("ponty");
 		parent.socket.emit("sbuy", { rid: it.rid });
-		await until(() => copies() > before, 3000);
-		if (!(copies() > before)) sbuy_missed(it, price);
-		if (copies() > before) {
+		await until(() => character.esize < before, 3000);
+		if (character.esize < before) {
 			n++;
 			game_log(`secondhands: bought ${it.name}+${it.level || 0} for ${fmt_k(price)} (${why_buy})`, C.ok);
 			log_ev("buy", { item: `${it.name}+${it.level || 0}`, src: "secondhands", price });
@@ -179,11 +212,3 @@ async function task_secondhands() {
 
 // Open game windows (the client's modals), or -1 when that can't be told (then a poll's window is always closed, as before)
 function modals_open() { try { return typeof parent.$ === "function" ? parent.$(".modal:visible").length : -1; } catch (e) { return -1; } }
-
-// v25.63 (Fable): a buy that didn't land (sold to someone else, refused) was retried every poll — every 15 s since v25.61
-// — with a 3 s wait each time and nothing in the log. Keyed by listing (its rid; without one, name, level and price).
-const sbuy_key = (it) => "sbuy:" + (it.rid || `${it.name}:${it.level || 0}:${shop_price(it)}`);
-function sbuy_missed(it, price) {
-	skip(sbuy_key(it), 600_000, "the buy didn't land");
-	game_log(`secondhands: buying ${it.name}${it.level ? "+" + it.level : ""} for ${fmt_k(price)} didn't land; that listing waits 10 min`, C.dim);
-}
