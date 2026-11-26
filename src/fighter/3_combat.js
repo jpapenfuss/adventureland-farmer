@@ -126,6 +126,8 @@ function best_escape(t, step) {
 	}
 	return best;
 }
+// The party kills it within hopeless_ttk_s (a fight profile from fight_math or live_math)
+const in_time = (f) => !!f && f.ttk <= CFG.hopeless_ttk_s;
 // The fight model on this one's live stats (a levelled monster), or null
 function live_math(e) {
 	const def = G.monsters[e.mtype];
@@ -169,15 +171,15 @@ function choose_target(local_ok, keep_cur = false) {
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
-	// v25.82 (review N5): the camp's own type levelled past hopeless_ttk_s but still out-healed — the last resort,
-	// lowest level first (fire()'s hopeless() exempts the camp's type)
+	// v25.82 (review N5): the camp's own type levelled past the live sustain test — the last resort, lowest level first,
+	// whenever the party still kills it within hopeless_ttk_s (one it can't is never taken, levelled or not)
 	let grown = null;
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
 		const f = live_ok(e);
 		if (!f) {
-			if (e.mtype === want && state.safe[want] && sustainable(live_math(e)) && (!grown || (e.level || 1) < (grown.level || 1) ||
+			if (e.mtype === want && state.safe[want] && in_time(live_math(e)) && (!grown || (e.level || 1) < (grown.level || 1) ||
 				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
 			continue;
 		}

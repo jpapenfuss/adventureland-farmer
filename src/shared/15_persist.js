@@ -10,7 +10,7 @@ function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
 	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 4, meas_at: state.meas_at, realism: state.realism,
-		type_skip: state.type_skip, explore: { tried: state.explore.tried, last_end: state.explore.last_end }, deaths_nc: state.deaths_nc || [],
+		type_skip: state.type_skip, explore: { tried: state.explore.tried, last_end: state.explore.last_end, dry: state.explore.dry || {}, why: state.explore.why || {} }, deaths_nc: state.deaths_nc || [],
 		cooldown: state.cooldown, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
@@ -88,6 +88,7 @@ function load_state() {
 	for (const [mt, t] of Object.entries(d.type_skip || {})) if (t > now) state.type_skip[mt] = t;
 	if (d.explore?.last_end > 0) state.explore.last_end = d.explore.last_end;
 	Object.assign(state.explore.tried, d.explore?.tried || {});
+	state.explore.dry = { ...(d.explore?.dry || {}) }; state.explore.why = { ...(d.explore?.why || {}) };
 	if (Array.isArray(d.deaths_nc)) state.deaths_nc = d.deaths_nc.filter((t) => now - t < 86_400_000);
 	if (d.cave_block) state.cave_block = d.cave_block;
 	Object.assign(state.gear_skip, live(d.gear_skip));
@@ -160,4 +161,4 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { state.explore.tried = {}; Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, deaths_nc: [], cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state.explore, { tried: {}, dry: {}, why: {} }); Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, deaths_nc: [], cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }

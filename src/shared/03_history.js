@@ -142,7 +142,6 @@ function watchdog() {
 		halt("watchdog");
 		state.travel_block_until = 0;
 		if (state.pack) rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);
-		state.last_pick = 0;
 		return;
 	}
 	// v24.9: only time at the pack counts — a walk there longer than noprog_min put it on cooldown before we arrived, and
@@ -155,7 +154,6 @@ function watchdog() {
 		const repeat = wd.acts.filter((a) => a.kind === "noprog").length >= 2;
 		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
 		rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);
-		state.last_pick = 0;
 		if (repeat) halt("watchdog"); // v24.60: no town teleport of the tank's own (it left the party behind)
 	}
 }

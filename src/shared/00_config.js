@@ -495,7 +495,6 @@ const state = {
 	travel_off: [],          // v24.27: worn pieces taken off for a long walk: [{ slot, name, level, p, stat_type, speed, fails? }]
 	safe: {},                // monster id -> { ttk, xp } for every type the last pick would fight (fight_profile)
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
-	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
 	last_target_at: Date.now(), // last time we had something to fight (idle detection)
 	best_score: 0,           // best free-choice pack's rate in the farm mode's unit
 	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
@@ -507,7 +506,7 @@ const state = {
 	type_skip: {},           // v25.82: monster id -> until: skipped after an impossible fight (saved)
 	fight_start: null,       // v25.82: the tank's fight episode { at, last, gathered, priest_ok, ids: { id: mtype }, judged? } (judge_death)
 	deaths_nc: [],           // v25.82: times of deaths not counted against a type, last 24h (saved)
-	explore: { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }, // v25.82: the trial running
+	explore: { cur: null, last_end: Date.now(), tried: {}, dry: {}, why: {}, next: null, none_at: 0 }, // v25.82: the trial running
 	                         //   { key, mtype, map, start, until }, the last one's end, type -> when tried (saved)
 	session: null,           // current xp measurement: { key, est, xp, start }
 	bad_ids: {},             // entity id -> until: targets that took no damage (immune/healing)

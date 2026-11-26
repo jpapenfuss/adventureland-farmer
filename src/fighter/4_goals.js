@@ -21,7 +21,7 @@ function boss_tick(pack) {
 		return true;
 	}
 	const b = parent.S?.[pack.mtype];
-	if (!b || b.live !== true) { state.last_pick = 0; return false; }
+	if (!b || b.live !== true) return false;
 	if (!walking() && !errand_busy()) travel_as("boss_tick", { map: b.map, x: b.x, y: b.y });
 	set_message(`→ BOSS ${pack.mtype} @ ${b.map}`);
 	return true;
@@ -235,16 +235,13 @@ function refresh_directive() {
 		state.dir_lock = { monster: d.monster, until: now + ((a ? travel_s(a.map, a.boundary) : 60) + CFG.travel.commit_min * 60) * 1000 };
 	}
 	if (d) {
-		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
-		if (changed) state.last_pick = 0;
 		// v25.70 (owner: "fighting cgoo for absolutely no reason"): the camp's reason follows the goal live — it was the
 		// text at the pick ("39 left" while 29 were left)
 		const P = state.pack;
 		if (P?.directive && !P.boss && !P.explore && !is_follower() && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
 	} else if (state.directive) {
 		state.directive = null;
-		state.last_pick = 0;
 	}
 }
 // The event to be at: live in the server's event list, and safe for us (its safe_from monster passes fight_math)

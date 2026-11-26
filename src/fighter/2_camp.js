@@ -77,7 +77,6 @@ function keep_away(e) {
 		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 4) {
 			rest_place(P, CFG.pack_cooldown_ms, now);
 			state.keep_log = [];
-			state.last_pick = 0;
 			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);
 		}
 	}
@@ -178,7 +177,11 @@ function explore_end(why_, now = Date.now()) {
 	// (review N6) the trial's session closes here, so its rate is booked now; only a trial that recorded one counts as tried
 	if (state.session?.key === c.key) end_session();
 	const rated = !untried(c.key);
-	if (rated) E.tried[c.mtype] = now;
+	// a type whose trials record nothing twice in a row (cut short, or no kills) waits 24 h too, so it can't take a
+	// trial every 30 min forever
+	E.dry = E.dry || {}; E.why = E.why || {};
+	if (rated) { E.tried[c.mtype] = now; delete E.dry[c.mtype]; delete E.why[c.mtype]; }
+	else if ((E.dry[c.mtype] = (E.dry[c.mtype] || 0) + 1) >= 2) { E.tried[c.mtype] = now; E.why[c.mtype] = "no kills in 2 trials"; delete E.dry[c.mtype]; }
 	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null, rated });
 	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})${rated ? "" : " — nothing measured, it stays untried"}`, C.info);
 	E.cur = null; E.last_end = now; E.none_at = 0;
@@ -215,7 +218,7 @@ function pick_pack() {
 	const d = state.directive && state.directive.until > now ? state.directive : null, E = state.explore;
 	if (E.cur) {
 		const P = state.pack, hunt = is_hunt_goal(d) && d.monster !== E.cur.mtype;
-		if (now < E.cur.until && !hunt && !d?.boss && P?.explore && pack_key(P) === E.cur.key && !((state.cooldown[E.cur.key] || 0) > now) && state.safe[E.cur.mtype]) { state.last_pick = now; return; }
+		if (now < E.cur.until && !hunt && !d?.boss && P?.explore && pack_key(P) === E.cur.key && !((state.cooldown[E.cur.key] || 0) > now) && state.safe[E.cur.mtype]) return;
 		explore_end(now >= E.cur.until ? "time" : hunt ? "a hunt" : d?.boss ? "a boss" : !P?.explore || pack_key(P) !== E.cur.key ? "left the camp (a death, a regroup)" : "the camp is resting", now);
 	}
 	let best = null;
@@ -223,7 +226,7 @@ function pick_pack() {
 	state.pick_skips = {};
 	// v24.38: every spot considered and what became of it (report: "spot choice"). out: why it's out, null = a candidate
 	const table = (state.pick_table = []);
-	state.pick_table_at = Date.now(); // (the report's "spot choice … ago": last_pick is zeroed to force a pick)
+	state.pick_table_at = Date.now(); // (the report's "spot choice … ago")
 	const note = (key, t, map, out, extra) => table.push({ key, mtype: t, map, out, m: meas()[key] || 0, ...extra });
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
@@ -245,7 +248,6 @@ function pick_pack() {
 		cands.push(p);
 		if (!best || p.score > best.score) best = p;
 	});
-	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
 	state.review_dir = dir_key(now); // v24.88
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit

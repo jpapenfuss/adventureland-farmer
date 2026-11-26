@@ -148,7 +148,6 @@ async function town_body(due) {
 		if (compound_town_due()) did += await bag_step("compound", task_compound);
 		// ...or a set piece to upgrade (v24.69)
 		if (!skipped("town:upgrade") && upgrade_due()) did += await bag_step("upgrade", task_upgrade);
-		state.last_pick = 0; // re-evaluate where to fight
 		state.last_town_did = did; // v24.92: the loop brake spares a merchant whose runs get work done
 		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000), trig: state.town_trig || "?", v: VERSION });
 		return did;

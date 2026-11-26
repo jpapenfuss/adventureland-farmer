@@ -496,7 +496,6 @@ const state = {
 	travel_off: [],          // v24.27: worn pieces taken off for a long walk: [{ slot, name, level, p, stat_type, speed, fails? }]
 	safe: {},                // monster id -> { ttk, xp } for every type the last pick would fight (fight_profile)
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
-	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
 	last_target_at: Date.now(), // last time we had something to fight (idle detection)
 	best_score: 0,           // best free-choice pack's rate in the farm mode's unit
 	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
@@ -508,7 +507,7 @@ const state = {
 	type_skip: {},           // v25.82: monster id -> until: skipped after an impossible fight (saved)
 	fight_start: null,       // v25.82: the tank's fight episode { at, last, gathered, priest_ok, ids: { id: mtype }, judged? } (judge_death)
 	deaths_nc: [],           // v25.82: times of deaths not counted against a type, last 24h (saved)
-	explore: { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }, // v25.82: the trial running
+	explore: { cur: null, last_end: Date.now(), tried: {}, dry: {}, why: {}, next: null, none_at: 0 }, // v25.82: the trial running
 	                         //   { key, mtype, map, start, until }, the last one's end, type -> when tried (saved)
 	session: null,           // current xp measurement: { key, est, xp, start }
 	bad_ids: {},             // entity id -> until: targets that took no damage (immune/healing)
@@ -1600,7 +1599,6 @@ function watchdog() {
 		halt("watchdog");
 		state.travel_block_until = 0;
 		if (state.pack) rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);
-		state.last_pick = 0;
 		return;
 	}
 	// v24.9: only time at the pack counts — a walk there longer than noprog_min put it on cooldown before we arrived, and
@@ -1613,7 +1611,6 @@ function watchdog() {
 		const repeat = wd.acts.filter((a) => a.kind === "noprog").length >= 2;
 		wd_act("noprog", `no kills for ${W.noprog_min} min at ${state.pack.mtype}${repeat ? "; 3rd time this hour: town first" : ""}`);
 		rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);
-		state.last_pick = 0;
 		if (repeat) halt("watchdog"); // v24.60: no town teleport of the tank's own (it left the party behind)
 	}
 }
@@ -1977,7 +1974,7 @@ async function travel(dest) {
 			if (e?.reason === "deadly_route" && P_ && !is_follower() && dest?.map === P_.map) {
 				rest_place(P_, 1_800_000);
 				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
-				state.pack = null; state.last_pick = 0;
+				state.pack = null;
 			}
 			// v25.55: the merchant with no safe way home (it walks no spawn that could kill it): teleport to town
 			if (e?.reason === "deadly_route" && is_merchant() && dest?.map === "main" && character.map !== "main" && !character.stand) fire("use_town");
@@ -4294,7 +4291,6 @@ async function town_body(due) {
 		if (compound_town_due()) did += await bag_step("compound", task_compound);
 		// ...or a set piece to upgrade (v24.69)
 		if (!skipped("town:upgrade") && upgrade_due()) did += await bag_step("upgrade", task_upgrade);
-		state.last_pick = 0; // re-evaluate where to fight
 		state.last_town_did = did; // v24.92: the loop brake spares a merchant whose runs get work done
 		log_ev("town", { due: due_tasks(due).join("+"), did, secs: Math.round((Date.now() - town_t0) / 1000), trig: state.town_trig || "?", v: VERSION });
 		return did;
@@ -4417,7 +4413,7 @@ function unpause(prefix = "town:") {
 	game_log(gone.length ? `unpaused: ${gone.join(", ")}` : `nothing paused under "${prefix}"`, C.info);
 	return gone;
 }
-function resume() { state.parked = false; state.last_pick = 0; state.last_target_at = Date.now(); game_log("Resuming", C.info); }
+function resume() { state.parked = false; state.last_target_at = Date.now(); game_log("Resuming", C.info); }
 // While parked: one trip to town, then stand and defend
 function park_tick() {
 	if (!errand_busy() && !state.park_home) {
@@ -4440,7 +4436,7 @@ function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
 	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 4, meas_at: state.meas_at, realism: state.realism,
-		type_skip: state.type_skip, explore: { tried: state.explore.tried, last_end: state.explore.last_end }, deaths_nc: state.deaths_nc || [],
+		type_skip: state.type_skip, explore: { tried: state.explore.tried, last_end: state.explore.last_end, dry: state.explore.dry || {}, why: state.explore.why || {} }, deaths_nc: state.deaths_nc || [],
 		cooldown: state.cooldown, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
@@ -4518,6 +4514,7 @@ function load_state() {
 	for (const [mt, t] of Object.entries(d.type_skip || {})) if (t > now) state.type_skip[mt] = t;
 	if (d.explore?.last_end > 0) state.explore.last_end = d.explore.last_end;
 	Object.assign(state.explore.tried, d.explore?.tried || {});
+	state.explore.dry = { ...(d.explore?.dry || {}) }; state.explore.why = { ...(d.explore?.why || {}) };
 	if (Array.isArray(d.deaths_nc)) state.deaths_nc = d.deaths_nc.filter((t) => now - t < 86_400_000);
 	if (d.cave_block) state.cave_block = d.cave_block;
 	Object.assign(state.gear_skip, live(d.gear_skip));
@@ -4590,7 +4587,7 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { state.explore.tried = {}; Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, deaths_nc: [], cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state.explore, { tried: {}, dry: {}, why: {} }); Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, deaths_nc: [], cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
 // =====================================================================
@@ -5812,7 +5809,6 @@ function safety_tune__fighter(ev) {
 	if (own() !== was) {
 		log_ev("safety", { to: +own().toFixed(3), why: ev || "calm" });
 		game_log(`boss safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP (bosses only; ${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
-		state.last_pick = 0;
 	}
 }
 setInterval(() => { try { safety_tune(); } catch (e) {} }, 60_000);
@@ -5983,7 +5979,6 @@ function keep_away(e) {
 		if (key && !is_follower() && state.keep_log.filter((k) => k.key === key).length >= 4) {
 			rest_place(P, CFG.pack_cooldown_ms, now);
 			state.keep_log = [];
-			state.last_pick = 0;
 			game_log(`${e.mtype} keeps coming to ${P.mtype}; cooling this spot down`, C.warn);
 		}
 	}
@@ -6084,7 +6079,11 @@ function explore_end(why_, now = Date.now()) {
 	// (review N6) the trial's session closes here, so its rate is booked now; only a trial that recorded one counts as tried
 	if (state.session?.key === c.key) end_session();
 	const rated = !untried(c.key);
-	if (rated) E.tried[c.mtype] = now;
+	// a type whose trials record nothing twice in a row (cut short, or no kills) waits 24 h too, so it can't take a
+	// trial every 30 min forever
+	E.dry = E.dry || {}; E.why = E.why || {};
+	if (rated) { E.tried[c.mtype] = now; delete E.dry[c.mtype]; delete E.why[c.mtype]; }
+	else if ((E.dry[c.mtype] = (E.dry[c.mtype] || 0) + 1) >= 2) { E.tried[c.mtype] = now; E.why[c.mtype] = "no kills in 2 trials"; delete E.dry[c.mtype]; }
 	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null, rated });
 	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})${rated ? "" : " — nothing measured, it stays untried"}`, C.info);
 	E.cur = null; E.last_end = now; E.none_at = 0;
@@ -6121,7 +6120,7 @@ function pick_pack() {
 	const d = state.directive && state.directive.until > now ? state.directive : null, E = state.explore;
 	if (E.cur) {
 		const P = state.pack, hunt = is_hunt_goal(d) && d.monster !== E.cur.mtype;
-		if (now < E.cur.until && !hunt && !d?.boss && P?.explore && pack_key(P) === E.cur.key && !((state.cooldown[E.cur.key] || 0) > now) && state.safe[E.cur.mtype]) { state.last_pick = now; return; }
+		if (now < E.cur.until && !hunt && !d?.boss && P?.explore && pack_key(P) === E.cur.key && !((state.cooldown[E.cur.key] || 0) > now) && state.safe[E.cur.mtype]) return;
 		explore_end(now >= E.cur.until ? "time" : hunt ? "a hunt" : d?.boss ? "a boss" : !P?.explore || pack_key(P) !== E.cur.key ? "left the camp (a death, a regroup)" : "the camp is resting", now);
 	}
 	let best = null;
@@ -6129,7 +6128,7 @@ function pick_pack() {
 	state.pick_skips = {};
 	// v24.38: every spot considered and what became of it (report: "spot choice"). out: why it's out, null = a candidate
 	const table = (state.pick_table = []);
-	state.pick_table_at = Date.now(); // (the report's "spot choice … ago": last_pick is zeroed to force a pick)
+	state.pick_table_at = Date.now(); // (the report's "spot choice … ago")
 	const note = (key, t, map, out, extra) => table.push({ key, mtype: t, map, out, m: meas()[key] || 0, ...extra });
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
@@ -6151,7 +6150,6 @@ function pick_pack() {
 		cands.push(p);
 		if (!best || p.score > best.score) best = p;
 	});
-	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
 	state.review_dir = dir_key(now); // v24.88
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit
@@ -6353,6 +6351,8 @@ function best_escape(t, step) {
 	}
 	return best;
 }
+// The party kills it within hopeless_ttk_s (a fight profile from fight_math or live_math)
+const in_time = (f) => !!f && f.ttk <= CFG.hopeless_ttk_s;
 // The fight model on this one's live stats (a levelled monster), or null
 function live_math(e) {
 	const def = G.monsters[e.mtype];
@@ -6396,15 +6396,15 @@ function choose_target(local_ok, keep_cur = false) {
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
-	// v25.82 (review N5): the camp's own type levelled past hopeless_ttk_s but still out-healed — the last resort,
-	// lowest level first (fire()'s hopeless() exempts the camp's type)
+	// v25.82 (review N5): the camp's own type levelled past the live sustain test — the last resort, lowest level first,
+	// whenever the party still kills it within hopeless_ttk_s (one it can't is never taken, levelled or not)
 	let grown = null;
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
 		const f = live_ok(e);
 		if (!f) {
-			if (e.mtype === want && state.safe[want] && sustainable(live_math(e)) && (!grown || (e.level || 1) < (grown.level || 1) ||
+			if (e.mtype === want && state.safe[want] && in_time(live_math(e)) && (!grown || (e.level || 1) < (grown.level || 1) ||
 				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
 			continue;
 		}
@@ -6666,7 +6666,7 @@ function boss_tick(pack) {
 		return true;
 	}
 	const b = parent.S?.[pack.mtype];
-	if (!b || b.live !== true) { state.last_pick = 0; return false; }
+	if (!b || b.live !== true) return false;
 	if (!walking() && !errand_busy()) travel_as("boss_tick", { map: b.map, x: b.x, y: b.y });
 	set_message(`→ BOSS ${pack.mtype} @ ${b.map}`);
 	return true;
@@ -6880,16 +6880,13 @@ function refresh_directive__fighter() {
 		state.dir_lock = { monster: d.monster, until: now + ((a ? travel_s(a.map, a.boundary) : 60) + CFG.travel.commit_min * 60) * 1000 };
 	}
 	if (d) {
-		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
-		if (changed) state.last_pick = 0;
 		// v25.70 (owner: "fighting cgoo for absolutely no reason"): the camp's reason follows the goal live — it was the
 		// text at the pick ("39 left" while 29 were left)
 		const P = state.pack;
 		if (P?.directive && !P.boss && !P.explore && !is_follower() && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
 	} else if (state.directive) {
 		state.directive = null;
-		state.last_pick = 0;
 	}
 }
 // The event to be at: live in the server's event list, and safe for us (its safe_from monster passes fight_math)
@@ -7481,7 +7478,7 @@ function gap_kind__fighter() {
 		const e = parent.entities[id];
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
-		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || (state.safe[pk.mtype] && sustainable(live_math(e)))) alive++; else beyond++; } // (v25.82: choose_target's last resort too)
+		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || (state.safe[pk.mtype] && in_time(live_math(e)))) alive++; else beyond++; } // (v25.82: choose_target's last resort too)
 		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
@@ -7532,7 +7529,7 @@ function facts_bosses__fighter(F, ctx) {
 function facts_explore__fighter(F, ctx) {
 	const { now } = ctx;
 	if (is_follower() || (in_party_cfg() && leader_name() !== character.name)) return;
-	const E = state.explore, tried = Object.entries(E.tried).filter(([, t]) => now - t < 86_400_000).sort((a, b) => a[1] - b[1]).map(([mt]) => mt);
+	const E = state.explore, tried = Object.entries(E.tried).filter(([, t]) => now - t < 86_400_000).sort((a, b) => a[1] - b[1]).map(([mt]) => (E.why?.[mt] ? `${mt} (${E.why[mt]})` : mt));
 	const next = E.cur ? `${E.cur.mtype} running (${mins(E.cur.until)} left)` : E.next ? `${E.next.mtype} in ${mins((E.last_end || now) + CFG.explore.every_min * 60_000)}` : "none untried within reach";
 	const sk = Object.entries(state.type_skip).filter(([, t]) => t > now).map(([mt, t]) => `${mt} until ${hhmm(t)}`);
 	const nc = (state.deaths_nc || []).filter((t) => now - t < 86_400_000).length;
@@ -7560,7 +7557,7 @@ function facts_picks__fighter(F, ctx) {
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
 			(RL ? ` | last ${ago(RL.at)} ago (${RL.why}): ${RL.text}` : ""));
 	}
-	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: measured looted gold/s only" : CFG.farm_mode === "gold" ? ", GOLD mode on xp/s until a camp's gold is measured" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+	F("picks", "self", `spot choice (${ago(state.pick_table_at || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: measured looted gold/s only" : CFG.farm_mode === "gold" ? ", GOLD mode on xp/s until a camp's gold is measured" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 		(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 }
 
@@ -7574,14 +7571,14 @@ function facts_targets__fighter(F, ctx) {
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !f ? c.beyond : !sustainable(f) ? c.heal : c.slow).push(e.level || 1); }
+		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !in_time(f) ? c.slow : c.heal).push(e.level || 1); }
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
 	const n = c.ok + c.skipped.length + c.heal.length + c.slow.length + c.beyond.length + c.far + c.taken + c.ignored;
 	if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
 		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} ${refuse_why(p.mtype) || "is not fought"}` : ""}` +
-		`${c.heal.length ? `, ${c.heal.length} levelled past what the party out-heals — never taken (levels ${c.heal.sort((x, y) => x - y).join(",")})` : ""}` +
-		`${c.slow.length ? `, ${c.slow.length} over ${CFG.hopeless_ttk_s}s a kill — the tank takes them, lowest first, when none passes (levels ${c.slow.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.heal.length ? `, ${c.heal.length} levelled past what the party out-heals — the tank takes them, lowest first, when none passes (levels ${c.heal.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.slow.length ? `, ${c.slow.length} the party can't kill within ${CFG.hopeless_ttk_s}s — never taken (levels ${c.slow.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.beyond.length ? `, ${c.beyond.length} the party can't damage — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 }

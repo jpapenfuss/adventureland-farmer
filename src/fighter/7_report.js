@@ -11,7 +11,7 @@ function gap_kind() {
 		const e = parent.entities[id];
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
-		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || (state.safe[pk.mtype] && sustainable(live_math(e)))) alive++; else beyond++; } // (v25.82: choose_target's last resort too)
+		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || (state.safe[pk.mtype] && in_time(live_math(e)))) alive++; else beyond++; } // (v25.82: choose_target's last resort too)
 		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
@@ -62,7 +62,7 @@ function facts_bosses(F, ctx) {
 function facts_explore(F, ctx) {
 	const { now } = ctx;
 	if (is_follower() || (in_party_cfg() && leader_name() !== character.name)) return;
-	const E = state.explore, tried = Object.entries(E.tried).filter(([, t]) => now - t < 86_400_000).sort((a, b) => a[1] - b[1]).map(([mt]) => mt);
+	const E = state.explore, tried = Object.entries(E.tried).filter(([, t]) => now - t < 86_400_000).sort((a, b) => a[1] - b[1]).map(([mt]) => (E.why?.[mt] ? `${mt} (${E.why[mt]})` : mt));
 	const next = E.cur ? `${E.cur.mtype} running (${mins(E.cur.until)} left)` : E.next ? `${E.next.mtype} in ${mins((E.last_end || now) + CFG.explore.every_min * 60_000)}` : "none untried within reach";
 	const sk = Object.entries(state.type_skip).filter(([, t]) => t > now).map(([mt, t]) => `${mt} until ${hhmm(t)}`);
 	const nc = (state.deaths_nc || []).filter((t) => now - t < 86_400_000).length;
@@ -90,7 +90,7 @@ function facts_picks(F, ctx) {
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
 			(RL ? ` | last ${ago(RL.at)} ago (${RL.why}): ${RL.text}` : ""));
 	}
-	F("picks", "self", `spot choice (${ago(state.pick_table_at || state.last_pick || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: measured looted gold/s only" : CFG.farm_mode === "gold" ? ", GOLD mode on xp/s until a camp's gold is measured" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
+	F("picks", "self", `spot choice (${ago(state.pick_table_at || Date.now())} ago${farm_kind() === "gold" ? ", GOLD mode: measured looted gold/s only" : CFG.farm_mode === "gold" ? ", GOLD mode on xp/s until a camp's gold is measured" : ""}): ` + T_.map((c) => `${c.mtype}@${c.map} ${Math.round(c.rate || c.m)}${c.m ? " measured" : " est"}` +
 		(c.out ? ` ✗ ${c.out}` : `${Math.round(c.score) !== Math.round(c.rate) ? ` (${Math.round(c.score)} after the walk)` : ""}${c.key === cur ? " ← here" : ""}`)).join(" | "));
 }
 
@@ -104,14 +104,14 @@ function facts_targets(F, ctx) {
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !f ? c.beyond : !sustainable(f) ? c.heal : c.slow).push(e.level || 1); }
+		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !in_time(f) ? c.slow : c.heal).push(e.level || 1); }
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
 	const n = c.ok + c.skipped.length + c.heal.length + c.slow.length + c.beyond.length + c.far + c.taken + c.ignored;
 	if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
 		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} ${refuse_why(p.mtype) || "is not fought"}` : ""}` +
-		`${c.heal.length ? `, ${c.heal.length} levelled past what the party out-heals — never taken (levels ${c.heal.sort((x, y) => x - y).join(",")})` : ""}` +
-		`${c.slow.length ? `, ${c.slow.length} over ${CFG.hopeless_ttk_s}s a kill — the tank takes them, lowest first, when none passes (levels ${c.slow.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.heal.length ? `, ${c.heal.length} levelled past what the party out-heals — the tank takes them, lowest first, when none passes (levels ${c.heal.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.slow.length ? `, ${c.slow.length} the party can't kill within ${CFG.hopeless_ttk_s}s — never taken (levels ${c.slow.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.beyond.length ? `, ${c.beyond.length} the party can't damage — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 }

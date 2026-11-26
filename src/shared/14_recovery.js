@@ -24,7 +24,7 @@ function unpause(prefix = "town:") {
 	game_log(gone.length ? `unpaused: ${gone.join(", ")}` : `nothing paused under "${prefix}"`, C.info);
 	return gone;
 }
-function resume() { state.parked = false; state.last_pick = 0; state.last_target_at = Date.now(); game_log("Resuming", C.info); }
+function resume() { state.parked = false; state.last_target_at = Date.now(); game_log("Resuming", C.info); }
 // While parked: one trip to town, then stand and defend
 function park_tick() {
 	if (!errand_busy() && !state.park_home) {

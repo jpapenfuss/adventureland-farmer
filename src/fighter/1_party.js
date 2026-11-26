@@ -220,7 +220,6 @@ function safety_tune(ev) {
 	if (own() !== was) {
 		log_ev("safety", { to: +own().toFixed(3), why: ev || "calm" });
 		game_log(`boss safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP (bosses only; ${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
-		state.last_pick = 0;
 	}
 }
 setInterval(() => { try { safety_tune(); } catch (e) {} }, 60_000);

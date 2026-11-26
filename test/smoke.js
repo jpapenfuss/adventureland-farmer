@@ -179,27 +179,27 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const px = vm.runInContext("state.pack && state.pack.mtype", ctx);
 		const e0 = vm.runInContext("kill_value('richgoo', null, 'gold')", ctx);
 		// gold mode with nothing measured (or under measure_min_s): xp picks the camp, so the party fights and measures
-		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 10, n: 1 } }; state.last_pick = 0; state.pack = null; pick_pack()`, ctx);
+		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 10, n: 1 } }; state.pack = null; pick_pack()`, ctx);
 		const p0 = vm.runInContext("[farm_kind(), state.pack && state.pack.mtype].join()", ctx);
 		assert(p0 === "xp,goo", `v25.68: gold mode, no camp measured for long enough: xp picks (${p0})`);
-		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 600, n: 4 }, '${GO}': { g: 60, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
+		vm.runInContext(`CFG.farm_mode = 'gold'; state.measured_gold = { '${RG}': { g: 3000, s: 600, n: 4 }, '${GO}': { g: 60, s: 600, n: 2 } }; pick_pack()`, ctx);
 		const pg = vm.runInContext("state.pack && state.pack.mtype", ctx);
-		vm.runInContext(`state.measured_gold = { '${RG}': { g: 60, s: 600, n: 4 }, '${GO}': { g: 3000, s: 600, n: 2 } }; state.last_pick = 0; pick_pack()`, ctx);
+		vm.runInContext(`state.measured_gold = { '${RG}': { g: 60, s: 600, n: 4 }, '${GO}': { g: 3000, s: 600, n: 2 } }; pick_pack()`, ctx);
 		const pg2 = vm.runInContext("state.pack && state.pack.mtype", ctx);
 		vm.runInContext("CFG.farm_mode = 'xp'; state.measured_gold = {}", ctx);
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.richgoo; delete ctx.G.monster_gold;
-		vm.runInContext("state.last_pick = 0; pick_pack()", ctx);
+		vm.runInContext("pick_pack()", ctx);
 		assert(e0 === 0 && px === "goo" && pg === "richgoo" && pg2 === "goo", `v25.68: no gold estimate (${e0}); xp mode goo, gold mode the camp measured richer (${px} / ${pg} / ${pg2})`); }
 	// v25.56: two types sharing a box (main's squigs and squigtoads) are two camps — the first type seen no longer
 	// claims the box; each type's rates, rests and deaths have their own key; an old save's keys are migrated
 	{ const B = [100, 100, 400, 400];
 		ctx.G.monsters.toad56 = { ...ctx.G.monsters.goo, xp: 500 };
 		ctx.G.maps.main.monsters.push({ type: "toad56", count: 5, boundary: B });
-		vm.runInContext("state.measured = {}; state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx);
+		vm.runInContext("state.measured = {}; state.cooldown = {}; state.pack = null; pick_pack()", ctx);
 		const p56 = vm.runInContext("state.pack && state.pack.mtype", ctx);
 		const keys = vm.runInContext("state.pick_table.map((c) => c.key).join(' | ')", ctx);
 		assert(p56 === "toad56" && /#goo/.test(keys) && /#toad56/.test(keys), `the better type in a shared box is picked; both are candidates (${p56}: ${keys})`);
-		vm.runInContext("rest_camp(pack_key({ map: 'main', boundary: [100, 100, 400, 400], mtype: 'toad56' }), 600000); state.last_pick = 0; state.pack = null; pick_pack()", ctx);
+		vm.runInContext("rest_camp(pack_key({ map: 'main', boundary: [100, 100, 400, 400], mtype: 'toad56' }), 600000); state.pack = null; pick_pack()", ctx);
 		assert(vm.runInContext("state.pack && state.pack.mtype", ctx) === "goo", "resting the toads' camp leaves the goos in the same box free");
 		// migration: an old save's "map:box" keys go to the box's first farmable type (goo comes first in map order)
 		const d56 = { measured: { "main:100,100,400,400": 7, "main:9,9,9,9": 3 }, measured_gold: {}, cooldown: { "main:100,100,400,400": 5 },
@@ -218,7 +218,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.cooldown['main:700,700,900,900#goo'] > Date.now() && state.cooldown['main:700,700,900,900#boss56'] > Date.now()", ctx), "a place rest covers every type in the box");
 		ctx.G.maps.main.monsters.splice(-2, 2); delete ctx.G.monsters.boss56;
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.toad56; delete ctx.__d56;
-		vm.runInContext("state.cooldown = {}; state.last_pick = 0; state.pack = null; pick_pack()", ctx); }
+		vm.runInContext("state.cooldown = {}; state.pack = null; pick_pack()", ctx); }
 	// v25.52: the report's units follow the mode
 	vm.runInContext("CFG.farm_mode = 'gold'; state.measured_gold = { 'main:1,1,2,2#goo': { g: 500, s: 100, n: 1 } }", ctx); // (v25.68: a camp measured)
 	{ const out = []; ctx.__F52 = (k, w, t) => out.push(t);
@@ -771,7 +771,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.pick_pack = pp0; ctx.parent.entities = ents0; vm.runInContext("state.pack = __pk75b; state.directive = null; state.review_dir = ''", ctx);
 		assert(p3 === 2, `v25.75: the goal's other area on the same map reviews the camp (${p3})`); }
 	// v25.70: right after a load the leader picks only a goal — no "best camp" walk before the members' hunts arrive
-	{ vm.runInContext("globalThis.__st70 = JSON.stringify({ safe: state.safe, best_xp: state.best_xp, best_at: state.best_at, best_ref: state.best_ref, best_score: state.best_score, pick_table: state.pick_table, last_pick: state.last_pick }); state.directive = null; state.pack = null; state.last_pick = 0; camp_load_at = Date.now(); globalThis.__rd70 = refresh_directive; refresh_directive = () => {}; pick_pack()", ctx);
+	{ vm.runInContext("globalThis.__st70 = JSON.stringify({ safe: state.safe, best_xp: state.best_xp, best_at: state.best_at, best_ref: state.best_ref, best_score: state.best_score, pick_table: state.pick_table }); state.directive = null; state.pack = null; camp_load_at = Date.now(); globalThis.__rd70 = refresh_directive; refresh_directive = () => {}; pick_pack()", ctx);
 		const p0 = vm.runInContext("state.pack", ctx);
 		vm.runInContext("camp_load_at = 0; refresh_directive = __rd70; pick_pack()", ctx);
 		const p1 = vm.runInContext("!!state.pack", ctx);
@@ -807,7 +807,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.monsters.push({ type: "brute82", count: 4, boundary: [200, 200, 300, 300] });
 		const unsafe = vm.runInContext("!safe_enough(fight_math(G.monsters.brute82))", ctx);
 		vm.runInContext("globalThis.__bk82 = { best_xp: state.best_xp, best_score: state.best_score, best_at: state.best_at, pick_table: state.pick_table, pack: state.pack }", ctx);
-		vm.runInContext("state.directive = null; state.dir_lock = null; state.turn = null; state.pack = null; state.cooldown = {}; state.last_pick = 0; pick_pack()", ctx);
+		vm.runInContext("state.directive = null; state.dir_lock = null; state.turn = null; state.pack = null; state.cooldown = {}; pick_pack()", ctx);
 		const picked = vm.runInContext("state.pack && state.pack.mtype", ctx), unmeasured = vm.runInContext("state.measured[pack_key(state.pack)] === undefined", ctx);
 		const ent = { id: "b82", type: "monster", mtype: "brute82", visible: true, hp: 200, max_hp: 200, attack: 15, xp: 9000, x: 250, y: 250, target: null };
 		const sv82 = ctx.parent.entities; ctx.parent.entities = { b82: ent };
@@ -815,7 +815,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const tgt = vm.runInContext("live_cache.clear(); choose_target(true)", ctx);
 		character.x = sx; character.y = sy; ctx.parent.entities = sv82;
 		ctx.G.maps.main.monsters.pop(); delete ctx.G.monsters.brute82;
-		vm.runInContext("Object.assign(state, __bk82); state.last_pick = 0; live_cache.clear()", ctx);
+		vm.runInContext("Object.assign(state, __bk82); live_cache.clear()", ctx);
 		assert(unsafe, "v25.82: setup: the model calls brute82 unsafe");
 		assert(picked === "brute82" && unmeasured, `v25.82: ...unmeasured, it's picked (${picked})`);
 		assert(tgt === ent, `v25.82: ...and targeted (${tgt && tgt.id})`); }
@@ -2502,7 +2502,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.G.maps.main.monsters.push({ type: "edge", count: 6, boundary: [600, 600, 800, 800] }, { type: "wall", count: 6, boundary: [900, 900, 1000, 1000] }, { type: "meh", count: 6, boundary: [1100, 1100, 1200, 1200] });
 		const goo = "main:100,100,400,400#goo", wall = "main:900,900,1000,1000#wall", hunt = "state.directive = { monster: 'meh', map: 'main', boundary: [1100, 1100, 1200, 1200], count: 6, reason: 'monster hunt 5 left', hunt: true, until: Date.now() + 1e6 }";
 		const due = "state.explore.last_end = Date.now() - (CFG.explore.every_min * 60_000 + 1000)";
-		R(`state.measured = { '${goo}': 5000 }; state.meas_at = {}; state.measured_gold = {}; state.explore = { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }; state.pack = null; state.last_pick = 0`);
+		R(`state.measured = { '${goo}': 5000 }; state.meas_at = {}; state.measured_gold = {}; state.explore = { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }; state.pack = null`);
 		assert(R("!safe_enough(fight_math(G.monsters.wall))"), "v25.82: setup: the model calls wall unsafe");
 		assert(R("!!fight_profile('wall')"), "v25.82: ...and it's fought anyway");
 		R("pick_pack()");
@@ -2516,7 +2516,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("state.explore.cur.until - state.explore.cur.start") === R("CFG.explore.trial_min * 60_000"), "v25.82: ...for trial_min");
 		assert(R(`state.explore.cur.key === '${wall}'`), "v25.82: ...at wall's camp");
 		assert(!R("state.explore.tried.wall"), "v25.82 (N6): a trial isn't stamped tried when it starts");
-		R("state.last_pick = 0; pick_pack(); explore_check()");
+		R("pick_pack(); explore_check()");
 		assert(R("state.pack.mtype === 'wall' && !!state.explore.cur"), "v25.82: the trial holds through repicks");
 		// the trial's session measures the camp like any other
 		R(`state.measured['${wall}'] = 3`);
@@ -2528,22 +2528,31 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(R("state.explore.next && state.explore.next.mtype") === "edge", "v25.82: next untried: edge");
 		assert(R(`state.pick_table.find((c) => c.key === '${wall}').m`) === 3, "v25.82: the tried camp is ranked by its measured rate");
 		// a live hunt wins over exploration: due, but the hunt's camp is picked and no trial starts
-		R(`${due}; ${hunt}; state.last_pick = 0; pick_pack()`);
+		R(`${due}; ${hunt}; pick_pack()`);
 		assert(R("state.pack && state.pack.mtype") === "meh" && !R("state.explore.cur"), `v25.82: a live hunt wins over exploration in the pick (${R("state.pack && state.pack.mtype")})`);
 		R("explore_check()");
 		assert(R("state.pack && state.pack.mtype") === "meh" && !R("state.explore.cur"), "v25.82: ...and in explore_check");
 		// ...and a hunt arriving mid-trial ends the trial; cut short, it doesn't count as tried (N6)
-		R("state.directive = null; state.last_pick = 0; pick_pack()");
+		R("state.directive = null; pick_pack()");
 		assert(R("state.pack.explore && state.pack.mtype === 'edge'"), "v25.82: no hunt: the trial starts (edge)");
 		R(`${hunt}; explore_check()`);
 		assert(R("state.pack.mtype === 'meh' && !state.explore.cur"), "v25.82: a hunt arriving mid-trial ends it");
 		assert(R("hist.ev.some((e) => e.type === 'explore_end' && e.mtype === 'edge' && e.why === 'a hunt' && !e.rated)"), "v25.82: ...logged as cut short by a hunt, nothing measured");
 		assert(!R("state.explore.tried.edge"), "v25.82 (N6): a trial cut short isn't stamped tried");
-		R("state.directive = null; state.last_pick = 0; state.explore.last_end = Date.now(); pick_pack()");
+		R("state.directive = null; state.explore.last_end = Date.now(); pick_pack()");
 		assert(R("state.explore.next && state.explore.next.mtype") === "edge", "v25.82 (N6): ...so edge is still next");
+		// a second trial in a row that records nothing (cut short again): edge waits 24 h, "no kills in 2 trials"
+		R(`${due}; state.directive = null; pick_pack()`);
+		assert(R("state.pack.explore && state.pack.mtype === 'edge'"), "v25.82: edge's second trial starts");
+		R("state.explore.cur.until = Date.now() - 1; explore_check()");
+		assert(R("state.explore.tried.edge > 0"), "v25.82: two trials in a row with no rate: edge is marked tried for 24 h");
+		assert(R("state.explore.why.edge") === "no kills in 2 trials", "v25.82: ...with the reason");
+		R("pick_pack()");
+		assert(R("!state.explore.next || state.explore.next.mtype !== 'edge'"), "v25.82: ...so it isn't next any more");
+		R("delete state.explore.tried.edge; delete state.explore.why.edge; state.explore.last_end = Date.now(); pick_pack()");
 		// N8: a camp whose ceiling (count / respawn × xp) can't beat the best measured rate isn't a trial target
 		R(`state.measured['${goo}'] = 9000`);
-		R("state.last_pick = 0; pick_pack()");
+		R("pick_pack()");
 		assert(R("state.explore.next === null"), `v25.82 (N8): best measured 9000 xp/s: edge (ceiling ~8800) is no candidate (${R("JSON.stringify(state.explore.next)")})`);
 		R(`state.measured['${goo}'] = 5000`);
 		// N9: the camp we stand at, unmeasured, is measured in place — not a trial target
@@ -2552,7 +2561,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(!nx9 || nx9.mtype !== "edge", `v25.82 (N9): the camp we're at isn't the next trial (${nx9 && nx9.mtype})`);
 		R(`state.measured['${goo}'] = 5000; state.pack = null`);
 		// N11: the trial-end pick waits while the party is broken (a member dead), as every other pick path does
-		R(`${due}; state.directive = null; state.last_pick = 0; pick_pack()`);
+		R(`${due}; state.directive = null; pick_pack()`);
 		assert(R("!!state.explore.cur"), "v25.82: setup: a trial runs");
 		hb("Sanala", { ...san, x: 20, y: 0, hp: 0, max_hp: 3000, rip: true });
 		R("globalThis.__pp11 = pick_pack; globalThis.__n11 = 0; pick_pack = () => __n11++; state.explore.cur.until = Date.now() - 1; explore_check(); pick_pack = __pp11");
@@ -2561,9 +2570,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		R("explore_check()");
 		assert(!R("state.explore.cur"), "v25.82 (N11): ...and ends once it's whole again");
 		// the report line
+		R("state.explore.tried.edge = Date.now(); state.explore.why.edge = 'no kills in 2 trials'");
 		const out88 = []; ctx.__F88 = (k, w, t) => out88.push(t);
 		R("state.type_skip = { cgoo: Date.now() + 3600000 }; state.deaths_nc = [Date.now()]; facts_explore(__F88, { now: Date.now() }); state.type_skip = {}; state.deaths_nc = []");
-		assert(/^explore: tried 1 types in 24h \(wall\), next: .+, skipped \(impossible\): cgoo until \d\d:\d\d, deaths not counted: 1$/.test(out88[0] || ""), `v25.82: the explore report line (${out88[0]})`);
+		assert(/^explore: tried 2 types in 24h \(wall, edge \(no kills in 2 trials\)\), next: .+, skipped \(impossible\): cgoo until \d\d:\d\d, deaths not counted: 1$/.test(out88[0] || ""), `v25.82: the explore report line (${out88[0]})`);
 		// N14: forget() clears the tried types and the uncounted deaths too
 		R("state.deaths_nc = [Date.now()]; globalThis.__ss14 = save_state; save_state = () => {}; forget(); save_state = __ss14");
 		assert(R("Object.keys(state.explore.tried).length === 0"), "v25.82 (N14): forget() clears explore.tried");
@@ -2689,7 +2699,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// N2: the refusal says why, everywhere
 		assert(/^can't out-heal it \(net \d+ vs pool 1000\)$/.test(R("refuse_why('sus82')")), `v25.82 (N2): refuse_why: "can't out-heal it (net X vs pool Y)" (${R("refuse_why('sus82')")})`);
 		assert(/can't out-heal it \(net \d+ vs pool 1000\)/.test(R("goal_blocked('sus82', 'main', [-900, -900, -800, -800])") || ""), `v25.82 (N2): goal_blocked says it (${R("goal_blocked('sus82', 'main', [-900, -900, -800, -800])")})`);
-		R(`state.measured['${key}'] = 50; state.last_pick = 0; state.directive = null; pick_pack()`);
+		R(`state.measured['${key}'] = 50; state.directive = null; pick_pack()`);
 		assert(/can't out-heal it/.test(R(`(state.pick_table.find((c) => c.key === '${key}') || {}).out`) || ""), `v25.82 (N2): the pick table says it (${R(`JSON.stringify(state.pick_table.find((c) => c.key === '${key}'))`)})`);
 		R(`delete state.measured['${key}']; state.pack = null`);
 		const l0 = log.length; R("why_not('sus82')");
@@ -5292,7 +5302,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		ctx.parent.entities = { n5: mild("n5", 60, 5), n4: mild("n4", 200, 4), n10: mk("n10", 40, 10), o9: { ...mk("o9", 30, 9), mtype: "goo" } };
 		assert(R("sustainable(live_math(parent.entities.n4)) && sustainable(live_math(parent.entities.n5))"), "setup: n4 and n5 are out-healed");
 		assert(!R("sustainable(live_math(parent.entities.n10))"), "setup: the level-10 one (20k a hit) isn't");
-		assert(R("choose_target(true)?.id") === "n4", `v25.82 (N5): nothing passes: the last resort — the lowest-level one of the camp's type the party out-heals (${R("choose_target(true)?.id")})`);
+		assert(R("choose_target(true)?.id") === "n4", `v25.82 (N5): nothing passes: the last resort — the lowest-level one of the camp's type the party kills in time (${R("choose_target(true)?.id")})`);
 		ctx.parent.entities.ok1 = mk("ok1", 250, 1);
 		R("live_cache.clear()");
 		assert(R("choose_target(true).id") === "ok1", "a monster that passes is there: that one first");
@@ -5334,17 +5344,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const n10a = ctx.parent.entities.n10.attack; ctx.parent.entities.n10.attack = 60; // (its 20k a hit fails the sustain test — v25.82)
 		assert(R("choose_target(true)?.id") === "n10", `v25.58 (owner: kill things in the camp): a level-10 one is taken too, on the real live check (${R("choose_target(true)?.id")})`);
 		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5e8; R("live_cache.clear()");
-		assert(R("choose_target(true)?.id") === "n10", "v25.82 (N5): over hopeless_ttk_s but out-healed: the last resort still takes it");
-		{ const out = []; ctx.__F58 = (k, w, t) => out.push(t); Object.assign(character, { x: 0, y: 0 });
-			R("facts_targets(__F58, { p: state.pack, d: null, now: Date.now() })");
-			assert(/1 over 180s a kill — the tank takes them, lowest first/.test(out.join()), `v25.82 (N2): report: the slow one is a last resort (${out.join()})`); delete ctx.__F58; }
-		ctx.parent.entities.n10.attack = n10a; R("live_cache.clear()");
-		assert(R("choose_target(true)") === null, "v25.82 (N5): ...but not one the party can't out-heal");
+		assert(R("choose_target(true)") === null, "v25.82 (N5): the last resort keeps hopeless(): one the party can't kill within hopeless_ttk_s is never taken, out-healed or not");
 		{ const out = []; ctx.__F58 = (k, w, t) => out.push(t); Object.assign(character, { x: 0, y: 0 });
 			R("facts_targets(__F58, { p: state.pack, d: null, now: Date.now() })"); const gk58 = R("gap_kind()");
-			assert(/1 levelled past what the party out-heals — never taken/.test(out.join()), `v25.82 (N2): report: the one the party can't out-heal is named so (${out.join()})`);
-			assert(!/skipped after an impossible fight/.test(out.join()), "v25.82 (N2): ...not as an impossible-fight skip");
+			assert(/1 the party can't kill within 180s — never taken/.test(out.join()), `v25.82 (N2): report: the unkillable one is named so (${out.join()})`);
 			assert(/none the party can kill/.test(gk58), `report: camp time: none the party can kill (${gk58})`); delete ctx.__F58; }
+		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5000; ctx.parent.entities.n10.attack = n10a; R("live_cache.clear()");
+		assert(R("choose_target(true)?.id") === "n10", "v25.82 (N5): one killed in time that fails the live sustain test (20k a hit): the last resort takes it");
+		{ const out = []; ctx.__F58 = (k, w, t) => out.push(t); Object.assign(character, { x: 0, y: 0 });
+			R("facts_targets(__F58, { p: state.pack, d: null, now: Date.now() })");
+			assert(/1 levelled past what the party out-heals — the tank takes them, lowest first/.test(out.join()), `v25.82 (N2): report: the levelled one is a last resort (${out.join()})`);
+			assert(!/skipped after an impossible fight/.test(out.join()), "v25.82 (N2): ...not an impossible-fight skip"); delete ctx.__F58; }
 		ctx.parent.entities.n10.hp = ctx.parent.entities.n10.max_hp = 5000; ctx.parent.entities.n10.attack = 60; R("live_cache.clear()");
 		// v24.65: where the camp time goes
 		assert(R("gap_kind()") === "monsters alive, walking to the next one" || R("gap_kind()") === "monsters alive, none chosen" || R("gap_kind()") === "monsters alive, in reach, swing on cooldown", `the tank with untouched camp monsters around: ${R("gap_kind()")}`);
