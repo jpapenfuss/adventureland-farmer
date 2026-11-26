@@ -63,6 +63,13 @@ function quest_directive(guide_only) {
 	}
 	return null;
 }
+// v25.82: who still has an unfinished hunt for this monster, as "Name 38 left, …" (null if nobody does)
+function hunt_open(mt) {
+	const own = character.s.monsterhunt, out = [];
+	if (own?.id === mt && own.c > 0) out.push(`${character.name} ${own.c} left`);
+	for (const p of partners()) if (p.hunt?.id === mt && p.hunt.c > 0) out.push(`${p.name} ${p.hunt.c} left`);
+	return out.length ? out.join(", ") : null;
+}
 function hunt_directive() {
 	const h = character.s.monsterhunt;
 	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
@@ -171,6 +178,14 @@ function refresh_directive() {
 	// turns (pick_shared).
 	let d = mine;
 	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
+	// v25.82 (owner): once the party reaches a member's monster hunt, it stays until that hunt is done — no turns, no
+	// better camp, no boss. The one exception is a finished hunt about to lapse: hunts_trip_due's late turn-in (under
+	// hunt_turnin_ms) takes the party to town, and this hold brings it back.
+	if (state.hunt_hold && !hunt_open(state.hunt_hold.monster)) state.hunt_hold = null;
+	if (!state.hunt_hold && d && !d.boss && hunt_open(d.monster) && d.map === character.map && valid_boundary(d.boundary) &&
+		in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]))
+		state.hunt_hold = { monster: d.monster, map: d.map, boundary: d.boundary, count: d.count, at: now };
+	if (state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (held until done)`, guide_safe: false, hold: true };
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list

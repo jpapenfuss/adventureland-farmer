@@ -1,4 +1,4 @@
-const VERSION = "25.61"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.82"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -230,9 +230,9 @@ const CFG = {
 	// v24.89: the merchant buys at Ponty the quest materials the fighters are short of (their heartbeats' qshort, less
 	// what the bank and its bags hold) — a listing at most ponty_material_max gold (Ponty sells a whole listing)
 	ponty_materials: true, ponty_material_max: 250_000,
-	// v24.81: an upgrade step under the odds floor is tried with the next scroll up (the server: x1.2 + 1%, so +4 goes
-	// 70% → 85%, +5 60% → 73%) when that scroll costs at most this — scroll1 (40k), never scroll2. Only for pieces an
-	// NPC doesn't sell (a shop piece is cheaper to rebuy than to protect).
+	// v24.81 / v25.82: every upgrade step tries the next scroll up (the server: x1.2 + 1%, so +4 goes 70% → 85%, +5
+	// 60% → 73%) when it costs at most this — scroll1 (40k), never scroll2 (1.6M) — and takes it if the odds rise. Not for
+	// a piece an NPC sells for less than that scroll (rebought instead).
 	upgrade_boost_max: 50_000,
 	secondhand_gold_per_pt: 300_000, // v25.50: = upgrade_gold_per_pt — a point bought is worth what a point built is (was 100k)
 	// v25.47 (owner: "We have fighters wearing Ring of Small Joys +2. Why are we not actively stockpiling them by buying

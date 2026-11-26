@@ -125,14 +125,19 @@ async function run_upgrade(a, row) {
 	if (scroll === "scroll2" || from >= CFG.upgrade_max_level) floor = Math.max(floor, CFG.upgrade_high.min_chance);
 	if (a.min_chance) floor = Math.max(floor, a.min_chance); // v25.39: a worn piece's project (upgrade_worn.min_chance)
 	let off = null;
-	if (preview && !(preview.chance >= floor)) { // v24.81: the next scroll up may lift it over (cheaper than an offering)
+	// v24.81: the next scroll up lifts the odds (the server: x1.2 + 1%, so +4 goes 70% → 85%, +5 60% → 73%).
+	// v25.82 (owner: "use higher scrolls even if the cost is greater, to ensure success"): every step takes it when it
+	// costs at most upgrade_boost_max, not only a step under the floor; a piece an NPC sells for less than that
+	// scroll is still rebought instead
+	if (preview && preview.chance < 1) {
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
-		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !(shop_for(a.name) && !G.items[a.name]?.cash) && upg_gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
+		const cheap = shop_for(a.name) && !G.items[a.name]?.cash && (G.items[a.name]?.g || 0) < hc;
+		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !cheap && upg_gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
 			await ensure_scroll(hs);
 			if (!has_computer()) await go("upgrade");
 			await wait_budget(1, RESERVE.errand);
 			const p3 = await T(upgrade(k, find_slot(hs, 0), null, true)).catch(() => null);
-			if (p3?.chance >= floor) { game_log(`upgrade ${a.name}: ${hs} lifts +${from + 1} from ${Math.round(preview.chance * 100)}% to ${Math.round(p3.chance * 100)}%`, C.info); preview = p3; scroll = hs; }
+			if (p3?.chance > preview.chance) { game_log(`upgrade ${a.name}: ${hs} lifts +${from + 1} from ${Math.round(preview.chance * 100)}% to ${Math.round(p3.chance * 100)}%`, C.info); preview = p3; scroll = hs; }
 		}
 	}
 	if (preview && !(preview.chance >= floor)) { // a Primling (or other allowed offering) in the bags may lift it over

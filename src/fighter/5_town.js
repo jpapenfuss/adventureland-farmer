@@ -229,7 +229,7 @@ function hunts_trip_due() {
 	const mine = character.s.monsterhunt, late = [[character.name, hunt_state() === "ready" ? mine.ms : null], ...partners().map((p) => [p.name, p.hs === "ready" ? p.hms : null])]
 		.filter(([, ms]) => ms > 0 && ms < CFG.hunt_turnin_ms);
 	if (late.length) return `monster hunts (${late.map(([n]) => `${n} to turn in before it lapses`).join(", ")})`;
-	if (!st.length || st.some(([, s]) => s === "chase")) return null;
+	if (!st.length || st.some(([, s]) => s === "chase") || state.hunt_hold) return null; // v25.82: a held hunt is finished first
 	const go = st.filter(([, s]) => s === "ready" || s === "none");
 	return go.length ? `monster hunts (${go.map(([n, s]) => `${n} ${s === "ready" ? "to turn in" : "to take"}`).join(", ")})` : null;
 }

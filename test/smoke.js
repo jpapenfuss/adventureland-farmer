@@ -759,7 +759,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Torlis", ctype: "paladin", level: 41, map: "main", x: 0, y: 0, hp: 900, max_hp: 900, attack: 60, frequency: 1, range: 30, armor: 60, resistance: 30, damage_type: "physical" });
 	ctx.G.monsters.minimush = { xp: 100, hp: 300, attack: 8, respawn: 10, range: 20, speed: 10, frequency: 1 };
 	ctx.G.maps.main.monsters.push({ type: "minimush", count: 8, boundary: [200, 200, 400, 400] });
-	vm.runInContext(`state.turn = null; state.guide_ignore = {}; state.gprog = null;
+	character.s = {}; // (test 35's goo hunt would hold the party at goo: v25.82)
+	vm.runInContext(`state.turn = null; state.guide_ignore = {}; state.gprog = null; state.hunt_hold = null;
 		state.guide_farm = { monster: "goo", map: "main", boundary: [-100,-100,100,100], count: 5, reason: "guide hunt_farm", guide_safe: true, until: Date.now() + 1e6 }`, ctx);
 	handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 		goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
@@ -768,6 +769,26 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
 	assert(vm.runInContext("state.directive.monster === 'minimush' && state.directive.for_partner && /Aspernari: guide quest wgloves/.test(state.directive.reason)", ctx),
 		`second turn: partner's goal (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
+	// 37b) v25.82 (owner): at a member's hunt the party stays until it's done — the turns (and every other goal) wait
+	{ vm.runInContext("state.turn = null; state.hunt_hold = null; state.directive = null; state.goals_cache = null", ctx);
+		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
+		vm.runInContext("refresh_directive()", ctx); // Torlis's turn: goo (the guide row), and we stand in it
+		assert(vm.runInContext("state.hunt_hold?.monster === 'goo' && state.directive.hold && /Aspernari 7 left/.test(state.directive.reason)", ctx),
+			`v25.82: standing at a member's hunt holds it (${vm.runInContext("JSON.stringify([state.hunt_hold, state.directive?.reason])", ctx)})`);
+		vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
+		assert(vm.runInContext("state.directive.monster === 'goo' && state.directive.hold", ctx), `v25.82: the partner's turn waits until the hunt is done (${vm.runInContext("state.directive.monster", ctx)})`);
+		Object.assign(character, { x: 300, y: 300 }); vm.runInContext("refresh_directive()", ctx); Object.assign(character, { x: 0, y: 0 });
+		assert(vm.runInContext("state.directive.monster === 'goo'", ctx), "v25.82: the hold isn't dropped by leaving the camp (a town trip brings the party back)");
+		assert(vm.runInContext("hunts_trip_due()", ctx) === null, "v25.82: no hunt town trip while a hunt is held");
+		handlers.cm({ name: "Sanala", message: { k: "hb", level: 57, ctype: "mage", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, hs: "ready", hms: 200_000 } });
+		assert(/before it lapses/.test(vm.runInContext("hunts_trip_due()", ctx) || ""), "v25.82: a finished hunt lapsing within 5 min is the one exception");
+		vm.runInContext("delete state.partners.Sanala", ctx);
+		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+			hunt: null, hs: "ready", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
+		vm.runInContext("refresh_directive()", ctx);
+		assert(vm.runInContext("!state.hunt_hold && !state.directive.hold", ctx), "v25.82: the hold ends once the hunt is done");
+		vm.runInContext("state.hunt_hold = null; state.turn = null", ctx); }
 
 	// 38) mutual goals win: Torlis's guide row is goo; Aspernari's goals include tortoise (hunt) and minimush (quest).
 	//     Torlis also needs a minimush drop → minimush is mutual and beats both lists' top items.
@@ -3533,6 +3554,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			const r2 = await R("run_upgrade({ name: 'mpg139', level: 1 })").then(() => "ok", (e) => e.reason);
 			assert(r1 === "low_chance" && r2 === "ok" && rolls.length === 1, `a worn piece's step at 85%: refused with min_chance 0.9 (${r1}), taken without (${r2})`);
 			ctx.upgrade = up0; character.items = Array(42).fill(null);
+		}
+		// v25.82 (owner: "use higher scrolls even if the cost is greater"): the next scroll up is taken whenever it lifts
+		// the odds, not only under the floor
+		{
+			const up0 = ctx.upgrade, rolls = [];
+			ctx.upgrade = (k, sk, off, calc) => calc ? Promise.resolve({ chance: character.items[sk]?.name === "scroll1" ? 0.95 : 0.85 }) : (rolls.push(character.items[sk]?.name), Promise.resolve({ success: true }));
+			character.items = Array(42).fill(null); character.items[1] = { name: "mpg139", level: 1 }; character.items[2] = { name: "computer" }; character.items[3] = { name: "scroll0", q: 5 }; character.items[4] = { name: "scroll1", q: 5 };
+			const gs = character.gold; character.gold = 5e6;
+			await R("run_upgrade({ name: 'mpg139', level: 1 })");
+			assert(rolls.join() === "scroll1", `v25.82: an 85% step is rolled with scroll1 at 95% (${rolls.join()})`);
+			character.gold = gs; ctx.upgrade = up0; character.items = Array(42).fill(null);
 		}
 		// a spare copy in the bank: the normal project, not the worn piece
 		R("state.gear_skip = {}; for (const n in G.items) if (n !== 'mpg139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test'); state.bank_gear = [{ name: 'mpg139', level: 0 }]");
