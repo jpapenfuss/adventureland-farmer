@@ -1,5 +1,5 @@
 // =====================================================================
-// fighter/2_camp.js — fighters only (src/manifest.json): camp choice and review: scoring, danger checks, probes, waypoints, patrol
+// fighter/2_camp.js — fighters only (src/manifest.json): camp choice and review: scoring, danger checks, exploration, waypoints, patrol
 // =====================================================================
 // The maps a walk crosses after leaving `from`, ending with `to` (the BFS route; smart_move's may differ a little)
 function map_route(from, to) {
@@ -20,15 +20,16 @@ function area_danger(area, mt) {
 }
 // A route through (or into) a map with such a monster that's also faster than us — it can't be outrun: "mt @ map", else null.
 // v24.16: smart_move's route (route_to); from defaults to us (the leader also checks each member's way there)
-function route_danger(to, tx, ty, from) {
+// (v25.82: except — the destination camp's own type, fought there, not walked past)
+function route_danger(to, tx, ty, from, except = null) {
 	const v = character.speed || 55;
 	const sp = G.maps[to]?.spawns?.[0] || [0, 0];
 	// v24.17: with door data, the danger is only real if there's no way around it (go() walks the way around)
-	if (G.maps[(from || character).map]?.doors) { const pl = route_plan(to, tx ?? sp[0], ty ?? sp[1], from || undefined); return pl ? pl.danger : null; }
+	if (G.maps[(from || character).map]?.doors) { const pl = route_plan(to, tx ?? sp[0], ty ?? sp[1], from || undefined, except); return pl ? pl.danger : null; }
 	const r = { maps: map_route((from || character).map, to) };
 	for (const m of r.maps) for (const [pk] of map_areas(m)) {
 		const t = pk.type;
-		if (no_go(t, v)) return `${t} @ ${m}`;
+		if (t !== except && no_go(t, v)) return `${t} @ ${m}`;
 	}
 	return null;
 }
@@ -51,7 +52,7 @@ function looming() {
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (!e || e.type !== "monster" || !e.visible || e.dead || (e.target && party.has(e.target))) continue; // on us: fight()'s escape
-		if (e.mtype === state.pack?.mtype) continue; // what the party came for (a boss, a probe): not something to avoid
+		if (e.mtype === state.pack?.mtype) continue; // what the party came for (a boss, a trial): not something to avoid
 		const d = distance(character, e);
 		if (d >= bd) continue;
 		// v24.25: only one coming our way (moving, its next point nearer us) or already very close — a wandering ent
@@ -82,12 +83,12 @@ function keep_away(e) {
 }
 // v24.16: together, a spot is only as safe as the way there for every member (one in another map walks its own route)
 // (v25.75, audit: x/y — the camp itself; without, the map's spawn)
-function party_route_danger(to, x, y) {
-	const own = route_danger(to, x, y);
+function party_route_danger(to, x, y, except = null) {
+	const own = route_danger(to, x, y, undefined, except);
 	if (own || !in_party_cfg()) return own;
 	for (const p of partners()) {
 		if (p.map === character.map || p.errand) continue;
-		const q = partner_pos(p), rd = route_danger(to, x, y, { map: q.map, x: q.x, y: q.y });
+		const q = partner_pos(p), rd = route_danger(to, x, y, { map: q.map, x: q.x, y: q.y }, except);
 		if (rd) return `${rd} (${p.name}'s way)`;
 	}
 	return null;
@@ -101,7 +102,7 @@ const dir_key = (now = Date.now()) => { const d = state.directive; return d && d
 // v24.84: the tank's camp review — on time, or early once the party is stronger than at the last pick
 function camp_review() {
 	const cur = state.pack, now = Date.now(), since = now - (state.review_at || state.camp_at || now);
-	if (!cur || cur.boss || cur.probe || errand_busy() || party_hit()) return false;
+	if (!cur || cur.boss || cur.explore || errand_busy() || party_hit()) return false; // (a trial: explore_check ends it)
 	const pw = party_power(), p0 = state.review_pw;
 	// v24.88: a new goal (a hunt taken, a quest's material) or one ended → review after a minute, not up to 30
 	const dir = dir_key(now);
@@ -139,69 +140,51 @@ function set_pack(p, label) {
 // v25.69 (owner: "why did we go to squigtoads, kill 2, turn around and leave?"): why pick_pack would refuse a goal at
 // this spot, or null. The goal rotation handed turns to goals refused here, and each such turn sent the party to the
 // best camp for a minute or two, between the goals it could farm.
-function goal_blocked(mt, map, boundary, guide_safe) {
-	// (state.safe: the last pick's verdict; a type it hasn't judged yet: the fight model's)
-	const safe = state.safe[mt] !== undefined ? !!state.safe[mt] : !!fight_profile(mt);
-	if (!safe && !(guide_safe && farmable_type(mt))) return "not safe for us";
+function goal_blocked(mt, map, boundary) {
+	// (state.safe: the last pick's verdict; a type it hasn't judged yet: fight_profile's)
+	if (type_skipped(mt) || !(state.safe[mt] !== undefined ? state.safe[mt] : fight_profile(mt))) return type_skipped(mt) ? `skipped until ${hhmm(state.type_skip[mt])} (an impossible fight)` : `the party can't kill it within ${CFG.hopeless_ttk_s}s`;
 	if (!map || !valid_boundary(boundary)) return null;
 	const area = { map, boundary, mtype: mt };
-	const dz = area_danger(area, mt) || party_route_danger(map, (boundary[0] + boundary[2]) / 2, (boundary[1] + boundary[3]) / 2);
+	const dz = area_danger(area, mt) || party_route_danger(map, (boundary[0] + boundary[2]) / 2, (boundary[1] + boundary[3]) / 2, mt);
 	if (dz) return dz;
 	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
 }
+const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
-// ---- Probing (CFG.probe) ----
-// How far over the safety limit a monster is: fight_risk ÷ the same budget safe_enough uses (1 = exactly at it)
-function risk_over(mt) {
-	const m = G.monsters[mt], f = m && fight_math(m);
-	if (!f) return Infinity;
-	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mt, f) * heal_mult(f);
-	return fight_risk(f) / Math.max(1, limit);
+// ---- Exploration (v25.82, owner: "Stop being so conservative. Try killing everything.") ----
+// Every CFG.explore.every_min of farming the tank gives an untried camp — no measured xp or gold rate — a trial of
+// trial_min, the highest xp per kill first (G.monsters xp x our xp multiplier; no safety model). The trial's session
+// records its rates like any other (state.measured, measured_gold); then the pick ranks it by them. A type tried in
+// the last 24 h waits (a trial that measured nothing isn't repeated every half hour). Hunts come first.
+const untried = (key) => state.measured[key] === undefined && !state.measured_gold[key];
+const is_hunt_goal = (d) => !!d && (!!d.hunt || /monster hunt/.test(d.reason || ""));
+const explore_xp = (mt) => (G.monsters[mt]?.xp || 0) * (xp_mult() || 1);
+// The next untried camp, from this pick's candidates (they passed the pick's own checks: a spawn worth farming, not
+// resting, no danger next to it or on the way, reachable)
+function explore_next(cands, now = Date.now()) {
+	const tried = state.explore.tried;
+	return cands.filter((c) => untried(pack_key(c)) && !(now - (tried[c.mtype] || 0) < 86_400_000))
+		.sort((a, b) => explore_xp(b.mtype) - explore_xp(a.mtype) || b.score - a.score)[0] || null;
 }
-// May the leader start a probe now? Everyone near, healthy and stocked; nothing else special going on
-function probe_ready() {
-	const P = CFG.probe, now = Date.now();
-	if (!P?.enabled || is_follower() || is_merchant() || (in_party_cfg() && leader_name() !== character.name) || state.probe || now - (state.probe_at || 0) < P.every_min * 60_000) return false;
-	if (state.directive?.boss || event_live() || errand_busy() || state.recovering || character.rip) return false;
-	const all = partners();
-	if (partners_near().length < all.length || character.hp < character.max_hp * 0.8) return false;
-	if (pot_count("hp") < CFG.pot_min * 2 || pot_count("mp") < CFG.pot_min * 2) return false;
-	return all.every((p) => p.max_hp && p.hp >= p.max_hp * 0.8 && (p.pots?.hp ?? 0) >= CFG.pot_min * 2 && (p.pots?.mp ?? 0) >= CFG.pot_min * 2);
+function explore_end(why_, now = Date.now()) {
+	const E = state.explore, c = E.cur;
+	if (!c) return;
+	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null });
+	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})`, C.info);
+	E.cur = null; E.last_end = now; E.none_at = 0;
 }
-// Best-xp spot of a monster just past the limit that would beat the best normal spot (this pick's) by min_gain
-function probe_pick() {
-	const P = CFG.probe, now = Date.now(), ref = state.best_score;
-	let best = null;
-	for (const mt in G.monsters) {
-		if (!farmable_type(mt) || skipped("probe:" + mt)) continue; // safe ones fail r > 1 below
-		const r = risk_over(mt);
-		if (!(r > 1 && r <= P.max_over)) continue;
-		const m = G.monsters[mt], f = fight_math(m);
-		each_area((pack, area) => {
-			if (pack.type !== mt || (!pack.grow && (expected_respawn(mt, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
-			if ((state.cooldown[pack_key(area)] || 0) > now) return;
-			// v24.54: a probe spot gets the same checks as any other — no no-go neighbour, a safe way there. The probe
-			// picked cgoo@level2s, whose only way passes the ents: the tank stood in town repeating "deadly_route".
-			if (area_danger(area, mt) || party_route_danger(area.map)) return;
-			// v24.3: a spot probed before is judged by what it measured (a probe that held far below its estimate was
-			// re-probed every win_cooldown_h forever); raw = the unscaled estimate, the unit realism compares against
-			const raw = kill_value(mt, null) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(mt, pack));
-			const est = meas_aged(pack_key(area), raw * state.realism); // v24.7: aged
-			if (est > 0 && est >= P.min_gain * (ref || 0) && (!best || est > best.est)) best = { mt, area, est, raw, r, ttk: f.ttk, pred: Math.round(fight_risk(f)) };
-		});
+// The tank, each tick: end a trial on time, or as soon as a hunt is live (hunts first); start one when it's due
+function explore_check() {
+	if (is_follower() || is_merchant() || (in_party_cfg() && leader_name() !== character.name)) return;
+	const E = state.explore, X = CFG.explore, now = Date.now(), d = state.directive && state.directive.until > now ? state.directive : null;
+	if (E.cur) {
+		if (now >= E.cur.until || (is_hunt_goal(d) && d.monster !== E.cur.mtype) || d?.boss) { state.last_pick = 0; pick_pack(); }
+		return;
 	}
-	return best;
-}
-// "over the safety limit x1.27 (calibration x0.74, incidents x0.70, 2 with us)": by how much a type fails, and what
-// scales its limit — the fight model's risk against the HP pool x safety x calibration x incidents (flees, deaths: they
-// fade) x the priest's bonus, judged as fight_profile judges it
-function over_text(mt) {
-	const m = G.monsters[mt], f = m && fight_math(m);
-	if (!f) return "over the safety limit (no damage on it)";
-	const lim = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mt, f) * heal_mult(f);
-	const inc = state.danger[mt] || 1, cal = calib_factor(mt, f);
-	return `over the safety limit x${(fight_risk(f) / lim).toFixed(2)} (calibration x${cal.toFixed(2)}${inc !== 1 ? `, incidents x${inc.toFixed(2)}` : ""}, ${f.mates} with us${f.priest ? "" : ", no priest"})`;
+	if (now - (E.last_end || 0) < X.every_min * 60_000 || now - (E.none_at || 0) < 300_000) return;
+	if (is_hunt_goal(d) || d?.boss || errand_busy() || party_hit() || walking() || character.rip || (in_party_cfg() && party_break())) return;
+	pick_pack();
 }
 var camp_load_at = Date.now(); // (var: pick_pack can run before this file's top level — v25.70's load wait)
 function pick_pack() {
@@ -217,13 +200,16 @@ function pick_pack() {
 		if (!state.goals_at_load) { state.goals_at_load = true; camp_load_at = now; setTimeout(() => { try { refresh_directive(); } catch (e) {} camp_load_at = 0; }, 8000); }
 		return;
 	}
-	if (state.probe && now < state.probe.until) { // a probe holds the pack until probe_check ends it
-		state.safe[state.probe.mtype] = state.probe.prof;
-		state.last_pick = now;
-		return;
+	// v25.82: a trial holds its camp until explore_check ends it (time, or a hunt); a camp gone (a death cleared it, the
+	// idle time rested it) or a type no longer fought ends it here
+	const d = state.directive && state.directive.until > now ? state.directive : null, E = state.explore;
+	if (E.cur) {
+		const P = state.pack, hunt = is_hunt_goal(d) && d.monster !== E.cur.mtype;
+		if (now < E.cur.until && !hunt && !d?.boss && P?.explore && pack_key(P) === E.cur.key && !((state.cooldown[E.cur.key] || 0) > now) && state.safe[E.cur.mtype]) { state.last_pick = now; return; }
+		explore_end(now >= E.cur.until ? "time" : hunt ? "a hunt" : d?.boss ? "a boss" : !P?.explore || pack_key(P) !== E.cur.key ? "left the camp (a death, a regroup)" : "the camp is resting", now);
 	}
 	let best = null;
-	const seen = new Set(), route_cache = new Map();
+	const seen = new Set(), route_cache = new Map(), cands = [];
 	state.pick_skips = {};
 	// v24.38: every spot considered and what became of it (report: "spot choice"). out: why it's out, null = a candidate
 	const table = (state.pick_table = []);
@@ -232,52 +218,49 @@ function pick_pack() {
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
 		if (CFG.force_type && t !== CFG.force_type) return;
-		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, over_text(t)); } return; }
+		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, type_skipped(t) ? `skipped until ${hhmm(state.type_skip[t])} (an impossible fight)` : `the party can't kill it within ${CFG.hopeless_ttk_s}s`); } return; }
 		if (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count)) return;
 		if (seen.has(key)) return;
 		if ((state.cooldown[key] || 0) > now) { seen.add(key); note(key, t, area.map, `resting ${mins(state.cooldown[key])} (a flee, a death, or it ran dry)`); return; }
 		seen.add(key);
-		// v24.10: not next to aggressive monsters we can't take on, nor past ones we can't outrun
-		const nb = area_danger(area, t), rd = nb ? null : route_cache.has(area.map) ? route_cache.get(area.map) : (route_cache.set(area.map, party_route_danger(area.map)), route_cache.get(area.map));
+		// v24.10: not next to aggressive monsters we can't take on, nor past ones we can't outrun (v25.82: nor through
+		// burners on the way; the camp's own type is what we go there for)
+		const rk = area.map + "#" + t, nb = area_danger(area, t), rd = nb ? null : route_cache.has(rk) ? route_cache.get(rk) : (route_cache.set(rk, party_route_danger(area.map, undefined, undefined, t)), route_cache.get(rk));
 		if (nb || rd) { state.pick_skips[key] = nb ? `${nb} spawns within ${CFG.danger_px}px` : `the way there passes ${rd}`; note(key, t, area.map, state.pick_skips[key]); return; }
 		const p = { mtype: t, ...area, ...score_area(t, pack, area) };
-		p.rate = p.score; // its rate there in the farm mode's unit (the probe reference; v25.51: p.xp is its xp/s)
+		p.rate = p.score; // its rate there in the farm mode's unit (v25.51: p.xp is its xp/s)
 		p.score *= walk_factor(area); // v24.9: counting the walk there
 		if (!(p.score > 0)) return; // v24.20: unreachable (no way there) or worthless: never the pick (it took "jrat @ jail")
 		note(key, t, area.map, null, { rate: p.rate, score: p.score });
+		cands.push(p);
 		if (!best || p.score > best.score) best = p;
 	});
 	state.last_pick = now;
 	state.review_at = now; state.review_pw = party_power(); // v24.84
 	state.review_dir = dir_key(now); // v24.88
-	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
+	state.best_score = best ? best.rate : 0; // in the farm mode's unit
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
-	if (probe_ready()) {
-		state.probe_at = now;
-		const pb = probe_pick();
-		if (!pb) state.probe_none = { at: now, best: Math.round(state.best_score || 0) };
-		if (pb) {
-			const prof = { ttk: pb.ttk, xp: G.monsters[pb.mt].xp, probe: true };
-			state.probe = { mtype: pb.mt, start: now, until: now + CFG.probe.minutes * 60_000, ratio: pb.r, pred: pb.pred, prof };
-			state.safe[pb.mt] = prof;
-			log_ev("probe_start", { mtype: pb.mt, over: +pb.r.toFixed(2), est: Math.round(pb.est) });
-			state.probe_none = null;
-			return set_pack({ mtype: pb.mt, ...pb.area, est: pb.raw, score: pb.est, probe: true, directive: `probe: ${pb.mt} (risk x${pb.r.toFixed(2)} of the limit)` },
-				`→ PROBE ${pb.mt} @ ${pb.area.map}: risk x${pb.r.toFixed(2)} of the limit, ~${Math.round(pb.est)} ${rate_unit()}`);
+	// v25.82 exploration: due (every_min since the last trial), no hunt and no boss on — the next untried camp
+	const nx = explore_next(cands, now);
+	E.next = nx ? { mtype: nx.mtype, map: nx.map } : null;
+	if (!is_follower() && !is_hunt_goal(d) && !d?.boss && now - (E.last_end || 0) >= CFG.explore.every_min * 60_000) {
+		if (!nx) E.none_at = now;
+		else {
+			const key = pack_key(nx);
+			E.cur = { key, mtype: nx.mtype, map: nx.map, start: now, until: now + CFG.explore.trial_min * 60_000 };
+			E.tried[nx.mtype] = now;
+			log_ev("explore", { mtype: nx.mtype, map: nx.map, xp: G.monsters[nx.mtype].xp, est: Math.round(nx.score) });
+			return set_pack({ ...nx, explore: true, directive: `explore: ${nx.mtype} (untried, ${CFG.explore.trial_min} min trial)` },
+				`→ EXPLORE ${nx.mtype} @ ${nx.map}: untried, ${G.monsters[nx.mtype].xp} xp a kill, ${CFG.explore.trial_min} min trial`);
 		}
 	}
-
-	const d = state.directive;
-	if (d && d.until > now && farmable_type(d.monster) && !state.safe[d.monster] && d.guide_safe)
-		state.safe[d.monster] = { ttk: d.seconds || 5, xp: G.monsters[d.monster].xp, trusted: true }; // guide's kill time,
-		// or 5s if it gave none — the guide's own fight model judged this route safe for us
 	if (d && d.until > now && d.boss)
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
 	if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map, (area.boundary[0] + area.boundary[2]) / 2, (area.boundary[1] + area.boundary[3]) / 2));
+		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map, (area.boundary[0] + area.boundary[2]) / 2, (area.boundary[1] + area.boundary[3]) / 2, d.monster));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
 		if (!dz && !((state.cooldown[pack_key(area)] || 0) > now)) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
@@ -285,14 +268,12 @@ function pick_pack() {
 		}
 	}
 	const cur = state.pack;
-	if (cur && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now) && best && pack_key(best) !== pack_key(cur)) {
+	if (cur && !cur.explore && state.safe[cur.mtype] && !((state.cooldown[pack_key(cur)] || 0) > now) && best && pack_key(best) !== pack_key(cur)) {
 		const cur_v = (cur.est > 0 ? meas_aged(pack_key(cur), cur.est * state.realism) : meas()[pack_key(cur)] ?? cur.score) * walk_factor(cur); // v24.6: aged; v24.9: walk left
 		if (best.score < cur_v * CFG.switch_margin) best = cur;
 	}
-	// v24.36: leaving a spot because it stopped passing the safety check (not for a better one): it rests 5 min. A verdict
-	// near the limit flipped with every small change in the party's stats, and the leader walked between two spots
-	// (72 changes in an hour, cgoo ↔ booboo, through the door between them).
-	if (cur && !cur.boss && !cur.probe && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
+	// v24.36: leaving a spot because its type stopped being fought (not for a better one): it rests 5 min
+	if (cur && !cur.boss && !cur.explore && !state.safe[cur.mtype] && best && pack_key(best) !== pack_key(cur))
 		rest_camp(pack_key(cur), 300_000, now);
 	set_pack(best, best && `→ ${best.mtype} x${Math.round(best.count)} @ ${best.map} (~${best.score.toFixed(0)} ${rate_unit()}${meas()[pack_key(best)] ? " measured" : " est"})`);
 }
@@ -314,29 +295,6 @@ function patrol() {
 	if (can_move_to(next.x, next.y)) move_to_as("patrol", next.x, next.y, 500); // patrol is low priority: a move per 500ms at most
 	else travel_as("patrol", { map: state.pack.map, x: next.x, y: next.y });
 }
-// Leader: end a running probe on time (success) or on trouble (failure)
-function probe_check() {
-	const P = state.probe;
-	if (!P) return;
-	const now = Date.now(), members = [character, ...partners()];
-	const fled = !!state.recovering || partners().some((p) => p.recovering);
-	const low = members.some((p) => p.max_hp && p.hp < p.max_hp * CFG.probe.abort_hp);
-	const dead = !!character.rip || partners_any().some((p) => p.rip);
-	const result = fled || low || dead ? "fail" : now >= P.until ? "ok" : null;
-	if (!result) return;
-	const c = state.calib[calib_key(P.mtype)];
-	log_ev("probe", { mtype: P.mtype, mins: Math.round((now - P.start) / 60_000), result, why: dead ? "death" : fled ? "flee" : low ? "low hp" : "time",
-		ratio: c ? +c.ratio.toFixed(2) : null, n: c?.n || 0, over: +P.ratio.toFixed(2) });
-	skip("probe:" + P.mtype, (result === "ok" ? CFG.probe.win_cooldown_h : CFG.probe.fail_cooldown_h) * 3600_000, result);
-	// v24.6: a probe that held widens the party verdict for that monster by the risk it held at (24h), for every fighter:
-	// before, nothing changed — calibration isn't recorded under tank cover — so it was re-probed every 2h, never adopted
-	if (result === "ok") { const mult = +Math.min(P.ratio * 1.05, CFG.probe.max_over * 1.05).toFixed(3); state.probe_ok[P.mtype] = { mult, at: now }; share_verdict({ kind: "probe_ok", mtype: P.mtype, mult }); }
-	else { delete state.probe_ok[P.mtype]; proven_death(P.mtype); share_verdict({ kind: "probe_fail", mtype: P.mtype }); } // (v25.69: an aborted probe's kills prove nothing for 24h)
-	if (result === "fail" && !fled && !dead) incident(P.mtype, 0.8); // a flee/death already recorded its own incident
-	game_log(`probe ${P.mtype}: ${result === "ok" ? "held for " + CFG.probe.minutes + " min" : "aborted (" + (dead ? "death" : fled ? "flee" : "low hp") + ")"}`, result === "ok" ? C.ok : C.warn);
-	state.probe = null;
-	state.last_pick = 0;
-}
 // ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Best normal spot's xp/s, without being there (for a member that doesn't pick)
 function best_score(kind = farm_kind()) { // (v25.51: kind — "xp" for best_known_xps)
@@ -344,7 +302,7 @@ function best_score(kind = farm_kind()) { // (v25.51: kind — "xp" for best_kno
 	let best = 0;
 	each_area((pack, area) => {
 		const t = pack.type;
-		if (!(t in prof)) { const f = farmable_type(t) && fight_math(G.monsters[t]); prof[t] = f && safe_enough(f, t) ? f : null; }
+		if (!(t in prof)) prof[t] = fight_profile(t);
 		const f = prof[t];
 		if (!f || (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count))) return;
 		const est = kill_value(t, f, kind) * Math.min(1 / (f.ttk + CFG.walk_overhead), area.count / expected_respawn(t, pack));

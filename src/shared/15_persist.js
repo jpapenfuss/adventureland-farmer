@@ -9,13 +9,13 @@ const RATES_V = 2; // bump to clear only the learned rates (spot xp/s, realism),
 function save_state() {
 	if (typeof set !== "function") return;
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
-	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 4, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
-		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
-		cooldown: state.cooldown, camp_deaths: state.camp_deaths, proven: state.proven, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
+	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 6, cmp_v: 4, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 4, meas_at: state.meas_at, realism: state.realism,
+		type_skip: state.type_skip, explore: { tried: state.explore.tried, last_end: state.explore.last_end }, deaths_nc: state.deaths_nc || [],
+		cooldown: state.cooldown, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
-		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
-		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, cmp_caps: state.cmp_caps, probe_ok: state.probe_ok, donated: state.donated, stand: state.stand,
+		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [],
+		bank_gear: state.bank_gear, bank_dump: state.bank_dump || null, bank_at: state.bank_at || 0, bank_by: state.bank_by || null, guide_equip: state.guide_equip, upg: state.upg, cmp_caps: state.cmp_caps, donated: state.donated, stand: state.stand,
 		bank_free: state.bank_free, purge: state.purge, row_fails: state.row_fails, hold_for: state.hold_for,
 		mspot: state.mspot, parcel_at: state.parcel_at, travel_off: state.travel_off, travel_full: state.travel_full || null, owe: state.owe || 0, safety_mult: state.safety_mult || 1, safety_at: state.safety_at || 0, hunt_fails: state.hunt_fails || 0,
 		skip_why: Object.fromEntries(Object.entries(skip_why).filter(([k]) => skipped(k))) });
@@ -44,20 +44,21 @@ function migrate_pack_keys(d) {
 		}
 		return out;
 	};
-	for (const f of ["measured", "measured_gold", "cooldown", "camp_deaths"]) d[f] = remap(d[f]);
+	for (const f of ["measured", "measured_gold", "cooldown"]) d[f] = remap(d[f]);
 	d.meas_at = remap(d.meas_at, /^(gp:|gw:|p:|w:)/);
 }
 function load_state() {
 	const d = typeof get === "function" ? get(SAVE_KEY) : null;
 	if (!d || d.v !== 1) return;
 	// v24.50: one-time clear-out of everything learned so far (owner's instruction). Spot xp/s, the model's realism,
-	// damage calibration, flee/death penalties, spot rests, probe verdicts, the safety self-tuning
+	// damage calibration, flee/death penalties, spot rests, probe verdicts, the safety self-tuning (v25.82: the
+	// calibration, penalties and probes are gone; old saves' copies are simply not read)
 	// were all gathered while the party wandered, fought with members missing or without their gear, and walked
 	// into fights one by one — none of it describes this party farming a camp together. Each character drops it once,
 	// the first time it loads this version; quests, bank, gear and town state are kept.
 	if (d.data_v !== DATA_V) {
-		for (const k of ["measured", "measured_gold", "meas_at", "realism", "danger", "danger_at", "calib", "calib_all", "cooldown", "probe_ok", "probe_at", "safety_mult", "safety_at"]) delete d[k];
-		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, damage calibration, penalties, probe verdicts) — starting clean`, C.warn);
+		for (const k of ["measured", "measured_gold", "meas_at", "realism", "cooldown", "safety_mult", "safety_at"]) delete d[k];
+		game_log(`farmer v${VERSION}: learned data cleared once (spot rates, rests, the safety self-tuning) — starting clean`, C.warn);
 	}
 	// v25.16: the owner (2026-11-22): the time estimates were far off — the rates had been measured with the party held
 	// for members whose tabs slept, or waiting "in town" at a camp; each of those minutes counted as the camp being slow,
@@ -82,20 +83,12 @@ function load_state() {
 		for (const k in state.measured) { state.meas_at["p:" + k] = d.meas_at?.["p:" + k] || t0; if (d.meas_at?.["w:" + k]) state.meas_at["w:" + k] = d.meas_at["w:" + k]; }
 		if (d.realism > 0) state.realism = d.realism;
 	} else if (Object.keys(d.measured || {}).length) game_log(`farmer v${VERSION}: pack measurements reset (new unit); re-measuring`, C.dim);
-	Object.assign(state.danger, d.danger || {});
-	Object.assign(state.danger_at, d.danger_at || {});
-	Object.assign(state.calib, d.calib || {});
-	// v25.35: calibration learned against the pre-v25.34 model for a rage-spawn or pure-damage type (booboo, mummy)
-	// already holds the gang's damage; the model now predicts it, so the old ratio would count it twice — and a type
-	// judged unsafe is never fought again, so it could never relearn. Dropped once.
-	if ((d.model_v || 1) < 2) for (const k of Object.keys(state.calib)) {
-		const mt = k.replace(/@p$/, "");
-		if (rage_n(mt) > 1 || G.monsters[mt]?.damage_type === "pure") delete state.calib[k];
-	}
-	if (d.calib_all?.n) state.calib_all = d.calib_all;
 	Object.assign(state.cooldown, live(d.cooldown));
-	Object.assign(state.camp_deaths, d.camp_deaths || {}); // v25.29
-	Object.assign(state.proven, d.proven || {}); // v25.69
+	// v25.82: types skipped after an impossible fight (still running), and the exploration clock and its tried types
+	for (const [mt, t] of Object.entries(d.type_skip || {})) if (t > now) state.type_skip[mt] = t;
+	if (d.explore?.last_end > 0) state.explore.last_end = d.explore.last_end;
+	Object.assign(state.explore.tried, d.explore?.tried || {});
+	if (Array.isArray(d.deaths_nc)) state.deaths_nc = d.deaths_nc.filter((t) => now - t < 86_400_000);
 	if (d.cave_block) state.cave_block = d.cave_block;
 	Object.assign(state.gear_skip, live(d.gear_skip));
 	Object.assign(state.crafted, d.crafted || {});
@@ -113,14 +106,12 @@ function load_state() {
 	if (d.last_town) state.last_town = d.last_town;
 	if (d.town_end_at) state.town_end_at = d.town_end_at;
 	if (d.hunt_fails > 0) state.hunt_fails = d.hunt_fails; // v25.59: Daisy's back-off survives a reload
-	if (d.probe_at) state.probe_at = d.probe_at; // v23.1: a reload no longer makes a probe due at once
 	if (Array.isArray(d.town_runs)) state.town_runs = d.town_runs.filter((t) => now - t < 600_000);
 	if (Array.isArray(d.bank_gear)) state.bank_gear = d.bank_gear;
 	if (d.bank_dump && typeof d.bank_dump === "object") state.bank_dump = d.bank_dump;
 	if (d.bank_at) { state.bank_at = d.bank_at; state.bank_by = d.bank_by || null; }
 	if (d.upg?.name) state.upg = d.upg;
 	if (d.cmp_caps && typeof d.cmp_caps === "object") state.cmp_caps = d.cmp_caps;
-	if (d.probe_ok && typeof d.probe_ok === "object") state.probe_ok = d.probe_ok;
 	if (d.donated) state.donated = d.donated;
 	if (d.stand) state.stand = d.stand;
 	if (d.bank_free) state.bank_free = d.bank_free;
@@ -169,4 +160,4 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, danger: {}, danger_at: {}, calib: {}, calib_all: { ratio: 1, n: 0 }, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }

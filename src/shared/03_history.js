@@ -10,17 +10,6 @@ function rest_place(p, ms, now = Date.now()) {
 	rest_camp(pack_key(p), ms, now);
 	for (const pk of G.maps[p.map]?.monsters || []) if (pk.boundary && pk.boundary.join(",") === box) rest_camp(pack_key({ map: p.map, boundary: p.boundary, mtype: pk.type }), ms, now);
 }
-// v25.29/v25.31: a death at a camp: each one there within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day).
-// Every fighter records every member's death (its own in on_death, the others' from their verdict), so the tank —
-// which picks the camps — counts and rests them all. A death within 60 s of one already counted, own or shared, is
-// the same wipe (the others learn of a death from heartbeats seconds later) and counts once. Times are this tab's clock.
-function camp_death(k) {
-	const now = Date.now(), L = (state.camp_deaths[k] = (state.camp_deaths[k] || []).filter((t) => now - t < 86_400_000));
-	if (!L.some((t) => Math.abs(t - now) < 60_000)) L.push(now);
-	const n = L.length, ms = Math.min(86_400_000, CFG.death_pack_cooldown_ms * 4 ** (n - 1));
-	rest_camp(k, ms, now);
-	return { n, ms };
-}
 // =====================================================================
 // History (v15): a persistent event log + hourly buckets, and death/flee post-mortems. Saved under its own key with
 // save_state (every 60s and on_destroy). history(h) / deaths(n) print it as copyable text.
@@ -57,7 +46,6 @@ if (typeof character.on === "function") {
 		if (!d || !(d.damage > 0)) return;
 		const a = parent.entities?.[d.actor];
 		pmring.hits.push({ t: Date.now(), mtype: a?.mtype || (a ? a.ctype || "player" : "?"), dmg: d.damage });
-		if (a?.mtype && G.monsters[a.mtype]) cal.cur[a.mtype] = (cal.cur[a.mtype] || 0) + d.damage;
 		if (pmring.hits.length > 200) pmring.hits.shift();
 	});
 	// v25.80: transfers between our characters, from the game's own events (same socket as the gold itself) — the code
@@ -92,45 +80,7 @@ function postmortem() {
 	return { killer, dmg10: by, hp: pmring.ring.map((r) => r.hp), max_hp: character.max_hp, pack: state.pack?.mtype || null,
 		map: character.map, x: Math.round(character.x), y: Math.round(character.y), tank: !!tank_cover(),
 		priest: partners_near().some((p) => p.ctype === "priest"), pots: { hp: pot_count("hp"), mp: pot_count("mp") },
-		predicted: f ? Math.round(fight_risk(f)) : null, pool: f ? Math.round(f.hp_pool) : null,
-		danger: killer ? +danger_of(killer).toFixed(2) : null, last: pmring.ring.slice(-6) };
-}
-// ---- Calibration (v15.1): damage actually taken per fight vs the model's prediction ----
-// Hits are summed per attacker type; a fight with type M ends when our target of type M dies or we switch away from
-// it, and its damage is compared with fight_risk for M (expected damage over one kill).
-const cal = { cur: {}, tgt: null };
-function calib_record(mt) {
-	const m = G.monsters[mt], f = m && fight_math(m);
-	const pred = f ? fight_risk(f) : 0, act = cal.cur[mt] || 0;
-	cal.cur[mt] = 0;
-	// under tank cover we take little damage by design: such fights say nothing about fighting it without the tank
-	if (!(pred > 1) || f.tank) return;
-	const r = Math.min(act / pred, 5); // one freak fight can't swing it more than 5x
-	const ck = calib_key(mt);
-	const c = (state.calib[ck] = state.calib[ck] || { ratio: 1, n: 0, act: 0, pred: 0 });
-	const a = c.n < 10 ? 1 / (c.n + 1) : 0.1; // plain average for the first 10, then EMA
-	c.ratio += (r - c.ratio) * a; c.act += (act - c.act) * a; c.pred += (pred - c.pred) * a; c.n++;
-	const g = state.calib_all, ga = g.n < 50 ? 1 / (g.n + 1) : 0.02;
-	g.ratio += (r - g.ratio) * ga; g.n++;
-}
-function calib_tick() {
-	const t = get_targeted_monster(), e = cal.tgt && parent.entities?.[cal.tgt.id];
-	if (cal.tgt && (!e || e.dead || !t || t.id !== cal.tgt.id)) { calib_record(cal.tgt.mtype); cal.tgt = null; }
-	if (t && t.type === "monster" && G.monsters[t.mtype] && !cal.tgt) cal.tgt = { id: t.id, mtype: t.mtype };
-}
-// Incidents fade: 10% of the way back to 1 per hour, starting an hour after the last one
-setInterval(() => {
-	const now = Date.now(), k = 1 - Math.pow(0.9, 1 / 60); // per minute
-	for (const mt in state.danger) {
-		if (now - (state.danger_at[mt] || 0) < 3600_000) continue;
-		state.danger[mt] += (1 - state.danger[mt]) * k;
-		if (Math.abs(1 - state.danger[mt]) < 0.01) delete state.danger[mt];
-	}
-}, 60_000);
-function incident(mt, mult) {
-	if (!mt || !G.monsters[mt]) return;
-	state.danger[mt] = (state.danger[mt] || 1) * mult;
-	state.danger_at[mt] = Date.now();
+		predicted: f ? Math.round(fight_risk(f)) : null, pool: f ? Math.round(f.hp_pool) : null, last: pmring.ring.slice(-6) };
 }
 // ---- Watchdog (CFG.watchdog) ----
 const wd = { pos: [], lost_since: null, acts: [], here_since: null };
@@ -295,14 +245,16 @@ function history_lines(hours = 6) {
 	if (drops.length) L.push(`untracked gold drops (>20k): ${drops.slice(-5).map((e) => `${fmt_k(e.g)} ${ago(e.t)} ago (${e.errand || "idle"}${e.serving ? ", serving " + e.serving : ""}${e.last_tag ? `, last tag ${e.last_tag} ${e.tag_age_s}s before` : ""}${e.stand ? ", stand open" : ""})`).join(" | ")}`);
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
-	const probes = ev.filter((e) => e.type === "probe");
+	const trials = ev.filter((e) => e.type === "explore_end"), imp = ev.filter((e) => e.type === "impossible" || e.type === "incident");
 	// v24.51: regroups — the times we used the suicide command, and why
 	const sui = ev.filter((e) => e.type === "suicide");
 	if (sui.length) L.push(`regroups by suicide: ${sui.length} — ${sui.slice(-5).map((e) => `${ago(e.t)} ago at ${e.at} (${e.why})`).join(" | ")}`);
 	// v24.33: where the leader sent us, and why (the last 12 changes of spot, oldest first)
 	const spots = ev.filter((e) => e.type === "pack" || e.type === "boss");
 	if (spots.length) L.push(`spots (${spots.length} changes): ${spots.slice(-12).map((e) => `${ago(e.t)} ago → ${e.to || e.name} (${e.why || "?"})`).join(" | ")}`);
-	if (probes.length) L.push(`probes: ${probes.slice(-6).map((e) => `${e.mtype} ${e.result === "ok" ? "✓" : "✗ " + e.why} (x${e.over} over; calibration ${e.ratio ?? "?"} over ${e.n} fights)`).join(" | ")}`);
+	// v25.82: exploration trials, and how each death was judged
+	if (trials.length) L.push(`trials: ${trials.slice(-6).map((e) => `${e.mtype}@${e.map} ${e.mins} min (${e.why})${e.rate != null ? ` ${Math.round(e.rate)} xp/s` : ""}`).join(" | ")}`);
+	if (imp.length) L.push(`deaths judged: ${imp.slice(-6).map((e) => e.type === "impossible" ? `${e.mtype} impossible (target at ${e.hp}%)` : `${e.mtype || "?"}: ${e.why}`).join(" | ")}`);
 	const stuck = ev.filter((e) => e.type === "stuck");
 	if (stuck.length) L.push(`watchdog: ${stuck.length} — ${stuck.slice(-5).map((e) => `${e.kind} ${ago(e.t)} ago (${e.note})`).join(" | ")}`);
 	const errs = ev.filter((e) => e.type === "error");
@@ -426,7 +378,7 @@ function meas_tick() {
 	}
 	gold_prev = g;
 	hist.dirty = true;
-	if (!character.rip) { pm_sample(); calib_tick(); }
+	if (!character.rip) pm_sample();
 	if (!p || character.rip) return;
 	// v24.49: together, a spot's xp/s is only measured while the whole party is at it. Time spent there with a member in
 	// town, dead, a map behind or wandering was booked as the spot's rate, and those rates then steered the next pick.

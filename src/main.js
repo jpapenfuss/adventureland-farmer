@@ -5,8 +5,8 @@
 // Main loop
 // =====================================================================
 let next_respawn = 0;
-// First tick after dying: be more careful with that monster (safety × 0.6 per death) and avoid that pack for
-// death_pack_cooldown_ms; drop the errand and measurement in progress
+// First tick after dying: the tank judges whether the fight was impossible (judge_death); drop the errand and the
+// measurement in progress
 function on_death() {
 	if (state.dead_handled) return;
 	state.dead_handled = true;
@@ -27,17 +27,14 @@ function on_death() {
 	if (!pmd.unexplained) safety_tune("death");
 	if (pmd.unexplained) game_log(`Died with no damage seen (script watching for ${pmd.watched_s}s) — not blaming ${p?.mtype || "the pack"}`, C.warn);
 	else if (p) {
-		// v24.16: killed by another monster than the spot's (a roamer: the ent at gscorpion), the spot isn't cooled down —
-		// that sent the party away from its best spot, through the caves, and back 30 min later
-		const roamer = !!killer && killer !== p.mtype;
-		incident(killer || p.mtype, 0.6);
-		proven_death(killer || p.mtype); // v25.69: a death to it: no longer proven for 24h
-		// v25.29: each death at the same camp within 24h rests it 4x longer (30 min, 2h, 8h, capped at a day): after a
-		// death at booboo the camp was picked again 30 min later, and the party died there again (2026-11-22)
-		const at = Date.now(), { n: rest_n, ms: rest_ms } = roamer ? { n: 0, ms: 0 } : camp_death(pack_key(p));
-		delete state.probe_ok[killer || p.mtype];
-		share_verdict({ kind: "incident", mtype: killer || p.mtype, mult: 0.6, key: roamer ? null : pack_key(p), cd: roamer ? 0 : state.cooldown[pack_key(p)], death: true, at });
-		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"}); safety for it now x${danger_of(killer || p.mtype).toFixed(2)}${rest_n ? `; camp rested ${Math.round(rest_ms / 60000)} min (death ${rest_n} here in 24h)` : ""}`);
+		// v25.82 (owner: deaths are often our movement's fault, not the monster's): a death blocks nothing unless the fight
+		// was clearly impossible — the tank judges the first death of each fight it started (judge_death); a member's
+		// death reaches it as a verdict. No camp rest, no escalation.
+		const killer_ = pmd.killer && pmd.dmg10?.[pmd.killer] ? pmd.killer : null;
+		share_verdict({ kind: "death", mtype: killer || p.mtype, killer: killer_, at: Date.now() });
+		const j = !is_merchant() && !is_follower() ? judge_death(killer_, character.name) : null;
+		const verdict = !j ? "" : j.counted ? `: impossible — ${j.mtype} skipped ${CFG.impossible.skip_h} h` : `: not counted (${j.why})`;
+		game_log(`Died at ${p.mtype} (main damage: ${killer || "?"})${verdict}`);
 	}
 	Object.assign(state, { session: null, pack: null, park_home: false, errand: null, recovering: false, fled_home: false, ptown: null });
 }
@@ -51,7 +48,6 @@ function tick() {
 		else if (character.rip) {
 			if (character.cave && !state.dead_handled) cave_died(); // v25.22 (role function)
 			if (character.cave) cave_watch_deaths(); // v25.41: the members' deaths count while we're dead too (role function)
-			probe_check(); // v24.3: a probe ends as failed when the leader dies, not "held" after respawning
 			on_death();
 			if (Date.now() >= next_respawn && can_spend(1, RESERVE.potion)) {
 				next_respawn = Date.now() + 5000; // retry every 5s; a "cant_respawn" reply says exactly how long to wait
@@ -140,8 +136,10 @@ tick();
 //   reviewed every 30 min (10 once the party is stronger). A camp's xp/s is measured only on time the party is all
 //   there and ready (v25.16: held, unheard-member and frozen-tab seconds are left out).
 //
-// Safety: fight_math follows the server's damage formula on live monster stats, with the party's damage and a near
-//   priest's heals; per-monster multiplier = calibration (actual ÷ predicted damage) × incidents. Probing is off.
+// What to fight (v25.82, owner: "Try killing everything"): every type the party kills within hopeless_ttk_s, unless
+//   a fight against it was clearly impossible in the last 2 h (the gathered party wiped with it over half HP). Every
+//   30 min of farming the tank gives an untried camp a 10-min trial (hunts first). The way there still avoids burners
+//   and aggressive monsters it can't fight; fight_math (the server's damage formula) judges bosses and events only.
 //
 // Cave of Many Dreams (fighter/9_cave.js; CFG.cave): once a day (cave_info) the tank leads the party to Dorr (main
 //   816,1200) and enters (cave_enter). Inside, for up to 24 min: the floor's camps (each at most 5 min), its floor

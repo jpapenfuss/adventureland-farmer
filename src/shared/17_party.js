@@ -54,9 +54,8 @@ function xp_mult_text() {
 	return `xp multiplier x${m.toFixed(2)} = 100% + gear ${Math.round(gear)}% + party ${party}%${other ? ` + other ${other}%` : ""}`;
 }
 // ---- Verdicts shared with the party (v24.6) ----
-// Deaths and flees (incident + the pack's cooldown) and probe results used to stay in the state of whoever had them;
-// together, only the leader picks, from its own tables — so a follower's death changed nothing and the party walked
-// back to the spot that killed it. Each is sent to the other fighters, who apply it to theirs.
+// Together, only the leader picks, from its own tables, so what a member learns is sent to the other fighters (v25.82:
+// a member's death, for the tank to judge; a type skipped after an impossible fight).
 // A message to the other fighters (fire and forget)
 function tell_party(msg) {
 	if (typeof send_cm === "function" && others().length) Promise.resolve(send_cm(others(), msg)).catch(() => {});

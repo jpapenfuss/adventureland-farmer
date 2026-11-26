@@ -242,8 +242,7 @@ function report_facts() {
 			(CFG.compound_bank_full && state.bank_free ? ` | bank-full mode ${bank_tight() ? "on" : "off"} (${state.bank_free.free}/${state.bank_free.total} free, counted ${state.bank_free.at ? ago(state.bank_free.at) + " ago" : "at an unknown time"})` : ""),
 			!gs.length && !paused.length && !cw.length);
 	}
-	facts_probe(F, c);
-	facts_safety(F, c);
+	facts_explore(F, c);
 	facts_guide_farm(F, c);
 	if (CFG.spend?.enabled) F("budget", "party", budget_text());
 	const golds = partners().filter((x) => Number.isFinite(x.gold));
@@ -382,7 +381,7 @@ function selftest() {
 	ok(!!G.tokens?.monstertoken?.tracker, `Tracktrix price (${G.tokens?.monstertoken?.tracker ?? "?"} tokens)`);
 	ok(!!G.maps.main?.ref?.secondhands, "Ponty (secondhands) location");
 	ok(!!G.events?.goobrawl, "Goo Brawl in G.events");
-	ok(seen.hit > 0 || is_merchant(), `"hit" events: ${seen.hit} in ${mins_up} min${seen.hit ? "" : " (none: post-mortems and calibration get no damage data)"}`, true);
+	ok(seen.hit > 0 || is_merchant(), `"hit" events: ${seen.hit} in ${mins_up} min${seen.hit ? "" : " (none: post-mortems get no damage data)"}`, true);
 	ok(seen.kill > 0 || is_merchant(), `kills seen: ${seen.kill} in ${mins_up} min`, true);
 	ok(stats.xp > 0 || is_merchant(), `xp gained since load: ${fmt_k(Math.round(stats.xp))}`, true);
 	ok((seen.kc || 0) > 0 || is_merchant() || !in_party_cfg(), `kill_credit events since load: ${seen.kc || 0} (party kills: together-mode xp/s measurement and the watchdog use them)`, true);

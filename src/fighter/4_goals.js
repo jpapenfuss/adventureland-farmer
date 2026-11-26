@@ -58,7 +58,7 @@ function quest_directive(guide_only) {
 			state.qprog = null;
 			continue;
 		}
-		return { monster: pickm.monster, map: pickm.map, boundary: pickm.boundary, count: pickm.count, guide_safe: false,
+		return { monster: pickm.monster, map: pickm.map, boundary: pickm.boundary, count: pickm.count,
 			reason: `${guided ? "guide quest " : ""}${id}: ${pickm.item} ${pickm.have}/${pickm.need}, ~${Math.ceil(total_s / 60)} min` };
 	}
 	return null;
@@ -67,7 +67,7 @@ function hunt_directive() {
 	const h = character.s.monsterhunt;
 	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
 	const best = resolve_area(h.id);
-	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
+	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, hunt: true };
 }
 // Leader: merge every online member's goal list. Mutual goals first: a monster on the lists of 2+ members, each with a
 // goal there finishing within mutual_max_h; ranked by combined weight ÷ (1 + the slowest of those goals' hours), so
@@ -92,8 +92,8 @@ function pick_shared(mine) {
 	const area_of = (e) => (e.area === undefined ? (e.area = (e.src ? resolve_area(e.monster, e.src.map, e.src.boundary, e.src.count) : resolve_area(e.monster)) || null) : e.area);
 	const blocked = [];
 	const ok = (e) => {
-		if (!G.monsters[e.monster] || !(fight_profile(e.monster) || (e.src?.guide_safe && farmable_type(e.monster)))) return false;
-		const a = area_of(e), why = a ? goal_blocked(e.monster, a.map, a.boundary, e.src?.guide_safe) : "no spawn found";
+		if (!farmable_type(e.monster)) return false;
+		const a = area_of(e), why = goal_blocked(e.monster, a?.map, a?.boundary) || (a ? null : "no spawn found"); // (the type first: why it isn't fought)
 		if (why) blocked.push(`${e.monster} (${Object.keys(e.w).join(", ")}): ${why}`);
 		return !why;
 	};
@@ -102,9 +102,10 @@ function pick_shared(mine) {
 	const weight = (e) => names(e).reduce((t, n) => t + e.w[n], 0);
 	const to_dir = (e, label) => {
 		const area = area_of(e);
-		return area && { monster: e.monster, ...area, reason: label, guide_safe: !!e.src?.guide_safe, for_partner: !e.w[me], mutual: names(e).length > 1 };
+		return area && { monster: e.monster, ...area, reason: label, hunt: !!e.hunt, for_partner: !e.w[me], mutual: names(e).length > 1 };
 	};
 	let cands = [...by.values()].filter((e) => names(e).length && ok(e));
+	const mine_ok_of = (m) => !!m && (!hunts_only || /^monster hunt/.test(m.reason || "")); // (refresh_directive passes only a goal the camp pick would take; v25.75: hunts first)
 	// v25.75 (audit; owner: hunts first): while any member has a hunt the party can farm, quests and guide rows get no
 	// turn and can't be "mutual" — a shared quest (3+3) outranked single hunts and they lapsed
 	const is_hunt = (e) => !!e.hunt;
@@ -118,9 +119,21 @@ function pick_shared(mine) {
 	state.shared = { mutual: mutual.map((e) => `${e.monster} ~${hours(e).toFixed(1)}h (${e.why.join("; ")})`),
 		too_slow: [...by.values()].flatMap((e) => e.too_slow.map((w) => `${e.monster}: ${w}`)), blocked, at: now };
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
+	// v25.82 (prior art: earthiverse sorts every character's hunts by time left; every party kill counts for every
+	// member's hunt at any distance — server.js L2490-2505): hunts only, the one that expires soonest, not turns
+	if (hunts_only) {
+		const left = (n, mt) => { const h = n === me ? character.s.monsterhunt : state.partners[n]?.hunt, ms = n === me ? h?.ms : state.partners[n]?.hms;
+			return h?.id === mt && ms > 0 ? ms : Infinity; };
+		let soon = null;
+		for (const e of cands) for (const n of names(e)) { const ms = left(n, e.monster); if (!soon || ms < soon.ms) soon = { e, n, ms }; }
+		if (soon && Number.isFinite(soon.ms)) {
+			if (soon.n === me) { if (mine_ok_of(mine)) return mine; }
+			else return to_dir(soon.e, `${soon.n}: ${soon.e.why.find((w) => w.startsWith(soon.n + ":"))?.slice(soon.n.length + 2) || soon.e.monster}`);
+		}
+	}
 	// nothing in common: turns, rotating through members that have a goal the group can fight
 	const top = (n) => cands.filter((e) => e.w[n]).sort((a, b) => b.w[n] - a.w[n])[0];
-	const mine_ok = !!mine && (!hunts_only || /^monster hunt/.test(mine.reason || "")); // (refresh_directive passes only a goal the camp pick would take; v25.75: hunts first)
+	const mine_ok = mine_ok_of(mine); // (refresh_directive passes only a goal the camp pick would take; v25.75: hunts first)
 	const order = [me, ...partners().map((p) => p.name).sort()].filter((n) => (n === me ? mine_ok : top(n)));
 	if (!order.length) return mine_ok ? mine : null;
 	// a turn's turn_min counts from arrival at its target (walking there isn't the turn), capped by turn_walk_max_min
@@ -161,7 +174,7 @@ function boss_directive() {
 	const b = live_boss();
 	if (!b) return null;
 	const gx = Math.round(b.x / 400) * 400, gy = Math.round(b.y / 400) * 400;
-	return { monster: b.name, map: b.map, boundary: [gx - 300, gy - 300, gx + 300, gy + 300], count: 1, boss: true, guide_safe: false,
+	return { monster: b.name, map: b.map, boundary: [gx - 300, gy - 300, gx + 300, gy + 300], count: 1, boss: true,
 		reason: `event boss ${G.monsters[b.name].name || b.name} (${b.hp}/${b.max_hp})` };
 }
 // Decide the farm directive: hunt > own quests > guide quests > guide farm row (CFG.goal_w order).
@@ -187,7 +200,7 @@ function refresh_directive() {
 	const gq = () => quest_directive(true), oq = () => quest_directive(false);
 	let mine = null;
 	// (v25.69: the first the camp pick would take — a refused hunt no longer hides our quest goals)
-	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) { const x = f(); if (x && (x.boss || !goal_blocked(x.monster, x.map, x.boundary, x.guide_safe))) mine = x; }
+	for (const f of [boss_directive, hunt_directive, oq, gq, () => g]) if (!mine) { const x = f(); if (x && (x.boss || !goal_blocked(x.monster, x.map, x.boundary))) mine = x; }
 	// A follower never picks where to fight, so the leader works both members' goals: mutual ones first, otherwise
 	// turns (pick_shared).
 	let d = mine;
@@ -201,7 +214,7 @@ function refresh_directive() {
 	// members' new goals reach us), the current goal stays.
 	// (v25.73: through the whole party trip and 45 s after it ends — counted from our own town run's end, the 34 s wait
 	// in town for the others used it up and the party still went to the best camp first)
-	const cur_ok = !!cur && (cur.boss || !goal_blocked(cur.monster, cur.map, cur.boundary, cur.guide_safe)); // (v25.75: never hold a refused goal)
+	const cur_ok = !!cur && (cur.boss || !goal_blocked(cur.monster, cur.map, cur.boundary)); // (v25.75: never hold a refused goal)
 	if (!d && cur && cur_ok && !cur.boss && in_party_cfg() && (hunts_trip_due() || state.ptown?.joined || now - Math.max(state.town_end_at || 0, state.ptown_done_at || 0) < 45_000)) d = cur;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt));
@@ -221,7 +234,7 @@ function refresh_directive() {
 		// v25.70 (owner: "fighting cgoo for absolutely no reason"): the camp's reason follows the goal live — it was the
 		// text at the pick ("39 left" while 29 were left)
 		const P = state.pack;
-		if (P?.directive && !P.boss && !P.probe && !is_follower() && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
+		if (P?.directive && !P.boss && !P.explore && !is_follower() && P.mtype === d.monster && P.map === d.map) P.directive = d.reason;
 	} else if (state.directive) {
 		state.directive = null;
 		state.last_pick = 0;
@@ -234,7 +247,7 @@ function event_live() {
 		const ev = CFG.events[name];
 		if (!ev.on || !ev_info(name)) continue;
 		const sf = ev.safe_from && G.monsters[ev.safe_from];
-		if (sf && !safe_enough(fight_math(sf), ev.safe_from)) continue;
+		if (sf && !safe_enough(fight_math(sf))) continue;
 		return name;
 	}
 	return null;
@@ -343,7 +356,7 @@ function goals_list() {
 	const out = [], now = Date.now();
 	if (state.goals_cache && now - state.goals_cache.at < 10_000) return state.goals_cache.list;
 	const W = CFG.goal_w, g = live_guide_farm();
-	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count, guide_safe: !!g.guide_safe });
+	if (g) out.push({ monster: g.monster, w: W.guide_farm, reason: g.reason, map: g.map, boundary: g.boundary, count: g.count });
 	const h = character.s.monsterhunt;
 	const eta = (n, per_kill, mt) => { const k = kills_per_s(mt) * per_kill; return k > 0 ? +(n / k / 3600).toFixed(2) : Infinity; };
 	// (v25.69: no eta — a hunt isn't dropped as "too slow to share" on an estimate)

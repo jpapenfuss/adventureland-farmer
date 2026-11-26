@@ -107,7 +107,7 @@ function read_guide() {
 	const route = farm && (farm.action?.route || farm.route);
 	const area = route && G.monsters[route.monster] && resolve_area(route.monster, route.map, route.boundary, route.count);
 	const mat = [farm?.title?.args?.item, farm?.reason?.args?.item, farm?.target?.name, farm?.action?.item, farm?.action?.name, route?.item, route?.drop].map(item_id).find(Boolean);
-	state.guide_farm = area ? { monster: route.monster, ...area, item: mat, guide_safe: route.safe !== false, seconds: route.seconds,
+	state.guide_farm = area ? { monster: route.monster, ...area, item: mat, seconds: route.seconds,
 		reason: "guide " + (farm.reason?.id || "").replace("progression.reason.", "") + (mat ? ` (${mat} ${held(mat)})` : ""),
 		until: Date.now() + CFG.guide_interval_ms * 4 } : null; // valid for 4 reads (60s): survives a read or two failing
 	return prog;

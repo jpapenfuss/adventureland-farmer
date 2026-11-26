@@ -122,10 +122,6 @@ function recover() {
 		const pmf = postmortem();
 		log_ev("flee", pmf);
 		bucket().flees++;
-		const fk = pmf.killer && G.monsters[pmf.killer] ? pmf.killer : state.pack?.mtype;
-		incident(fk, 0.8);
-		share_verdict({ kind: "incident", mtype: fk, mult: 0.8 }); // v24.6: the leader picks for the party from its own tables
-		if (!state.pack?.probe) safety_tune("flee"); // a probe's flee is the probe's verdict, not the everyday limit's
 		Object.assign(state, { recovering: true, fled: false, session: null, pack: null });
 		game_log(`HP ${((character.hp / character.max_hp) * 100).toFixed(0)}%: retreating`, C.bad);
 	}

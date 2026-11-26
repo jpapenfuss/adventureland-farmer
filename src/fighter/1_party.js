@@ -132,15 +132,6 @@ function send_own_gold(name, g) {
 		return r;
 	});
 }
-// Not leading (now): a probe we started is ours no more — it would later be closed as "held" (v24.3). Called from the
-// follower branch.
-function lead_lost() {
-	if (state.probe && in_party_cfg() && leader_name() !== character.name) {
-		const P = state.probe;
-		log_ev("probe", { mtype: P.mtype, mins: Math.round((Date.now() - P.start) / 60_000), result: "dropped", why: "leader changed", ratio: null, n: 0, over: +(P.ratio || 0).toFixed(2) });
-		state.probe = null;
-	}
-}
 // ---- Group travel (CFG.party.group, v24.11) ----
 // Leader, together: the members we should wait for, as text — or null to go on (nothing to wait for, or waited enough)
 function group_hold(pack, here) {
@@ -237,37 +228,29 @@ setInterval(() => { try { safety_tune(); } catch (e) {} }, 60_000);
 // own quests, so each used to count all of it toward its own copy. Copies go to the fighters short of the item (bags
 // vs what they need; each one's shortfall comes in its heartbeat) in name order, so all agree. The merchant counts all.
 const qshort = () => { const o = {}; for (const [n, q] of state.needs) if (G.items[n]?.s) { const v = q - held_any(n); if (v > 0) o[n] = v; } return o; };
-// Our party-fight calibration ratios (20+ fights), for the leader's verdicts under our cover (tanks only, v24.6)
-function calp_share() {
-	const o = {};
-	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= CALIB_MIN_N) o[k.slice(0, -2)] = +state.calib[k].ratio.toFixed(3);
-	return o;
-}
+// v25.82: verdicts from the party — a member's death (the tank judges whether the fight was impossible) and a type
+// skipped after an impossible fight (every fighter skips it: followers judge their targets by it too)
 function apply_verdict(v, from) {
 	if (!v || !G.monsters[v.mtype]) return;
-	if (v.kind === "incident" && v.mult > 0 && v.mult < 1) {
-		incident(v.mtype, v.mult);
-		// v25.31: a member's death at a camp counts here as our own (the tank picks the camps: a follower's death
-		// rested it 1 h at most on the tank, and the 4x escalation never reached it); any other shared rest: 1 h at most
-		// (v.at is the sender's clock: only for staleness, either way, since tabs on other machines can run ahead)
-		const now = Date.now();
-		if (v.key && v.death && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) camp_death(v.key);
-		else if (v.key && v.cd > now) rest_camp(v.key, Math.min(v.cd - now, 3600_000), now);
-		if (v.death) { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
-		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_ok" && v.mult >= 1 && v.mult <= (CFG.probe?.max_over || 2) * 1.1) {
-		state.probe_ok[v.mtype] = { mult: v.mult, at: Date.now() };
-		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype, mult: v.mult });
-	} else if (v.kind === "probe_fail") { delete state.probe_ok[v.mtype]; proven_death(v.mtype); }
+	const now = Date.now();
+	if (v.kind === "death") {
+		// (v.at is the sender's clock: only for staleness, since tabs on other machines can run ahead)
+		if (!is_follower() && Number.isFinite(v.at) && Math.abs(now - v.at) < 600_000) judge_death(v.killer && G.monsters[v.killer] ? v.killer : null, from);
+		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype });
+	} else if (v.kind === "type_skip" && Number.isFinite(v.until)) {
+		state.type_skip[v.mtype] = Math.max(state.type_skip[v.mtype] || 0, Math.min(v.until, now + CFG.impossible.skip_h * 3600_000 * 1.1));
+		state.last_pick = 0;
+		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype });
+	}
 }
 // Status message to the other members every beat_ms: position, HP, target, pack, errand, combat stats (for the
 // fight model), hunt, goals and gold. Skipped while the call budget is tight.
 function heartbeat() {
 	if (!in_party_cfg() || typeof send_cm !== "function") return;
 	const t = get_targeted_monster(), p = state.pack;
-	const msg = { k: "hb", v: VERSION, b: BUILD, tn: is_follower() && !errand_busy() ? town_urgent(town_due()) || null : null, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : Date.now() - (state.ptown_done_at || 0) < 6000 ? { done: true } : null, xpm: xp_mult(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, calp: CFG.gear_tank.includes(character.ctype) ? calp_share() : null, safety_mult: state.safety_mult || 1, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
+	const msg = { k: "hb", v: VERSION, b: BUILD, tn: is_follower() && !errand_busy() ? town_urgent(town_due()) || null : null, lw: travel_long() ? 1 : 0, pt: state.ptown?.joined ? { id: state.ptown.id, done: !!state.ptown.done } : Date.now() - (state.ptown_done_at || 0) < 6000 ? { done: true } : null, xpm: xp_mult(), grp_wait: state.group_wait?.who && !(state.group_wait.go_until > Date.now()) ? state.group_wait.who : null, safety_mult: state.safety_mult || 1, qshort: qshort(), bag_lv: bag_gear_levels(), ledger: my_ledger(), bag_gear: bag_gear_names(), level: character.level, ctype: character.ctype, map: character.map,
 		x: Math.round(character.x), y: Math.round(character.y), hp: character.hp, max_hp: character.max_hp, rip: !!character.rip,
-		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, probe: !!p.probe } : null, recovering: !!state.recovering,
+		target: t && !t.dead ? t.id : null, pack: p ? { mtype: p.mtype, map: p.map, boundary: p.boundary, directive: p.directive, explore: !!p.explore } : null, recovering: !!state.recovering,
 		errand: errand_busy() ? state.errand : null, attack: character.attack, frequency: character.frequency,
 		damage_type: character.damage_type || G.classes[character.ctype]?.damage_type, apiercing: character.apiercing || 0,
 		rpiercing: character.rpiercing || 0, range: character.range,

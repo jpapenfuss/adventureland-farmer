@@ -7,7 +7,6 @@ function fighter_defers_town() { return false; }
 function why_not_fighter() { return "the merchant doesn't fight"; }
 function facts_stat() {}
 function facts_elixir() {}
-function facts_safety() {}
 function facts_guide_farm() {}
 function facts_dir_held() {}
 function facts_shared() {}
@@ -33,14 +32,13 @@ async function ptown_wait() {}
 function facts_doing() {}
 function facts_party() {}
 function facts_bosses() {}
-function facts_probe() {}
+function facts_explore() {}
 function facts_engage() {}
 function facts_picks() {}
 function facts_targets() {}
 function facts_quests() {}
 function party_break_tick() { return false; }
 function ptown_join_tick() { return false; }
-function probe_check() {}
 function gap_kind() { return null; }
 function follower_tick() {}
 function party_heal() { return false; }

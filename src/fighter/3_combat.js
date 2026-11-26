@@ -81,7 +81,9 @@ function hold_for_tank(t) {
 	return true;
 }
 // Live-stat check per entity: monsters level up when left alive, and an elite can be several times stronger than its
-// G.monsters entry. Verdicts are cached per entity id and recomputed when its level/HP/attack changes.
+// G.monsters entry. Verdicts are cached per entity id and recomputed when its level/HP/attack changes. v25.82 (owner:
+// "Try killing everything"): the verdict is only the hard limits (fightable: the kill time, the sustain test) — no
+// safety fraction, no calibration.
 const live_cache = new Map(); // entity id -> { key, ok, ttk, xp }; trimmed to 500 entries (oldest first)
 function entity_profile(e) {
 	const key = `${fight_mates().map((p) => p.name).join()}:${e.level || 1}:${e.max_hp}:${e.attack}`; // re-judged when who counts changes
@@ -91,18 +93,15 @@ function entity_profile(e) {
 	const live = {};
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
 	const f = def && fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
-	const ok = safe_enough(f, e.mtype);
+	const ok = fightable(f); // (the kill time and the sustain test, on its live stats)
 	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
 	live_cache.set(e.id, out);
 	if (live_cache.size > 500) live_cache.delete(live_cache.keys().next().value);
 	return ok ? out : null;
 }
+// A type the party fights (state.safe: fight_profile — not an impossible fight lately), this one on its live stats
 function live_ok(e) {
-	const f = state.safe[e.mtype];
-	if (!f) return null;
-	if (f.trusted && !((e.level || 1) > 1)) return f; // guide-judged safe and not levelled up: trust it
-	if (f.probe) return f; // probing this monster on purpose
-	if (f.proven) return f; // v25.69: killed often enough, no death to it in 24h — evidence over the model (Fable)
+	if (!state.safe[e.mtype]) return null;
 	const lf = entity_profile(e);
 	return lf ? { ttk: lf.ttk, xp: lf.xp } : null;
 }
@@ -130,10 +129,7 @@ function best_escape(t, step) {
 	}
 	return best;
 }
-// v25.58 (owner: "trying to kill things in the camp", not leaving it because its monsters levelled up): a levelled-up
-// monster of the camp's type is taken as a last resort whenever the party can kill it at all — on its live stats,
-// within hopeless_ttk_s. (v24.59's grown_over limit and v24.61's "overgrown: leave at once" are gone; a camp that
-// really is too strong is left through its deaths: camp_death rests it 30 min, 2 h, 8 h.)
+// Whether the party could kill this one on its live stats within hopeless_ttk_s, whatever its type's standing (report)
 function killable(e) {
 	const def = G.monsters[e.mtype];
 	if (!def) return false;
@@ -141,6 +137,21 @@ function killable(e) {
 	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
 	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
 	return !!f && f.ttk <= CFG.hopeless_ttk_s;
+}
+// v25.82 (prior art: the server's fear — targets of a damage type over our courage cut our attack to 40%, then 20%,
+// server.js L1427-1445; earthiverse's attack strategy skips a new pull at courage): would one more monster of this
+// damage type on us go past our courage? extra: ones about to be pulled with it (no courage stat: no cap). choose_target
+// fights what's on us before any new monster, so single pulls never stack; an area skill's pulls (cburst) can.
+function over_courage(e, extra = 0) {
+	const dt = e.damage_type || G.monsters[e.mtype]?.damage_type || "physical";
+	const cap = dt === "magical" ? character.mcourage : dt === "pure" ? character.pcourage : character.courage;
+	if (!(cap > 0)) return false;
+	let n = extra;
+	for (const id in parent.entities || {}) {
+		const m = parent.entities[id];
+		if (m?.type === "monster" && !m.dead && m.target === character.name && (m.damage_type || G.monsters[m.mtype]?.damage_type || "physical") === dt) n++;
+	}
+	return n >= cap;
 }
 function choose_target(local_ok, keep_cur = false) {
 	const party = party_names();
@@ -162,17 +173,11 @@ function choose_target(local_ok, keep_cur = false) {
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
-	let grown = null; // v24.56: the camp's own type, over the per-monster limit (levelled up): the last resort
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
-		const f = live_ok(e);
-		if (!f) {
-			// lowest level first, then nearest; never one the party couldn't kill at all
-			if (e.mtype === want && killable(e) && (!grown || (e.level || 1) < (grown.level || 1) ||
-				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
-			continue;
-		}
+		const f = live_ok(e); // (v25.82: a levelled-up one too, whenever the party kills it within hopeless_ttk_s)
+		if (!f) continue;
 		// v24.64: the tank starts a fight on its camp's monster first. v25.57 (owner: "Never, under any circumstances,
 		// should [they] just wander around doing nothing in a camp"): when none of the camp's type is free (squigtoad: 2
 		// up, other players on them, "nothing alive" 53% of the time), another type in the camp box that passes the same
@@ -191,12 +196,9 @@ function choose_target(local_ok, keep_cur = false) {
 		const clear = distance(character, e) <= character.range || can_move_to(e);
 		if (tier < best_tier || (clear && !best_clear) || (clear === best_clear && v > best_v)) (best = e), (best_v = v), (best_tier = tier), (best_clear = clear);
 	}
-	// v24.56 (owner): a camp whose monsters have all levelled up past the limit isn't stood at — the tank works them
-	// down, lowest level first, when nothing that passes is there. (The camp was chosen on the type's level-1 stats;
-	// Torlis stood among five level 8-9 poisio, "0 attackable".)
-	// then a filler (owner: "How about we actually just kill things?"); the camp is left only when there's nothing to
-	// fight for the idle time, by the camp review, or through its deaths
-	return best_tier === 0 ? best : grown || best;
+	// the camp's type first, then a filler (owner: "How about we actually just kill things?"); the camp is left only
+	// when there's nothing to fight for the idle time, or by the camp review
+	return best;
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)
@@ -328,8 +330,10 @@ function cburst() {
 		!hopeless(e) && ((e.target && party.has(e.target)) || (e.mtype === want && !e.target && live_ok(e) && !tank_first(e)))).sort((a, b) => a.hp - b.hp);
 	if (hits.length < 3) return false;
 	let budget = character.mp - character.max_mp * 0.25;
-	const targets = [];
+	const targets = [], pulled = {};
 	for (const e of hits.slice(0, 12)) {
+		// v25.82: no more new pulls than our courage allows (past it the server cuts our attack to 40%/20%)
+		if (!e.target) { const dt = e.damage_type || G.monsters[e.mtype]?.damage_type || "physical"; if (over_courage(e, pulled[dt] || 0)) continue; pulled[dt] = (pulled[dt] || 0) + 1; }
 		const need = Math.ceil(e.hp / ((sk.ratio || 0.5) * dm((e.resistance || 0) - (character.rpiercing || 0))) * 1.1);
 		const mp = Math.min(need, Math.floor(budget));
 		if (mp < 50) break;

@@ -1,8 +1,9 @@
-const VERSION = "25.80"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.82"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
-	safety: 0.35,              // a fight may cost at most this fraction of max HP (expected damage taken over one kill).
+	safety: 0.35,              // bosses and events only (v25.82: camps and targets aren't judged by the damage model): a
+	                           //   fight may cost at most this fraction of max HP (expected damage taken over one kill).
 	// v23.5: the limit tunes itself: every step_h with no death or flee it rises x up (to at most max); a flee lowers it
 	// x down; a death resets it to safety. It used to be fixed, so days without a scratch never moved the party up.
 	safety_tune: { enabled: true, step_h: 2, up: 1.15, down: 0.85, max: 0.6 },
@@ -11,7 +12,6 @@ const CFG = {
 	kite_slack: 4,             // a mob we can kite still counts 1/kite_slack of its damage: kiting isn't perfect
 	                           //   (other mobs, walls, missed steps), so it lowers the risk 4x rather than to zero
 	max_ttk_s: 20,             // a monster that isn't the pack's type is only attacked if it dies within this many s
-	model_distrust: 2,         // v24.47: a monster we have no fights against is assumed to deal this many times the predicted damage
 	hopeless_ttk_s: 180,       // v24.44: a monster the party couldn't kill in 3 min is never attacked at all (ents)
 	                           //   (long fights block the pack's respawns and hunt progress)
 	max_respawn: 120,          // s; packs whose monster respawns slower than this aren't farmed (too much idle time)
@@ -19,7 +19,6 @@ const CFG = {
 	walk_overhead: 1.5,        // s added to every kill in estimates for walking to the next target and aggro time
 	idle_giveup_ms: 25_000,    // nothing to fight at the pack for this long while patrolling → put the pack on cooldown
 	pack_cooldown_ms: 600_000, // 10 min: an idle pack is skipped this long (someone else is probably farming it)
-	death_pack_cooldown_ms: 1_800_000, // 30 min: a pack we died at is skipped this long
 	repick_ms: 120_000,        // re-evaluate where to fight every 2 min (levels, gear and measurements change)
 	switch_margin: 1.15,       // change packs only if the new one scores 15% better (walking there isn't free)
 	near_pad: 450,             // px around the pack area a target may be picked from (and chased to)
@@ -29,8 +28,17 @@ const CFG = {
 	// v25.51: what camps are chosen for — "xp" (xp/s) or "gold" (v25.68: measured looted gold/s only, no estimate: a camp
 	// never fought at scores 0). Gold is measured at every camp the party fights at, whatever the mode. Not enabled.
 	farm_mode: "xp",
-	proven_kills: 10,          // v25.69 (owner: "if we killed 493 of a target, we can kill 7 more"): a type the party has killed
-	                           // this many times, with no death to it in 24h, is fought whatever the fight model says
+	// v25.82 (owner: "Try killing everything"): every type the party kills within hopeless_ttk_s is fought. Only a clearly
+	// impossible fight counts against a type — all members alive and within engage_px of the tank when it started, the
+	// priest in heal range, and the party's first death with the target over `hp` of its HP: skipped skip_h, no
+	// escalation. Any other death blocks nothing (deaths are often our movement's fault, not the monster's).
+	impossible: { hp: 0.5, skip_h: 2 },
+	// v25.82 sustain test (fightable): heal_eff — the share of the priest's heal output (attack x frequency) counted
+	// against incoming damage (overheal, movement, its own targets)
+	sustain: { heal_eff: 0.8 },
+	// v25.82: exploration — every every_min of farming the tank gives an untried camp (no measured xp or gold rate) a
+	// trial_min trial, the highest xp per kill first; hunts come first
+	explore: { every_min: 30, trial_min: 10 },
 	measure_min_s: 90,         // s at a pack before its measured xp/s is trusted over the estimate
 	// v24.84 (owner: explore camps for the best return; re-evaluate them as gear and levels improve): the tank reviews
 	// its camp every camp_review_min, or after camp_review_early_min once the party has grown stronger (an average level
@@ -46,12 +54,6 @@ const CFG = {
 	flee_hp: 0.25,             // the merchant, below 25% HP: teleport to town (use_town) and recover (fighters never flee)
 	flee_quiet_ms: 1200,       // ...channelling only once nothing has hit us for 1.2s (a hit cancels the 3s channel)
 	smash_mp_floor: 0.6,       // paladin: smash only with MP above 60% of max (+ its 380 cost): regen funds it, never potions
-	// Probing: the safety model only picks monsters it already calls safe, so it never learns about harder ones. Every
-	// every_min the leader may try the best-xp spot whose risk is just over the limit (up to max_over x) and that beats
-	// the best normal xp/s by min_gain, for `minutes`. A member dying or dropping below abort_hp ends it as a failure
-	// (fail_cooldown_h before that monster is tried again);
-	// lasting the time is a success (win_cooldown_h). Calibration learns from the fights either way.
-	probe: { enabled: false, every_min: 45, minutes: 10, max_over: 2.0, min_gain: 1.25, abort_hp: 0.4, fail_cooldown_h: 6, win_cooldown_h: 2 },
 	recover_hp: 0.85,          // ...and stay out until HP is back to 85%
 	recover_mp: 0.4,           //    and MP to 40% (enough for heals/skills on the way back)
 	loot_range: 400,           // px; the server pays a chest's gold multiplier only within 400px of the opener
@@ -488,21 +490,22 @@ const PACE_MS = 150;    // pause between consecutive bulk calls (selling, bankin
 const state = {
 	pack: null,              // where we fight: { mtype, map, boundary, count, est, score, directive? }
 	travel_off: [],          // v24.27: worn pieces taken off for a long walk: [{ slot, name, level, p, stat_type, speed, fails? }]
-	safe: {},                // monster id -> { ttk, xp } for every type that passed the safety check at the last pick
+	safe: {},                // monster id -> { ttk, xp } for every type the last pick would fight (fight_profile)
 	waypoints: [], wp: 0,    // patrol route through the pack (3x3 grid) and the current index
 	last_pick: 0,            // when pick_pack last ran (0 forces a re-pick)
 	last_target_at: Date.now(), // last time we had something to fight (idle detection)
-	best_score: 0,           // best free-choice pack's rate in the farm mode's unit (the probe's reference)
+	best_score: 0,           // best free-choice pack's rate in the farm mode's unit
 	best_xp: 0,              // v25.51: xp/s at that pick, whatever the mode (quest/hunt opportunity cost)
 	cooldown: {},            // pack key -> until (saved)
 	measured: {},            // pack key -> measured xp/s with the party there (together), averaged (saved)
 	measured_gold: {},       // v25.68: pack key -> { g: gold we looted there (chest_opened), s: seconds fought, n, at } (saved)
 	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
-	danger: {},              // monster id -> incident multiplier: × 0.6 per death, × 0.8 per flee; fades back to 1 (saved)
-	danger_at: {},           // monster id -> last death/flee (fading pauses for an hour after one) (saved)
-	calib: {},               // monster id -> { ratio, n, act, pred }: actual ÷ predicted damage per fight (EMA) (saved)
-	calib_all: { ratio: 1, n: 0 }, // the same over every monster: the default for monsters with few fights (saved)
+	type_skip: {},           // v25.82: monster id -> until: skipped after an impossible fight (saved)
+	fight_start: null,       // v25.82: the tank's last fight start { id, mtype, at, gathered, priest_ok, judged? } (judge_death)
+	deaths_nc: [],           // v25.82: times of deaths not counted against a type, last 24h (saved)
+	explore: { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }, // v25.82: the trial running
+	                         //   { key, mtype, map, start, until }, the last one's end, type -> when tried (saved)
 	session: null,           // current xp measurement: { key, est, xp, start }
 	bad_ids: {},             // entity id -> until: targets that took no damage (immune/healing)
 	prog: null,              // { id, hp, t }: damage progress on the current target
@@ -533,15 +536,10 @@ const state = {
 	mspot: null,             // merchant: the stand spot for Merrit { x, y } (saved)
 	stand_since: 0,          // merchant: when the stand was last opened and left still (Merrit's 2-minute timer)
 	parcel_at: 0,            // merchant: when the last Market Parcel arrived (saved)
-	proven: {},              // v25.69: monster type -> { k: party kills seen (kill_credit), d: [death times to it, 24h] } (saved)
-	camp_deaths: {},         // v25.29: pack_key -> death times in the last 24h (the rest after a death grows with them) (saved)
 	cave_block: null,        // v25.29: { at, lv, gs, n, deaths } — the cave beat us: not again until the party is stronger (saved)
 	stand: {},               // merchant listings: trade slot -> { name, level, q, price, value, at, cut_at } (saved)
 	upg: null,               // upgrade step { name, to, for, slot, gain, cost, floor, from_copy, worn? } — one roll (saved)
 	cmp_caps: {},            // item -> { level, at }: copies at this level won't be compounded (odds under the floor; v24.15, saved)
-	probe: null,             // running probe { mtype, start, until, ratio, prof }
-	probe_at: 0,             // last time a probe was considered (every_min)
-	probe_ok: {},            // mtype -> { mult, at }: a probe held; the party verdict for it is widened by mult for 24h (v24.6, saved)
 	pick_skips: {},          // pack key -> why the last pick skipped it as dangerous (v24.10; why_not)
 	upg_pick_at: 0,          // last time a project was looked for (every 10 min)
 	fund_need: 0,            // merchant: gold its current project step needs from the fighters

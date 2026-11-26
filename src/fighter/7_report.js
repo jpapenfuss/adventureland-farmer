@@ -34,7 +34,7 @@ function facts_doing(F, ctx) {
 	// a follower's reason is "following X"; the leader's directive is in the party header
 	F("doing", "self", `fighting: ${tgt}${is_follower() ? ` — ${why_}` : ""}`);
 	F("doing_why", "party", `  because ${why_}`, is_follower());
-	if (d && !is_follower() && !state.safe[d.monster] && !d.boss) F("directive_unsafe", "self", `directive ${d.monster} is NOT safe → ignored (why_not("${d.monster}"))`);
+	if (d && !is_follower() && !state.safe[d.monster] && !d.boss) F("directive_unsafe", "self", `directive ${d.monster} is not fought → ignored (why_not("${d.monster}"))`);
 }
 
 function facts_party(F, ctx) {
@@ -57,15 +57,16 @@ function facts_bosses(F, ctx) {
 	F("bosses", "party", `bosses: ${live.length ? live.map((k) => `${k}@${S_[k].map} ${boss_safe(k) ? "JOIN" : "too strong"}`).join(", ") : "none live on this server"}`, !live.length);
 }
 
-function facts_probe(F, ctx) {
-	const { p, d, now } = ctx;
-	if (!(CFG.probe?.enabled && (!in_party_cfg() || leader_name() === character.name))) return;
-	const P = state.probe, last = [...hist.ev].reverse().find((e) => e.type === "probe");
-	const next = (state.probe_at || 0) + CFG.probe.every_min * 60_000;
-	const why_ = P ? null : probe_why(), none = state.probe_none && Date.now() - state.probe_none.at < 2 * 3600_000 ? state.probe_none : null;
-	F("probe", "self", `probe: ${P ? `${P.mtype} running (${Math.max(0, Math.round((P.until - Date.now()) / 60_000))}m left, risk x${P.ratio.toFixed(2)})` : why_}` +
-		(none && !P ? ` | last check ${ago(none.at)} ago: no monster within x${CFG.probe.max_over} of the limit beats ${CFG.probe.min_gain}x the best ${none.best} ${rate_unit()}` : "") +
-		(last ? ` | last probe: ${last.mtype} ${last.result === "ok" ? "✓" : "✗ " + last.why} ${ago(last.t)} ago` : ""));
+// v25.82: exploration — "explore: tried N types in 24h (list), next: <type> in <min>, skipped (impossible): type until
+// hh:mm, deaths not counted: N"
+function facts_explore(F, ctx) {
+	const { now } = ctx;
+	if (is_follower() || (in_party_cfg() && leader_name() !== character.name)) return;
+	const E = state.explore, tried = Object.entries(E.tried).filter(([, t]) => now - t < 86_400_000).sort((a, b) => a[1] - b[1]).map(([mt]) => mt);
+	const next = E.cur ? `${E.cur.mtype} running (${mins(E.cur.until)} left)` : E.next ? `${E.next.mtype} in ${mins((E.last_end || now) + CFG.explore.every_min * 60_000)}` : "none untried within reach";
+	const sk = Object.entries(state.type_skip).filter(([, t]) => t > now).map(([mt, t]) => `${mt} until ${hhmm(t)}`);
+	const nc = (state.deaths_nc || []).filter((t) => now - t < 86_400_000).length;
+	F("explore", "self", `explore: tried ${tried.length} types in 24h (${tried.join(", ") || "none"}), next: ${next}, skipped (impossible): ${sk.join(", ") || "none"}, deaths not counted: ${nc}`);
 }
 
 function facts_engage(F, ctx) {
@@ -96,19 +97,19 @@ function facts_picks(F, ctx) {
 function facts_targets(F, ctx) {
 	const { p, d, now } = ctx;
 	if (!(p && character.map === p.map)) return;
-	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, unsafe: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
+	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, skipped: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (!e || e.type !== "monster" || e.mtype !== p.mtype || !e.visible || e.dead) continue;
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) (killable(e) ? c.unsafe : c.beyond).push(e.level || 1);
+		else if (!live_ok(e)) (killable(e) ? c.skipped : c.beyond).push(e.level || 1);
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
-	const n = c.ok + c.unsafe.length + c.beyond.length + c.far + c.taken + c.ignored;
+	const n = c.ok + c.skipped.length + c.beyond.length + c.far + c.taken + c.ignored;
 	if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
-		`${c.unsafe.length ? `, ${c.unsafe.length} levelled up past the limit — the tank takes them, lowest first, when none passes (levels ${c.unsafe.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} is skipped after an impossible fight` : ""}` +
 		`${c.beyond.length ? `, ${c.beyond.length} the party can't kill within ${CFG.hopeless_ttk_s}s — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 }
@@ -131,28 +132,6 @@ function facts_quests(F, ctx) {
 		F("quest:" + id, "self", `quest ${id}${is_guide_quest(id) ? " [guide]" : ""} @ ${G.npcs[r.quest]?.name || r.quest}: ${st} — ${inputs}`, st === "done");
 	}
 }
-// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
-// Why probe_ready() says no right now (report; v20.0 — the probe line used to be hidden until a first probe ran)
-function probe_why() {
-	const P = CFG.probe, now = Date.now();
-	if (!P?.enabled) return "off";
-	if (is_follower() || (in_party_cfg() && leader_name() !== character.name)) return "only the leader probes";
-	if (state.probe) return null;
-	if (now - (state.probe_at || 0) < P.every_min * 60_000) return `next check in ${mins((state.probe_at || 0) + P.every_min * 60_000)}`;
-	if (state.directive?.boss) return "boss fight";
-	if (event_live()) return "event running";
-	if (errand_busy()) return `errand ${state.errand}`;
-	if (state.recovering || character.rip) return "recovering";
-	const all = partners(), near = partners_near();
-	if (near.length < all.length) return `waiting for ${all.filter((p) => !near.includes(p)).map((p) => p.name).join(", ")} to be near`;
-	if (character.hp < character.max_hp * 0.8) return "our HP under 80%";
-	if (pot_count("hp") < CFG.pot_min * 2 || pot_count("mp") < CFG.pot_min * 2) return `our potions under ${CFG.pot_min * 2}`;
-	const low = all.find((p) => !(p.max_hp && p.hp >= p.max_hp * 0.8));
-	if (low) return `${low.name} HP under 80%`;
-	const lp = all.find((p) => (p.pots?.hp ?? 0) < CFG.pot_min * 2 || (p.pots?.mp ?? 0) < CFG.pot_min * 2);
-	if (lp) return `${lp.name} potions under ${CFG.pot_min * 2}`;
-	return "ready (next pick)";
-}
 // ---- more report() lines of the fighters (v25.2), called from report_facts in order ----
 function facts_stat(F, ctx) {
 	const { p, d, now } = ctx;
@@ -170,10 +149,6 @@ function facts_elixir(F, ctx) {
 		F("elixir", "self", `elixir: ${t}`, !elixir_active() && !best_elixir() && !bank_elixir() && character.gold < CFG.elixir_buy_min_gold);
 	}
 }
-function facts_safety(F, ctx) {
-	const { p, d, now } = ctx;
-	if (p && !p.boss) F("safety", "self", `safety limit ${Math.round(safety_now() * 100)}% of HP per kill${(state.safety_mult || 1) > 1 ? ` (raised from ${Math.round(CFG.safety * 100)}%; next step ${mins((state.safety_at || Date.now()) + CFG.safety_tune.step_h * 3600_000)})` : ""} | at ${p.mtype}: x${danger_of(p.mtype).toFixed(2)} — ${calib_text(p.mtype)}${state.danger[p.mtype] ? `, incidents x${state.danger[p.mtype].toFixed(2)}` : ""}`, danger_of(p.mtype) >= 1);
-}
 function facts_guide_farm(F, ctx) {
 	const { p, d, now } = ctx;
 	if (state.guide_farm) F("guide_farm", "self", `guide farm row: ${state.guide_farm.monster} (${state.guide_farm.reason})`, true);
@@ -187,8 +162,6 @@ function facts_shared(F, ctx) {
 	if (!is_follower() && partners().length) {
 		if (state.shared?.mutual.length) F("mutual", "party", `mutual goals: ${state.shared.mutual.slice(0, 3).join(" | ")}`);
 		else if (state.turn) F("turn", "party", `no mutual goal; turn: ${state.turn.who}'s for ${mins(state.turn.end)}${state.turn.arrived ? "" : " (walking there; the clock starts on arrival)"}`);
-		const pv = Object.entries(state.safe || {}).filter(([, f]) => f?.proven).map(([t]) => `${t} (${state.proven[t].k} kills)`);
-		if (pv.length) F("proven", "party", `fought on evidence (the model calls them unsafe; killed ${CFG.proven_kills}+ times, no death to them in 24h): ${pv.slice(0, 6).join(", ")}`);
 		if (state.shared?.blocked?.length) F("goal_blocked", "party", `goals left out (the camp pick would refuse them): ${state.shared.blocked.slice(0, 4).join(" | ")}`);
 		if (state.shared?.too_slow.length) F("too_slow", "party", `too slow to share (> ${CFG.party.mutual_max_h}h): ${state.shared.too_slow.slice(0, 4).join(" | ")}`);
 	}
@@ -237,20 +210,13 @@ function why_not_fighter(mtype) {
 	if (!farmable_type(mtype)) return out(L(`${mtype}: not farmable (${flags.join(", ") || "no xp/attack/respawn"})`));
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
-	const limit = (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
-	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill, takes ~${fight_risk(f).toFixed(0)} dmg/kill vs limit ${limit.toFixed(0)} → ${safe_enough(f, mtype) ? "SAFE" : "UNSAFE"}` +
-		`${f.kiteable ? " (kiteable)" : ""}${f.hp_pool > character.max_hp ? " (tank's HP)" : ""}`);
-	L(`  safety x${danger_of(mtype).toFixed(2)} = ${calib_text(mtype)} × incidents x${(state.danger[mtype] || 1).toFixed(2)}`);
+	// v25.82: no damage model — the kill time, and an impossible fight in the last skip_h
+	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill (the model expects ~${fight_risk(f).toFixed(0)} dmg/kill${f.kiteable ? ", kiteable" : ""}) → ${f.ttk > CFG.hopeless_ttk_s ? `NOT FOUGHT: over ${CFG.hopeless_ttk_s}s a kill`
+		: type_skipped(mtype) ? `SKIPPED until ${hhmm(state.type_skip[mtype])}: an impossible fight` : "FOUGHT"}`);
 	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
-	if (sk.length) L(`  skipped as dangerous at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split("#")[1] ? k.split("#")[1] + "@" : ""}${k.split(":")[0]} (${w})`).join("; ")}`);
+	if (sk.length) L(`  skipped at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split("#")[1] ? k.split("#")[1] + "@" : ""}${k.split(":")[0]} (${w})`).join("; ")}`);
 	const areas = [];
 	each_area((pack, area) => { if (pack.type === mtype) areas.push(`${area.map} x${Math.round(area.count)}${(state.cooldown[pack_key(area)] || 0) > Date.now() ? ` (cooldown ${mins(state.cooldown[pack_key(area)])})` : ""}`); });
 	L(`${mtype} packs: ${areas.join(", ") || "none on open maps"}; respawn ${m.respawn}s${m.respawn > CFG.max_respawn ? " (> max_respawn: only via directive)" : ""}`);
 	return out();
-}
-// ---- from the shared code (v24.95–v25.6): used by the fighters only ----
-function calib_text(mt) {
-	const c = state.calib[calib_key(mt)];
-	return c ? `calibration x${calib_factor(mt).toFixed(2)} (predicted ${Math.round(c.pred)}, actual ${Math.round(c.act)} dmg per fight over ${c.n}${c.n < CALIB_MIN_N ? `, needs ${CALIB_MIN_N}: judged as an unknown monster` : ""})`
-		: `calibration x${calib_factor(mt).toFixed(2)} (no fights yet: judged as the worst we've measured, at least x${CFG.model_distrust} the prediction)`;
 }

@@ -84,34 +84,6 @@ function fight_math(m, use_tank = true, team = "party") {
 		team, tank: tank ? tank.name : null, mates: mates.length, priest: mates.some((p) => p.ctype === "priest") };
 }
 const fight_risk = (f) => (f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps) * f.ttk;
-// Safety multiplier for a monster: calibration (how its fights went vs the model) × incidents (deaths/flees, fading)
-// Calibrated after 20 fights: 1 / ratio, clamped 0.4-1.5 (a monster that hits half as hard as predicted earns ×1.5).
-// Fewer fights: the all-monster ratio, more cautiously (0.6-1.2).
-// One entry per monster, keyed mtype + "@p" (v24.6 kept party fights apart from solo ones under that suffix; saved
-// calibration still applies). A verdict under tank cover uses the tank's own calibration (its heartbeat `calp`): it's
-// the one taking the hits — our own fights under cover say nothing and aren't recorded.
-const calib_key = (mt) => mt + "@p";
-// v24.47: measured damage decides, from the third fight on; the fight model alone is never trusted. The model has
-// under-predicted every monster this party fought (actual / predicted: gscorpion 1.3, cgoo 1.8, croc 2.7 — and it
-// counts one monster hitting one member, when a spot has several). Before, a monster got no correction until 20
-// fights, the correction was clamped, and a new monster was judged on the raw model: that is where the deaths at new
-// spots came from.
-//  - 3+ fights against it (ours, or under our tank: its own): 1 / (actual / predicted), down to 0.1, up to 1.5
-//  - fewer: as bad as the worst monster we have measured, and never better than model_distrust (2x the prediction)
-const CALIB_MIN_N = 3;
-function calib_factor(mtype, f) {
-	const own = (r) => Math.min(1.5, Math.max(0.1, 1 / Math.max(r, 0.1)));
-	const tr = f && f.tank ? state.partners[f.tank]?.calp?.[mtype] : 0;
-	if (tr > 0) return own(tr);
-	const c = state.calib[calib_key(mtype)];
-	if (c && c.n >= CALIB_MIN_N) return own(c.ratio);
-	let worst = CFG.model_distrust;
-	for (const k in state.calib) if (k.endsWith("@p") && state.calib[k].n >= CALIB_MIN_N) worst = Math.max(worst, state.calib[k].ratio);
-	return 1 / Math.min(worst, 4);
-}
-// v24.6: a probe that held (probe_ok, 24h, shared) widens the party verdict for that monster by the risk it held at
-const probe_ok_mult = (mtype) => { const o = state.probe_ok[mtype]; return o && Date.now() - o.at < 24 * 3600_000 ? o.mult : 1; };
-const danger_of = (mtype, f) => calib_factor(mtype, f) * (state.danger[mtype] || 1) * probe_ok_mult(mtype);
 // A priest among the members the verdict counted heals us through it
 const heal_mult = (f) => (f.priest ? CFG.party.heal_bonus : 1); // a priest among the members counted (fight_math)
 // The safety fraction in force: CFG.safety x the self-tuned multiplier (v23.5), capped at safety_tune.max. The leader
@@ -122,7 +94,9 @@ const safety_now = () => {
 	if (in_party_cfg()) for (const p of partners_any()) if (p.safety_mult > 0) m = Math.min(m, p.safety_mult);
 	return Math.min(CFG.safety * m, CFG.safety_tune?.enabled ? CFG.safety_tune.max : CFG.safety);
 };
-const safe_enough = (f, mtype) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * danger_of(mtype, f) * heal_mult(f);
+// v25.82: the plain model, for the event check only (event_live's safe_from): no calibration, no incidents. Camps and
+// targets are no longer judged by it (fight_profile)
+const safe_enough = (f) => !!f && fight_risk(f) <= (f.hp_pool || character.max_hp) * safety_now() * heal_mult(f);
 // v24.50: the tank decides. Together, with a tank in the party:
 //  - only the tank starts a fight: nobody else touches a monster that has no target, wherever the tank is (v24.46 had
 //    this only with the tank within reach) — no time limit, no exceptions;
@@ -165,25 +139,70 @@ function tank_first(t) {
 		miss.every((n) => { const q = state.partners[n]; return q && fresh(q) && Date.now() - q.t <= 3 * CFG.party.beat_ms && !q.rip && !q.errand && !q.recovering && q.map === character.map; })) return false;
 	return true;
 }
-// v25.69 (owner): evidence over the model — the party has killed this type proven_kills times (kill_credit, any member)
-// and no member died to it in the last 24h
-function proven(mtype) {
-	const p = state.proven[mtype], now = Date.now();
-	return !!p && p.k >= (CFG.proven_kills || Infinity) && !(p.d || []).some((t) => now - t < 86_400_000);
+// ---- v25.82 (owner: "Try killing everything"): evidence replaces prediction ----
+// A type is fought unless the party can't kill it within hopeless_ttk_s or survive one kill (sustainable), or a fight
+// against it was clearly impossible
+// in the last CFG.impossible.skip_h: all three members alive and within engage_px of the tank when the fight started,
+// the priest in heal range, and the party's first death came with the target still over CFG.impossible.hp of its HP.
+// Any other death blocks nothing (owner: deaths are often our movement's fault — single file, the healer out of range).
+const type_skipped = (mt, now = Date.now()) => (state.type_skip[mt] || 0) > now;
+// The priest's healing per second among the members counted (a heal is its attack; CFG.sustain.heal_eff of it lands)
+function priest_hps(f) {
+	if (!f?.priest && character.ctype !== "priest") return 0;
+	const pr = [...(character.ctype === "priest" ? [character] : []), ...fight_mates(f.team).filter((p) => p.ctype === "priest")];
+	return Math.max(0, ...pr.map((p) => (p.attack || 0) * (p.frequency || 0))) * CFG.sustain.heal_eff;
 }
-function proven_death(mtype, at = Date.now()) {
-	if (!mtype) return;
-	const p = (state.proven[mtype] = state.proven[mtype] || { k: 0, d: [] });
-	p.d = [...(p.d || []).filter((t) => at - t < 86_400_000 && Math.abs(t - at) > 60_000), at];
+// v25.82 sustain test (prior art: earthiverse's setups gate on "the priest out-heals it", in place of a %-of-HP budget):
+// a fight is out of reach only when the priest can't out-heal what the target deals AND that net damage over one kill
+// would spend the whole HP of whoever it hits — known stats only, no calibration, no safety fraction. A strict
+// "HPS ≥ DPS" alone would refuse a quick kill the HP pool absorbs, the conservatism the owner rejected.
+function sustainable(f) {
+	if (!f) return false;
+	const net = f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps - priest_hps(f);
+	return net <= 0 || net * f.ttk < (f.hp_pool || character.max_hp);
 }
+// The hard limits on a type: the party kills it within hopeless_ttk_s, and survives one kill (sustainable)
+const fightable = (f) => !!f && f.ttk <= CFG.hopeless_ttk_s && sustainable(f);
 function fight_profile(mtype) {
-	if (!farmable_type(mtype)) return null;
-	// v24.35: a monster type is judged for the party, not for whoever is within 400px this second. The leader stepped
-	// through a door ahead of the others, was "alone" on the far side, found its target unsafe, picked another spot and
-	// walked back — at every door.
+	if (!farmable_type(mtype) || type_skipped(mtype)) return null;
 	const f = fight_math(G.monsters[mtype]);
-	if (safe_enough(f, mtype)) return { ttk: f.ttk, xp: f.xp };
-	return f && proven(mtype) ? { ttk: f.ttk, xp: f.xp, proven: true } : null;
+	return fightable(f) ? { ttk: f.ttk, xp: f.xp } : null;
+}
+// The tank, starting a fight (fire(): a monster on none of us): how the party stood at that moment
+function fight_started(t) {
+	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || !together_now() || !is_tank_class(character.ctype)) return;
+	if (state.fight_start?.id === t.id && !state.fight_start.judged) return;
+	const mates = partners_any(); // (every configured member, heard from: party_missing names the unheard ones)
+	const gathered = !character.rip && others().length > 0 && !party_missing().length;
+	const pr = mates.find((q) => q.ctype === "priest"), pq = pr && partner_pos(pr);
+	const priest_ok = !!pr && !pr.rip && pq.map === character.map && Math.hypot(pq.x - character.x, pq.y - character.y) <= (pr.range || G.classes?.priest?.range || 0);
+	state.fight_start = { id: t.id, mtype: t.mtype, at: Date.now(), gathered, priest_ok };
+}
+// The tank (it picks the camps) judges the first death of each fight it started: { counted, mtype | why }. who: the
+// member that died; killer: the type that did it the most damage (null: unknown)
+function judge_death(killer, who) {
+	const fs = state.fight_start, now = Date.now();
+	if (fs?.judged) return { counted: false, why: "the same fight's wipe" };
+	if (!fs || now - fs.at > 10 * 60_000) return death_not_counted(killer, who, "no fight the tank started");
+	fs.judged = true;
+	const e = parent.entities?.[fs.id], frac = e && !e.dead && e.max_hp > 0 ? e.hp / e.max_hp : 0;
+	const why_ = !fs.gathered ? "party not gathered" : !fs.priest_ok ? "healer out of range"
+		: killer && killer !== fs.mtype ? `killed by ${killer}, not the fight's ${fs.mtype}` : frac <= CFG.impossible.hp ? `target at ${Math.round(frac * 100)}%` : null;
+	if (why_) return death_not_counted(killer || fs.mtype, who, why_);
+	const until = now + CFG.impossible.skip_h * 3600_000;
+	state.type_skip[fs.mtype] = until; // no escalation: a second impossible wipe is another skip_h from then
+	log_ev("impossible", { mtype: fs.mtype, who, hp: Math.round(frac * 100), until });
+	game_log(`${fs.mtype}: the gathered party wiped with it at ${Math.round(frac * 100)}% — skipped for ${CFG.impossible.skip_h} h`, C.warn);
+	share_verdict({ kind: "type_skip", mtype: fs.mtype, until });
+	state.last_pick = 0;
+	return { counted: true, mtype: fs.mtype };
+}
+function death_not_counted(mt, who, why_) {
+	const now = Date.now();
+	state.deaths_nc = [...(state.deaths_nc || []).filter((t) => now - t < 86_400_000), now];
+	log_ev("incident", { mtype: mt || null, who, why: `death not counted: ${why_}` });
+	game_log(`death not counted (${who}${mt ? ` @ ${mt}` : ""}): ${why_}`, C.dim);
+	return { counted: false, why: why_ };
 }
 // Seconds between respawns, as the server schedules them: respawn + 0..0.9s random (mean +0.45); respawns over 200s
 // are instead scaled by 0.72..1.2 (mean ×0.96). "grow" packs refill almost instantly (0.1s here).
@@ -234,14 +253,15 @@ function map_hops(from, to) {
 // where its NPC stands — Dijkstra over map spawns, cached per start (map, 200px cell) for 60s. The hop count (v24.9-v24.15)
 // predicted other paths than smart_move took: it walked through level1's vampire rats, which killed all three.
 const rt_cache = new Map();
-function route_graph(map, x, y, safe = false) {
-	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${safe ? 1 : 0}`, now = Date.now(), c = rt_cache.get(key);
+// (v25.82: except — the destination camp's own type: the walk goes to fight it, its zones are no danger on the way)
+function route_graph(map, x, y, safe = false, except = null) {
+	const key = `${map}:${Math.round(x / 200)}:${Math.round(y / 200)}|${safe ? 1 : 0}|${except || ""}`, now = Date.now(), c = rt_cache.get(key);
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
 	// (v25.80, Fable: not for a ranged burner's zone — desertland's transporter arrival stands in the fire spirits' reach,
 	// and the exemption let the first stretch be the death walk north; their path-length budget already lets us leave)
-	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
+	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && z.t !== except && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -250,7 +270,7 @@ function route_graph(map, x, y, safe = false) {
 			// v24.19: safe mode — not along a stretch that passes deadly spawns. Our own first stretch is excepted only when
 			// we already stand inside such a spawn's reach (v24.43: it was always excepted — from desertland's transporter the
 			// "safe" way to level2s was the walk past the ents)
-			if (safe && !(u === "@" && in_danger_here) && seg_danger(p.map, p.x, p.y, how.x, how.y)) return;
+			if (safe && !(u === "@" && in_danger_here) && seg_danger(p.map, p.x, p.y, how.x, how.y, except)) return;
 			const n = `${m2}#${s2}`;
 			pos[n] = pos[n] || { map: m2, x: sp[0], y: sp[1] };
 			out.push([n, cost, how]);
@@ -278,13 +298,13 @@ function route_graph(map, x, y, safe = false) {
 	return r;
 }
 // { d: px, maps: the maps entered (the destination last), doors } or null (unreachable); from defaults to us
-function route_to(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }, safe = false) {
+function route_to(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }, safe = false, except = null) {
 	if (to_map === from.map) return { d: Math.hypot(tx - from.x, ty - from.y), maps: [], doors: 0, legs: [] };
-	const g = route_graph(from.map, from.x, from.y, safe);
+	const g = route_graph(from.map, from.x, from.y, safe, except);
 	let best = null;
 	for (const n in g.dist) {
 		const p = g.pos[n];
-		if (p.map !== to_map || (safe && seg_danger(to_map, p.x, p.y, tx, ty))) continue;
+		if (p.map !== to_map || (safe && seg_danger(to_map, p.x, p.y, tx, ty, except))) continue;
 		const d = g.dist[n] + Math.hypot(tx - p.x, ty - p.y);
 		if (!best || d < best.d) best = { d, n };
 	}
@@ -363,8 +383,8 @@ function walk_path(map, x1, y1, x2, y2) {
 }
 // "mt @ map" if the walk from (x1,y1) to (x2,y2) on a map passes within danger_px of such a spawn: along the real path
 // (walk_path), or the straight line sampled every 40px where the map has no geometry
-function seg_danger(map, x1, y1, x2, y2) {
-	const zs = deadly_areas(map);
+function seg_danger(map, x1, y1, x2, y2, except = null) {
+	const zs = except ? deadly_areas(map).filter((z) => z.t !== except) : deadly_areas(map);
 	if (!zs.length) return null;
 	// only where a detour could matter: a spawn within danger_px of the stretch's box grown by 500px (the walk bends
 	// round cliffs and water, but not across the map); elsewhere the straight line will do, and costs nothing
@@ -399,21 +419,21 @@ function route_plain(to_map, tx, ty) {
 	const r = route_to(to_map, tx, ty);
 	return r ? { d: r.d, legs: r.legs.some((l) => l.kind === "tp") ? r.legs : null, danger: null, around: null } : null;
 }
-function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
-	const r = route_to(to_map, tx, ty, from);
+function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }, except = null) {
+	const r = route_to(to_map, tx, ty, from, false, except);
 	if (!r) return null;
 	// v25.80 (Fable): a walk on the map we're on was never judged — in desertland, gscorpion is a straight walk through
 	// the fire spirits
-	if (to_map === from.map) { const w = seg_danger(to_map, from.x, from.y, tx, ty); return { d: r.d, legs: null, danger: w, around: null }; }
+	if (to_map === from.map) { const w = seg_danger(to_map, from.x, from.y, tx, ty, except); return { d: r.d, legs: null, danger: w, around: null }; }
 	let why = null;
-	for (const L of r.legs) if (L.fx !== undefined && (why = seg_danger(L.map, L.fx, L.fy, L.x, L.y))) break;
-	if (!why && r.last) why = seg_danger(to_map, r.last.x, r.last.y, tx, ty);
+	for (const L of r.legs) if (L.fx !== undefined && (why = seg_danger(L.map, L.fx, L.fy, L.x, L.y, except))) break;
+	if (!why && r.last) why = seg_danger(to_map, r.last.x, r.last.y, tx, ty, except);
 	// v24.34: a safe shortest way that uses the transporter is walked leg by leg too. smart_move only takes the
 	// transporter when its own path passes the NPC, so from desertland it went by the door instead (level2s → level2 →
 	// level1's prats); in level2s the plan said "back to desertland, transporter", and in desertland smart_move left by
 	// the door again — the party walked in and out of that door.
 	if (!why) return { d: r.d, legs: r.legs.some((l) => l.kind === "tp") ? r.legs : null, danger: null, around: null };
-	const s = route_to(to_map, tx, ty, from, true);
+	const s = route_to(to_map, tx, ty, from, true, except);
 	return s ? { d: s.d, legs: s.legs, danger: null, around: why } : { d: r.d, legs: null, danger: why, around: null };
 }
 // v25.43: the speed we walk at — a merchant with its stand open moves at 10, which made every aggressive monster look
@@ -445,14 +465,15 @@ const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(
 // through those fire spirits, 16 s in reach; they attack anyone in range untargeted — so nothing reacted — and every hit
 // stacks burn): for everyone. A fighter judges it for the party's weakest member against that member's whole HP (the
 // merchant: half its own), burn counted at ~3x the hit (it stacks to about that), and never for a type the party farms
-// (state.safe: the camp's own monster, fought, not walked past).
+// (v25.82: not even for a type the party would fight — every type now; route_plan's except leaves out the destination
+// camp's own type instead: fought, not walked past).
 // threat_dps: { dps, hp } — its damage per second in reach (burn ~3x) and the HP budget a walk past it may spend — or null
 // (Fable on v25.80: a fighter ignores a monster that almost never attacks unprovoked, aggro under 0.1 — halloween's
 // mrpumpkin closed the minimush camp)
 function threat_dps(t) {
 	const m = G.monsters[t];
 	if (!m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return null;
-	if (!is_merchant() && (state.safe?.[t] || ((m.aggro || 0) < 0.1 && !((m.rage || 0) > 0)))) return null;
+	if (!is_merchant() && (m.aggro || 0) < 0.1 && !((m.rage || 0) > 0)) return null;
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const magic = m.damage_type === "magical";
 	const hit = (m.attack || 0) * dm(((magic ? character.resistance : character.armor) || 0) - ((magic ? m.rpiercing : m.apiercing) || 0));
@@ -548,7 +569,7 @@ const farm_kind = () => (CFG.farm_mode === "gold" && Object.keys(state.measured_
 // (counted once CFG.measure_min_s seconds were fought there — one chest in a 5 s session isn't a rate)
 const gold_rate = (key) => { const m = state.measured_gold[key]; return m && m.s >= CFG.measure_min_s ? m.g / m.s : undefined; };
 const meas = (kind = farm_kind()) => (kind === "gold" ? Object.fromEntries(Object.keys(state.measured_gold).map((k) => [k, gold_rate(k)]).filter((x) => x[1] !== undefined)) : state.measured);
-// a kill's value in the farm mode's unit (f: a fight profile — its xp, which a probe or the guide may set). Gold: none —
+// a kill's value in the farm mode's unit (f: a fight profile — its xp). Gold: none —
 // a camp's gold is only what was measured there (v25.68)
 const kill_value = (t, f, kind = farm_kind()) => (kind === "gold" ? 0 : f?.xp ?? G.monsters[t]?.xp ?? 0);
 const rate_unit = () => (farm_kind() === "gold" ? "gold/s" : "xp/s");

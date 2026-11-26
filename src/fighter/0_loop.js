@@ -16,7 +16,7 @@ function follower_tick() {
 		return;
 	}
 	// v24.8: a fleeing leader sends no pack: keep ours and hold it (as on its errands) instead of walking to its town spot
-	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, probe: !!L.pack.probe }
+	state.pack = L.pack && valid_boundary(L.pack.boundary) ? { mtype: L.pack.mtype, map: L.pack.map, boundary: L.pack.boundary, directive: `following ${L.name}`, explore: !!L.pack.explore }
 		: L.recovering && state.pack ? state.pack : null;
 	state.last_target_at = Date.now();
 	if (party_heal()) return;
@@ -71,8 +71,7 @@ function follower_tick() {
 function follower_pick(pos) {
 	const mt = state.pack?.mtype;
 	if (!mt || pos.map !== character.map) return null;
-	if (state.pack.probe) state.safe[mt] = { ttk: 5, xp: G.monsters[mt]?.xp || 0, probe: true }; // the leader is probing it
-	else if (Date.now() - (state.fsafe_at || 0) > 30_000 || state.fsafe_mt !== mt) {
+	if (Date.now() - (state.fsafe_at || 0) > 30_000 || state.fsafe_mt !== mt) {
 		const f = fight_profile(mt);
 		if (f) state.safe[mt] = f; else delete state.safe[mt];
 		state.fsafe_at = Date.now(); state.fsafe_mt = mt;
@@ -86,7 +85,6 @@ function follower_pick(pos) {
 function fighter_tick() {
 	let wait = 200;
 	if (is_follower()) {
-		lead_lost();
 		follower_tick();
 		loot_chests();
 		const L = leader_hb();
@@ -94,7 +92,7 @@ function fighter_tick() {
 		return 150;
 	}
 	if (cave_entry_tick()) { loot_chests(); return 200; } // v25.22: once a day, the party goes into the Cave of Many Dreams
-	probe_check();
+	explore_check(); // v25.82: a trial's end, or the next one due
 	// v24.60: the party sits at its camp. No re-pick every repick_ms (estimates within a few % of each other moved
 	// it between camps: 18 changes in an hour). A camp is left only when it's gone: a death there, nothing to
 	// fight for the idle time, or no safe way to it — each of those clears state.pack or picks again itself.
@@ -102,7 +100,7 @@ function fighter_tick() {
 	// pick on the first tick after loading, judging every monster for itself alone, and the party sat there)
 	// v25.75 (audit): a camp put to rest (idle, the watchdog, a roamer keeping us away) is left — "cool it and pick
 	// again" only cooled it, and the party stayed until the 30-min review
-	const resting_pack = !!state.pack && !state.pack.boss && !state.pack.probe && (state.cooldown[pack_key(state.pack)] || 0) > Date.now();
+	const resting_pack = !!state.pack && !state.pack.boss && (state.cooldown[pack_key(state.pack)] || 0) > Date.now();
 	if (resting_pack && Date.now() - (state.rest_pick_at || 0) > 5000 && !errand_busy() && !(in_party_cfg() && party_break())) { state.rest_pick_at = Date.now(); if (!is_follower()) try { refresh_directive(); } catch (e) {} pick_pack(); } // (the goal first: its other area — Fable)
 	else if (!state.pack && !(in_party_cfg() && party_break())) pick_pack();
 	else if (state.pack && !(in_party_cfg() && party_break())) camp_review(); // v24.84

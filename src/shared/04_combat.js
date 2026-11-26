@@ -22,6 +22,7 @@ function hopeless(t) {
 }
 function fire(skill, target, extra) {
 	if (hopeless(target) || tank_first(target)) return false;
+	if (target?.type === "monster" && !target.target && skill !== "heal") fight_started(target); // v25.82: how the party stood (judge_death)
 	const key = G.skills[skill]?.share || skill;
 	if (inflight[key] || is_on_cooldown(skill)) return false;
 	const reserve = skill === "attack" ? RESERVE.attack : skill.startsWith("use_") || skill.startsWith("regen_") ? RESERVE.potion : RESERVE.skill;
@@ -102,7 +103,6 @@ async function travel(dest) {
 			const P_ = state.pack;
 			if (e?.reason === "deadly_route" && P_ && !is_follower() && dest?.map === P_.map) {
 				rest_place(P_, 1_800_000);
-				if (state.probe?.mtype === P_.mtype) { skip("probe:" + P_.mtype, 6 * 3600_000, "no safe way there"); state.probe = null; }
 				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
 				state.pack = null; state.last_pick = 0;
 			}
