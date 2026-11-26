@@ -1,4 +1,4 @@
-const VERSION = "25.80"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.81"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -444,6 +444,9 @@ const CFG = {
 		// After one transfer the poorer has ~20% of the richer's gold, so the 10% trigger can't fire back.
 		gold: { enabled: true, min_ratio: 0.10, give: 0.15, min_rich: 1_000_000, every_h: 3 },
 	},
+	// v25.81: the prebuilt gear table (data/gear/*.json, tools/gear_table.js), fetched once per load from the repo at the
+	// loaded commit (master if unknown); the last good copy is cached in the browser. Lookups: gt_item, gt_slot, gt_best.
+	gear_table: { enabled: true, repo: "jpapenfuss/adventureland-farmer", dir: "data/gear", timeout_ms: 15_000 },
 };
 code_settings.show_smart_move_text = false; // hide smart_move's "Path found!" chatter in the game log
 

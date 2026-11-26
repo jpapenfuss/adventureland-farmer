@@ -214,6 +214,7 @@ function report_facts() {
 		const c = CFG.craft_power && craft_pick();
 		if (c) F("craft", "self", `craft: ${c.id} for ${c.for}'s ${c.slot} (+${c.gain} pts${c.cost ? `, ${fmt_k(c.cost)} gold` : ""})${craft_inputs_in_bags(c.id) ? " — ready" : " — fetching inputs"}`);
 	}
+	F("gear_table", "self", gt_report_text(), gt.status === "loaded" && !gt.stale); // v25.81: the prebuilt gear table
 	// v24.81: the character's own numbers (the server's totals, as the client shows them)
 	{
 		const c = character, pick = ["level", "int", "str", "dex", "vit", "for", "attack", "frequency", "range", "speed", "armor", "resistance", "max_hp", "max_mp", "mp_cost", "crit", "critdamage",
