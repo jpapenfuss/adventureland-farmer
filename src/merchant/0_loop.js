@@ -158,7 +158,7 @@ function fight_back() { // v25.11: role function (the fighters' is in fighter/3_
 	if (!t) return false;
 	if (character.c.town) return true; // channelling the town teleport: an attack would cancel it
 	if (get_targeted_monster() !== t) change_target(t);
-	if (can_attack(t)) fire("attack", t);
+	if (can_attack(t)) { tag_spend("combat"); fire("attack", t); } // (a merchant's attack costs gold: v25.80)
 	return true;
 }
 // ---- role functions (v25.11): the fighters' versions are in fighter/1_party.js, 5_town.js and 6_gear.js ----

@@ -1507,12 +1507,25 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("inflight.attack = false; change_target(null); follower_tick()", ctx);
 	assert(!atk55.includes("g55"), "...but not one beyond wait_radius of the leader");
 	delete ctx.parent.entities.g55; ctx.distance = dist_save;
+	// v25.80: a ranged burner that attacks untargeted is a no-walk spawn for fighters too (Sanala died crossing desertland's
+	// fire spirits), judged for the weakest member; never for a type the party farms
+	{ ctx.G.monsters.fsp80 = { aggro: 0.2, range: 280, attack: 320, frequency: 1.2, damage_type: "magical", abilities: { burn: {} }, speed: 24, hp: 5000, xp: 10 };
+		ctx.G.monsters.weak80 = { aggro: 0.2, range: 280, attack: 10, frequency: 1, damage_type: "magical", speed: 24, hp: 50, xp: 1 };
+		const pm0 = vm.runInContext("JSON.stringify(state.partners)", ctx);
+		vm.runInContext("state.partners = { Sanala: { name: 'Sanala', ctype: 'mage', max_hp: 3500, t: Date.now(), map: 'main', x: 0, y: 0 } }", ctx);
+		const r = vm.runInContext("[merchant_threat('fsp80', 55), merchant_threat('weak80', 55), (state.safe.fsp80 = { ttk: 1, xp: 1 }, merchant_threat('fsp80', 55))].join()", ctx);
+		vm.runInContext(`delete state.safe.fsp80; state.partners = ${pm0}`, ctx); delete ctx.G.monsters.fsp80; delete ctx.G.monsters.weak80;
+		assert(r === "true,false,false", `v25.80: fire spirits are a no-walk spawn for a fighter party (weakest 3.5k HP); a weak one isn't; a farmed type isn't (${r})`); }
 	// 56) transfers between our characters don't count as income/spending
 	ctx.send_cm = () => Promise.resolve();
 	vm.runInContext("stats.adj = 0", ctx);
-	await vm.runInContext("send_own_gold('Torlis', 5000)", ctx);
+	// v25.80: from the game's own gold events (the code message arrived a tick late: earned, then "other" spending)
+	handlers.gold_sent({ amount: 5000, to: "Torlis" });
+	handlers.gold_received({ amount: 2000, from: "Sanala" });
+	handlers.gold_received({ amount: 999, from: "Stranger" }); // a stranger's gold is income
+	assert(vm.runInContext("stats.adj", ctx) === 3000, "v25.80: sent +5000 / received −2000 tracked as transfers from the game's events, a stranger's not");
 	handlers.cm({ name: "Sanala", message: { k: "gold", g: 2000 } });
-	assert(vm.runInContext("stats.adj", ctx) === 3000, "sent +5000 / received −2000 tracked as transfers");
+	assert(vm.runInContext("stats.adj", ctx) === 3000, "v25.80: the code message no longer moves the ledger (no double count)");
 	// 57) merchant donates gold above keep for XP, capped per day, stops at to_level
 	Object.assign(character, { name: "DoWhatNow", ctype: "merchant", level: 5, gold: 1_300_000, map: "main", rip: false });
 	const emits = []; ctx.parent.socket.emit = (ev, d) => emits.push([ev, d && d.gold]);
@@ -4233,8 +4246,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const dz = R("deadly_areas('dz555').map((z) => z.t).join()");
 		assert(dz === "fire555", `merchant: fire spirits are no place to walk, the scorpions it visits are (${dz})`);
 		assert(/fire555/.test(R("seg_danger('dz555', 0, 0, 0, -800) || ''")), "merchant: a walk through the fire spirits is dangerous");
-		assert(R("seg_danger('dz555', -330, 0, -330, -800)") === null && /fire555/.test(R("seg_danger('dz555', -290, 0, -290, -800) || ''")),
-			"merchant: out of their range (280 + 120 px) is fine, inside it is not — not the 400 px of a monster that chases");
+		// (v25.80: the time a walk spends within their reach + 40 px is what counts — no wider margin)
+		assert(R("seg_danger('dz555', -240, 0, -240, -800)") === null && /fire555/.test(R("seg_danger('dz555', -150, 0, -150, -800) || ''")),
+			"merchant: outside their reach (280 + 40 px) is fine, a walk well inside it is not — not the 400 px of a monster that chases");
 		ctx.G.maps.dz555.monsters.push({ type: "fire555", count: 0, boundary: [2000, 2000, 2200, 2200] });
 		R("dz_cache.clear()");
 		assert(R("seg_danger('dz555', 2100, 1500, 2100, 2500)") === null, "an empty spawn (count 0: an event boss's) isn't there");

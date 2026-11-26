@@ -80,8 +80,7 @@ function on_cm_message(m) {
 		return;
 	}
 	if (m && m.message?.k === "gold" && ((CFG.party.members || []).includes(m.name) || m.name === CFG.merchant?.name)) {
-		stats.adj -= +m.message.g || 0; // a transfer from one of ours: not income
-		log_ev("gold", { from: m.name, g: +m.message.g || 0 });
+		log_ev("gold", { from: m.name, g: +m.message.g || 0 }); // (v25.80: the ledger adjustment comes from the game's gold_received event)
 		return;
 	}
 	if (!m || !(CFG.party.members || []).includes(m.name) || m.message?.k !== "hb") return;

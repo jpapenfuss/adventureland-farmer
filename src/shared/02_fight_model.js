@@ -239,7 +239,9 @@ function route_graph(map, x, y, safe = false) {
 	if (c && now - c.at < 60_000) return c;
 	const dist = { "@": 0 }, prev = {}, via = {}, pos = { "@": { map, x, y } }, done = new Set(), open = ["@"];
 	const tp = G.npcs?.transporter?.places || {}, DP = CFG.travel.door_px;
-	const in_danger_here = safe && deadly_areas(map).some((z) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
+	// (v25.80, Fable: not for a ranged burner's zone — desertland's transporter arrival stands in the fire spirits' reach,
+	// and the exemption let the first stretch be the death walk north; their path-length budget already lets us leave)
+	const in_danger_here = safe && deadly_areas(map).some((z) => !z.dps && Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px);
 	const edges = (u) => {
 		const p = pos[u], M = G.maps[p.map], out = [];
 		const add = (m2, s2, cost, how) => {
@@ -307,7 +309,7 @@ function deadly_areas(map) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
 		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
-		else if (merchant_threat(t, v)) list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 120 }); // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
+		else if (merchant_threat(t, v)) { const T_ = threat_dps(t); list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 40, dps: T_.dps, hp: T_.hp, v }); } // (v25.80: its reach plus the sprites' size — the time spent there is what's counted, so no extra margin) // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
 	return list;
@@ -373,8 +375,22 @@ function seg_danger(map, x1, y1, x2, y2) {
 		const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 40));
 		pts = Array.from({ length: n + 1 }, (_, i) => [x1 + ((x2 - x1) * i) / n, y1 + ((y2 - y1) * i) / n]);
 	}
-	for (const z of zs) for (const [x, y] of pts)
-		if (Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px) return `${z.t} @ ${map}`;
+	const inside = (z, x, y) => Math.hypot(Math.max(0, z.b[0] - x, x - z.b[2]), Math.max(0, z.b[1] - y, y - z.b[3])) < z.px;
+	let burn_dmg = 0, burn_hp = Infinity, burn_t = null; // (summed over overlapping zones: two spawns' reach on one stretch)
+	for (const z of zs) {
+		// v25.80 (Fable): a ranged attacker that can't chase is judged by the time this walk spends in its reach — the
+		// whole damage over that stretch against the HP budget — not by touching its zone: desertland's transporter
+		// arrival brushes the fire spirits' reach, the way north crosses it for 16 s
+		if (z.dps) {
+			let px = 0;
+			for (let i = 1; i < pts.length; i++) if (inside(z, pts[i][0], pts[i][1]) || inside(z, pts[i - 1][0], pts[i - 1][1])) px += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+			const dmg = z.dps * (px / Math.max(z.v || 10, 10));
+			if (dmg > 0) { burn_dmg += dmg; burn_hp = Math.min(burn_hp, z.hp); burn_t = burn_t || z.t; }
+			if (burn_dmg >= burn_hp) return `${burn_t} @ ${map}`;
+			continue;
+		}
+		for (const [x, y] of pts) if (inside(z, x, y)) return `${z.t} @ ${map}`;
+	}
 	return null;
 }
 // The way smart_move would walk, or if that passes deadly spawns, the shortest way around them: { d, legs, danger,
@@ -386,6 +402,9 @@ function route_plain(to_map, tx, ty) {
 function route_plan(to_map, tx, ty, from = { map: character.map, x: character.x, y: character.y }) {
 	const r = route_to(to_map, tx, ty, from);
 	if (!r) return null;
+	// v25.80 (Fable): a walk on the map we're on was never judged — in desertland, gscorpion is a straight walk through
+	// the fire spirits
+	if (to_map === from.map) { const w = seg_danger(to_map, from.x, from.y, tx, ty); return { d: r.d, legs: null, danger: w, around: null }; }
 	let why = null;
 	for (const L of r.legs) if (L.fx !== undefined && (why = seg_danger(L.map, L.fx, L.fy, L.x, L.y))) break;
 	if (!why && r.last) why = seg_danger(to_map, r.last.x, r.last.y, tx, ty);
@@ -422,14 +441,29 @@ const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
 // rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed). Such a
 // monster can't chase us, so deadly_areas keeps the walk out of its range (+120 px), not danger_px.
-function merchant_threat(t, v) {
+// v25.80 (a fighter, Sanala, died the same way: the only walk from desertland's transporter to the level2s door runs
+// through those fire spirits, 16 s in reach; they attack anyone in range untargeted — so nothing reacted — and every hit
+// stacks burn): for everyone. A fighter judges it for the party's weakest member against that member's whole HP (the
+// merchant: half its own), burn counted at ~3x the hit (it stacks to about that), and never for a type the party farms
+// (state.safe: the camp's own monster, fought, not walked past).
+// threat_dps: { dps, hp } — its damage per second in reach (burn ~3x) and the HP budget a walk past it may spend — or null
+// (Fable on v25.80: a fighter ignores a monster that almost never attacks unprovoked, aggro under 0.1 — halloween's
+// mrpumpkin closed the minimush camp)
+function threat_dps(t) {
 	const m = G.monsters[t];
-	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
+	if (!m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return null;
+	if (!is_merchant() && (state.safe?.[t] || ((m.aggro || 0) < 0.1 && !((m.rage || 0) > 0)))) return null;
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const magic = m.damage_type === "magical";
 	const hit = (m.attack || 0) * dm(((magic ? character.resistance : character.armor) || 0) - ((magic ? m.rpiercing : m.apiercing) || 0));
-	const exposed_s = (2 * (m.range || 0) + 100) / Math.max(v, 10);
-	return hit * (m.frequency || 0) * exposed_s >= (character.max_hp || 1) / 2;
+	const burn = m.abilities?.burn ? 3 : 1;
+	const hp = is_merchant() ? (character.max_hp || 1) / 2 : Math.min(character.max_hp || Infinity, ...partners_any().map((p) => p.max_hp || Infinity));
+	return { dps: hit * burn * (m.frequency || 0), hp: Number.isFinite(hp) ? hp : character.max_hp || 1 };
+}
+// A walk straight through its reach would cost that budget
+function merchant_threat(t, v) {
+	const T_ = threat_dps(t), m = G.monsters[t];
+	return !!T_ && T_.dps * ((2 * (m.range || 0) + 100) / Math.max(v, 10)) >= T_.hp;
 }
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }
