@@ -45,7 +45,9 @@ async function run(role) {
 	// v25.78 (owner): the merchant's report classes every non-stackable bank item; nothing placeable → UNCLASSIFIED
 	if (role === "merchant") {
 		Object.assign(G.items, { quiver: { type: "quiver", g: 100 }, mystery: { type: "misc", g: 100 }, shell9: { type: "material", s: 9999 } });
-		vm.runInContext("state.bank_dump = { quiver: 3, mystery: 1, shell9: 500 }; state.bank_at = Date.now(); state.partners = { Torlis: { name: 'Torlis', ctype: 'paladin', t: Date.now(), gear: { w: {} } } }", ctx);
+		vm.runInContext("state.bank_dump = { quiver: 3, mystery: 1, shell9: 500 }; state.bank_at = Date.now(); state.partners = {}; for (const n of CFG.party.members) state.partners[n] = { name: n, ctype: 'paladin', t: Date.now(), gear: { w: {} } }", ctx);
+		const bt0 = vm.runInContext("globalThis.__pp = state.partners; state.partners = {}; globalThis.__bt0 = bank_classes_text(); state.partners = __pp; __bt0", ctx);
+		assert(/gear \(not every fighter heard from/.test(bt0) || !/no party class/.test(bt0), `merchant: with fighters unheard, gear verdicts are provisional (${bt0})`);
 		const bt = vm.runInContext("bank_classes_text()", ctx);
 		assert(/no party class can use: quiver x3/.test(bt) && /UNCLASSIFIED: mystery/.test(bt) && !/shell9/.test(bt) && bt.indexOf("UNCLASSIFIED") < bt.indexOf("no party"), `merchant: bank items classed, UNCLASSIFIED first, stackables left out (${bt})`);
 	}

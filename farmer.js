@@ -8894,7 +8894,7 @@ function gear_purge_text() {
 
 // v25.78 (owner: "report() include all items in the bank, flagging unclassified items"): every non-stackable bank item
 // (stackables stack in one slot forever: left out) by what it is to the party; UNCLASSIFIED = nothing places it yet
-function bank_item_class(name, level, locked, takers) {
+function bank_item_class(name, level, locked, takers, provisional) {
 	const d = G.items[name];
 	if (!d) return "UNCLASSIFIED (unknown item)";
 	if (locked) return "locked (yours)";
@@ -8902,10 +8902,11 @@ function bank_item_class(name, level, locked, takers) {
 	if (state.upg?.name === name) return "upgrade project";
 	const it = { name, level };
 	if (GEAR.has(d.type)) {
+		if (provisional) return "gear (not every fighter heard from: judged later)"; // (Fable: missing members' pieces read "useless")
 		const who = takers.filter((m) => gear_gain(it, m.ctype, m.g)).map((m) => m.name);
 		if (who.length) return `upgrade now for ${who.join("/")}`;
 		if (!takers.some((m) => slots_for(name, m.ctype, m.g).length)) return "no party class can use";
-		if (d.set && G.sets?.[d.set] && Array.isArray(d.class)) return `set piece (${d.set})`;
+		if (d.set && G.sets?.[d.set]) return `set piece (${d.set})`;
 		if (d.compound && compound_groups().some((g) => g.name === name && g.level === level)) return "compound set copy";
 		if (!recipe_lv) gear_protected({ name: "" }, takers); // (fills recipe_lv)
 		if (recipe_lv?.get(name)?.has(level)) return "recipe input";
@@ -8913,18 +8914,22 @@ function bank_item_class(name, level, locked, takers) {
 		return "surplus gear (no fighter would wear it at any level)";
 	}
 	if (d.e || d.quest) return "exchange / quest turn-in";
+	if (!recipe_lv) gear_protected({ name: "" }, takers);
+	if (recipe_lv?.has(name)) return "recipe input";
 	if (state.needs.has(name)) return "needed (quest / guide)";
 	return "UNCLASSIFIED";
 }
 function bank_classes_text() {
 	const dump = state.bank_dump;
 	if (!dump) return "bank items: nothing recorded yet";
-	const takers = purge_takers() || gear_takers().filter((m) => m.ctype !== "merchant");
+	const pt = purge_takers(), takers = pt || gear_takers().filter((m) => m.ctype !== "merchant");
 	const by = {};
 	for (const [k, q] of Object.entries(dump)) {
-		const m = k.match(/^(.+?)(?:\+(\d+))?(\*)?$/), name = m[1], level = +(m[2] || 0);
+		const m = k.match(/^(.+?)(?:\+(\d+))?(\*)?$/);
+		if (!m) continue;
+		const name = m[1], level = +(m[2] || 0);
 		if (G.items[name]?.s) continue; // stackable
-		const c = bank_item_class(name, level, !!m[3], takers);
+		const c = bank_item_class(name, level, !!m[3], takers, !pt);
 		(by[c] = by[c] || []).push(`${name}${level ? "+" + level : ""}${q > 1 ? " x" + q : ""}`);
 	}
 	const order = Object.keys(by).sort((a, b) => (b.startsWith("UNCLASSIFIED") ? 1 : 0) - (a.startsWith("UNCLASSIFIED") ? 1 : 0) || a.localeCompare(b));
