@@ -1305,7 +1305,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		character.items[2] = { name: "nhelm", level: 0, stat_type: "str" };
 		const sp1 = vm.runInContext("owned_level('nhelm')", ctx);
 		character.items[2] = { name: "nhelm", level: 0 };
-		assert((!s6 || s6.ok || !/odds/.test(s6.why || "")) && (!s8 || (!s8.ok && /odds 15%/.test(s8.why))) && sp0 === 0 && sp1 === -1,
+		character.items[3] = { name: "nhelm", level: 0, stat_type: "str" };
+		const rh = vm.runInContext("[rollable_held({ name: 'nhelm', to: 1 }), rollable_held({ name: 'nhelm', to: 1, worn: { who: 'Torlis' } })].join()", ctx);
+		character.items[3] = null; character.items[2] = { name: "nhelm", level: 0 };
+		assert(rh === "0,0", `v25.79: the plain copy is rollable either way (${rh})`);
+		character.items[2] = null; character.items[3] = { name: "nhelm", level: 0, stat_type: "str" };
+		const rh2 = vm.runInContext("[rollable_held({ name: 'nhelm', to: 1 }), rollable_held({ name: 'nhelm', to: 1, worn: { who: 'Torlis' } })].join()", ctx);
+		character.items[3] = null; character.items[2] = { name: "nhelm", level: 0 };
+		assert(rh2 === "-1,0", `v25.79: a stat-scrolled copy is never a spare's roll, but is the worn piece handed over (${rh2})`);
+		assert(s6 && s6.ok && s6.floor === 0.2 && s6.p === 0.4 && s8 && !s8.ok && /odds 15%/.test(s8.why) && sp0 === 0 && sp1 === -1,
 			`v25.79: a spare-backed 40% step isn't refused for odds, a 15% one is; a stat-scrolled copy isn't a spare (${JSON.stringify([s6, s8, sp0, sp1])})`); }
 	assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 50_000, `a fighter's budget is its gold above gold_reserve (${vm.runInContext("upgrade_gold()", ctx)})`);
 	{ const nm = character.name, ct = character.ctype; Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
