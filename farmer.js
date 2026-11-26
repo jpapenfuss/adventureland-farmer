@@ -2092,10 +2092,11 @@ function item_props(item, ctype) {
 	if (out.stat && item.stat_type) { out[item.stat_type] = (out[item.stat_type] || 0) + out.stat * (STAT_SCROLL_MULT[item.stat_type] ?? 1); out.stat = 0; }
 	return out;
 }
-// What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type
-function gear_stats(item, ctype) {
+// What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type; v25.81: a
+// weapon held in the offhand (slot "offhand": a rogue's second dagger) takes the class's offhand modifier for its type
+function gear_stats(item, ctype, slot) {
 	const p = { ...item_props(item, ctype) }, d = G.items[item.name], cls = G.classes[ctype];
-	const mod = !cls || !d ? null : d.type === "weapon" ? cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype]
+	const mod = !cls || !d ? null : d.type === "weapon" ? (slot === "offhand" ? cls.offhand?.[d.wtype] : cls.doublehand?.[d.wtype] || cls.mainhand?.[d.wtype])
 		: OFFHAND_TYPES.has(d.type) ? cls.offhand?.[d.wtype] || cls.offhand?.[d.type] : null;
 	for (const [k, v] of Object.entries(mod || {})) if (typeof v === "number") p[k] = (p[k] || 0) + v;
 	// v25.55: the server floors MP per attack at 1 — a saving counts only down to there: the class's own cost at our
@@ -2131,9 +2132,9 @@ function stat_points(p, ctype) {
 	return s;
 }
 // A piece on its own (no set bonus): the same for every slot it fits
-function gear_score(item, ctype = character.ctype) {
+function gear_score(item, ctype = character.ctype, slot) {
 	if (!item || !G.items[item.name]) return 0;
-	return round1(stat_points(gear_stats(item, ctype), ctype));
+	return round1(stat_points(gear_stats(item, ctype, slot), ctype));
 }
 // Set bonus with n pieces worn: the server adds up the levels 1..n of G.sets[set] (server_functions.js, at boot; the
 // client's G holds them per level)
@@ -2154,10 +2155,10 @@ function set_gain(item, ctype, g, slot) {
 // (a partner on an older version sends off: true/false — the offhand flag that field used to be)
 const dps_ctx = (g) => (CFG.gear_dps && g && typeof g.off === "object" && g.off && g.off.mult > 0 && g.off.A > 0 && g.off.F > 0 ? g.off : null);
 function slot_value(item, ctype, g, slot) {
-	let v = gear_score(item, ctype);
+	let v = gear_score(item, ctype, slot);
 	const O = dps_ctx(g);
 	if (O && slot && item && G.items[item.name]) {
-		const p = gear_stats(item, ctype), lin = (p.attack || 0) * stat_weight("attack", ctype) + (p.frequency || 0) * stat_weight("frequency", ctype);
+		const p = gear_stats(item, ctype, slot), lin = (p.attack || 0) * stat_weight("attack", ctype) + (p.frequency || 0) * stat_weight("frequency", ctype);
 		if (lin) v += offense_points(p, O, slot) - lin; // its attack and speed as damage, instead of the flat weights
 	}
 	return round1(v + set_gain(item, ctype, g, slot));
@@ -2172,7 +2173,7 @@ function offense_ctx(sl) {
 	if (character.ctype === "priest") mult *= 1.6;
 	if (!(mult > 0)) return null;
 	const ia = {}, fr = {};
-	for (const s of GEAR_SLOTS) if (sl[s]) { const p = gear_stats(sl[s], character.ctype); if (p.attack) ia[s] = p.attack; if (p.frequency) fr[s] = p.frequency; }
+	for (const s of GEAR_SLOTS) if (sl[s]) { const p = gear_stats(sl[s], character.ctype, s); if (p.attack) ia[s] = p.attack; if (p.frequency) fr[s] = p.frequency; }
 	return { A: Math.round(character.attack), F: +character.frequency.toFixed(3), mult: +mult.toFixed(3), ia, fr };
 }
 // Points a piece's attack and frequency are worth in a slot: the damage per second it adds over that slot EMPTY (so
@@ -2191,9 +2192,9 @@ function worn_sets(sl) {
 // "int 10×1.2=12, vit 4×0.48=1.9 (+set wanderers 2pc 20)": why a piece scores what it does
 function gear_why(item, ctype = character.ctype, g = null, slot = null) {
 	if (!item || !G.items[item.name]) return "";
-	const t = stat_terms(gear_stats(item, ctype), ctype).slice(0, 4).map((x) => `${x.k} ${round1(x.v)}×${+x.w.toFixed(2)}=${round1(x.pts)}`);
+	const t = stat_terms(gear_stats(item, ctype, slot), ctype).slice(0, 4).map((x) => `${x.k} ${round1(x.v)}×${+x.w.toFixed(2)}=${round1(x.pts)}`);
 	const sg = g && slot ? round1(set_gain(item, ctype, g, slot)) : 0;
-	const p_ = gear_stats(item, ctype), dps = dps_ctx(g) && slot && (p_.attack || p_.frequency) ? ` [attack+speed as damage: ${round1(offense_points(p_, g.off, slot))} pts, not the two weights]` : "";
+	const p_ = gear_stats(item, ctype, slot), dps = dps_ctx(g) && slot && (p_.attack || p_.frequency) ? ` [attack+speed as damage: ${round1(offense_points(p_, g.off, slot))} pts, not the two weights]` : "";
 	return t.join(", ") + (sg ? ` (+set ${G.items[item.name].set} ${sg})` : "") + dps;
 }
 // "weights paladin (G.classes lstats, main str, side int): str 1.2 int 1.2 vit 0.96 ... | attack 1 armor 0.6 ..."
@@ -2901,8 +2902,22 @@ const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name 
 // +11/+12 added; the game's data.js carries the same table as G.upgrades, which is read first when present)
 const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024, 0.14, 0.11], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018, 0.13, 0.10],
 	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015, 0.12, 0.09] };
-const odds_grade = (name) => Math.min(2, Math.max(0, item_grade({ name, level: 0 })));
-const upg_odds = (name, to) => { const g = odds_grade(name); return G.upgrades?.[g]?.[to] || (UPG_ODDS[g] || UPG_ODDS[0])[to - 1] || 0; };
+// The odds row (server: def.igrade, the grade at +0; lostearring is forced to 2, server_functions.js), clamped to the rows
+// the tables have (0..2); a compound from a +3 input or higher takes the grade at its level - 2 instead (server.js compound)
+const odds_grade = (name, level = 0) => Math.min(2, Math.max(0, name === "lostearring" && !level ? 2 : item_grade({ name, level })));
+// The level an item can't go past: the server answers max_level at grade 4 (grades[3])
+const item_max_level = (name) => { const d = G.items[name]; return d && (d.upgrade || d.compound) ? (d.grades || [9, 10, 11, 12])[3] : 0; };
+// v25.81: 0 past the item's max level (the old tables' zero at +11 was what refused a +10 → +11 step)
+const upg_odds = (name, to) => { if (to > item_max_level(name)) return 0; const g = odds_grade(name); return G.upgrades?.[g]?.[to] || (UPG_ODDS[g] || UPG_ODDS[0])[to - 1] || 0; };
+// v24.81: the server's base compound odds by grade (design/upgrades.py), result level 1..10 (v25.81: +5..+10, G.compounds
+// first when present; moved here from merchant/3_ponty.js so the gear table's checks see it on every role)
+const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25, 0.20, 0.10, 0.08, 0.05, 0.05, 0.05], 1: [0.90, 0.70, 0.40, 0.20, 0.15, 0.08, 0.05, 0.05, 0.05, 0.03],
+	2: [0.80, 0.60, 0.32, 0.16, 0.10, 0.05, 0.03, 0.03, 0.03, 0.02] };
+const cmp_odds = (name, to) => {
+	if (to > item_max_level(name)) return 0;
+	const from = to - 1, g = odds_grade(name, from >= 3 ? from - 2 : 0);
+	return G.compounds?.[g]?.[to] || (CMP_ODDS[g] || CMP_ODDS[0])[to - 1] || 0;
+};
 // v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
 // (the project's bank fetch skips titled copies too); -1 if none
 // (v25.79, Fable: nor a stat-scrolled one — a spare is rolled at down to 20%, and a failure would lose its stat scroll too)
@@ -2926,6 +2941,8 @@ function upgrade_step(it, ctype, g, slot, copies) {
 	if (!def?.upgrade || def.compound || def.cash || it.l) return null;
 	const from = it.level || 0, to = from + 1, sc = upgrade_scroll(it.name, from), cost = G.items[sc]?.g;
 	const base = { name: it.name, from, to, slot, cost: cost || 0 };
+	// v25.81: never past the item's max level (the server refuses it: max_level)
+	if (to > item_max_level(it.name)) return { ...base, ok: false, why: `+${to} is past its max level +${item_max_level(it.name)}` };
 	if (!cost || sc === "scroll3") return { ...base, ok: false, why: "no scroll for the next level" };
 	const r = gear_gain(with_stat(it, to), ctype, g);
 	if (!r) return { ...base, ok: false, why: `+${to} gains nothing` };
@@ -5229,83 +5246,103 @@ setInterval(() => {
 // =====================================================================
 // data/gear/*.json is built offline from the game's data.js by tools/gear_table.js with this bot's own functions
 // (stats per level, piece_value per class and level, upgrade/compound odds, where each piece comes from: shops,
-// crafts, exchange boxes, drops, tokens) and committed to the repo. It is fetched once per load from GitHub at the
-// commit this code was loaded from (window.farmer_loaded.sha; master if unknown), and the last good copy is kept in
-// the browser (localStorage) for when GitHub can't be reached. Static facts only: nothing here is computed at run time.
+// crafts, exchange boxes, drops, tokens) and committed to the repo. It is fetched once per load from GitHub at one
+// commit — the one this code was loaded from (window.farmer_loaded.sha), else master's newest — and the last good copy
+// is kept in the browser (localStorage) for when GitHub can't be reached. Static facts only.
 //   gt_item(name)  → its record or null        gt_slot(type) → the records of one slot file ([] if none)
-//   gt_best(ctype, slot, { max_level, filter }) → records a class can wear there, best piece_value first
+//   gt_best(ctype, slot, { max_level, filter, ignored }) → records a class can wear there, best piece_value first
 //   gt_set(name)   → a set's pieces and bonuses (data/gear/sets.json) or null
+// A table is stale when it was built for other game data (g_version) or by other scoring code (score_hash: the
+// weights and the functions the values come from); it is still served, flagged in the report.
 const GT_CACHE = "farmer_gear_table"; // localStorage key: { sha, at, index, slots, sets }
-// status: off | loading | loaded (GitHub) | cached (the stored copy) | failed; stale: the table's g_version ≠ the live G's
-const gt = { status: "off", index: null, items: null, slots: {}, sets: {}, sha: null, from: null, err: null, stale: null, at: 0, promise: null };
-// A short hash of the game's item and set data (FNV-1a, 8 hex): the table's g_version when G has no version number.
-// tools/gear_table.js uses this same function.
-function gt_hash(items, sets) {
-	const s = JSON.stringify([items || {}, sets || {}]);
+// status: off | loading | loaded (GitHub) | cached (the stored copy) | failed
+const gt = { status: "off", index: null, items: null, slots: {}, sets: {}, sha: null, err: null, stale: null, why_stale: [], at: 0, promise: null, note: "" };
+// A short hash (FNV-1a, 8 hex) of two values' JSON. tools/gear_table.js uses this same function.
+function gt_hash(a, b) {
+	const s = JSON.stringify([a || {}, b || {}]);
 	let h = 0x811c9dc5;
 	for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
 	return h.toString(16).padStart(8, "0");
 }
+// The game data's version (G.version, else a hash of G.items + G.sets)
 const gt_g_version = (g = G) => (g && g.version != null ? String(g.version) : gt_hash(g?.items, g?.sets));
-// Where the files are: raw GitHub at the loaded commit (its repo from the loader's url when it names one)
-function gt_base() {
-	const fl = typeof window !== "undefined" ? window.farmer_loaded : null, T_ = CFG.gear_table || {};
-	const sha = typeof fl?.sha === "string" && /^[0-9a-f]{7,40}$/.test(fl.sha) ? fl.sha : null;
-	const repo = (String(fl?.url || "").match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+\/[^/]+)\//) || [])[1] || T_.repo;
-	return { sha, url: `https://raw.githubusercontent.com/${repo}/${sha || "master"}/${T_.dir || "data/gear"}/` };
+// What the values depend on in this code: the scoring weights and the source of the functions they come from
+function gt_score_hash() {
+	const fns = [stat_weight, class_stats, item_props, gear_stats, xp_weight, stat_points, gear_score, set_bonus, set_gain, slot_value, slots_for, is_2h,
+		odds_grade, item_max_level, upg_odds, cmp_odds, upgrade_scroll].map(String);
+	return gt_hash({ w: CFG.gear_w, tank: CFG.gear_tank, tank_mult: CFG.gear_tank_mult, xp: CFG.gear_xp_value, doc: CLASS_DOC, sm: STAT_SCROLL_MULT, u: UPG_ODDS, c: CMP_ODDS }, fns);
 }
-async function gt_get_json(url) {
+const gt_repo = () => {
+	const fl = typeof window !== "undefined" ? window.farmer_loaded : null;
+	return (String(fl?.url || "").match(/^https:\/\/raw\.githubusercontent\.com\/([^/]+\/[^/]+)\//) || [])[1] || CFG.gear_table?.repo;
+};
+const gt_url = (sha, f) => `https://raw.githubusercontent.com/${gt_repo()}/${sha || "master"}/${CFG.gear_table?.dir || "data/gear"}/${f}`;
+async function gt_get(url, headers, as_text) {
 	const ctl = typeof AbortController === "function" ? new AbortController() : null;
 	const timer = ctl && setTimeout(() => ctl.abort(), CFG.gear_table?.timeout_ms || 15_000);
 	try {
-		const res = await fetch(url, { cache: "no-store", signal: ctl?.signal });
+		const res = await fetch(url, { cache: "no-store", signal: ctl?.signal, headers });
 		if (!res.ok) throw new Error(`HTTP ${res.status} ${url.split("/").pop()}`);
-		return await res.json();
+		return as_text ? await res.text() : await res.json();
 	} finally { if (timer) clearTimeout(timer); }
+}
+// The commit to read: the loaded one; else master's newest (GitHub API, as the loader asks); null if that fails
+async function gt_commit() {
+	const fl = typeof window !== "undefined" ? window.farmer_loaded : null;
+	if (typeof fl?.sha === "string" && /^[0-9a-f]{7,40}$/.test(fl.sha)) return fl.sha;
+	try {
+		const r = String(await gt_get(`https://api.github.com/repos/${gt_repo()}/commits/master`, { Accept: "application/vnd.github.sha" }, true)).trim();
+		return /^[0-9a-f]{40}$/.test(r) ? r : null;
+	} catch (e) { return null; }
 }
 const gt_store = () => { try { return typeof window !== "undefined" && window.localStorage ? window.localStorage : null; } catch (e) { return null; } };
 function gt_cached() { try { const s = gt_store(); return JSON.parse((s && s.getItem(GT_CACHE)) || "null"); } catch (e) { return null; } }
-// A downloaded or cached copy is usable: an index listing slot files, and every one of them present
-const gt_valid = (d) => !!d && typeof d === "object" && !!d.index?.slots && typeof d.slots === "object" &&
-	Object.keys(d.index.slots).length > 0 && Object.keys(d.index.slots).every((s) => d.slots[s] && typeof d.slots[s] === "object");
+// A downloaded or cached copy is usable: an index listing slot files, each present with the number of items it lists
+const gt_valid = (d) => !!d && typeof d === "object" && !!d.index?.slots && !!d.slots && typeof d.slots === "object" && Object.keys(d.index.slots).length > 0 &&
+	Object.keys(d.index.slots).every((s) => d.slots[s] && typeof d.slots[s] === "object" && Object.keys(d.slots[s]).length === d.index.slots[s].items);
+// Make a copy the live table (throws on a malformed record: the caller keeps the previous state)
 function gt_install(d, status, sha) {
 	const items = {}, slots = {};
 	for (const s of Object.keys(d.index.slots).sort()) {
 		slots[s] = Object.keys(d.slots[s]).sort().map((n) => d.slots[s][n]);
-		for (const r of slots[s]) items[r.name] = r;
+		for (const r of slots[s]) { if (!r || typeof r.name !== "string") throw new Error(`bad record in ${s}`); items[r.name] = r; }
 	}
-	const live = gt_g_version();
-	Object.assign(gt, { status, index: d.index, items, slots, sets: d.sets || {}, sha: sha || null, at: d.at || Date.now(),
-		stale: d.index.g_version != null && String(d.index.g_version) !== live });
-	if (gt.stale) game_log(`gear table: built for game data ${d.index.g_version}, the game runs ${live} — still used; values may be off (node tools/gear_table.js rebuilds it)`, C.warn);
+	const why = [], live = gt_g_version(), sh = gt_score_hash();
+	if (d.index.g_version != null && String(d.index.g_version) !== live) why.push(`game data ${d.index.g_version}, the game runs ${live}`);
+	if (d.index.score_hash && d.index.score_hash !== sh) why.push(`other scoring code (${d.index.score_hash}, this code ${sh})`);
+	Object.assign(gt, { status, index: d.index, items, slots, sets: d.sets || {}, sha: sha || null, at: d.at || Date.now(), stale: why.length > 0, why_stale: why });
+	if (gt.stale) game_log(`gear table: built for ${why.join("; ")} — still used; values may be off (node tools/gear_table.js rebuilds it)`, C.warn);
 }
-// Once per load (later calls return the same promise): download index.json, every slot file and sets.json; on any
-// failure use the cached copy. Logs one line either way.
+// Once per load (later calls return the same promise): download index.json, every slot file and sets.json from one
+// commit; on any failure use the cached copy. Logs one line either way. Never rejects.
 function gear_table_load() {
 	if (gt.promise) return gt.promise;
 	gt.status = "loading";
 	gt.promise = (async () => {
-		const b = gt_base();
-		let note = "";
 		try {
 			if (typeof fetch !== "function") throw new Error("no fetch");
-			const index = await gt_get_json(b.url + "index.json");
+			const sha = await gt_commit();
+			const index = await gt_get(gt_url(sha, "index.json"));
 			if (!index?.slots || !Object.keys(index.slots).length) throw new Error("index.json lists no slot files");
 			const names = Object.keys(index.slots).sort(), slots = {};
-			const files = await Promise.all(names.map((s) => gt_get_json(b.url + (index.slots[s].file || s + ".json"))));
-			names.forEach((s, i) => { slots[s] = files[i]?.items || {}; });
-			const sets = index.sets ? (await gt_get_json(b.url + index.sets))?.sets || {} : {};
-			const d = { index, slots, sets, sha: b.sha, at: Date.now() };
-			if (!gt_valid(d)) throw new Error("a slot file is missing or empty");
-			gt_install(d, "loaded", b.sha);
-			try { gt_store()?.setItem(GT_CACHE, JSON.stringify(d)); } catch (e) { note = ` (not cached: ${e?.name || e})`; }
+			const files = await Promise.all(names.map((s) => gt_get(gt_url(sha, index.slots[s].file || s + ".json"))));
+			names.forEach((s, i) => { slots[s] = files[i]?.items; });
+			const sets = index.sets ? (await gt_get(gt_url(sha, index.sets)))?.sets || {} : {};
+			const d = { index, slots, sets, sha, at: Date.now() };
+			if (!gt_valid(d)) throw new Error("a slot file is missing or short of items");
+			gt_install(d, "loaded", sha);
+			// (with no commit known the files came from master: not cached, since they can't be told apart from a later build)
+			if (!sha) gt.note = " (not cached: commit unknown)";
+			else try { gt_store()?.setItem(GT_CACHE, JSON.stringify(d)); } catch (e) { gt.note = ` (not cached: ${e?.name || e})`; }
 		} catch (e) {
 			gt.err = String(e?.message || e);
-			const c = gt_cached();
-			if (gt_valid(c)) gt_install(c, "cached", c.sha);
-			else gt.status = "failed";
+			try {
+				const c = gt_cached();
+				if (!gt_valid(c)) throw new Error("no cached copy");
+				gt_install(c, "cached", c.sha);
+			} catch (e2) { Object.assign(gt, { status: "failed", items: null, slots: {}, sets: {}, index: null, cache_err: String(e2?.message || e2) }); }
 		}
-		game_log(gt_report_text() + note, gt.status === "loaded" ? C.dim : C.warn);
+		try { game_log(gt_report_text() + gt.note, gt.status === "loaded" && !gt.stale ? C.dim : C.warn); } catch (e) {}
 		return gt.status;
 	})();
 	return gt.promise;
@@ -5313,9 +5350,10 @@ function gear_table_load() {
 const gt_item = (name) => (gt.items && Object.prototype.hasOwnProperty.call(gt.items, name) ? gt.items[name] : null);
 const gt_slot = (type) => (gt.slots[type] || []).slice();
 const gt_set = (name) => (gt.sets && Object.prototype.hasOwnProperty.call(gt.sets, name) ? gt.sets[name] : null);
-// A record's best level for a class (up to max_level and the piece's own max): { level, value }, null if it can't wear it
-function gt_best_level(r, ctype, max_level) {
-	const v = r?.value?.[ctype];
+// A record's best level for a class in a slot (up to max_level and the piece's own max): { level, value }, null if it
+// can't wear it. A weapon in the offhand is worth its value_off (the class's offhand modifier) where the table has one.
+function gt_best_level(r, ctype, max_level, slot) {
+	const v = (slot === "offhand" && r?.value_off?.[ctype]) || r?.value?.[ctype];
 	if (!Array.isArray(v)) return null;
 	const top = Math.min(v.length - 1, max_level ?? Infinity);
 	let best = null;
@@ -5323,25 +5361,28 @@ function gt_best_level(r, ctype, max_level) {
 	return best;
 }
 // Records a class can wear in a slot ("ring" or "ring1", "mainhand", "offhand"...), best piece_value at their best
-// level (up to max_level) first; each a copy of the record with best: { level, value } added. filter(record) narrows.
+// level (up to max_level) first; each a copy of the record with best: { level, value } added. filter(record) narrows;
+// pieces the game flags ignore (test items) only with ignored: true.
 function gt_best(ctype, slot, opts = {}) {
 	if (!gt.items) return [];
 	const want = String(slot).replace(/[12]$/, ""), out = [];
 	for (const n of Object.keys(gt.items).sort()) {
 		const r = gt.items[n];
-		if (!(r.slots?.[ctype] || []).some((s) => s === slot || s.replace(/[12]$/, "") === want)) continue;
+		if (r.ignore && !opts.ignored) continue;
+		const s_ = (r.slots?.[ctype] || []).find((s) => s === slot || s.replace(/[12]$/, "") === want);
+		if (!s_) continue;
 		if (opts.filter && !opts.filter(r)) continue;
-		const best = gt_best_level(r, ctype, opts.max_level);
+		const best = gt_best_level(r, ctype, opts.max_level, s_);
 		if (best) out.push({ ...r, best });
 	}
 	return out.sort((a, b) => b.best.value - a.best.value || (a.name < b.name ? -1 : 1));
 }
 // The report line (facts): "gear table: N items, M slots, built vX (stale|current)"
 function gt_report_text() {
-	if (!gt.items) return `gear table: ${gt.status === "loading" ? "loading" : gt.status === "off" ? "off" : `not loaded (${gt.err || "?"}; no cached copy)`}`;
-	const ix = gt.index;
-	return `gear table: ${Object.keys(gt.items).length} items, ${Object.keys(gt.slots).length} slots, built v${ix.built_from || "?"} (${gt.stale ? "stale" : "current"})` +
-		` — ${gt.status === "cached" ? `cached copy${gt.sha ? " @" + gt.sha.slice(0, 7) : ""} (GitHub: ${gt.err})` : `GitHub @${gt.sha ? gt.sha.slice(0, 7) : "master"}`}, game data ${ix.g_version}`;
+	if (!gt.items) return `gear table: ${gt.status === "loading" ? "loading" : gt.status === "off" ? "off" : `not loaded (${gt.err || "?"}; cache: ${gt.cache_err || "none"})`}`;
+	const ix = gt.index, b = ix.built_from || "?";
+	return `gear table: ${Object.keys(gt.items).length} items, ${Object.keys(gt.slots).length} slots, built v${b}${b !== VERSION ? ` ≠ running v${VERSION}` : ""} (${gt.stale ? "stale" : "current"})` +
+		`${gt.stale ? ` [${gt.why_stale.join("; ")}]` : ""} — ${gt.status === "cached" ? `cached copy${gt.sha ? " @" + gt.sha.slice(0, 7) : ""} (GitHub: ${gt.err})` : `GitHub @${gt.sha ? gt.sha.slice(0, 7) : "master"}`}, game data ${ix.g_version}`;
 }
 if (CFG.gear_table?.enabled) gear_table_load();
 // =====================================================================
@@ -8762,11 +8803,7 @@ function secondhand_reason(it, groups) {
 	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
-// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..10 (v25.81:
-// +5..+10 added; the game's data.js carries the same table as G.compounds, which is read first when present)
-const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25, 0.20, 0.10, 0.08, 0.05, 0.05, 0.05], 1: [0.90, 0.70, 0.40, 0.20, 0.15, 0.08, 0.05, 0.05, 0.05, 0.03],
-	2: [0.80, 0.60, 0.32, 0.16, 0.10, 0.05, 0.03, 0.03, 0.03, 0.02] };
-const cmp_odds = (name, to) => { const g = odds_grade(name); return G.compounds?.[g]?.[to] || (CMP_ODDS[g] || CMP_ODDS[0])[to - 1] || 0; };
+// (CMP_ODDS / cmp_odds: shared/08_upgrade_pick.js)
 // Routes through Ponty's stock: for a compound item, the copies to buy there so that — with ours (bags + bank) — three
 // make a +1 or a +2 a fighter would wear. A +1 for the last step comes from ours, from Ponty, or from three +0s (ours
 // first, then Ponty's cheapest). Only steps at or over compound_min_chance; cost = Ponty prices + scrolls.

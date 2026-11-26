@@ -26,8 +26,22 @@ const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name 
 // +11/+12 added; the game's data.js carries the same table as G.upgrades, which is read first when present)
 const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024, 0.14, 0.11], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018, 0.13, 0.10],
 	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015, 0.12, 0.09] };
-const odds_grade = (name) => Math.min(2, Math.max(0, item_grade({ name, level: 0 })));
-const upg_odds = (name, to) => { const g = odds_grade(name); return G.upgrades?.[g]?.[to] || (UPG_ODDS[g] || UPG_ODDS[0])[to - 1] || 0; };
+// The odds row (server: def.igrade, the grade at +0; lostearring is forced to 2, server_functions.js), clamped to the rows
+// the tables have (0..2); a compound from a +3 input or higher takes the grade at its level - 2 instead (server.js compound)
+const odds_grade = (name, level = 0) => Math.min(2, Math.max(0, name === "lostearring" && !level ? 2 : item_grade({ name, level })));
+// The level an item can't go past: the server answers max_level at grade 4 (grades[3])
+const item_max_level = (name) => { const d = G.items[name]; return d && (d.upgrade || d.compound) ? (d.grades || [9, 10, 11, 12])[3] : 0; };
+// v25.81: 0 past the item's max level (the old tables' zero at +11 was what refused a +10 → +11 step)
+const upg_odds = (name, to) => { if (to > item_max_level(name)) return 0; const g = odds_grade(name); return G.upgrades?.[g]?.[to] || (UPG_ODDS[g] || UPG_ODDS[0])[to - 1] || 0; };
+// v24.81: the server's base compound odds by grade (design/upgrades.py), result level 1..10 (v25.81: +5..+10, G.compounds
+// first when present; moved here from merchant/3_ponty.js so the gear table's checks see it on every role)
+const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25, 0.20, 0.10, 0.08, 0.05, 0.05, 0.05], 1: [0.90, 0.70, 0.40, 0.20, 0.15, 0.08, 0.05, 0.05, 0.05, 0.03],
+	2: [0.80, 0.60, 0.32, 0.16, 0.10, 0.05, 0.03, 0.03, 0.03, 0.02] };
+const cmp_odds = (name, to) => {
+	if (to > item_max_level(name)) return 0;
+	const from = to - 1, g = odds_grade(name, from >= 3 ? from - 2 : 0);
+	return G.compounds?.[g]?.[to] || (CMP_ODDS[g] || CMP_ODDS[0])[to - 1] || 0;
+};
 // v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
 // (the project's bank fetch skips titled copies too); -1 if none
 // (v25.79, Fable: nor a stat-scrolled one — a spare is rolled at down to 20%, and a failure would lose its stat scroll too)
@@ -51,6 +65,8 @@ function upgrade_step(it, ctype, g, slot, copies) {
 	if (!def?.upgrade || def.compound || def.cash || it.l) return null;
 	const from = it.level || 0, to = from + 1, sc = upgrade_scroll(it.name, from), cost = G.items[sc]?.g;
 	const base = { name: it.name, from, to, slot, cost: cost || 0 };
+	// v25.81: never past the item's max level (the server refuses it: max_level)
+	if (to > item_max_level(it.name)) return { ...base, ok: false, why: `+${to} is past its max level +${item_max_level(it.name)}` };
 	if (!cost || sc === "scroll3") return { ...base, ok: false, why: "no scroll for the next level" };
 	const r = gear_gain(with_stat(it, to), ctype, g);
 	if (!r) return { ...base, ok: false, why: `+${to} gains nothing` };

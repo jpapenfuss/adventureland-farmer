@@ -8,6 +8,7 @@
   "rogue",
   "warrior"
  ],
+ "drop_note": "drops[].base / map_drops[].base are the tables' base rates, not per-kill chances: the server rolls a monster drop with chance base x monster.level x monster.mult x player luckm x share (x B.drop_table_multiplier rolls), a map drop with base x share x luckm x monster.max_hp/1000 x monster.luckx (global ones x monster.mult too)",
  "g_version": "18285",
  "g_version_from": "G.version",
  "generator": "tools/gear_table.js",
@@ -15,79 +16,83 @@
  "odds_note": "odds[L]: the base chance (no offering) of the step that reaches +L, from the bot's upg_odds/cmp_odds",
  "odds_source": "G.upgrades / G.compounds (data.js; the game's design/upgrades.py)",
  "rounding": "stats and values 2 decimals, odds 4 decimals, drop/box probabilities 4 significant digits",
+ "score_hash": "93cc0834",
+ "score_note": "score_hash: the scoring weights and functions these values come from (gt_score_hash); the bot flags the table stale when its own differs",
  "sets": "sets.json",
  "sets_bytes": 21225,
  "sets_count": 22,
  "slots": {
   "amulet": {
-   "bytes": 33240,
+   "bytes": 33513,
    "file": "amulet.json",
    "items": 21
   },
   "belt": {
-   "bytes": 21861,
+   "bytes": 22009,
    "file": "belt.json",
    "items": 15
   },
   "cape": {
-   "bytes": 38062,
+   "bytes": 38271,
    "file": "cape.json",
    "items": 16
   },
   "chest": {
-   "bytes": 76415,
+   "bytes": 77004,
    "file": "chest.json",
    "items": 36
   },
   "earring": {
-   "bytes": 23782,
+   "bytes": 23963,
    "file": "earring.json",
    "items": 17
   },
   "gloves": {
-   "bytes": 60968,
+   "bytes": 61367,
    "file": "gloves.json",
    "items": 26
   },
   "helmet": {
-   "bytes": 77217,
+   "bytes": 77713,
    "file": "helmet.json",
    "items": 34
   },
   "mainhand": {
-   "bytes": 171112,
+   "bytes": 174153,
    "file": "mainhand.json",
    "items": 98
   },
   "offhand": {
-   "bytes": 48418,
+   "bytes": 48698,
    "file": "offhand.json",
    "items": 28
   },
   "orb": {
-   "bytes": 37642,
+   "bytes": 38028,
    "file": "orb.json",
    "items": 28
   },
   "pants": {
-   "bytes": 36131,
+   "bytes": 36416,
    "file": "pants.json",
    "items": 16
   },
   "ring": {
-   "bytes": 41504,
+   "bytes": 41827,
    "file": "ring.json",
    "items": 26
   },
   "shoes": {
-   "bytes": 54555,
+   "bytes": 54878,
    "file": "shoes.json",
    "items": 23
   }
  },
+ "titles_note": "boxes[].title: the title the exchange gives (an entry's own, or glitched from the glitch table); monster chests give none",
  "v_stat_note": "v_stat[class][L]: piece_value with a stat scroll of the class's main stat (the piece's stat points as that attribute); only pieces that take stat scrolls",
  "value_ctx": {
   "attack": 100,
   "level": 60
- }
+ },
+ "value_note": "value[class][L]: the bot's slot_value with no worn context — the flat-weight score (attack and frequency at their CFG.gear_w weights, not the live attack x speed damage), so gt_best's order can differ from the live gear_gain; value_off[class][L]: a weapon held in the offhand, with the class's offhand modifier"
 }

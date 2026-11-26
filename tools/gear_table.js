@@ -93,7 +93,7 @@ function load_bot(G) {
 	vm.runInContext(build(), ctx);
 	const R = (code) => vm.runInContext(code, ctx);
 	// exported for the generator: run with the wearer's class as ours (xp_weight and the mp_cost floor read character)
-	R(`globalThis.__gt = { slot_value, slots_for, class_stats, is_2h, upg_odds, cmp_odds, upgrade_scroll, set_bonus, stat_points, gt_hash, VERSION,
+	R(`globalThis.__gt = { slot_value, slots_for, class_stats, gt_score_hash, is_2h, upg_odds, cmp_odds, upgrade_scroll, set_bonus, stat_points, gt_hash, VERSION,
 		UPG_N: UPG_ODDS[0].length, CMP_N: CMP_ODDS[0].length, GEAR: [...GEAR] }`);
 	const B = R("globalThis.__gt");
 	B.as = (ctype, f) => { character.ctype = ctype; return f(); };
@@ -116,34 +116,38 @@ function source_index(G, gear) {
 	for (const id of Object.keys(G.craft || {}).sort()) for (const e of G.craft[id].items || []) add(e[1], "input_to", { craft: id, q: e[0], ...(e[2] != null ? { level: e[2] } : {}) });
 	// dismantling something gives it
 	for (const id of Object.keys(G.dismantle || {}).sort()) for (const e of G.dismantle[id].items || []) add(e[1], "dismantled_from", { item: id, q: e[0] });
-	// exchange tables (weighted: weight / table total), "open" entries followed into the table they open
-	const expand = (table, p, via, depth, out) => {
+	// exchange tables (weighted: weight / table total), "open" entries followed into the table they open. exch: opened by
+	// an exchange (server exchange(): an entry's [4] is the item's title, and a piece from "glitch" is "glitched"), or a
+	// monster's chest (chest_exchange(): no titles). An entry's [3] is jar data, not a level.
+	const expand = (table, p, via, depth, out, exch) => {
 		const T = G.drops?.[table];
 		if (!Array.isArray(T) || depth > 4) return;
 		const total = T.reduce((s, e) => s + (e[0] || 0), 0);
 		if (!(total > 0)) return;
 		for (const e of T) {
 			const q = p * (e[0] || 0) / total;
-			if (e[1] === "open") { if (!via.includes(e[2])) expand(e[2], q, [...via, e[2]], depth + 1, out); }
-			else if (gear.has(e[1])) out.push({ n: e[1], p: q, via, level: e[3] ?? null, title: e[4] ?? null });
+			if (e[1] === "open") { if (!via.includes(e[2])) expand(e[2], q, [...via, e[2]], depth + 1, out, exch); }
+			else if (gear.has(e[1])) out.push({ n: e[1], p: q, via, title: exch ? e[4] || (table === "glitch" ? "glitched" : null) : null });
 		}
 	};
 	for (const b of Object.keys(G.drops || {}).sort()) {
 		if (NOT_TABLES.has(b) || !Array.isArray(G.drops[b])) continue;
-		const got = []; expand(b, 1, [], 0, got);
+		const got = []; expand(b, 1, [], 0, got, true);
 		const agg = {};
-		for (const g of got) { const k = g.n + "|" + g.via.join(">") + "|" + g.level + "|" + g.title; (agg[k] = agg[k] || { ...g, p: 0 }).p += g.p; }
-		for (const g of Object.values(agg)) add(g.n, "boxes", { box: b, p: sig4(g.p), ...(G.items[b] ? { need: G.items[b].e || 1 } : { item: false }), ...(g.via.length ? { via: g.via } : {}), ...(g.level != null ? { level: g.level } : {}), ...(g.title ? { title: g.title } : {}) });
+		for (const g of got) { const k = g.n + "|" + g.via.join(">") + "|" + g.title; (agg[k] = agg[k] || { ...g, p: 0 }).p += g.p; }
+		for (const g of Object.values(agg)) add(g.n, "boxes", { box: b, p: sig4(g.p), ...(G.items[b] ? { need: G.items[b].e || 1 } : { item: false }), ...(g.via.length ? { via: g.via } : {}), ...(g.title ? { title: g.title } : {}) });
 	}
-	// monster drops (per kill) and map drops (per kill there; "global": anywhere); "open" = a chance at a whole table
+	// monster drops and map drops ("global": anywhere): the table's base rate, which the server scales per kill (index.json
+	// drop_note); "open" = a chance at a whole table (opened as a chest: no titles)
 	const drop_list = (list, emit) => {
 		for (const e of list || []) {
-			if (e[1] === "open") { const got = []; expand(e[2], 1, [e[2]], 1, got); for (const g of got) emit(g.n, sig4(e[0] * g.p), g.via); }
+			if (e[1] === "open") { const got = []; expand(e[2], 1, [e[2]], 1, got, false); for (const g of got) emit(g.n, sig4(e[0] * g.p), g.via); }
 			else if (gear.has(e[1])) emit(e[1], sig4(e[0]), []);
 		}
 	};
-	for (const m of Object.keys(G.drops?.monsters || {}).sort()) drop_list(G.drops.monsters[m], (n, rate, via) => add(n, "drops", { monster: m, rate, ...(via.length ? { via } : {}) }));
-	for (const m of Object.keys(G.drops?.maps || {}).sort()) drop_list(G.drops.maps[m], (n, rate, via) => add(n, "map_drops", { map: m, rate, ...(via.length ? { via } : {}) }));
+	for (const m of Object.keys(G.drops?.monsters || {}).sort()) if (!G.monsters?.[m]?.ignore) drop_list(G.drops.monsters[m], (n, base, via) => add(n, "drops", { monster: m, base, ...(via.length ? { via } : {}) }));
+	// (maps the game flags ignore, or that don't exist — maintest — are left out)
+	for (const m of Object.keys(G.drops?.maps || {}).sort()) if (/^global/.test(m) || (G.maps?.[m] && !G.maps[m].ignore)) drop_list(G.drops.maps[m], (n, base, via) => add(n, "map_drops", { map: m, base, ...(via.length ? { via } : {}) }));
 	// token prices
 	for (const t of Object.keys(G.tokens || {}).sort()) for (const n of Object.keys(G.tokens[t]).sort()) add(n, "tokens", { token: t, price: G.tokens[t][n] });
 	return S;
@@ -179,6 +183,11 @@ function item_record(G, B, calc, S, name) {
 		rec.slots[c] = sl;
 		if (def.type === "weapon" && B.is_2h(name, c)) two.push(c);
 		rec.value[c] = levels.map((L) => r2(B.as(c, () => B.slot_value({ name, level: L }, c, null, null))));
+		// a weapon the class may hold in the offhand: its value there, with the class's offhand modifier (where it differs)
+		if (def.type === "weapon" && sl.includes("offhand")) {
+			const off = levels.map((L) => r2(B.as(c, () => B.slot_value({ name, level: L }, c, null, "offhand"))));
+			if (JSON.stringify(off) !== JSON.stringify(rec.value[c]) || !sl.includes("mainhand")) (rec.value_off = rec.value_off || {})[c] = off;
+		}
 		// v_stat: the same with a stat scroll of the class's main stat on it (its stat points counted as that attribute)
 		const main = B.class_stats(c)?.main;
 		if (def.stat && main) (rec.v_stat = rec.v_stat || {})[c] = levels.map((L) => r2(B.as(c, () => B.slot_value({ name, level: L, stat_type: main }, c, null, null))));
@@ -194,8 +203,8 @@ function item_record(G, B, calc, S, name) {
 		dismantle: G.dismantle?.[name] ? { gives: (G.dismantle[name].items || []).map((e) => ({ q: e[0], item: e[1] })), cost: G.dismantle[name].cost || 0 } : null,
 		dismantled_from: s.dismantled_from || [],
 		boxes: (s.boxes || []).sort((a, b) => b.p - a.p || (a.box < b.box ? -1 : 1)),
-		drops: (s.drops || []).sort((a, b) => b.rate - a.rate || (a.monster < b.monster ? -1 : 1)),
-		map_drops: (s.map_drops || []).sort((a, b) => b.rate - a.rate || (a.map < b.map ? -1 : 1)),
+		drops: (s.drops || []).sort((a, b) => b.base - a.base || (a.monster < b.monster ? -1 : 1)),
+		map_drops: (s.map_drops || []).sort((a, b) => b.base - a.base || (a.map < b.map ? -1 : 1)),
 		tokens: s.tokens || [],
 		from_lower: kind, // upgrade: +L-1 and a scroll; compound: three +L-1 and a compound scroll
 	};
@@ -247,6 +256,11 @@ function build_table(G) {
 		rounding: "stats and values 2 decimals, odds 4 decimals, drop/box probabilities 4 significant digits",
 		odds_note: "odds[L]: the base chance (no offering) of the step that reaches +L, from the bot's upg_odds/cmp_odds",
 		odds_source: G.upgrades && G.compounds ? "G.upgrades / G.compounds (data.js; the game's design/upgrades.py)" : "the bot's own copy of design/upgrades.py (UPG_ODDS / CMP_ODDS): G has no upgrades/compounds tables",
+		score_hash: B.gt_score_hash(),
+		score_note: "score_hash: the scoring weights and functions these values come from (gt_score_hash); the bot flags the table stale when its own differs",
+		value_note: "value[class][L]: the bot's slot_value with no worn context — the flat-weight score (attack and frequency at their CFG.gear_w weights, not the live attack x speed damage), so gt_best's order can differ from the live gear_gain; value_off[class][L]: a weapon held in the offhand, with the class's offhand modifier",
+		drop_note: "drops[].base / map_drops[].base are the tables' base rates, not per-kill chances: the server rolls a monster drop with chance base x monster.level x monster.mult x player luckm x share (x B.drop_table_multiplier rolls), a map drop with base x share x luckm x monster.max_hp/1000 x monster.luckx (global ones x monster.mult too)",
+		titles_note: "boxes[].title: the title the exchange gives (an entry's own, or glitched from the glitch table); monster chests give none",
 		v_stat_note: "v_stat[class][L]: piece_value with a stat scroll of the class's main stat (the piece's stat points as that attribute); only pieces that take stat scrolls",
 		slots: ix_slots, sets: "sets.json", sets_count: Object.keys(sets).length, sets_bytes: Buffer.byteLength(files["sets.json"]) });
 	files["index.json"] = JSON.stringify(index, null, 1) + "\n";
