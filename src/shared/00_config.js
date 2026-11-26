@@ -505,7 +505,7 @@ const state = {
 	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	type_skip: {},           // v25.82: monster id -> until: skipped after an impossible fight (saved)
-	fight_start: null,       // v25.82: the tank's last fight start { id, mtype, at, gathered, priest_ok, judged? } (judge_death)
+	fight_start: null,       // v25.82: the tank's fight episode { at, last, gathered, priest_ok, ids: { id: mtype }, judged? } (judge_death)
 	deaths_nc: [],           // v25.82: times of deaths not counted against a type, last 24h (saved)
 	explore: { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }, // v25.82: the trial running
 	                         //   { key, mtype, map, start, until }, the last one's end, type -> when tried (saved)

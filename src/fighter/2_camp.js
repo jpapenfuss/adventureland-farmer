@@ -9,11 +9,13 @@ function map_route(from, to) {
 	return out;
 }
 const rect_gap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
-// A spot within danger_px of a spawn of such a monster: its name, else null
+// A spot within danger_px of a spawn of such a monster: its name, else null. v25.82 (review N3): only a neighbour that
+// is there (count > 0), comes at players (aggressive) and that the party couldn't handle (handles: any type — jr. and
+// greenjr, not farmable, closed booboo and the halloween snakes)
 function area_danger(area, mt) {
 	for (const [pk, a2] of map_areas(area.map)) {
 		const t = pk.type;
-		if (t === mt || !aggressive(t) || state.safe[t] || !valid_boundary(a2.boundary)) continue;
+		if (t === mt || !(a2.count > 0) || !aggressive(t) || handles(t) || !valid_boundary(a2.boundary)) continue;
 		if (rect_gap(area.boundary, a2.boundary) < CFG.danger_px) return t;
 	}
 	return null;
@@ -142,36 +144,43 @@ function set_pack(p, label) {
 // best camp for a minute or two, between the goals it could farm.
 function goal_blocked(mt, map, boundary) {
 	// (state.safe: the last pick's verdict; a type it hasn't judged yet: fight_profile's)
-	if (type_skipped(mt) || !(state.safe[mt] !== undefined ? state.safe[mt] : fight_profile(mt))) return type_skipped(mt) ? `skipped until ${hhmm(state.type_skip[mt])} (an impossible fight)` : `the party can't kill it within ${CFG.hopeless_ttk_s}s`;
+	if (type_skipped(mt) || !(state.safe[mt] !== undefined ? state.safe[mt] : fight_profile(mt))) return refuse_why(mt) || "not fought at the last pick";
 	if (!map || !valid_boundary(boundary)) return null;
 	const area = { map, boundary, mtype: mt };
 	const dz = area_danger(area, mt) || party_route_danger(map, (boundary[0] + boundary[2]) / 2, (boundary[1] + boundary[3]) / 2, mt);
 	if (dz) return dz;
 	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
 }
-const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
 // ---- Exploration (v25.82, owner: "Stop being so conservative. Try killing everything.") ----
 // Every CFG.explore.every_min of farming the tank gives an untried camp — no measured xp or gold rate — a trial of
 // trial_min, the highest xp per kill first (G.monsters xp x our xp multiplier; no safety model). The trial's session
-// records its rates like any other (state.measured, measured_gold); then the pick ranks it by them. A type tried in
-// the last 24 h waits (a trial that measured nothing isn't repeated every half hour). Hunts come first.
+// records its rates like any other (state.measured, measured_gold); then the pick ranks it by them. A type whose trial
+// recorded a rate in the last 24 h waits; a trial cut short (a hunt, a death, a refused walk) doesn't count. Hunts first.
 const untried = (key) => state.measured[key] === undefined && !state.measured_gold[key];
 const is_hunt_goal = (d) => !!d && (!!d.hunt || /monster hunt/.test(d.reason || ""));
 const explore_xp = (mt) => (G.monsters[mt]?.xp || 0) * (xp_mult() || 1);
+// A camp's hard ceiling in xp/s: all its monsters killed as fast as they respawn (review N8)
+const explore_ceiling = (c) => { const pk = (G.maps[c.map]?.monsters || []).find((p) => p.type === c.mtype) || {}; return (c.count / expected_respawn(c.mtype, pk)) * explore_xp(c.mtype); };
 // The next untried camp, from this pick's candidates (they passed the pick's own checks: a spawn worth farming, not
-// resting, no danger next to it or on the way, reachable)
+// resting, no danger next to it or on the way, reachable). Not the camp we stand at (it's measured in place, review
+// N9), nor one whose ceiling can't beat the best measured xp rate (review N8).
 function explore_next(cands, now = Date.now()) {
-	const tried = state.explore.tried;
-	return cands.filter((c) => untried(pack_key(c)) && !(now - (tried[c.mtype] || 0) < 86_400_000))
+	const tried = state.explore.tried, here = state.pack && !state.pack.explore && valid_boundary(state.pack.boundary) ? pack_key(state.pack) : null;
+	const best_m = Math.max(0, ...cands.map((c) => state.measured[pack_key(c)]).filter(Number.isFinite));
+	return cands.filter((c) => untried(pack_key(c)) && pack_key(c) !== here && !(now - (tried[c.mtype] || 0) < 86_400_000) && explore_ceiling(c) > best_m)
 		.sort((a, b) => explore_xp(b.mtype) - explore_xp(a.mtype) || b.score - a.score)[0] || null;
 }
 function explore_end(why_, now = Date.now()) {
 	const E = state.explore, c = E.cur;
 	if (!c) return;
-	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null });
-	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})`, C.info);
+	// (review N6) the trial's session closes here, so its rate is booked now; only a trial that recorded one counts as tried
+	if (state.session?.key === c.key) end_session();
+	const rated = !untried(c.key);
+	if (rated) E.tried[c.mtype] = now;
+	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null, rated });
+	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})${rated ? "" : " — nothing measured, it stays untried"}`, C.info);
 	E.cur = null; E.last_end = now; E.none_at = 0;
 }
 // The tank, each tick: end a trial on time, or as soon as a hunt is live (hunts first); start one when it's due
@@ -179,7 +188,8 @@ function explore_check() {
 	if (is_follower() || is_merchant() || (in_party_cfg() && leader_name() !== character.name)) return;
 	const E = state.explore, X = CFG.explore, now = Date.now(), d = state.directive && state.directive.until > now ? state.directive : null;
 	if (E.cur) {
-		if (now >= E.cur.until || (is_hunt_goal(d) && d.monster !== E.cur.mtype) || d?.boss) { state.last_pick = 0; pick_pack(); }
+		// (review N11: guarded like fighter_tick's other pick paths)
+		if ((now >= E.cur.until || (is_hunt_goal(d) && d.monster !== E.cur.mtype) || d?.boss) && !errand_busy() && !(in_party_cfg() && party_break())) pick_pack();
 		return;
 	}
 	if (now - (E.last_end || 0) < X.every_min * 60_000 || now - (E.none_at || 0) < 300_000) return;
@@ -218,7 +228,7 @@ function pick_pack() {
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
 		if (CFG.force_type && t !== CFG.force_type) return;
-		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, type_skipped(t) ? `skipped until ${hhmm(state.type_skip[t])} (an impossible fight)` : `the party can't kill it within ${CFG.hopeless_ttk_s}s`); } return; }
+		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, refuse_why(t) || "not fought"); } return; }
 		if (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count)) return;
 		if (seen.has(key)) return;
 		if ((state.cooldown[key] || 0) > now) { seen.add(key); note(key, t, area.map, `resting ${mins(state.cooldown[key])} (a flee, a death, or it ran dry)`); return; }
@@ -249,7 +259,6 @@ function pick_pack() {
 		else {
 			const key = pack_key(nx);
 			E.cur = { key, mtype: nx.mtype, map: nx.map, start: now, until: now + CFG.explore.trial_min * 60_000 };
-			E.tried[nx.mtype] = now;
 			log_ev("explore", { mtype: nx.mtype, map: nx.map, xp: G.monsters[nx.mtype].xp, est: Math.round(nx.score) });
 			return set_pack({ ...nx, explore: true, directive: `explore: ${nx.mtype} (untried, ${CFG.explore.trial_min} min trial)` },
 				`→ EXPLORE ${nx.mtype} @ ${nx.map}: untried, ${G.monsters[nx.mtype].xp} xp a kill, ${CFG.explore.trial_min} min trial`);

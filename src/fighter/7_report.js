@@ -11,7 +11,7 @@ function gap_kind() {
 		const e = parent.entities[id];
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
-		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || killable(e)) alive++; else beyond++; }
+		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || (state.safe[pk.mtype] && sustainable(live_math(e)))) alive++; else beyond++; } // (v25.82: choose_target's last resort too)
 		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
@@ -97,20 +97,22 @@ function facts_picks(F, ctx) {
 function facts_targets(F, ctx) {
 	const { p, d, now } = ctx;
 	if (!(p && character.map === p.map)) return;
-	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, skipped: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
+	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, skipped: [], heal: [], slow: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (!e || e.type !== "monster" || e.mtype !== p.mtype || !e.visible || e.dead) continue;
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) (killable(e) ? c.skipped : c.beyond).push(e.level || 1);
+		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !f ? c.beyond : !sustainable(f) ? c.heal : c.slow).push(e.level || 1); }
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
-	const n = c.ok + c.skipped.length + c.beyond.length + c.far + c.taken + c.ignored;
+	const n = c.ok + c.skipped.length + c.heal.length + c.slow.length + c.beyond.length + c.far + c.taken + c.ignored;
 	if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
-		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} is skipped after an impossible fight` : ""}` +
-		`${c.beyond.length ? `, ${c.beyond.length} the party can't kill within ${CFG.hopeless_ttk_s}s — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} ${refuse_why(p.mtype) || "is not fought"}` : ""}` +
+		`${c.heal.length ? `, ${c.heal.length} levelled past what the party out-heals — never taken (levels ${c.heal.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.slow.length ? `, ${c.slow.length} over ${CFG.hopeless_ttk_s}s a kill — the tank takes them, lowest first, when none passes (levels ${c.slow.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.beyond.length ? `, ${c.beyond.length} the party can't damage — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 }
 
@@ -211,8 +213,8 @@ function why_not_fighter(mtype) {
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
 	// v25.82: no damage model — the kill time, and an impossible fight in the last skip_h
-	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill (the model expects ~${fight_risk(f).toFixed(0)} dmg/kill${f.kiteable ? ", kiteable" : ""}) → ${f.ttk > CFG.hopeless_ttk_s ? `NOT FOUGHT: over ${CFG.hopeless_ttk_s}s a kill`
-		: type_skipped(mtype) ? `SKIPPED until ${hhmm(state.type_skip[mtype])}: an impossible fight` : "FOUGHT"}`);
+	const no = refuse_why(mtype);
+	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill (the model expects ~${fight_risk(f).toFixed(0)} dmg/kill${f.kiteable ? ", kiteable" : ""}) → ${no ? `NOT FOUGHT: ${no}` : "FOUGHT"}`);
 	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
 	if (sk.length) L(`  skipped at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split("#")[1] ? k.split("#")[1] + "@" : ""}${k.split(":")[0]} (${w})`).join("; ")}`);
 	const areas = [];

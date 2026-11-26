@@ -22,7 +22,7 @@ function hopeless(t) {
 }
 function fire(skill, target, extra) {
 	if (hopeless(target) || tank_first(target)) return false;
-	if (target?.type === "monster" && !target.target && skill !== "heal") fight_started(target); // v25.82: how the party stood (judge_death)
+	if (target?.type === "monster" && skill !== "heal") fight_started(target); // v25.82: the fight (judge_death)
 	const key = G.skills[skill]?.share || skill;
 	if (inflight[key] || is_on_cooldown(skill)) return false;
 	const reserve = skill === "attack" ? RESERVE.attack : skill.startsWith("use_") || skill.startsWith("regen_") ? RESERVE.potion : RESERVE.skill;

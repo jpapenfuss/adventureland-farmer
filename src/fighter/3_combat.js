@@ -89,10 +89,7 @@ function entity_profile(e) {
 	const key = `${fight_mates().map((p) => p.name).join()}:${e.level || 1}:${e.max_hp}:${e.attack}`; // re-judged when who counts changes
 	const c = live_cache.get(e.id);
 	if (c && c.key === key) return c.ok ? c : null;
-	const def = G.monsters[e.mtype];
-	const live = {};
-	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = def && fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
+	const def = G.monsters[e.mtype], f = live_math(e);
 	const ok = fightable(f); // (the kill time and the sustain test, on its live stats)
 	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
 	live_cache.set(e.id, out);
@@ -129,14 +126,13 @@ function best_escape(t, step) {
 	}
 	return best;
 }
-// Whether the party could kill this one on its live stats within hopeless_ttk_s, whatever its type's standing (report)
-function killable(e) {
+// The fight model on this one's live stats (a levelled monster), or null
+function live_math(e) {
 	const def = G.monsters[e.mtype];
-	if (!def) return false;
+	if (!def) return null;
 	const live = {};
-	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
-	return !!f && f.ttk <= CFG.hopeless_ttk_s;
+	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
+	return fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
 }
 // v25.82 (prior art: the server's fear — targets of a damage type over our courage cut our attack to 40%, then 20%,
 // server.js L1427-1445; earthiverse's attack strategy skips a new pull at courage): would one more monster of this
@@ -173,11 +169,18 @@ function choose_target(local_ok, keep_cur = false) {
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
+	// v25.82 (review N5): the camp's own type levelled past hopeless_ttk_s but still out-healed — the last resort,
+	// lowest level first (fire()'s hopeless() exempts the camp's type)
+	let grown = null;
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
-		const f = live_ok(e); // (v25.82: a levelled-up one too, whenever the party kills it within hopeless_ttk_s)
-		if (!f) continue;
+		const f = live_ok(e);
+		if (!f) {
+			if (e.mtype === want && state.safe[want] && sustainable(live_math(e)) && (!grown || (e.level || 1) < (grown.level || 1) ||
+				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
+			continue;
+		}
 		// v24.64: the tank starts a fight on its camp's monster first. v25.57 (owner: "Never, under any circumstances,
 		// should [they] just wander around doing nothing in a camp"): when none of the camp's type is free (squigtoad: 2
 		// up, other players on them, "nothing alive" 53% of the time), another type in the camp box that passes the same
@@ -196,9 +199,9 @@ function choose_target(local_ok, keep_cur = false) {
 		const clear = distance(character, e) <= character.range || can_move_to(e);
 		if (tier < best_tier || (clear && !best_clear) || (clear === best_clear && v > best_v)) (best = e), (best_v = v), (best_tier = tier), (best_clear = clear);
 	}
-	// the camp's type first, then a filler (owner: "How about we actually just kill things?"); the camp is left only
-	// when there's nothing to fight for the idle time, or by the camp review
-	return best;
+	// the camp's type first, then its levelled ones, then a filler (owner: "How about we actually just kill things?");
+	// the camp is left only when there's nothing to fight for the idle time, or by the camp review
+	return best_tier === 0 ? best : grown || best;
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)

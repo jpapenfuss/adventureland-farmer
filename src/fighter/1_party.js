@@ -206,7 +206,7 @@ function party_break_tick() {
 const in_town = () => character.map === "main" && Math.hypot(character.x, character.y) < CFG.party.town_px;
 // ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Self-tuning safety (CFG.safety_tune): up a step after every step_h without a death or flee; down on a flee; reset on
-// a death. Checked every minute; the clock restarts on every change.
+// a death. Checked every minute; the clock restarts on every change. (v25.82: it moves only the boss limit, boss_safe)
 function safety_tune(ev) {
 	const T_ = CFG.safety_tune, now = Date.now();
 	if (!T_?.enabled || is_merchant()) return;
@@ -219,7 +219,7 @@ function safety_tune(ev) {
 	state.safety_at = now;
 	if (own() !== was) {
 		log_ev("safety", { to: +own().toFixed(3), why: ev || "calm" });
-		game_log(`safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP per kill (${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
+		game_log(`boss safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP (bosses only; ${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
 		state.last_pick = 0;
 	}
 }
@@ -239,7 +239,8 @@ function apply_verdict(v, from) {
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype });
 	} else if (v.kind === "type_skip" && Number.isFinite(v.until)) {
 		state.type_skip[v.mtype] = Math.max(state.type_skip[v.mtype] || 0, Math.min(v.until, now + CFG.impossible.skip_h * 3600_000 * 1.1));
-		state.last_pick = 0;
+		delete state.safe[v.mtype]; // (a follower's targets too)
+		if (!is_follower() && state.pack?.mtype === v.mtype && !state.pack.boss) pick_pack(); // the tank leaves its camp
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype });
 	}
 }

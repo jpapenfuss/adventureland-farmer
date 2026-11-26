@@ -126,7 +126,10 @@ async function go_route(dest, ms, tele_tried = false) {
 	if (T_ && T_.map !== character.map) {
 		// v24.59: a follower doesn't judge the way (its own verdict made it detour, refuse, or teleport while the tank
 		// walked on): it takes the shortest way, the transporter where that uses one
-		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y);
+		// (v25.82: to or from our own camp, its own type is what we fight there, not a danger on the way — the pick judged
+		// the way with it left out, and a burner camp — fireroamer @ desertland — could be neither reached nor left)
+		const P_ = state.pack, own = P_ && !P_.boss && (P_.map === T_.map || P_.map === character.map) ? P_.mtype : null;
+		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y, undefined, own);
 		if (pl?.danger) {
 			if (Date.now() - (state.deadly_log_at || 0) > 60_000) { state.deadly_log_at = Date.now(); game_log(`walk to ${T_.map}: every way passes ${pl.danger} — not going`, C.warn); }
 			state.walk_refused = { to: T_.map, why: pl.danger, at: Date.now() };

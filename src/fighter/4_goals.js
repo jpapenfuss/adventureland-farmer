@@ -121,12 +121,19 @@ function pick_shared(mine) {
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
 	// v25.82 (prior art: earthiverse sorts every character's hunts by time left; every party kill counts for every
 	// member's hunt at any distance — server.js L2490-2505): hunts only, the one that expires soonest, not turns
+	// (review N15) a hunt the measured kill rate can't finish in its time left ranks after those that can; an unmeasured one may
 	if (hunts_only) {
 		const left = (n, mt) => { const h = n === me ? character.s.monsterhunt : state.partners[n]?.hunt, ms = n === me ? h?.ms : state.partners[n]?.hms;
-			return h?.id === mt && ms > 0 ? ms : Infinity; };
+			return h?.id === mt && ms > 0 ? { ms, c: h.c || 0 } : null; };
+		const late = (mt, h) => { const kps = measured_kps(mt); return kps > 0 && h.c / kps > h.ms / 1000; };
 		let soon = null;
-		for (const e of cands) for (const n of names(e)) { const ms = left(n, e.monster); if (!soon || ms < soon.ms) soon = { e, n, ms }; }
-		if (soon && Number.isFinite(soon.ms)) {
+		for (const e of cands) for (const n of names(e)) {
+			const h = left(n, e.monster);
+			if (!h) continue;
+			const k = { e, n, ms: h.ms, late: late(e.monster, h) };
+			if (!soon || k.late < soon.late || (k.late === soon.late && k.ms < soon.ms)) soon = k;
+		}
+		if (soon) {
 			if (soon.n === me) { if (mine_ok_of(mine)) return mine; }
 			else return to_dir(soon.e, `${soon.n}: ${soon.e.why.find((w) => w.startsWith(soon.n + ":"))?.slice(soon.n.length + 2) || soon.e.monster}`);
 		}
@@ -335,6 +342,13 @@ function hunt_feasible(h) {
 	if (is_follower()) return state.safe[h.id] !== undefined ? !!state.safe[h.id] : !!fight_profile(h.id);
 	const a = resolve_area(h.id);
 	return !!a && !goal_blocked(h.id, a.map, a.boundary);
+}
+// v25.82: the party's measured kills per second of a type (its best measured camp: base xp/s ÷ xp a kill), 0 unmeasured
+function measured_kps(mt) {
+	const xp = G.monsters[mt]?.xp || 0;
+	let best = 0;
+	if (xp > 0) each_area((pack, area) => { const v = state.measured[pack_key(area)]; if (pack.type === mt && v > 0) best = Math.max(best, v / xp); });
+	return best;
 }
 // Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
 function kills_per_s(mt) {

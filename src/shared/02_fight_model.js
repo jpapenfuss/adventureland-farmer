@@ -142,8 +142,7 @@ function tank_first(t) {
 // ---- v25.82 (owner: "Try killing everything"): evidence replaces prediction ----
 // A type is fought unless the party can't kill it within hopeless_ttk_s or survive one kill (sustainable), or a fight
 // against it was clearly impossible
-// in the last CFG.impossible.skip_h: all three members alive and within engage_px of the tank when the fight started,
-// the priest in heal range, and the party's first death came with the target still over CFG.impossible.hp of its HP.
+// in the last CFG.impossible.skip_h (judge_death).
 // Any other death blocks nothing (owner: deaths are often our movement's fault — single file, the healer out of range).
 const type_skipped = (mt, now = Date.now()) => (state.type_skip[mt] || 0) > now;
 // The priest's healing per second among the members counted (a heal is its attack; CFG.sustain.heal_eff of it lands)
@@ -156,46 +155,100 @@ function priest_hps(f) {
 // a fight is out of reach only when the priest can't out-heal what the target deals AND that net damage over one kill
 // would spend the whole HP of whoever it hits — known stats only, no calibration, no safety fraction. A strict
 // "HPS ≥ DPS" alone would refuse a quick kill the HP pool absorbs, the conservatism the owner rejected.
+const sustain_net = (f) => f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps - priest_hps(f); // net damage per s
 function sustainable(f) {
 	if (!f) return false;
-	const net = f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps - priest_hps(f);
+	const net = sustain_net(f);
 	return net <= 0 || net * f.ttk < (f.hp_pool || character.max_hp);
+}
+const sustain_text = (f) => `can't out-heal it (net ${Math.round(sustain_net(f) * f.ttk)} vs pool ${Math.round(f.hp_pool || character.max_hp)})`;
+const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
+// Why fight_profile refuses a type, or null (fought) — the report, why_not, goal_blocked and the pick table say it
+function refuse_why(mt) {
+	if (!farmable_type(mt)) return "not a farmable type";
+	if (type_skipped(mt)) return `skipped until ${hhmm(state.type_skip[mt])} (an impossible fight)`;
+	const f = fight_math(G.monsters[mt]);
+	if (!f) return "we can't out-damage its healing";
+	if (f.ttk > CFG.hopeless_ttk_s) return `the party can't kill it within ${CFG.hopeless_ttk_s}s`;
+	return sustainable(f) ? null : sustain_text(f);
 }
 // The hard limits on a type: the party kills it within hopeless_ttk_s, and survives one kill (sustainable)
 const fightable = (f) => !!f && f.ttk <= CFG.hopeless_ttk_s && sustainable(f);
+// v25.82 (review N3/N4): would the party handle this monster if it came at us — any type, farmable or not (jr., greenjr),
+// on the hard limits only. A type skipped after an impossible fight still counts as handled here: the skip closes its
+// own camps, not its neighbours' camps nor the ways past it. The merchant handles nothing (it doesn't fight).
+const handle_c = {};
+function handles(t) {
+	if (is_merchant()) return false;
+	if (state.safe[t]) return true;
+	const c = handle_c[t], now = Date.now();
+	if (c && now - c.at < 30_000) return c.v;
+	const m = G.monsters[t], v = !!m && fightable(fight_math(m));
+	handle_c[t] = { at: now, v };
+	return v;
+}
 function fight_profile(mtype) {
 	if (!farmable_type(mtype) || type_skipped(mtype)) return null;
 	const f = fight_math(G.monsters[mtype]);
 	return fightable(f) ? { ttk: f.ttk, xp: f.xp } : null;
 }
-// The tank, starting a fight (fire(): a monster on none of us): how the party stood at that moment
+// ---- Impossible fights (v25.82) ----
+// A fight is an episode on the tank: it starts when the tank opens on a monster (fire()) or when any monster first
+// targets a member (engage_scan, each tick: the aggressive camps, where the monster opens), and lasts while monsters
+// are on the party. Its start records how the party stood: everyone gathered (party_missing empty), the priest in
+// heal range of the tank.
+function party_standing() {
+	const pr = partners_any().find((q) => q.ctype === "priest"), pq = pr && partner_pos(pr);
+	return { gathered: !character.rip && others().length > 0 && !party_missing().length,
+		priest_ok: !!pr && !pr.rip && pq.map === character.map && Math.hypot(pq.x - character.x, pq.y - character.y) <= (pr.range || G.classes?.priest?.range || 0) };
+}
+const FIGHT_GAP_MS = 15_000; // no monster on the party this long: the episode is over
 function fight_started(t) {
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || !together_now() || !is_tank_class(character.ctype)) return;
-	if (state.fight_start?.id === t.id && !state.fight_start.judged) return;
-	const mates = partners_any(); // (every configured member, heard from: party_missing names the unheard ones)
-	const gathered = !character.rip && others().length > 0 && !party_missing().length;
-	const pr = mates.find((q) => q.ctype === "priest"), pq = pr && partner_pos(pr);
-	const priest_ok = !!pr && !pr.rip && pq.map === character.map && Math.hypot(pq.x - character.x, pq.y - character.y) <= (pr.range || G.classes?.priest?.range || 0);
-	state.fight_start = { id: t.id, mtype: t.mtype, at: Date.now(), gathered, priest_ok };
+	const now = Date.now();
+	let fs = state.fight_start;
+	if (!fs || now - (fs.last || fs.at) > FIGHT_GAP_MS) fs = state.fight_start = { at: now, ...party_standing(), ids: {} };
+	fs.ids[t.id] = t.mtype; fs.last = now;
 }
-// The tank (it picks the camps) judges the first death of each fight it started: { counted, mtype | why }. who: the
-// member that died; killer: the type that did it the most damage (null: unknown)
+// The tank, each tick: every monster on a member is part of the fight (the first one starts it)
+function engage_scan() {
+	if (!together_now() || !is_tank_class(character.ctype) || character.rip) return;
+	const party = party_names();
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (e?.type === "monster" && !e.dead && e.target && party.has(e.target)) fight_started(e);
+	}
+}
+// The tank (it picks the camps) judges the first death of each fight: { counted, mtype | why }. who: the member that
+// died; killer: the type that did it the most damage (null: unknown). It counts only when the party was gathered at the
+// start, the priest in range, the first to die the tank or the priest (a mage's death is aggro control, not proof), and
+// the monsters on the party still over CFG.impossible.hp (their highest HP share).
 function judge_death(killer, who) {
 	const fs = state.fight_start, now = Date.now();
-	if (fs?.judged) return { counted: false, why: "the same fight's wipe" };
-	if (!fs || now - fs.at > 10 * 60_000) return death_not_counted(killer, who, "no fight the tank started");
+	if (!fs || now - (fs.last || fs.at) > 2 * FIGHT_GAP_MS) return death_not_counted(killer, who, "no fight on the party");
+	if (fs.judged) return { counted: false, why: "the same fight's wipe" };
 	fs.judged = true;
-	const e = parent.entities?.[fs.id], frac = e && !e.dead && e.max_hp > 0 ? e.hp / e.max_hp : 0;
+	const party = party_names(), on = [];
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (e?.type === "monster" && !e.dead && e.max_hp > 0 && ((e.target && party.has(e.target)) || fs.ids?.[id])) on.push(e);
+	}
+	const top = on.sort((a, b) => b.hp / b.max_hp - a.hp / a.max_hp)[0], frac = top ? top.hp / top.max_hp : 0;
+	const ct = who === character.name ? character.ctype : state.partners[who]?.ctype;
+	const mt = killer && on.some((e) => e.mtype === killer) ? killer : top?.mtype || killer;
 	const why_ = !fs.gathered ? "party not gathered" : !fs.priest_ok ? "healer out of range"
-		: killer && killer !== fs.mtype ? `killed by ${killer}, not the fight's ${fs.mtype}` : frac <= CFG.impossible.hp ? `target at ${Math.round(frac * 100)}%` : null;
-	if (why_) return death_not_counted(killer || fs.mtype, who, why_);
+		: !(is_tank_class(ct) || ct === "priest") ? `first death ${who} (${ct || "?"}): aggro control, not an impossible fight`
+		: killer && !on.some((e) => e.mtype === killer) ? `killed by ${killer}, not a monster on the party`
+		: frac <= CFG.impossible.hp ? `target at ${Math.round(frac * 100)}%` : null;
+	if (why_) return death_not_counted(mt, who, why_);
 	const until = now + CFG.impossible.skip_h * 3600_000;
-	state.type_skip[fs.mtype] = until; // no escalation: a second impossible wipe is another skip_h from then
-	log_ev("impossible", { mtype: fs.mtype, who, hp: Math.round(frac * 100), until });
-	game_log(`${fs.mtype}: the gathered party wiped with it at ${Math.round(frac * 100)}% — skipped for ${CFG.impossible.skip_h} h`, C.warn);
-	share_verdict({ kind: "type_skip", mtype: fs.mtype, until });
-	state.last_pick = 0;
-	return { counted: true, mtype: fs.mtype };
+	state.type_skip[mt] = until; // no escalation: a second impossible wipe is another skip_h from then
+	delete state.safe[mt];
+	if (state.pack?.mtype === mt && !state.pack.boss) state.pack = null; // the camp loop picks again (fighter_tick)
+	log_ev("impossible", { mtype: mt, who, hp: Math.round(frac * 100), until });
+	game_log(`${mt}: the gathered party lost ${who} with it at ${Math.round(frac * 100)}% — skipped for ${CFG.impossible.skip_h} h`, C.warn);
+	share_verdict({ kind: "type_skip", mtype: mt, until });
+	return { counted: true, mtype: mt };
 }
 function death_not_counted(mt, who, why_) {
 	const now = Date.now();
@@ -328,7 +381,7 @@ function deadly_areas(map) {
 	for (const [pk, a] of map_areas(map)) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
-		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
+		if (aggressive(t) && !handles(t) && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
 		else if (merchant_threat(t, v)) { const T_ = threat_dps(t); list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 40, dps: T_.dps, hp: T_.hp, v }); } // (v25.80: its reach plus the sprites' size — the time spent there is what's counted, so no extra margin) // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
@@ -455,7 +508,7 @@ const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const 
 // those began with the party hitting the ent (it was "a monster on a party member", so everyone shot it). Since
 // v24.44 nobody attacks a monster the party can't kill, and an ent left alone leaves room to walk past (owner).
 // Listing it closed the only way to level2s and the walk from its door.
-const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(t) && !state.safe[t] && chase_speed(t) >= v);
+const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(t) && !handles(t) && chase_speed(t) >= v);
 // v25.55: the merchant (no fighting, ~2k HP) died walking to the gscorpion camp past desertland's fire spirits: aggro
 // 0.2 (under the 0.5 above) and slower than it, but range 280 and 320 magical a hit — 2,749 damage in the 10 s it
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or

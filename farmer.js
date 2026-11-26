@@ -506,7 +506,7 @@ const state = {
 	meas_at: {},             // "p:" + pack key -> when that measurement was last updated (v24.3, saved)
 	realism: 1,              // measured ÷ estimated xp/s, averaged; scales estimates of unvisited packs (saved)
 	type_skip: {},           // v25.82: monster id -> until: skipped after an impossible fight (saved)
-	fight_start: null,       // v25.82: the tank's last fight start { id, mtype, at, gathered, priest_ok, judged? } (judge_death)
+	fight_start: null,       // v25.82: the tank's fight episode { at, last, gathered, priest_ok, ids: { id: mtype }, judged? } (judge_death)
 	deaths_nc: [],           // v25.82: times of deaths not counted against a type, last 24h (saved)
 	explore: { cur: null, last_end: Date.now(), tried: {}, next: null, none_at: 0 }, // v25.82: the trial running
 	                         //   { key, mtype, map, start, until }, the last one's end, type -> when tried (saved)
@@ -681,7 +681,10 @@ async function go_route(dest, ms, tele_tried = false) {
 	if (T_ && T_.map !== character.map) {
 		// v24.59: a follower doesn't judge the way (its own verdict made it detour, refuse, or teleport while the tank
 		// walked on): it takes the shortest way, the transporter where that uses one
-		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y);
+		// (v25.82: to or from our own camp, its own type is what we fight there, not a danger on the way — the pick judged
+		// the way with it left out, and a burner camp — fireroamer @ desertland — could be neither reached nor left)
+		const P_ = state.pack, own = P_ && !P_.boss && (P_.map === T_.map || P_.map === character.map) ? P_.mtype : null;
+		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y, undefined, own);
 		if (pl?.danger) {
 			if (Date.now() - (state.deadly_log_at || 0) > 60_000) { state.deadly_log_at = Date.now(); game_log(`walk to ${T_.map}: every way passes ${pl.danger} — not going`, C.warn); }
 			state.walk_refused = { to: T_.map, why: pl.danger, at: Date.now() };
@@ -919,8 +922,7 @@ function tank_first(t) {
 // ---- v25.82 (owner: "Try killing everything"): evidence replaces prediction ----
 // A type is fought unless the party can't kill it within hopeless_ttk_s or survive one kill (sustainable), or a fight
 // against it was clearly impossible
-// in the last CFG.impossible.skip_h: all three members alive and within engage_px of the tank when the fight started,
-// the priest in heal range, and the party's first death came with the target still over CFG.impossible.hp of its HP.
+// in the last CFG.impossible.skip_h (judge_death).
 // Any other death blocks nothing (owner: deaths are often our movement's fault — single file, the healer out of range).
 const type_skipped = (mt, now = Date.now()) => (state.type_skip[mt] || 0) > now;
 // The priest's healing per second among the members counted (a heal is its attack; CFG.sustain.heal_eff of it lands)
@@ -933,46 +935,100 @@ function priest_hps(f) {
 // a fight is out of reach only when the priest can't out-heal what the target deals AND that net damage over one kill
 // would spend the whole HP of whoever it hits — known stats only, no calibration, no safety fraction. A strict
 // "HPS ≥ DPS" alone would refuse a quick kill the HP pool absorbs, the conservatism the owner rejected.
+const sustain_net = (f) => f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps - priest_hps(f); // net damage per s
 function sustainable(f) {
 	if (!f) return false;
-	const net = f.their_dps / (f.kiteable ? CFG.kite_slack : 1) + f.self_dps - priest_hps(f);
+	const net = sustain_net(f);
 	return net <= 0 || net * f.ttk < (f.hp_pool || character.max_hp);
+}
+const sustain_text = (f) => `can't out-heal it (net ${Math.round(sustain_net(f) * f.ttk)} vs pool ${Math.round(f.hp_pool || character.max_hp)})`;
+const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
+// Why fight_profile refuses a type, or null (fought) — the report, why_not, goal_blocked and the pick table say it
+function refuse_why(mt) {
+	if (!farmable_type(mt)) return "not a farmable type";
+	if (type_skipped(mt)) return `skipped until ${hhmm(state.type_skip[mt])} (an impossible fight)`;
+	const f = fight_math(G.monsters[mt]);
+	if (!f) return "we can't out-damage its healing";
+	if (f.ttk > CFG.hopeless_ttk_s) return `the party can't kill it within ${CFG.hopeless_ttk_s}s`;
+	return sustainable(f) ? null : sustain_text(f);
 }
 // The hard limits on a type: the party kills it within hopeless_ttk_s, and survives one kill (sustainable)
 const fightable = (f) => !!f && f.ttk <= CFG.hopeless_ttk_s && sustainable(f);
+// v25.82 (review N3/N4): would the party handle this monster if it came at us — any type, farmable or not (jr., greenjr),
+// on the hard limits only. A type skipped after an impossible fight still counts as handled here: the skip closes its
+// own camps, not its neighbours' camps nor the ways past it. The merchant handles nothing (it doesn't fight).
+const handle_c = {};
+function handles(t) {
+	if (is_merchant()) return false;
+	if (state.safe[t]) return true;
+	const c = handle_c[t], now = Date.now();
+	if (c && now - c.at < 30_000) return c.v;
+	const m = G.monsters[t], v = !!m && fightable(fight_math(m));
+	handle_c[t] = { at: now, v };
+	return v;
+}
 function fight_profile(mtype) {
 	if (!farmable_type(mtype) || type_skipped(mtype)) return null;
 	const f = fight_math(G.monsters[mtype]);
 	return fightable(f) ? { ttk: f.ttk, xp: f.xp } : null;
 }
-// The tank, starting a fight (fire(): a monster on none of us): how the party stood at that moment
+// ---- Impossible fights (v25.82) ----
+// A fight is an episode on the tank: it starts when the tank opens on a monster (fire()) or when any monster first
+// targets a member (engage_scan, each tick: the aggressive camps, where the monster opens), and lasts while monsters
+// are on the party. Its start records how the party stood: everyone gathered (party_missing empty), the priest in
+// heal range of the tank.
+function party_standing() {
+	const pr = partners_any().find((q) => q.ctype === "priest"), pq = pr && partner_pos(pr);
+	return { gathered: !character.rip && others().length > 0 && !party_missing().length,
+		priest_ok: !!pr && !pr.rip && pq.map === character.map && Math.hypot(pq.x - character.x, pq.y - character.y) <= (pr.range || G.classes?.priest?.range || 0) };
+}
+const FIGHT_GAP_MS = 15_000; // no monster on the party this long: the episode is over
 function fight_started(t) {
 	if (!t || t.type !== "monster" || !G.monsters[t.mtype] || !together_now() || !is_tank_class(character.ctype)) return;
-	if (state.fight_start?.id === t.id && !state.fight_start.judged) return;
-	const mates = partners_any(); // (every configured member, heard from: party_missing names the unheard ones)
-	const gathered = !character.rip && others().length > 0 && !party_missing().length;
-	const pr = mates.find((q) => q.ctype === "priest"), pq = pr && partner_pos(pr);
-	const priest_ok = !!pr && !pr.rip && pq.map === character.map && Math.hypot(pq.x - character.x, pq.y - character.y) <= (pr.range || G.classes?.priest?.range || 0);
-	state.fight_start = { id: t.id, mtype: t.mtype, at: Date.now(), gathered, priest_ok };
+	const now = Date.now();
+	let fs = state.fight_start;
+	if (!fs || now - (fs.last || fs.at) > FIGHT_GAP_MS) fs = state.fight_start = { at: now, ...party_standing(), ids: {} };
+	fs.ids[t.id] = t.mtype; fs.last = now;
 }
-// The tank (it picks the camps) judges the first death of each fight it started: { counted, mtype | why }. who: the
-// member that died; killer: the type that did it the most damage (null: unknown)
+// The tank, each tick: every monster on a member is part of the fight (the first one starts it)
+function engage_scan() {
+	if (!together_now() || !is_tank_class(character.ctype) || character.rip) return;
+	const party = party_names();
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (e?.type === "monster" && !e.dead && e.target && party.has(e.target)) fight_started(e);
+	}
+}
+// The tank (it picks the camps) judges the first death of each fight: { counted, mtype | why }. who: the member that
+// died; killer: the type that did it the most damage (null: unknown). It counts only when the party was gathered at the
+// start, the priest in range, the first to die the tank or the priest (a mage's death is aggro control, not proof), and
+// the monsters on the party still over CFG.impossible.hp (their highest HP share).
 function judge_death(killer, who) {
 	const fs = state.fight_start, now = Date.now();
-	if (fs?.judged) return { counted: false, why: "the same fight's wipe" };
-	if (!fs || now - fs.at > 10 * 60_000) return death_not_counted(killer, who, "no fight the tank started");
+	if (!fs || now - (fs.last || fs.at) > 2 * FIGHT_GAP_MS) return death_not_counted(killer, who, "no fight on the party");
+	if (fs.judged) return { counted: false, why: "the same fight's wipe" };
 	fs.judged = true;
-	const e = parent.entities?.[fs.id], frac = e && !e.dead && e.max_hp > 0 ? e.hp / e.max_hp : 0;
+	const party = party_names(), on = [];
+	for (const id in parent.entities || {}) {
+		const e = parent.entities[id];
+		if (e?.type === "monster" && !e.dead && e.max_hp > 0 && ((e.target && party.has(e.target)) || fs.ids?.[id])) on.push(e);
+	}
+	const top = on.sort((a, b) => b.hp / b.max_hp - a.hp / a.max_hp)[0], frac = top ? top.hp / top.max_hp : 0;
+	const ct = who === character.name ? character.ctype : state.partners[who]?.ctype;
+	const mt = killer && on.some((e) => e.mtype === killer) ? killer : top?.mtype || killer;
 	const why_ = !fs.gathered ? "party not gathered" : !fs.priest_ok ? "healer out of range"
-		: killer && killer !== fs.mtype ? `killed by ${killer}, not the fight's ${fs.mtype}` : frac <= CFG.impossible.hp ? `target at ${Math.round(frac * 100)}%` : null;
-	if (why_) return death_not_counted(killer || fs.mtype, who, why_);
+		: !(is_tank_class(ct) || ct === "priest") ? `first death ${who} (${ct || "?"}): aggro control, not an impossible fight`
+		: killer && !on.some((e) => e.mtype === killer) ? `killed by ${killer}, not a monster on the party`
+		: frac <= CFG.impossible.hp ? `target at ${Math.round(frac * 100)}%` : null;
+	if (why_) return death_not_counted(mt, who, why_);
 	const until = now + CFG.impossible.skip_h * 3600_000;
-	state.type_skip[fs.mtype] = until; // no escalation: a second impossible wipe is another skip_h from then
-	log_ev("impossible", { mtype: fs.mtype, who, hp: Math.round(frac * 100), until });
-	game_log(`${fs.mtype}: the gathered party wiped with it at ${Math.round(frac * 100)}% — skipped for ${CFG.impossible.skip_h} h`, C.warn);
-	share_verdict({ kind: "type_skip", mtype: fs.mtype, until });
-	state.last_pick = 0;
-	return { counted: true, mtype: fs.mtype };
+	state.type_skip[mt] = until; // no escalation: a second impossible wipe is another skip_h from then
+	delete state.safe[mt];
+	if (state.pack?.mtype === mt && !state.pack.boss) state.pack = null; // the camp loop picks again (fighter_tick)
+	log_ev("impossible", { mtype: mt, who, hp: Math.round(frac * 100), until });
+	game_log(`${mt}: the gathered party lost ${who} with it at ${Math.round(frac * 100)}% — skipped for ${CFG.impossible.skip_h} h`, C.warn);
+	share_verdict({ kind: "type_skip", mtype: mt, until });
+	return { counted: true, mtype: mt };
 }
 function death_not_counted(mt, who, why_) {
 	const now = Date.now();
@@ -1105,7 +1161,7 @@ function deadly_areas(map) {
 	for (const [pk, a] of map_areas(map)) {
 		const t = pk.type;
 		if (!(a.count > 0) || !valid_boundary(a.boundary)) continue;
-		if (aggressive(t) && !state.safe[t] && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
+		if (aggressive(t) && !handles(t) && chase_speed(t) >= v) list.push({ t, b: a.boundary, px: CFG.danger_px });
 		else if (merchant_threat(t, v)) { const T_ = threat_dps(t); list.push({ t, b: a.boundary, px: (G.monsters[t].range || 0) + 40, dps: T_.dps, hp: T_.hp, v }); } // (v25.80: its reach plus the sprites' size — the time spent there is what's counted, so no extra margin) // (range is edge to edge of the sprites, and the walk strays from the judged grid path)
 	}
 	dz_cache.set(map, { at: now, v, list });
@@ -1232,7 +1288,7 @@ const chase_speed = (mt) => { const m = G.monsters[mt]; if (!m) return 0; const 
 // those began with the party hitting the ent (it was "a monster on a party member", so everyone shot it). Since
 // v24.44 nobody attacks a monster the party can't kill, and an ent left alone leaves room to walk past (owner).
 // Listing it closed the only way to level2s and the walk from its door.
-const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(t) && !state.safe[t] && chase_speed(t) >= v);
+const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(t) && !handles(t) && chase_speed(t) >= v);
 // v25.55: the merchant (no fighting, ~2k HP) died walking to the gscorpion camp past desertland's fire spirits: aggro
 // 0.2 (under the 0.5 above) and slower than it, but range 280 and 320 magical a hit — 2,749 damage in the 10 s it
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
@@ -1839,7 +1895,7 @@ function hopeless(t) {
 }
 function fire(skill, target, extra) {
 	if (hopeless(target) || tank_first(target)) return false;
-	if (target?.type === "monster" && !target.target && skill !== "heal") fight_started(target); // v25.82: how the party stood (judge_death)
+	if (target?.type === "monster" && skill !== "heal") fight_started(target); // v25.82: the fight (judge_death)
 	const key = G.skills[skill]?.share || skill;
 	if (inflight[key] || is_on_cooldown(skill)) return false;
 	const reserve = skill === "attack" ? RESERVE.attack : skill.startsWith("use_") || skill.startsWith("regen_") ? RESERVE.potion : RESERVE.skill;
@@ -4534,7 +4590,7 @@ const other_build = (v, b) => v !== VERSION || (!!b && !!BUILD && b !== BUILD);
 setInterval(() => { save_state(); save_hist(); }, 60_000);
 function on_destroy() { save_state(); save_hist(); store_report(); } // the game calls this just before the code is stopped or reloaded
 // forget(): clear learned farming data (measurements, danger notes, cooldowns, pauses); craft history is kept
-function forget() { Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
+function forget() { state.explore.tried = {}; Object.assign(state, { measured: {}, measured_gold: {}, meas_at: {}, type_skip: {}, deaths_nc: [], cooldown: {}, gear_skip: {}, realism: 1 }); save_state(); game_log("Learned state cleared"); }
 // =====================================================================
 // Diagnostics (call from the CODE console): report(), why_not("bee")
 // =====================================================================
@@ -5438,6 +5494,7 @@ function fighter_tick() {
 		return 150;
 	}
 	if (cave_entry_tick()) { loot_chests(); return 200; } // v25.22: once a day, the party goes into the Cave of Many Dreams
+	engage_scan(); // v25.82: monsters on the party (judge_death)
 	explore_check(); // v25.82: a trial's end, or the next one due
 	// v24.60: the party sits at its camp. No re-pick every repick_ms (estimates within a few % of each other moved
 	// it between camps: 18 changes in an hour). A camp is left only when it's gone: a death there, nothing to
@@ -5741,7 +5798,7 @@ function party_break_tick__fighter() {
 const in_town = () => character.map === "main" && Math.hypot(character.x, character.y) < CFG.party.town_px;
 // ---- from the shared code (v24.95–v25.6): used by the fighters only ----
 // Self-tuning safety (CFG.safety_tune): up a step after every step_h without a death or flee; down on a flee; reset on
-// a death. Checked every minute; the clock restarts on every change.
+// a death. Checked every minute; the clock restarts on every change. (v25.82: it moves only the boss limit, boss_safe)
 function safety_tune__fighter(ev) {
 	const T_ = CFG.safety_tune, now = Date.now();
 	if (!T_?.enabled || is_merchant()) return;
@@ -5754,7 +5811,7 @@ function safety_tune__fighter(ev) {
 	state.safety_at = now;
 	if (own() !== was) {
 		log_ev("safety", { to: +own().toFixed(3), why: ev || "calm" });
-		game_log(`safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP per kill (${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
+		game_log(`boss safety limit ${Math.round(was * 100)}% → ${Math.round(own() * 100)}% of HP (bosses only; ${ev || `no death or flee for ${T_.step_h}h`})`, ev ? C.warn : C.info);
 		state.last_pick = 0;
 	}
 }
@@ -5774,7 +5831,8 @@ function apply_verdict(v, from) {
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype });
 	} else if (v.kind === "type_skip" && Number.isFinite(v.until)) {
 		state.type_skip[v.mtype] = Math.max(state.type_skip[v.mtype] || 0, Math.min(v.until, now + CFG.impossible.skip_h * 3600_000 * 1.1));
-		state.last_pick = 0;
+		delete state.safe[v.mtype]; // (a follower's targets too)
+		if (!is_follower() && state.pack?.mtype === v.mtype && !state.pack.boss) pick_pack(); // the tank leaves its camp
 		log_ev("verdict", { from, kind: v.kind, mtype: v.mtype });
 	}
 }
@@ -5857,11 +5915,13 @@ function map_route(from, to) {
 	return out;
 }
 const rect_gap = (a, b) => Math.hypot(Math.max(0, a[0] - b[2], b[0] - a[2]), Math.max(0, a[1] - b[3], b[1] - a[3]));
-// A spot within danger_px of a spawn of such a monster: its name, else null
+// A spot within danger_px of a spawn of such a monster: its name, else null. v25.82 (review N3): only a neighbour that
+// is there (count > 0), comes at players (aggressive) and that the party couldn't handle (handles: any type — jr. and
+// greenjr, not farmable, closed booboo and the halloween snakes)
 function area_danger(area, mt) {
 	for (const [pk, a2] of map_areas(area.map)) {
 		const t = pk.type;
-		if (t === mt || !aggressive(t) || state.safe[t] || !valid_boundary(a2.boundary)) continue;
+		if (t === mt || !(a2.count > 0) || !aggressive(t) || handles(t) || !valid_boundary(a2.boundary)) continue;
 		if (rect_gap(area.boundary, a2.boundary) < CFG.danger_px) return t;
 	}
 	return null;
@@ -5990,36 +6050,43 @@ function set_pack(p, label) {
 // best camp for a minute or two, between the goals it could farm.
 function goal_blocked__fighter(mt, map, boundary) {
 	// (state.safe: the last pick's verdict; a type it hasn't judged yet: fight_profile's)
-	if (type_skipped(mt) || !(state.safe[mt] !== undefined ? state.safe[mt] : fight_profile(mt))) return type_skipped(mt) ? `skipped until ${hhmm(state.type_skip[mt])} (an impossible fight)` : `the party can't kill it within ${CFG.hopeless_ttk_s}s`;
+	if (type_skipped(mt) || !(state.safe[mt] !== undefined ? state.safe[mt] : fight_profile(mt))) return refuse_why(mt) || "not fought at the last pick";
 	if (!map || !valid_boundary(boundary)) return null;
 	const area = { map, boundary, mtype: mt };
 	const dz = area_danger(area, mt) || party_route_danger(map, (boundary[0] + boundary[2]) / 2, (boundary[1] + boundary[3]) / 2, mt);
 	if (dz) return dz;
 	return (state.cooldown[pack_key(area)] || 0) > Date.now() ? "resting" : null;
 }
-const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 // Choose where to fight: best-scoring safe pack, unless a directive (guide/quest/hunt) names one we can fight.
 // Stays at the current pack unless the best is switch_margin better (hysteresis).
 // ---- Exploration (v25.82, owner: "Stop being so conservative. Try killing everything.") ----
 // Every CFG.explore.every_min of farming the tank gives an untried camp — no measured xp or gold rate — a trial of
 // trial_min, the highest xp per kill first (G.monsters xp x our xp multiplier; no safety model). The trial's session
-// records its rates like any other (state.measured, measured_gold); then the pick ranks it by them. A type tried in
-// the last 24 h waits (a trial that measured nothing isn't repeated every half hour). Hunts come first.
+// records its rates like any other (state.measured, measured_gold); then the pick ranks it by them. A type whose trial
+// recorded a rate in the last 24 h waits; a trial cut short (a hunt, a death, a refused walk) doesn't count. Hunts first.
 const untried = (key) => state.measured[key] === undefined && !state.measured_gold[key];
 const is_hunt_goal = (d) => !!d && (!!d.hunt || /monster hunt/.test(d.reason || ""));
 const explore_xp = (mt) => (G.monsters[mt]?.xp || 0) * (xp_mult() || 1);
+// A camp's hard ceiling in xp/s: all its monsters killed as fast as they respawn (review N8)
+const explore_ceiling = (c) => { const pk = (G.maps[c.map]?.monsters || []).find((p) => p.type === c.mtype) || {}; return (c.count / expected_respawn(c.mtype, pk)) * explore_xp(c.mtype); };
 // The next untried camp, from this pick's candidates (they passed the pick's own checks: a spawn worth farming, not
-// resting, no danger next to it or on the way, reachable)
+// resting, no danger next to it or on the way, reachable). Not the camp we stand at (it's measured in place, review
+// N9), nor one whose ceiling can't beat the best measured xp rate (review N8).
 function explore_next(cands, now = Date.now()) {
-	const tried = state.explore.tried;
-	return cands.filter((c) => untried(pack_key(c)) && !(now - (tried[c.mtype] || 0) < 86_400_000))
+	const tried = state.explore.tried, here = state.pack && !state.pack.explore && valid_boundary(state.pack.boundary) ? pack_key(state.pack) : null;
+	const best_m = Math.max(0, ...cands.map((c) => state.measured[pack_key(c)]).filter(Number.isFinite));
+	return cands.filter((c) => untried(pack_key(c)) && pack_key(c) !== here && !(now - (tried[c.mtype] || 0) < 86_400_000) && explore_ceiling(c) > best_m)
 		.sort((a, b) => explore_xp(b.mtype) - explore_xp(a.mtype) || b.score - a.score)[0] || null;
 }
 function explore_end(why_, now = Date.now()) {
 	const E = state.explore, c = E.cur;
 	if (!c) return;
-	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null });
-	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})`, C.info);
+	// (review N6) the trial's session closes here, so its rate is booked now; only a trial that recorded one counts as tried
+	if (state.session?.key === c.key) end_session();
+	const rated = !untried(c.key);
+	if (rated) E.tried[c.mtype] = now;
+	log_ev("explore_end", { mtype: c.mtype, map: c.map, mins: Math.round((now - c.start) / 60_000), why: why_, rate: state.measured[c.key] ?? null, rated });
+	game_log(`explore ${c.mtype} @ ${c.map}: trial over (${why_})${rated ? "" : " — nothing measured, it stays untried"}`, C.info);
 	E.cur = null; E.last_end = now; E.none_at = 0;
 }
 // The tank, each tick: end a trial on time, or as soon as a hunt is live (hunts first); start one when it's due
@@ -6027,7 +6094,8 @@ function explore_check() {
 	if (is_follower() || is_merchant() || (in_party_cfg() && leader_name() !== character.name)) return;
 	const E = state.explore, X = CFG.explore, now = Date.now(), d = state.directive && state.directive.until > now ? state.directive : null;
 	if (E.cur) {
-		if (now >= E.cur.until || (is_hunt_goal(d) && d.monster !== E.cur.mtype) || d?.boss) { state.last_pick = 0; pick_pack(); }
+		// (review N11: guarded like fighter_tick's other pick paths)
+		if ((now >= E.cur.until || (is_hunt_goal(d) && d.monster !== E.cur.mtype) || d?.boss) && !errand_busy() && !(in_party_cfg() && party_break())) pick_pack();
 		return;
 	}
 	if (now - (E.last_end || 0) < X.every_min * 60_000 || now - (E.none_at || 0) < 300_000) return;
@@ -6066,7 +6134,7 @@ function pick_pack() {
 	each_area((pack, area) => {
 		const t = pack.type, key = pack_key(area);
 		if (CFG.force_type && t !== CFG.force_type) return;
-		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, type_skipped(t) ? `skipped until ${hhmm(state.type_skip[t])} (an impossible fight)` : `the party can't kill it within ${CFG.hopeless_ttk_s}s`); } return; }
+		if (!state.safe[t]) { if (meas()[key] && !seen.has("x" + key)) { seen.add("x" + key); note(key, t, area.map, refuse_why(t) || "not fought"); } return; }
 		if (!pack.grow && (expected_respawn(t, pack) > CFG.max_respawn || pack.count < CFG.min_count)) return;
 		if (seen.has(key)) return;
 		if ((state.cooldown[key] || 0) > now) { seen.add(key); note(key, t, area.map, `resting ${mins(state.cooldown[key])} (a flee, a death, or it ran dry)`); return; }
@@ -6097,7 +6165,6 @@ function pick_pack() {
 		else {
 			const key = pack_key(nx);
 			E.cur = { key, mtype: nx.mtype, map: nx.map, start: now, until: now + CFG.explore.trial_min * 60_000 };
-			E.tried[nx.mtype] = now;
 			log_ev("explore", { mtype: nx.mtype, map: nx.map, xp: G.monsters[nx.mtype].xp, est: Math.round(nx.score) });
 			return set_pack({ ...nx, explore: true, directive: `explore: ${nx.mtype} (untried, ${CFG.explore.trial_min} min trial)` },
 				`→ EXPLORE ${nx.mtype} @ ${nx.map}: untried, ${G.monsters[nx.mtype].xp} xp a kill, ${CFG.explore.trial_min} min trial`);
@@ -6249,10 +6316,7 @@ function entity_profile(e) {
 	const key = `${fight_mates().map((p) => p.name).join()}:${e.level || 1}:${e.max_hp}:${e.attack}`; // re-judged when who counts changes
 	const c = live_cache.get(e.id);
 	if (c && c.key === key) return c.ok ? c : null;
-	const def = G.monsters[e.mtype];
-	const live = {};
-	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = def && fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
+	const def = G.monsters[e.mtype], f = live_math(e);
 	const ok = fightable(f); // (the kill time and the sustain test, on its live stats)
 	const out = { key, ok, ttk: f ? f.ttk : Infinity, xp: e.xp || def?.xp || 0 };
 	live_cache.set(e.id, out);
@@ -6289,14 +6353,13 @@ function best_escape(t, step) {
 	}
 	return best;
 }
-// Whether the party could kill this one on its live stats within hopeless_ttk_s, whatever its type's standing (report)
-function killable(e) {
+// The fight model on this one's live stats (a levelled monster), or null
+function live_math(e) {
 	const def = G.monsters[e.mtype];
-	if (!def) return false;
+	if (!def) return null;
 	const live = {};
-	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "level"]) if (e[k] !== undefined) live[k] = e[k];
-	const f = fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp });
-	return !!f && f.ttk <= CFG.hopeless_ttk_s;
+	for (const k of ["hp", "max_hp", "attack", "frequency", "armor", "resistance", "speed", "xp", "1hp", "level"]) if (e[k] !== undefined) live[k] = e[k];
+	return fight_math({ ...def, ...live, mtype: e.mtype, hp: e.max_hp || def.hp, charge: Math.max(def.charge || 0, e.speed || 0) });
 }
 // v25.82 (prior art: the server's fear — targets of a damage type over our courage cut our attack to 40%, then 20%,
 // server.js L1427-1445; earthiverse's attack strategy skips a new pull at courage): would one more monster of this
@@ -6333,11 +6396,18 @@ function choose_target(local_ok, keep_cur = false) {
 	if (!local_ok) return keep_cur && cur && near_box(cur) && farmable_entity(cur) && valid(cur) && !(cur.target && !party.has(cur.target)) && live_ok(cur) ? cur : null;
 	const want = state.pack?.mtype;
 	let best = null, best_v = 0, best_tier = 2, best_clear = false; // tier 0 = the pack's own monster, 1 = anything else
+	// v25.82 (review N5): the camp's own type levelled past hopeless_ttk_s but still out-healed — the last resort,
+	// lowest level first (fire()'s hopeless() exempts the camp's type)
+	let grown = null;
 	for (const id in parent.entities) {
 		const e = parent.entities[id];
 		if (!farmable_entity(e) || !valid(e) || (e.target && !party.has(e.target)) || !near_box(e)) continue;
-		const f = live_ok(e); // (v25.82: a levelled-up one too, whenever the party kills it within hopeless_ttk_s)
-		if (!f) continue;
+		const f = live_ok(e);
+		if (!f) {
+			if (e.mtype === want && state.safe[want] && sustainable(live_math(e)) && (!grown || (e.level || 1) < (grown.level || 1) ||
+				((e.level || 1) === (grown.level || 1) && distance(character, e) < distance(character, grown)))) grown = e;
+			continue;
+		}
 		// v24.64: the tank starts a fight on its camp's monster first. v25.57 (owner: "Never, under any circumstances,
 		// should [they] just wander around doing nothing in a camp"): when none of the camp's type is free (squigtoad: 2
 		// up, other players on them, "nothing alive" 53% of the time), another type in the camp box that passes the same
@@ -6356,9 +6426,9 @@ function choose_target(local_ok, keep_cur = false) {
 		const clear = distance(character, e) <= character.range || can_move_to(e);
 		if (tier < best_tier || (clear && !best_clear) || (clear === best_clear && v > best_v)) (best = e), (best_v = v), (best_tier = tier), (best_clear = clear);
 	}
-	// the camp's type first, then a filler (owner: "How about we actually just kill things?"); the camp is left only
-	// when there's nothing to fight for the idle time, or by the camp review
-	return best;
+	// the camp's type first, then its levelled ones, then a filler (owner: "How about we actually just kill things?");
+	// the camp is left only when there's nothing to fight for the idle time, or by the camp review
+	return best_tier === 0 ? best : grown || best;
 }
 // One distance used by both approach and kite, so they can't push against each other:
 //   keep  = the monster's reach + kite_margin (closer than this, it can hit us)
@@ -6696,12 +6766,19 @@ function pick_shared(mine) {
 	if (mutual.length) return to_dir(mutual[0], `mutual: ${[...new Set(mutual[0].why)].slice(0, 3).join(" + ")}`);
 	// v25.82 (prior art: earthiverse sorts every character's hunts by time left; every party kill counts for every
 	// member's hunt at any distance — server.js L2490-2505): hunts only, the one that expires soonest, not turns
+	// (review N15) a hunt the measured kill rate can't finish in its time left ranks after those that can; an unmeasured one may
 	if (hunts_only) {
 		const left = (n, mt) => { const h = n === me ? character.s.monsterhunt : state.partners[n]?.hunt, ms = n === me ? h?.ms : state.partners[n]?.hms;
-			return h?.id === mt && ms > 0 ? ms : Infinity; };
+			return h?.id === mt && ms > 0 ? { ms, c: h.c || 0 } : null; };
+		const late = (mt, h) => { const kps = measured_kps(mt); return kps > 0 && h.c / kps > h.ms / 1000; };
 		let soon = null;
-		for (const e of cands) for (const n of names(e)) { const ms = left(n, e.monster); if (!soon || ms < soon.ms) soon = { e, n, ms }; }
-		if (soon && Number.isFinite(soon.ms)) {
+		for (const e of cands) for (const n of names(e)) {
+			const h = left(n, e.monster);
+			if (!h) continue;
+			const k = { e, n, ms: h.ms, late: late(e.monster, h) };
+			if (!soon || k.late < soon.late || (k.late === soon.late && k.ms < soon.ms)) soon = k;
+		}
+		if (soon) {
 			if (soon.n === me) { if (mine_ok_of(mine)) return mine; }
 			else return to_dir(soon.e, `${soon.n}: ${soon.e.why.find((w) => w.startsWith(soon.n + ":"))?.slice(soon.n.length + 2) || soon.e.monster}`);
 		}
@@ -6910,6 +6987,13 @@ function hunt_feasible(h) {
 	if (is_follower()) return state.safe[h.id] !== undefined ? !!state.safe[h.id] : !!fight_profile(h.id);
 	const a = resolve_area(h.id);
 	return !!a && !goal_blocked(h.id, a.map, a.boundary);
+}
+// v25.82: the party's measured kills per second of a type (its best measured camp: base xp/s ÷ xp a kill), 0 unmeasured
+function measured_kps(mt) {
+	const xp = G.monsters[mt]?.xp || 0;
+	let best = 0;
+	if (xp > 0) each_area((pack, area) => { const v = state.measured[pack_key(area)]; if (pack.type === mt && v > 0) best = Math.max(best, v / xp); });
+	return best;
 }
 // Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
 function kills_per_s(mt) {
@@ -7397,7 +7481,7 @@ function gap_kind__fighter() {
 		const e = parent.entities[id];
 		if (e?.type !== "monster" || e.dead || !e.visible) continue;
 		if (e.target && party.has(e.target)) on_us++;
-		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || killable(e)) alive++; else beyond++; }
+		else if (e.mtype === pk.mtype && in_rect(e.x, e.y, box)) { if (e.target) theirs++; else if (live_ok(e) || (state.safe[pk.mtype] && sustainable(live_math(e)))) alive++; else beyond++; } // (v25.82: choose_target's last resort too)
 		else if (!e.target && farmable_entity(e) && in_rect(e.x, e.y, b)) { const f = live_ok(e); if (f && f.ttk * (e.hp / e.max_hp) <= CFG.max_ttk_s) alive++; } // v25.57: a filler choose_target would take
 	}
 	const t = get_targeted_monster();
@@ -7483,20 +7567,22 @@ function facts_picks__fighter(F, ctx) {
 function facts_targets__fighter(F, ctx) {
 	const { p, d, now } = ctx;
 	if (!(p && character.map === p.map)) return;
-	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, skipped: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
+	const party = party_names(), box = p.boundary, P_ = CFG.near_pad, c = { ok: 0, skipped: [], heal: [], slow: [], beyond: [], far: 0, taken: 0, ignored: 0, wall: 0 };
 	for (const id in parent.entities || {}) {
 		const e = parent.entities[id];
 		if (!e || e.type !== "monster" || e.mtype !== p.mtype || !e.visible || e.dead) continue;
 		if ((state.bad_ids[e.id] || 0) > now) c.ignored++;
 		else if (e.target && !party.has(e.target)) c.taken++;
 		else if (!in_rect(e.x, e.y, [box[0] - P_, box[1] - P_, box[2] + P_, box[3] + P_])) c.far++;
-		else if (!live_ok(e)) (killable(e) ? c.skipped : c.beyond).push(e.level || 1);
+		else if (!live_ok(e)) { const f = live_math(e); (type_skipped(e.mtype) || !state.safe[e.mtype] ? c.skipped : !f ? c.beyond : !sustainable(f) ? c.heal : c.slow).push(e.level || 1); }
 		else { c.ok++; if (!(distance(character, e) <= character.range || can_move_to(e))) c.wall++; }
 	}
-	const n = c.ok + c.skipped.length + c.beyond.length + c.far + c.taken + c.ignored;
+	const n = c.ok + c.skipped.length + c.heal.length + c.slow.length + c.beyond.length + c.far + c.taken + c.ignored;
 	if (n) F("targets", "self", `targets: ${n} ${p.mtype} in view — ${c.ok} attackable${c.wall ? ` (${c.wall} behind a wall/water)` : ""}` +
-		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} is skipped after an impossible fight` : ""}` +
-		`${c.beyond.length ? `, ${c.beyond.length} the party can't kill within ${CFG.hopeless_ttk_s}s — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.skipped.length ? `, ${c.skipped.length} not fought: ${p.mtype} ${refuse_why(p.mtype) || "is not fought"}` : ""}` +
+		`${c.heal.length ? `, ${c.heal.length} levelled past what the party out-heals — never taken (levels ${c.heal.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.slow.length ? `, ${c.slow.length} over ${CFG.hopeless_ttk_s}s a kill — the tank takes them, lowest first, when none passes (levels ${c.slow.sort((x, y) => x - y).join(",")})` : ""}` +
+		`${c.beyond.length ? `, ${c.beyond.length} the party can't damage — never taken (levels ${c.beyond.sort((x, y) => x - y).join(",")})` : ""}` +
 		`${c.far ? `, ${c.far} outside the spot (+${P_}px)` : ""}${c.taken ? `, ${c.taken} someone else's` : ""}${c.ignored ? `, ${c.ignored} ignored (no damage / unreachable)` : ""}`);
 }
 
@@ -7597,8 +7683,8 @@ function why_not_fighter__fighter(mtype) {
 	const f = fight_math(m);
 	if (!f) return out(L(`${mtype}: we can't out-damage its healing`));
 	// v25.82: no damage model — the kill time, and an impossible fight in the last skip_h
-	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill (the model expects ~${fight_risk(f).toFixed(0)} dmg/kill${f.kiteable ? ", kiteable" : ""}) → ${f.ttk > CFG.hopeless_ttk_s ? `NOT FOUGHT: over ${CFG.hopeless_ttk_s}s a kill`
-		: type_skipped(mtype) ? `SKIPPED until ${hhmm(state.type_skip[mtype])}: an impossible fight` : "FOUGHT"}`);
+	const no = refuse_why(mtype);
+	L(`${mtype}: ${f.ttk.toFixed(1)}s per kill (the model expects ~${fight_risk(f).toFixed(0)} dmg/kill${f.kiteable ? ", kiteable" : ""}) → ${no ? `NOT FOUGHT: ${no}` : "FOUGHT"}`);
 	const sk = Object.entries(state.pick_skips || {}).filter(([k, w]) => (G.maps[k.split(":")[0]]?.monsters || []).some((pk) => pk.type === mtype) || w.includes(mtype));
 	if (sk.length) L(`  skipped at the last pick: ${sk.slice(0, 6).map(([k, w]) => `${k.split("#")[1] ? k.split("#")[1] + "@" : ""}${k.split(":")[0]} (${w})`).join("; ")}`);
 	const areas = [];

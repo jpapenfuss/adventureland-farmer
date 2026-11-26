@@ -92,6 +92,7 @@ function fighter_tick() {
 		return 150;
 	}
 	if (cave_entry_tick()) { loot_chests(); return 200; } // v25.22: once a day, the party goes into the Cave of Many Dreams
+	engage_scan(); // v25.82: monsters on the party (judge_death)
 	explore_check(); // v25.82: a trial's end, or the next one due
 	// v24.60: the party sits at its camp. No re-pick every repick_ms (estimates within a few % of each other moved
 	// it between camps: 18 changes in an hour). A camp is left only when it's gone: a death there, nothing to
