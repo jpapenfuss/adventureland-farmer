@@ -116,6 +116,8 @@ async function task_sell() {
 			n++;
 			// v25.33: each sale on the record (the owner allows gear sales by rule now — gear_purge)
 			log_ev("npc_sold", { item: `${it.name}+${it.level || 0}${it.p ? ":" + it.p : ""}`, q: it.q || 1 });
+			// v25.77: a purge mark is spent by its sale — a copy bought later (the owner's, from Ponty) isn't sold on the old mark
+			if (state.purge) delete state.purge[purge_key(it)];
 			if (GEAR.has(G.items[it.name]?.type)) game_log(`sold ${it.name}+${it.level || 0}${(it.q || 1) > 1 ? " x" + it.q : ""} to an NPC`, C.dim);
 		}).catch((e) => game_log("sell: " + why(e)));
 		await sleep_ms(PACE_MS);

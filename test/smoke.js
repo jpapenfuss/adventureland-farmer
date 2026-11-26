@@ -1863,6 +1863,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(e1["setpants:0"] === 2 && !e1["setpants:1"], `no NPC sells it: 3 + 3 failure stock of 8 kept, 2 go (${JSON.stringify(e1)})`);
 		assert(e1["rcoat:3"] === 2 && !e1["rcoat:5"], "a recipe's level (+5) kept, the +3s sold");
 		assert(!e1["goodhelm:0"], "5 copies of a helmet a fighter would wear now: none sold (past the cap of 3)");
+		// v25.77 (owner: the bought Vowkeeper Gloves were sold at once): a piece of a set a party class can wear is never sold
+		{ const sets0 = ctx.G.sets; ctx.G.sets = { ...(sets0 || {}), okset: { 2: { armor: 50 }, items: ["oathgl"] }, warset: { items: ["wargl"] } };
+			Object.assign(ctx.G.items, { oathgl: { type: "gloves", g: 100, armor: 1, set: "okset", class: ["paladin"] }, wargl: { type: "gloves", g: 100, armor: 1, set: "warset", class: ["warrior"] } });
+			pack[pack.indexOf(null)] = { name: "oathgl", level: 0 }; pack[pack.indexOf(null)] = { name: "wargl", level: 0 };
+			const e3 = ex(); ctx.G.sets = sets0;
+			assert(!e3["oathgl:0"] && e3["wargl:0"] === 1, `v25.77: a paladin set piece is kept, another class's sold (${JSON.stringify(e3)})`); }
 		R("state.upg = { name: 'okhelm', to: 7 }");
 		assert(!ex()["okhelm:2"], "the current project's piece: none sold");
 		R("state.upg = null");

@@ -29,8 +29,12 @@ const gear_useful = (name, top, takers) => { for (let L = 0; L <= top; L++) if (
 // (G.craft rows are [qty, name, level], level 0 when left out; the server matches the level exactly): coat+5 and
 // coat+0 are inputs (ratworkcoat, cave_ambercoat), the 17 coat+3 in the bank aren't.
 let recipe_lv = null;
+// v25.77 (owner: "sells the Vowkeeper gloves as soon as I buy them"): a piece of a set a fighter's class can wear is
+// never sold — the gear model judges one piece at a time and can't see a set's bonus, so every set piece looked useless
+const party_set_piece = (d, takers) => !!d?.set && !!G.sets?.[d.set] && takers.some((m) => !d.class || d.class.includes(m.ctype));
 function gear_protected(it, takers) {
 	const d = it && G.items[it.name];
+	if (party_set_piece(d, takers)) return true;
 	if (!recipe_lv) { recipe_lv = new Map(); for (const id in G.craft || {}) for (const [, n, l] of G.craft[id].items || []) (recipe_lv.get(n) || recipe_lv.set(n, new Set()).get(n)).add(l || 0); }
 	return !d || !GEAR.has(d.type) || it.l || it.b || it.p || d.e || d.cash || CFG.keep.includes(it.name) || state.needs.has(it.name) ||
 		!!recipe_lv.get(it.name)?.has(it.level || 0) || state.upg?.name === it.name ||
