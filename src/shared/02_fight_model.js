@@ -422,14 +422,22 @@ const no_go = (t, v) => !!G.monsters[t] && (merchant_threat(t, v) || aggressive(
 // spent in reach. For the merchant a spawn is no place to walk when anything that may attack it at all (any aggro or
 // rage) deals half its HP while it crosses that monster's reach (twice its range plus 100 px at our speed). Such a
 // monster can't chase us, so deadly_areas keeps the walk out of its range (+120 px), not danger_px.
+// v25.80 (a fighter, Sanala, died the same way: the only walk from desertland's transporter to the level2s door runs
+// through those fire spirits, 16 s in reach; they attack anyone in range untargeted — so nothing reacted — and every hit
+// stacks burn): for everyone. A fighter judges it for the party's weakest member against that member's whole HP (the
+// merchant: half its own), burn counted at ~3x the hit (it stacks to about that), and never for a type the party farms
+// (state.safe: the camp's own monster, fought, not walked past).
 function merchant_threat(t, v) {
 	const m = G.monsters[t];
-	if (!is_merchant() || !m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
+	if (!m || !((m.aggro || 0) > 0 || (m.rage || 0) > 0)) return false;
+	if (!is_merchant() && state.safe?.[t]) return false;
 	const dm = (d) => (typeof damage_multiplier === "function" ? damage_multiplier(d) : Math.max(0.05, 1 - d / 1000));
 	const magic = m.damage_type === "magical";
 	const hit = (m.attack || 0) * dm(((magic ? character.resistance : character.armor) || 0) - ((magic ? m.rpiercing : m.apiercing) || 0));
 	const exposed_s = (2 * (m.range || 0) + 100) / Math.max(v, 10);
-	return hit * (m.frequency || 0) * exposed_s >= (character.max_hp || 1) / 2;
+	const burn = m.abilities?.burn ? 3 : 1;
+	const hp = is_merchant() ? (character.max_hp || 1) / 2 : Math.min(character.max_hp || Infinity, ...partners_any().map((p) => p.max_hp || Infinity));
+	return hit * burn * (m.frequency || 0) * exposed_s >= (Number.isFinite(hp) ? hp : character.max_hp || 1);
 }
 const aggressive = (mt) => { const m = G.monsters[mt]; return !!m && ((m.aggro || 0) >= 0.5 || (m.rage || 0) >= 0.5); };
 function map_areas(name) { const out = []; for (const pk of G.maps[name]?.monsters || []) for (const a of pack_areas(name, pk)) out.push([pk, a]); return out; }

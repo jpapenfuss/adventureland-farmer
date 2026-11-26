@@ -60,6 +60,11 @@ if (typeof character.on === "function") {
 		if (a?.mtype && G.monsters[a.mtype]) cal.cur[a.mtype] = (cal.cur[a.mtype] || 0) + d.damage;
 		if (pmring.hits.length > 200) pmring.hits.shift();
 	});
+	// v25.80: transfers between our characters, from the game's own events (same socket as the gold itself) — the code
+	// message that used to carry them could arrive a tick later: +g booked as earned, then -g as "other" spending
+	const ours = (n) => (CFG.party.members || []).includes(n) || n === CFG.merchant?.name;
+	character.on("gold_received", (d) => { if (d && ours(d.from) && d.amount > 0) stats.adj -= d.amount; });
+	character.on("gold_sent", (d) => { if (d && ours(d.to) && d.amount > 0) stats.adj += d.amount; });
 	character.on("target_hit", (d) => {
 		seen.target_hit++;
 		if (!d?.kill) return;
@@ -285,6 +290,8 @@ function history_lines(hours = 6) {
 	const bosses = ev.filter((e) => e.type === "boss");
 	if (bosses.length) L.push(`bosses: ${bosses.slice(-4).map((e) => `${e.name} ${ago(e.t)} ago`).join(", ")}`);
 	{ const lg = my_ledger(Math.max(1, Math.ceil(hours))); L.push(`gold ${Math.ceil(hours)}h: earned ${fmt_k(lg.earn)}, spent ${fmt_k(lg.spend)} — ${cats_text(lg.cats)}`); }
+	const drops = ev.filter((e) => e.type === "gold_drop");
+	if (drops.length) L.push(`untracked gold drops (>20k): ${drops.slice(-5).map((e) => `${fmt_k(e.g)} ${ago(e.t)} ago (${e.errand || "idle"}${e.serving ? ", serving " + e.serving : ""}${e.last_tag ? `, last tag ${e.last_tag} ${e.tag_age_s}s before` : ""}${e.stand ? ", stand open" : ""})`).join(" | ")}`);
 	const gold = ev.filter((e) => e.type === "gold");
 	if (gold.length) L.push(`gold transfers: ${gold.slice(-4).map((e) => (e.to ? `→${e.to} ` : `←${e.from} `) + fmt_k(e.g)).join(", ")}`);
 	const probes = ev.filter((e) => e.type === "probe");
@@ -410,6 +417,9 @@ function meas_tick() {
 			const cat = spend_tag && Date.now() < spend_tag.until ? spend_tag.cat : "other";
 			b.cats = b.cats || {};
 			b.cats[cat] = (b.cats[cat] || 0) - dg;
+			// v25.80: an untagged drop over 20k is logged with what we were doing (the merchant's "other" was 3.5M in 6h)
+			if (cat === "other" && -dg > 20_000) log_ev("gold_drop", { g: -dg, errand: state.errand || null, serving: state.serving || null, last_tag: spend_tag?.cat || null,
+				tag_age_s: spend_tag ? Math.round((Date.now() - (spend_tag.until - 5000)) / 1000) : null, map: character.map, stand: !!character.stand });
 		}
 		b.ls = (b.ls || 0) + 1;
 	}

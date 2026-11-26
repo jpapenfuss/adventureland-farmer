@@ -126,8 +126,7 @@ setInterval(() => { try { gold_balance(); } catch (e) {} }, 15_000);
 // Send gold to one of our characters and tell it, so both sides leave the transfer out of their gold/h
 function send_own_gold(name, g) {
 	return T(send_gold(name, g)).then((r) => {
-		stats.adj += g;
-		log_ev("gold", { to: name, g });
+		log_ev("gold", { to: name, g }); // (v25.80: the ledger adjustment comes from the game's gold_sent event)
 		if (typeof send_cm === "function") Promise.resolve(send_cm([name], { k: "gold", g })).catch(() => {});
 		return r;
 	});
