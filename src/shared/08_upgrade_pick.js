@@ -22,10 +22,12 @@ const plain_held = (name) => character.items.reduce((m, i) => (i && i.name === n
 const may_roll = (P) => (i) => !!i && i.name === P.name && !i.l && !i.p && (!!P.worn || !i.stat_type);
 const rollable_held = (P) => character.items.reduce((m, i) => (may_roll(P)(i) ? Math.max(m, i.level || 0) : m), -1);
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
-// v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..10
-const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018],
-	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015] };
-const upg_odds = (name, to) => (UPG_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || UPG_ODDS[0])[to - 1] || 0;
+// v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..12 (v25.81:
+// +11/+12 added; the game's data.js carries the same table as G.upgrades, which is read first when present)
+const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024, 0.14, 0.11], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018, 0.13, 0.10],
+	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015, 0.12, 0.09] };
+const odds_grade = (name) => Math.min(2, Math.max(0, item_grade({ name, level: 0 })));
+const upg_odds = (name, to) => { const g = odds_grade(name); return G.upgrades?.[g]?.[to] || (UPG_ODDS[g] || UPG_ODDS[0])[to - 1] || 0; };
 // v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
 // (the project's bank fetch skips titled copies too); -1 if none
 // (v25.79, Fable: nor a stat-scrolled one — a spare is rolled at down to 20%, and a failure would lose its stat scroll too)

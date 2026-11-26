@@ -7,8 +7,9 @@ function can_wear(name) {
 	const def = G.items[name], cls = G.classes[character.ctype] || {};
 	if (!def) return false;
 	if (def.class && !def.class.includes(character.ctype)) return false;
-	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand))
-		return !!((cls.mainhand || {})[def.wtype] || (cls.offhand || {})[def.wtype]);
+	// v25.81: two-handers too (G.classes[c].doublehand), as slots_for counts them — a warrior's axe, a rogue's bow
+	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand || cls.doublehand))
+		return !!(cls.mainhand?.[def.wtype] || cls.doublehand?.[def.wtype] || cls.offhand?.[def.wtype]);
 	if (["quiver", "source", "shield", "misc_offhand"].includes(def.type) && cls.offhand) return !!cls.offhand[def.type];
 	return true;
 }
@@ -65,14 +66,20 @@ function gear_weights(ctype) {
 	for (const k of STAT_KEYS) { const w = stat_weight(k, ctype); if (w) out[k] = Math.round(w * 1000) / 1000; }
 	return out;
 }
+// What one stat point of a stat-scrolled piece gives, per attribute (common_functions.js calculate_item_properties: mult)
+const STAT_SCROLL_MULT = { gold: 0.5, luck: 1, xp: 0.5, int: 1, str: 1, dex: 1, vit: 1, for: 1, armor: 2.25, resistance: 2.25, speed: 0.325, evasion: 0.325,
+	reflection: 0.15, lifesteal: 0.15, manasteal: 0.04, rpiercing: 2.25, apiercing: 2.25, crit: 0.125, dreturn: 0.5, frequency: 0.325, mp_cost: -0.6, output: 0.175 };
 // Item stats at its level: the game's own calculator when the runner exposes it, else base + per-level increments
 function item_props(item, ctype) {
 	const f = typeof calculate_item_properties === "function" ? calculate_item_properties
 		: typeof parent !== "undefined" && typeof parent.calculate_item_properties === "function" ? parent.calculate_item_properties : null;
 	if (f) try { return f(item, { class: ctype }); } catch (e) {}
 	const def = G.items[item.name] || {}, out = {}, lv = item.level || 0, inc = def.upgrade || def.compound || {};
-	for (const k of STAT_KEYS) if (typeof def[k] === "number") out[k] = def[k];
+	for (const k of [...STAT_KEYS, "stat"]) if (typeof def[k] === "number") out[k] = def[k];
 	for (const k in inc) if (typeof inc[k] === "number") out[k] = (out[k] || 0) + inc[k] * lv;
+	// v25.81: a stat-scrolled piece's stat points are that attribute, as the game counts them (calculate_item_properties:
+	// prop[stat_type] += stat x its multiplier)
+	if (out.stat && item.stat_type) { out[item.stat_type] = (out[item.stat_type] || 0) + out.stat * (STAT_SCROLL_MULT[item.stat_type] ?? 1); out.stat = 0; }
 	return out;
 }
 // What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type

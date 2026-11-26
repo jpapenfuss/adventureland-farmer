@@ -2017,8 +2017,9 @@ function can_wear(name) {
 	const def = G.items[name], cls = G.classes[character.ctype] || {};
 	if (!def) return false;
 	if (def.class && !def.class.includes(character.ctype)) return false;
-	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand))
-		return !!((cls.mainhand || {})[def.wtype] || (cls.offhand || {})[def.wtype]);
+	// v25.81: two-handers too (G.classes[c].doublehand), as slots_for counts them — a warrior's axe, a rogue's bow
+	if (def.type === "weapon" && def.wtype && (cls.mainhand || cls.offhand || cls.doublehand))
+		return !!(cls.mainhand?.[def.wtype] || cls.doublehand?.[def.wtype] || cls.offhand?.[def.wtype]);
 	if (["quiver", "source", "shield", "misc_offhand"].includes(def.type) && cls.offhand) return !!cls.offhand[def.type];
 	return true;
 }
@@ -2075,14 +2076,20 @@ function gear_weights(ctype) {
 	for (const k of STAT_KEYS) { const w = stat_weight(k, ctype); if (w) out[k] = Math.round(w * 1000) / 1000; }
 	return out;
 }
+// What one stat point of a stat-scrolled piece gives, per attribute (common_functions.js calculate_item_properties: mult)
+const STAT_SCROLL_MULT = { gold: 0.5, luck: 1, xp: 0.5, int: 1, str: 1, dex: 1, vit: 1, for: 1, armor: 2.25, resistance: 2.25, speed: 0.325, evasion: 0.325,
+	reflection: 0.15, lifesteal: 0.15, manasteal: 0.04, rpiercing: 2.25, apiercing: 2.25, crit: 0.125, dreturn: 0.5, frequency: 0.325, mp_cost: -0.6, output: 0.175 };
 // Item stats at its level: the game's own calculator when the runner exposes it, else base + per-level increments
 function item_props(item, ctype) {
 	const f = typeof calculate_item_properties === "function" ? calculate_item_properties
 		: typeof parent !== "undefined" && typeof parent.calculate_item_properties === "function" ? parent.calculate_item_properties : null;
 	if (f) try { return f(item, { class: ctype }); } catch (e) {}
 	const def = G.items[item.name] || {}, out = {}, lv = item.level || 0, inc = def.upgrade || def.compound || {};
-	for (const k of STAT_KEYS) if (typeof def[k] === "number") out[k] = def[k];
+	for (const k of [...STAT_KEYS, "stat"]) if (typeof def[k] === "number") out[k] = def[k];
 	for (const k in inc) if (typeof inc[k] === "number") out[k] = (out[k] || 0) + inc[k] * lv;
+	// v25.81: a stat-scrolled piece's stat points are that attribute, as the game counts them (calculate_item_properties:
+	// prop[stat_type] += stat x its multiplier)
+	if (out.stat && item.stat_type) { out[item.stat_type] = (out[item.stat_type] || 0) + out.stat * (STAT_SCROLL_MULT[item.stat_type] ?? 1); out.stat = 0; }
 	return out;
 }
 // What wearing it adds: its stats plus the class's modifiers for its weapon type (mainhand) or offhand type
@@ -2890,10 +2897,12 @@ const plain_held = (name) => character.items.reduce((m, i) => (i && i.name === n
 const may_roll = (P) => (i) => !!i && i.name === P.name && !i.l && !i.p && (!!P.worn || !i.stat_type);
 const rollable_held = (P) => character.items.reduce((m, i) => (may_roll(P)(i) ? Math.max(m, i.level || 0) : m), -1);
 const best_level_held = (name) => character.items.reduce((m, i) => (i && i.name === name && !i.l ? Math.max(m, i.level || 0) : m), -1);
-// v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..10
-const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018],
-	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015] };
-const upg_odds = (name, to) => (UPG_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || UPG_ODDS[0])[to - 1] || 0;
+// v24.82: the server's base upgrade odds by the item's starting grade (design/upgrades.py), result level 1..12 (v25.81:
+// +11/+12 added; the game's data.js carries the same table as G.upgrades, which is read first when present)
+const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07, 0.024, 0.14, 0.11], 1: [0.99998, 0.97, 0.94, 0.68, 0.58, 0.38, 0.24, 0.14, 0.066, 0.018, 0.13, 0.10],
+	2: [0.97, 0.94, 0.92, 0.64, 0.52, 0.32, 0.232, 0.13, 0.062, 0.015, 0.12, 0.09] };
+const odds_grade = (name) => Math.min(2, Math.max(0, item_grade({ name, level: 0 })));
+const upg_odds = (name, to) => { const g = odds_grade(name); return G.upgrades?.[g]?.[to] || (UPG_ODDS[g] || UPG_ODDS[0])[to - 1] || 0; };
 // v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
 // (the project's bank fetch skips titled copies too); -1 if none
 // (v25.79, Fable: nor a stat-scrolled one — a spare is rolled at down to 20%, and a failure would lose its stat scroll too)
@@ -8753,9 +8762,11 @@ function secondhand_reason(it, groups) {
 	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
-// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..4
-const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25], 1: [0.90, 0.70, 0.40, 0.20], 2: [0.80, 0.60, 0.32, 0.16] };
-const cmp_odds = (name, to) => (CMP_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || CMP_ODDS[0])[to - 1] || 0;
+// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..10 (v25.81:
+// +5..+10 added; the game's data.js carries the same table as G.compounds, which is read first when present)
+const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25, 0.20, 0.10, 0.08, 0.05, 0.05, 0.05], 1: [0.90, 0.70, 0.40, 0.20, 0.15, 0.08, 0.05, 0.05, 0.05, 0.03],
+	2: [0.80, 0.60, 0.32, 0.16, 0.10, 0.05, 0.03, 0.03, 0.03, 0.02] };
+const cmp_odds = (name, to) => { const g = odds_grade(name); return G.compounds?.[g]?.[to] || (CMP_ODDS[g] || CMP_ODDS[0])[to - 1] || 0; };
 // Routes through Ponty's stock: for a compound item, the copies to buy there so that — with ours (bags + bank) — three
 // make a +1 or a +2 a fighter would wear. A +1 for the last step comes from ours, from Ponty, or from three +0s (ours
 // first, then Ponty's cheapest). Only steps at or over compound_min_chance; cost = Ponty prices + scrolls.

@@ -49,9 +49,11 @@ function secondhand_reason(it, groups) {
 	if (g && gain > 0 && (g.bags + g.bank) % 3 === 2 && price <= (gain * CFG.secondhand_gold_per_pt) / 3) return "completes a compound set";
 	return null;
 }
-// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..4
-const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25], 1: [0.90, 0.70, 0.40, 0.20], 2: [0.80, 0.60, 0.32, 0.16] };
-const cmp_odds = (name, to) => (CMP_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || CMP_ODDS[0])[to - 1] || 0;
+// v24.81: the server's base compound odds by the item's starting grade (design/upgrades.py), result level 1..10 (v25.81:
+// +5..+10 added; the game's data.js carries the same table as G.compounds, which is read first when present)
+const CMP_ODDS = { 0: [0.99, 0.75, 0.40, 0.25, 0.20, 0.10, 0.08, 0.05, 0.05, 0.05], 1: [0.90, 0.70, 0.40, 0.20, 0.15, 0.08, 0.05, 0.05, 0.05, 0.03],
+	2: [0.80, 0.60, 0.32, 0.16, 0.10, 0.05, 0.03, 0.03, 0.03, 0.02] };
+const cmp_odds = (name, to) => { const g = odds_grade(name); return G.compounds?.[g]?.[to] || (CMP_ODDS[g] || CMP_ODDS[0])[to - 1] || 0; };
 // Routes through Ponty's stock: for a compound item, the copies to buy there so that — with ours (bags + bank) — three
 // make a +1 or a +2 a fighter would wear. A +1 for the last step comes from ours, from Ponty, or from three +0s (ours
 // first, then Ponty's cheapest). Only steps at or over compound_min_chance; cost = Ponty prices + scrolls.

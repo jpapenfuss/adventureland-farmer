@@ -12,78 +12,80 @@
  "g_version_from": "G.version",
  "generator": "tools/gear_table.js",
  "items": 384,
- "odds_note": "odds[L]: the bot's chance for the step that reaches +L (upg_odds/cmp_odds); null past the bot's tables",
+ "odds_note": "odds[L]: the base chance (no offering) of the step that reaches +L, from the bot's upg_odds/cmp_odds",
+ "odds_source": "G.upgrades / G.compounds (data.js; the game's design/upgrades.py)",
  "rounding": "stats and values 2 decimals, odds 4 decimals, drop/box probabilities 4 significant digits",
  "sets": "sets.json",
  "sets_bytes": 21225,
  "sets_count": 22,
  "slots": {
   "amulet": {
-   "bytes": 33259,
+   "bytes": 33240,
    "file": "amulet.json",
    "items": 21
   },
   "belt": {
-   "bytes": 21878,
+   "bytes": 21861,
    "file": "belt.json",
    "items": 15
   },
   "cape": {
-   "bytes": 31944,
+   "bytes": 38062,
    "file": "cape.json",
    "items": 16
   },
   "chest": {
-   "bytes": 69044,
+   "bytes": 76415,
    "file": "chest.json",
    "items": 36
   },
   "earring": {
-   "bytes": 23801,
+   "bytes": 23782,
    "file": "earring.json",
    "items": 17
   },
   "gloves": {
-   "bytes": 53712,
+   "bytes": 60968,
    "file": "gloves.json",
    "items": 26
   },
   "helmet": {
-   "bytes": 68360,
+   "bytes": 77217,
    "file": "helmet.json",
    "items": 34
   },
   "mainhand": {
-   "bytes": 171154,
+   "bytes": 171112,
    "file": "mainhand.json",
    "items": 98
   },
   "offhand": {
-   "bytes": 47948,
+   "bytes": 48418,
    "file": "offhand.json",
    "items": 28
   },
   "orb": {
-   "bytes": 37669,
+   "bytes": 37642,
    "file": "orb.json",
    "items": 28
   },
   "pants": {
-   "bytes": 32305,
+   "bytes": 36131,
    "file": "pants.json",
    "items": 16
   },
   "ring": {
-   "bytes": 41540,
+   "bytes": 41504,
    "file": "ring.json",
    "items": 26
   },
   "shoes": {
-   "bytes": 47694,
+   "bytes": 54555,
    "file": "shoes.json",
    "items": 23
   }
  },
+ "v_stat_note": "v_stat[class][L]: piece_value with a stat scroll of the class's main stat (the piece's stat points as that attribute); only pieces that take stat scrolls",
  "value_ctx": {
   "attack": 100,
   "level": 60

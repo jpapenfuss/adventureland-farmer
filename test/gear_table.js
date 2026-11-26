@@ -8,6 +8,7 @@ const { build, ROLE_FILES } = require(path.join(ROOT, "tools", "build.js"));
 let fails = 0;
 const assert = (c, m) => { console.log(`${c ? "ok" : "FAIL"} - ${m}`); if (!c) fails++; };
 const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+const r2 = (x) => Math.round(x * 100) / 100;
 
 // ---- 1. the generator on a fixture ----
 const FIX = {
@@ -26,6 +27,7 @@ const FIX = {
 		taxe: { type: "weapon", wtype: "axe", name: "Test Axe", attack: 30, g: 9000 },
 		thelm: { type: "helmet", name: "Test Helm", set: "tset", armor: 10, g: 100 },
 		tboots: { type: "shoes", name: "Test Boots", set: "tset", armor: 4, class: ["mage"], g: 100 },
+		tcoat: { type: "chest", name: "Test Coat", stat: 2, armor: 5, upgrade: { stat: 1, armor: 1 }, g: 100, grades: [3, 6, 8, 10] },
 		tbox: { type: "box", name: "Test Box", e: 1, g: 10 },
 		tmat: { type: "material", name: "Test Mat", g: 1 },
 		cscroll0: { type: "cscroll", grade: 0, g: 6400 }, cscroll1: { type: "cscroll", grade: 1, g: 240000 },
@@ -43,10 +45,10 @@ const FIX = {
 {
 	const T = build_table(JSON.parse(JSON.stringify(FIX)));
 	const ring = T.slots.ring?.tring, wand = T.slots.mainhand?.twand, helm = T.slots.helmet?.thelm, boots = T.slots.shoes?.tboots, axe = T.slots.mainhand?.taxe;
-	assert(eq(Object.keys(T.slots).sort(), ["helmet", "mainhand", "ring", "shoes"]) && !T.slots.box, `generator: one file per slot type, gear only (${Object.keys(T.slots)})`);
+	assert(eq(Object.keys(T.slots).sort(), ["chest", "helmet", "mainhand", "ring", "shoes"]) && !T.slots.box, `generator: one file per slot type, gear only (${Object.keys(T.slots)})`);
 	// compound: +1..+4 add 1 int each, +5 x1.25, +6 x1.5, +7 x2 (rounded as the game rounds)
 	assert(ring && eq(ring.stats.map((s) => s.int), [2, 3, 4, 5, 6, 7, 9, 11]) && ring.max_level === 7, `generator: compound stats per level (${ring && ring.stats.map((s) => s.int)})`);
-	assert(ring && eq(ring.odds, [null, 0.99, 0.75, 0.4, 0.25, null, null, null]) && ring.scroll.kind === "compound" && eq(ring.scroll.by_level, ["cscroll0", "cscroll0", "cscroll1", "cscroll1", "cscroll2", "cscroll2", "cscroll3"]),
+	assert(ring && eq(ring.odds, [null, 0.99, 0.75, 0.4, 0.25, 0.2, 0.1, 0.08]) && ring.scroll.kind === "compound" && eq(ring.scroll.by_level, ["cscroll0", "cscroll0", "cscroll1", "cscroll1", "cscroll2", "cscroll2", "cscroll3"]),
 		`generator: compound odds (cmp_odds) and scrolls by grade (${ring && JSON.stringify(ring.odds)})`);
 	// upgrade: +2 attack a level, +7 x1.25, +8 x1.5, +9 x2, +10 x3
 	assert(wand && eq(wand.stats.map((s) => s.attack), [10, 12, 14, 16, 18, 20, 22, 25, 28, 32, 38]) && wand.scroll.kind === "upgrade" && wand.scroll.by_level[3] === "scroll1" && wand.scroll.by_level[6] === "scroll2",
@@ -65,6 +67,16 @@ const FIX = {
 	assert(rs && eq(rs.drops.map((d) => [d.monster, d.rate]), [["goo", 0.375], ["goo", 0.01]]) && eq(wand.sources.map_drops, [{ map: "main", rate: 0.001 }]), `generator: monster drops (direct and through a box) and map drops (${rs && JSON.stringify(rs.drops)})`);
 	assert(helm && eq(helm.sources.craft, { cost: 500, inputs: [{ item: "tmat", q: 2 }, { item: "tring", level: 1, q: 1 }] }) && rs && eq(rs.input_to, [{ craft: "thelm", level: 1, q: 1 }]), "generator: craft recipe and what it's an input to");
 	assert(boots && eq(boots.sources.tokens, [{ price: 15, token: "monstertoken" }]) && rs.from_lower === "compound" && wand.sources.from_lower === "upgrade" && helm.sources.from_lower === null, "generator: token prices, upgradable/compoundable from a lower copy");
+	// v_stat: a main-stat scroll on a stat piece — its stat points (2, +1 a level) as int (mage 1.2) / str (paladin 1.2, x1 not defence)
+	const coat = T.slots.chest?.tcoat;
+	assert(coat && eq(coat.stats.map((s) => s.stat), [2, 3, 4, 5, 6, 7, 8, 10, 13, 16, 20]) && coat.v_stat && eq(coat.v_stat.mage.map((v, L) => r2(v - coat.value.mage[L])), coat.stats.map((s) => r2(s.stat * 1.2)))
+		&& eq(coat.v_stat.ranger.map((v, L) => r2(v - coat.value.ranger[L])), coat.stats.map((s) => r2(s.stat * 1.2))) && !ring.v_stat && !wand.v_stat,
+		`generator: v_stat = piece_value with a main-stat scroll (coat mage ${coat && coat.v_stat && coat.v_stat.mage.slice(0, 3)} vs ${coat && coat.value.mage.slice(0, 3)})`);
+	// odds: the game's G.upgrades / G.compounds when the data has them; the bot's copy (to +12 / +10) otherwise
+	const Gu = JSON.parse(JSON.stringify(FIX)); Gu.upgrades = { 0: { 1: 0.5, 11: 0.3 } }; Gu.compounds = { 0: { 5: 0.33 } };
+	const Tu = build_table(Gu);
+	assert(Tu.slots.mainhand.twand.odds[1] === 0.5 && Tu.slots.mainhand.twand.odds[2] === 0.98 && Tu.slots.ring.tring.odds[5] === 0.33 && /G\.upgrades/.test(Tu.index.odds_source) && !/G\.upgrades \//.test(T.index.odds_source),
+		`generator: odds from G.upgrades / G.compounds when present (${Tu.index.odds_source} | without: ${T.index.odds_source})`);
 	const S = T.sets.tset;
 	assert(S && eq(S.items, ["tboots", "thelm"]) && eq(S.total["2"], { int: 5 }) && S.points.mage.total["2"] === 6 && S.points.ranger.step["2"] === 1.5, `generator: sets — pieces, bonus per count, points per class (${S && JSON.stringify(S.points.mage)})`);
 	assert(T.index.g_version === "77" && T.index.built_from === fs.readFileSync(path.join(ROOT, "src", "shared", "00_config.js"), "utf8").match(/"([^"]+)"/)[1] && T.index.slots.ring.items === 1, "generator: index (g_version, built_from VERSION, files)");
@@ -89,7 +101,7 @@ const FIX = {
 	}
 	const sets = JSON.parse(fs.readFileSync(path.join(DIR, ix.sets), "utf8")).sets;
 	assert(parsed && files.length >= 13 && Object.keys(recs).length === ix.items && Object.keys(sets).length === ix.sets_count, `data/gear: index + ${files.length} slot files parse, counts match, each under 1 MB (${sizes.join(", ")})`);
-	const DATA = [process.env.AL_DATA, "/tmp/al-data.js", "/tmp/claude-0/-home-user/e103bab1-2b3c-5c3d-9c14-1dd779e08eae/scratchpad/al/data.js"].find((p) => p && fs.existsSync(p));
+	const DATA = [process.env.AL_DATA, "/tmp/al-data.js"].find((p) => p && fs.existsSync(p));
 	if (!DATA) console.log("skip - data/gear covers every equipment piece: no data.js (set AL_DATA=<path to the game's data.js>)");
 	else {
 		const G = parse_data(DATA), GEAR = new Set(["weapon", "shield", "helmet", "chest", "pants", "gloves", "shoes", "cape", "ring", "earring", "amulet", "belt", "orb", "source", "quiver", "misc_offhand"]);
@@ -153,6 +165,14 @@ function client({ fetch_ok = true, store = {}, sha = SHA, version, files } = {})
 	const line = c.R("gt_report_text()"), facts = c.R("report_facts().filter((f) => f.key === 'gear_table').map((f) => f.text)");
 	assert(new RegExp(`^gear table: ${N} items, ${M} slots, built v${ix.built_from.replace(".", "\\.")} \\(current\\)`).test(line) && facts.length === 1 && facts[0] === line, `lookup: report line (${line})`);
 	assert(c.logs.filter((l) => /^gear table:/.test(l)).length === 1 && !c.logs.some((l) => /built for game data/.test(l)), "lookup: logged once, no stale warning on matching game data");
+	// the bot itself (v25.81): a stat-scrolled piece's stat counts as that attribute; can_wear counts two-handers
+	c.R("G.items.tst = { type: 'helmet', stat: 2, upgrade: { stat: 1 }, grades: [9, 10, 11, 12] }; G.items.tax = { type: 'weapon', wtype: 'axe' }; G.items.tbw = { type: 'quiver' }");
+	c.R("G.classes.warrior = { main_stat: 'str', mainhand: { mace: {} }, doublehand: { axe: {} }, offhand: { shield: {} } }; G.classes.priest = { main_stat: 'int', mainhand: { staff: {} }, offhand: { shield: {} } }; G.classes.mage.mainhand = { wand: {} }");
+	assert(c.R("gear_score({ name: 'tst', level: 1, stat_type: 'int' }, 'mage')") === 3.6 && c.R("gear_score({ name: 'tst', level: 1 }, 'mage')") === 0 && c.R("gear_score({ name: 'tst', level: 1, stat_type: 'armor' }, 'mage')") === 2,
+		`bot: piece_value counts a stat scroll's stat as its attribute (int +1: ${c.R("gear_score({ name: 'tst', level: 1, stat_type: 'int' }, 'mage')")}, none: ${c.R("gear_score({ name: 'tst', level: 1 }, 'mage')")}, armor: ${c.R("gear_score({ name: 'tst', level: 1, stat_type: 'armor' }, 'mage')")})`);
+	const cw = (ct, n) => c.R(`character.ctype = '${ct}'; globalThis.__cw = can_wear('${n}'); character.ctype = 'mage'; __cw`);
+	assert(cw("warrior", "tax") === true && cw("mage", "tax") === false && cw("priest", "tbw") === false,
+		"bot: can_wear counts a two-hander (warrior axe yes; mage axe, priest quiver no)");
 	// b) GitHub down, the cached copy is used
 	const store = { ...c.store };
 	c = client({ fetch_ok: false, store, version: Number(ix.g_version) || ix.g_version });

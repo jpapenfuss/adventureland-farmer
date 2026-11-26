@@ -37,6 +37,8 @@ const PROP_KEYS = ["gold", "luck", "xp", "int", "str", "dex", "vit", "for", "cha
 	"armor", "incdmgamp", "resistance", "pnresistance", "firesistance", "fzresistance", "phresistance", "stresistance", "stun", "blast", "explosion", "breaks",
 	"stat", "speed", "level", "evasion", "miss", "reflection", "lifesteal", "manasteal", "attr0", "attr1", "rpiercing", "apiercing", "crit", "critdamage",
 	"dreturn", "frequency", "mp_cost", "mp_reduction", "output", "courage", "mcourage", "pcourage"];
+const STAT_MULT = { gold: 0.5, luck: 1, xp: 0.5, int: 1, str: 1, dex: 1, vit: 1, for: 1, armor: 2.25, resistance: 2.25, speed: 0.325, evasion: 0.325,
+	reflection: 0.15, lifesteal: 0.15, manasteal: 0.04, rpiercing: 2.25, apiercing: 2.25, crit: 0.125, dreturn: 0.5, frequency: 0.325, mp_cost: -0.6, output: 0.175 };
 function make_props(G) {
 	// adopt_extras as the game has it (its upgrade/compound branch iterates the extras' own keys)
 	const adopt = (def, ex) => { for (const p in ex) { if (p === "upgrade" || p === "compound") { for (const pp in ex) def[p][pp] = (def[p][pp] || 0) + ex[p][pp]; } else def[p] = (def[p] || 0) + ex[p]; } };
@@ -63,6 +65,7 @@ function make_props(G) {
 		if (item.level === 10 && prop.stat && def.tier && def.tier >= 3) prop.stat += 2;
 		for (const p in def) if (prop[p] === null) prop[p] = def[p]; else if (prop[p] !== undefined) prop[p] += def[p];
 		for (const p in prop) if (!NO_ROUND.has(p)) prop[p] = Math.round(prop[p]);
+		if (def.stat && item.stat_type) { prop[item.stat_type] += prop.stat * STAT_MULT[item.stat_type]; prop.stat = 0; }
 		return prop;
 	};
 }
@@ -90,7 +93,7 @@ function load_bot(G) {
 	vm.runInContext(build(), ctx);
 	const R = (code) => vm.runInContext(code, ctx);
 	// exported for the generator: run with the wearer's class as ours (xp_weight and the mp_cost floor read character)
-	R(`globalThis.__gt = { slot_value, slots_for, is_2h, upg_odds, cmp_odds, upgrade_scroll, set_bonus, stat_points, gt_hash, VERSION,
+	R(`globalThis.__gt = { slot_value, slots_for, class_stats, is_2h, upg_odds, cmp_odds, upgrade_scroll, set_bonus, stat_points, gt_hash, VERSION,
 		UPG_N: UPG_ODDS[0].length, CMP_N: CMP_ODDS[0].length, GEAR: [...GEAR] }`);
 	const B = R("globalThis.__gt");
 	B.as = (ctype, f) => { character.ctype = ctype; return f(); };
@@ -161,7 +164,8 @@ function item_record(G, B, calc, S, name) {
 	if (by_cls.length) rec.stats_class = Object.fromEntries(by_cls.map((c) => [c, levels.map((L) => stat_bag(calc({ name, level: L }, { class: c })))]));
 	// scrolls: the one each step L → L+1 takes (index L), the bot's upgrade_scroll / its compound's cscroll by grade
 	rec.scroll = kind ? { kind, by_level: levels.slice(0, max).map((L) => (kind === "upgrade" ? B.upgrade_scroll(name, L) : "cscroll" + Math.max(0, calculate_item_grade(def, { level: L })))) } : null;
-	// odds of the step that reaches level L (index L; 0 is null); null past the bot's own tables (+10 upgrade, +4 compound)
+	// odds of the step that reaches level L (index L; 0 is null): the bot's upg_odds / cmp_odds, which read G.upgrades /
+	// G.compounds (the game's design/upgrades.py: upgrades to +12, compounds to +10); null where they give none
 	rec.odds = kind ? levels.map((L) => { if (!L) return null; const p = kind === "upgrade" ? B.upg_odds(name, L) : B.cmp_odds(name, L); return p ? r4(p) : null; }) : null;
 	// who can wear it where, the hands flag, and piece_value per class per level (the bot's slot_value, no worn context)
 	rec.slots = {}; rec.value = {};
@@ -175,6 +179,9 @@ function item_record(G, B, calc, S, name) {
 		rec.slots[c] = sl;
 		if (def.type === "weapon" && B.is_2h(name, c)) two.push(c);
 		rec.value[c] = levels.map((L) => r2(B.as(c, () => B.slot_value({ name, level: L }, c, null, null))));
+		// v_stat: the same with a stat scroll of the class's main stat on it (its stat points counted as that attribute)
+		const main = B.class_stats(c)?.main;
+		if (def.stat && main) (rec.v_stat = rec.v_stat || {})[c] = levels.map((L) => r2(B.as(c, () => B.slot_value({ name, level: L, stat_type: main }, c, null, null))));
 	}
 	rec.hands = def.type !== "weapon" ? null : two.length && Object.keys(rec.slots).every((c) => two.includes(c) || !rec.slots[c].includes("mainhand")) ? 2 : 1;
 	rec.two_handed_for = def.type === "weapon" ? two : null;
@@ -238,7 +245,9 @@ function build_table(G) {
 	const index = canon({ generator: "tools/gear_table.js", built_from: B.VERSION, g_version: G.version != null ? String(G.version) : B.gt_hash(G.items, G.sets),
 		g_version_from: G.version != null ? "G.version" : "hash of G.items + G.sets", items: names.length, classes: CLASSES, value_ctx: VALUE_CTX,
 		rounding: "stats and values 2 decimals, odds 4 decimals, drop/box probabilities 4 significant digits",
-		odds_note: "odds[L]: the bot's chance for the step that reaches +L (upg_odds/cmp_odds); null past the bot's tables",
+		odds_note: "odds[L]: the base chance (no offering) of the step that reaches +L, from the bot's upg_odds/cmp_odds",
+		odds_source: G.upgrades && G.compounds ? "G.upgrades / G.compounds (data.js; the game's design/upgrades.py)" : "the bot's own copy of design/upgrades.py (UPG_ODDS / CMP_ODDS): G has no upgrades/compounds tables",
+		v_stat_note: "v_stat[class][L]: piece_value with a stat scroll of the class's main stat (the piece's stat points as that attribute); only pieces that take stat scrolls",
 		slots: ix_slots, sets: "sets.json", sets_count: Object.keys(sets).length, sets_bytes: Buffer.byteLength(files["sets.json"]) });
 	files["index.json"] = JSON.stringify(index, null, 1) + "\n";
 	return { files, index, slots, sets };
