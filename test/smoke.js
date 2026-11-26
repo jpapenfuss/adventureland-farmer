@@ -1865,7 +1865,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(!e1["goodhelm:0"], "5 copies of a helmet a fighter would wear now: none sold (past the cap of 3)");
 		// v25.77 (owner: the bought Vowkeeper Gloves were sold at once): a piece of a set a party class can wear is never sold
 		{ const sets0 = ctx.G.sets; ctx.G.sets = { ...(sets0 || {}), okset: { 2: { armor: 50 }, items: ["oathgl"] }, warset: { items: ["wargl"] } };
-			Object.assign(ctx.G.items, { oathgl: { type: "gloves", g: 100, armor: 1, set: "okset", class: ["paladin"] }, wargl: { type: "gloves", g: 100, armor: 1, set: "warset", class: ["warrior"] } });
+			Object.assign(ctx.G.items, { oathgl: { type: "helmet", g: 100, armor: 1, set: "okset", class: ["paladin"] }, wargl: { type: "helmet", g: 100, armor: 1, set: "warset", class: ["warrior"] } }); // (a slot the fighter wears: not "useful" by filling an empty one)
 			pack[pack.indexOf(null)] = { name: "oathgl", level: 0 }; pack[pack.indexOf(null)] = { name: "wargl", level: 0 };
 			const e3 = ex();
 			// the live failure: a copy marked by an earlier purge, at the shop — the paladin piece isn't sold, the warrior's is
