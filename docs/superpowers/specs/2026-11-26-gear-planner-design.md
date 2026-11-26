@@ -133,8 +133,10 @@ Owner's:
   doesn't win every time). Two fighters wanting the same item: the higher-ranked step takes it.
 
 Builder's calls (marked so the owner can overrule):
-- **Upgrade risk:** today's floors stay (`floor_last` 0.8 for a worn last copy, `floor_spare` 0.5 with a spare). The
-  planner may buy or level spare copies just to back a step; `min_chain_odds` for "reachable level" = the product of the
+- **Upgrade risk (owner: "willing to take even greater risk when we have a spare. Upgrades are NECESSARY"):** a worn
+  last copy keeps `floor_last` 0.8. A spare-backed step has no fixed gate above a 0.2 floor (`floor_spare`, live from
+  v25.79): it's taken when its gain per expected cost wins — expected cost = scroll ÷ odds + the spare's replacement
+  cost × (1 − odds) ÷ odds. The planner may buy or level spare copies just to back a step; `min_chain_odds` for "reachable level" = the product of the
   per-step odds the executor will accept, so the plan never targets a level the executor refuses. Failure cost = the
   cost of re-reaching the destroyed copy's level (recursive, capped at one rebuild).
 - **Stage 1 is strictly read-only:** `gear_gain` and every caller are untouched. Stage 2 makes `gear_gain` (and with it
