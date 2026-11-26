@@ -125,6 +125,36 @@ surplus, no party class can use, unclassified.
 `gear plan` lines per fighter: target loadout and its value vs current; the current project with route and cost;
 the next 3 steps; unmeasured routes skipped.
 
+### 9. Decisions after the builder check
+
+Owner's:
+- **One party plan**, one project at a time. Steps from different fighters are ranked by **relative gain** (the step's
+  value ÷ that fighter's current loadout value) per party-hour, so classes compare fairly (the tank's defence weight
+  doesn't win every time). Two fighters wanting the same item: the higher-ranked step takes it.
+
+Builder's calls (marked so the owner can overrule):
+- **Upgrade risk:** today's floors stay (`floor_last` 0.8 for a worn last copy, `floor_spare` 0.5 with a spare). The
+  planner may buy or level spare copies just to back a step; `min_chain_odds` for "reachable level" = the product of the
+  per-step odds the executor will accept, so the plan never targets a level the executor refuses. Failure cost = the
+  cost of re-reaching the destroyed copy's level (recursive, capped at one rebuild).
+- **Stage 1 is strictly read-only:** `gear_gain` and every caller are untouched. Stage 2 makes `gear_gain` (and with it
+  equip_upgrades, share_gear, bank_upgrades, wanted_by_member, the purge) the plan's loadout delta; equip/share/bank
+  fetch then also refuse a swap that breaks a planned set before it's complete. ponty_stock and secondhand buys of a
+  plain upgrade, craft_power and must-hold token buys stay, but each checks the plan (a step off the plan isn't taken
+  if it spends what a plan step needs).
+- **Tokens:** the token holder (the first configured member online) executes token steps, as today; the merchant never
+  buys with tokens. Stage 1 adds a hunt turn-in counter (log_ev "hunt_turnin" with tokens gained) so tokens/h is
+  measured; until 6 h of it exist, token routes are "unmeasured".
+- **Measured kill rate:** `state.measured[camp]` (xp/s, the raw stored value, not `meas_aged`'s blend) ÷ the monster's
+  base xp, shown with its age; a camp without one is unmeasured. No model kill rate is used.
+- **Gold/h:** gross earnings (`earn`) over the last 6 h, all fighters + merchant.
+- **Farming time cost:** hours × (1 − that camp's measured xp/s ÷ the best measured xp/s) — only the xp lost versus
+  the best camp; hunts are never displaced (gear goals rank below them).
+- **One value function:** `loadout_value` uses the same per-piece valuation as equipping (`slot_value`, including the
+  damage model when `gear_dps` is on) plus set bonuses, so targets match what gets worn.
+- **Merchant offline:** plan execution waits for the merchant (fighters keep today's own-project behaviour); gear
+  goals still come from the tank's own planner run.
+
 ## Stages (each its own PR)
 
 1. Planner module + report lines, read-only (nothing acts on it). The owner checks targets and routes in reports.
