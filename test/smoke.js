@@ -4246,8 +4246,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const dz = R("deadly_areas('dz555').map((z) => z.t).join()");
 		assert(dz === "fire555", `merchant: fire spirits are no place to walk, the scorpions it visits are (${dz})`);
 		assert(/fire555/.test(R("seg_danger('dz555', 0, 0, 0, -800) || ''")), "merchant: a walk through the fire spirits is dangerous");
-		assert(R("seg_danger('dz555', -330, 0, -330, -800)") === null && /fire555/.test(R("seg_danger('dz555', -290, 0, -290, -800) || ''")),
-			"merchant: out of their range (280 + 120 px) is fine, inside it is not — not the 400 px of a monster that chases");
+		// (v25.80: the time a walk spends within their reach + 40 px is what counts — no wider margin)
+		assert(R("seg_danger('dz555', -240, 0, -240, -800)") === null && /fire555/.test(R("seg_danger('dz555', -150, 0, -150, -800) || ''")),
+			"merchant: outside their reach (280 + 40 px) is fine, a walk well inside it is not — not the 400 px of a monster that chases");
 		ctx.G.maps.dz555.monsters.push({ type: "fire555", count: 0, boundary: [2000, 2000, 2200, 2200] });
 		R("dz_cache.clear()");
 		assert(R("seg_danger('dz555', 2100, 1500, 2100, 2500)") === null, "an empty spawn (count 0: an event boss's) isn't there");
