@@ -1295,7 +1295,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	character.slots = { helmet: { name: "nhelm", level: 0 } }; character.items = Array(42).fill(null);
 	character.items[0] = { name: "computer" }; character.items[1] = { name: "scroll0", q: 20 }; character.items[2] = { name: "nhelm", level: 0 };
 	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null; my_gear_cache = null", ctx);
-	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("JSON.stringify([state.upg.name, state.upg.to, state.upg.from_copy, !!state.upg.worn, state.upg.floor])", ctx) === '["nhelm",1,0,false,0.5]',
+	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("JSON.stringify([state.upg.name, state.upg.to, state.upg.from_copy, !!state.upg.worn, state.upg.floor])", ctx) === '["nhelm",1,0,false,0.2]',
 		`a spare at the worn level: one +1 step at the spare floor (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
 	assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 50_000, `a fighter's budget is its gold above gold_reserve (${vm.runInContext("upgrade_gold()", ctx)})`);
 	{ const nm = character.name, ct = character.ctype; Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
@@ -3674,7 +3674,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			R("state.bank_gear = [{ name: 'stf139', level: 0 }]");
 			const ps = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
 			R("state.bank_gear = []");
-			assert(pw === null && ps?.name === "stf139" && !ps.worn && ps.floor === 0.5, `a worn staff: no hand-over (${JSON.stringify(pw)}); a spare +0 in the bank: stepped (${JSON.stringify(ps)})`);
+			assert(pw === null && ps?.name === "stf139" && !ps.worn && ps.floor === 0.2, `a worn staff: no hand-over (${JSON.stringify(pw)}); a spare +0 in the bank: stepped (${JSON.stringify(ps)})`);
 			R("state.partners = __pa; sold_c.delete('stf139'); state.gear_skip = {}"); delete ctx.G.items.stf139;
 		}
 		// v25.66: the step's floor is the whole floor at the roll
@@ -3690,7 +3690,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a spare copy in the bank: the normal project, not the worn piece
 		R("state.gear_skip = {}; for (const n in G.items) if (n !== 'mpg139' && G.items[n].upgrade) skip('upg:' + n, 60000, 'test'); state.bank_gear = [{ name: 'mpg139', level: 0 }]");
 		const pk2 = JSON.parse(R("JSON.stringify(pick_upgrade())") || "null");
-		assert(pk2 && pk2.name === "mpg139" && !pk2.worn && pk2.from_copy === 0 && pk2.floor === 0.5, "with a spare copy at the worn level: the spare is stepped (spare floor), the worn one is left alone");
+		assert(pk2 && pk2.name === "mpg139" && !pk2.worn && pk2.from_copy === 0 && pk2.floor === 0.2, "with a spare copy at the worn level: the spare is stepped (spare floor), the worn one is left alone");
 		R("state.partners = {}; state.merchant = null; state.upg = null; state.bank_gear = []; state.gear_skip = {}; sold_c.delete('mpg139'); my_gear_cache = null");
 		delete ctx.G.items.mpg139; Object.assign(character, sv);
 	}
