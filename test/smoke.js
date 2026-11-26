@@ -772,10 +772,13 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 37b) v25.82 (owner): at a member's hunt the party stays until it's done — the turns (and every other goal) wait
 	{ vm.runInContext("state.turn = null; state.hunt_hold = null; state.directive = null; state.goals_cache = null", ctx);
 		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
-			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
+			hunt: { id: "goo", c: 7 }, hs: "chase", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
 		vm.runInContext("refresh_directive()", ctx); // Torlis's turn: goo (the guide row), and we stand in it
 		assert(vm.runInContext("state.hunt_hold?.monster === 'goo' && state.directive.hold && /Aspernari 7 left/.test(state.directive.reason)", ctx),
 			`v25.82: standing at a member's hunt holds it (${vm.runInContext("JSON.stringify([state.hunt_hold, state.directive?.reason])", ctx)})`);
+		// once held, it stays held even if the estimate says it can't finish ("lost"), and no hunt trip runs for it
+		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
 		vm.runInContext("state.turn.end = Date.now() - 1; refresh_directive()", ctx);
 		assert(vm.runInContext("state.directive.monster === 'goo' && state.directive.hold", ctx), `v25.82: the partner's turn waits until the hunt is done (${vm.runInContext("state.directive.monster", ctx)})`);
 		Object.assign(character, { x: 300, y: 300 }); vm.runInContext("refresh_directive()", ctx); Object.assign(character, { x: 0, y: 0 });
@@ -788,6 +791,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			hunt: null, hs: "ready", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
 		vm.runInContext("refresh_directive()", ctx);
 		assert(vm.runInContext("!state.hunt_hold && !state.directive.hold", ctx), "v25.82: the hold ends once the hunt is done");
+		// a hunt its owner can't finish doesn't start a hold (Fable on v25.82)
+		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
+		vm.runInContext("state.turn = null; state.directive = null; refresh_directive()", ctx);
+		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.82: a hunt that can't be finished doesn't start a hold");
 		vm.runInContext("state.hunt_hold = null; state.turn = null", ctx); }
 
 	// 38) mutual goals win: Torlis's guide row is goo; Aspernari's goals include tortoise (hunt) and minimush (quest).

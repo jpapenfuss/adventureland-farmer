@@ -133,10 +133,10 @@ async function run_upgrade(a, row) {
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
 		const cheap = shop_for(a.name) && !G.items[a.name]?.cash && (G.items[a.name]?.g || 0) < hc;
 		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !cheap && upg_gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
-			await ensure_scroll(hs);
+			const got = await ensure_scroll(hs).then(() => true, () => false); // can't buy it: roll on the base scroll
 			if (!has_computer()) await go("upgrade");
 			await wait_budget(1, RESERVE.errand);
-			const p3 = await T(upgrade(k, find_slot(hs, 0), null, true)).catch(() => null);
+			const p3 = got ? await T(upgrade(k, find_slot(hs, 0), null, true)).catch(() => null) : null;
 			if (p3?.chance > preview.chance) { game_log(`upgrade ${a.name}: ${hs} lifts +${from + 1} from ${Math.round(preview.chance * 100)}% to ${Math.round(p3.chance * 100)}%`, C.info); preview = p3; scroll = hs; }
 		}
 	}

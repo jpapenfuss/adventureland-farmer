@@ -2575,10 +2575,10 @@ async function run_upgrade(a, row) {
 		const hs = "scroll" + (Math.max(0, item_grade({ name: a.name, level: from })) + 1), hc = G.items[hs]?.g;
 		const cheap = shop_for(a.name) && !G.items[a.name]?.cash && (G.items[a.name]?.g || 0) < hc;
 		if (hs !== scroll && hc && hc <= (CFG.upgrade_boost_max || 0) && !cheap && upg_gold_ok(hc) && character.gold - hc >= CFG.gold_reserve) {
-			await ensure_scroll(hs);
+			const got = await ensure_scroll(hs).then(() => true, () => false); // can't buy it: roll on the base scroll
 			if (!has_computer()) await go("upgrade");
 			await wait_budget(1, RESERVE.errand);
-			const p3 = await T(upgrade(k, find_slot(hs, 0), null, true)).catch(() => null);
+			const p3 = got ? await T(upgrade(k, find_slot(hs, 0), null, true)).catch(() => null) : null;
 			if (p3?.chance > preview.chance) { game_log(`upgrade ${a.name}: ${hs} lifts +${from + 1} from ${Math.round(preview.chance * 100)}% to ${Math.round(p3.chance * 100)}%`, C.info); preview = p3; scroll = hs; }
 		}
 	}
@@ -6539,10 +6539,16 @@ function quest_directive(guide_only) {
 	return null;
 }
 // v25.82: who still has an unfinished hunt for this monster, as "Name 38 left, …" (null if nobody does)
-function hunt_open(mt) {
-	const own = character.s.monsterhunt, out = [];
-	if (own?.id === mt && own.c > 0) out.push(`${character.name} ${own.c} left`);
-	for (const p of partners()) if (p.hunt?.id === mt && p.hunt.c > 0) out.push(`${p.name} ${p.hunt.c} left`);
+// chasing: only hunts their owner can finish in time (hunt_feasible / heartbeat "chase") — what starts a hold. A hold
+// then lasts while the hunt is open, with a member's last heartbeat good for 5 min (a death or a dropped tab
+// doesn't end it; Fable on v25.82)
+function hunt_open(mt, chasing = false) {
+	const own = character.s.monsterhunt, out = [], now = Date.now();
+	if (own?.id === mt && own.c > 0 && (!chasing || hunt_feasible(own))) out.push(`${character.name} ${own.c} left`);
+	for (const n of others()) {
+		const p = state.partners[n];
+		if (p && now - (p.t || 0) < 300_000 && p.hunt?.id === mt && p.hunt.c > 0 && (!chasing || p.hs === "chase")) out.push(`${p.name || n} ${p.hunt.c} left`);
+	}
 	return out.length ? out.join(", ") : null;
 }
 function hunt_directive() {
@@ -6657,7 +6663,7 @@ function refresh_directive__fighter() {
 	// better camp, no boss. The one exception is a finished hunt about to lapse: hunts_trip_due's late turn-in (under
 	// hunt_turnin_ms) takes the party to town, and this hold brings it back.
 	if (state.hunt_hold && !hunt_open(state.hunt_hold.monster)) state.hunt_hold = null;
-	if (!state.hunt_hold && d && !d.boss && hunt_open(d.monster) && d.map === character.map && valid_boundary(d.boundary) &&
+	if (!state.hunt_hold && d && !d.boss && hunt_open(d.monster, true) && d.map === character.map && valid_boundary(d.boundary) &&
 		in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]))
 		state.hunt_hold = { monster: d.monster, map: d.map, boundary: d.boundary, count: d.count, at: now };
 	if (state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (held until done)`, guide_safe: false, hold: true };
@@ -6674,6 +6680,7 @@ function refresh_directive__fighter() {
 		const a = valid_boundary(d.boundary) ? d : resolve_area(d.monster, d.map, d.boundary);
 		state.dir_lock = { monster: d.monster, until: now + ((a ? travel_s(a.map, a.boundary) : 60) + CFG.travel.commit_min * 60) * 1000 };
 	}
+	if (d?.hold && !state.hunt_hold) d = { ...d, hold: false }; // a released hold doesn't live on through the commitment
 	if (d) {
 		const changed = !state.directive || state.directive.monster !== d.monster || state.directive.map !== d.map;
 		state.directive = { ...d, until: now + CFG.guide_interval_ms * 4 };
