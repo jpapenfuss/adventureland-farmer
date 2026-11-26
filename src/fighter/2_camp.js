@@ -244,12 +244,13 @@ function pick_pack() {
 		// or 5s if it gave none — the guide's own fight model judged this route safe for us
 	if (d && d.until > now && d.boss)
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
-	if (d && d.until > now && state.safe[d.monster]) {
+	// v25.82: a held hunt (the party is at it, refresh_directive) is kept whatever the camp's rest, danger or safety verdict
+	if (d && d.until > now && (state.safe[d.monster] || (d.hold && fight_profile(d.monster)))) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
+		const dz = !d.boss && !d.hold && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
-		if (!dz && !((state.cooldown[pack_key(area)] || 0) > now)) {
+		if (!dz && (d.hold || !((state.cooldown[pack_key(area)] || 0) > now))) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
 		}

@@ -257,7 +257,9 @@ function history_lines(hours = 6) {
 	L.push(`town trips: ${towns.length}${towns.length ? ` (${Object.entries(why_t).map(([w, n]) => `${w} ${n}`).join(", ")}; avg ${Math.round(towns.reduce((a, e) => a + (e.secs || 0), 0) / towns.length)}s)` : ""}`);
 	for (const kind of ["upgrade", "compound"]) {
 		const xs = ev.filter((e) => e.type === kind);
-		if (xs.length) L.push(`${kind}s: ${xs.filter((e) => e.ok).length} ok / ${xs.filter((e) => !e.ok).length} failed — ${xs.slice(-4).map((e) => `${e.item}+${e.from}${e.ok ? "✓" : "✗"}`).join(" ")}`);
+		// v25.82: against the server's own odds at the time (owner: "failures seem a lot worse than 40%")
+		const exp = xs.filter((e) => e.chance > 0), ex = exp.length ? ` (the odds said ${Math.round(exp.reduce((t, e) => t + e.chance, 0) / exp.length * 100)}% ok)` : "";
+		if (xs.length) L.push(`${kind}s: ${xs.filter((e) => e.ok).length} ok / ${xs.filter((e) => !e.ok).length} failed${ex} — ${xs.slice(-4).map((e) => `${e.item}+${e.from}${e.ok ? "✓" : "✗"}`).join(" ")}`);
 	}
 	const buys = ev.filter((e) => e.type === "buy");
 	if (buys.length) L.push(`buys: ${buys.slice(-6).map((e) => `${e.item} (${e.src}${e.price ? " " + fmt_k(e.price) : ""})`).join(", ")}`);
