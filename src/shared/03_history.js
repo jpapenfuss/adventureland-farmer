@@ -62,6 +62,7 @@ if (typeof character.on === "function") {
 	});
 	// v25.80: transfers between our characters, from the game's own events (same socket as the gold itself) — the code
 	// message that used to carry them could arrive a tick later: +g booked as earned, then -g as "other" spending
+	// (the generic game_response handler fires these first with { response, name, gold } — no from/to/amount: skipped)
 	const ours = (n) => (CFG.party.members || []).includes(n) || n === CFG.merchant?.name;
 	character.on("gold_received", (d) => { if (d && ours(d.from) && d.amount > 0) stats.adj -= d.amount; });
 	character.on("gold_sent", (d) => { if (d && ours(d.to) && d.amount > 0) stats.adj += d.amount; });
