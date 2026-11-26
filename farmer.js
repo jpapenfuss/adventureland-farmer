@@ -2844,8 +2844,9 @@ const UPG_ODDS = { 0: [0.9999999, 0.98, 0.95, 0.70, 0.60, 0.40, 0.25, 0.15, 0.07
 const upg_odds = (name, to) => (UPG_ODDS[Math.min(2, Math.max(0, item_grade({ name, level: 0 })))] || UPG_ODDS[0])[to - 1] || 0;
 // v25.17: the best level of a copy we own, in the bags (unlocked) or (last seen) in the bank; not a titled one, in either
 // (the project's bank fetch skips titled copies too); -1 if none
-const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.p).map((i) => i.level || 0),
-	...(state.bank_gear || []).filter((i) => i.name === name && !i.p).map((i) => i.level || 0));
+// (v25.79, Fable: nor a stat-scrolled one — a spare is rolled at down to 20%, and a failure would lose its stat scroll too)
+const owned_level = (name) => Math.max(-1, ...character.items.filter((i) => i && i.name === name && !i.l && !i.p && !i.stat_type).map((i) => i.level || 0),
+	...(state.bank_gear || []).filter((i) => i.name === name && !i.p && !i.stat_type).map((i) => i.level || 0));
 // Is it sold by an NPC we can find? (cached: G doesn't change)
 const sold_c = new Map();
 const sold_by_npc = (name) => { if (!sold_c.has(name)) sold_c.set(name, !!shop_for(name)); return sold_c.get(name); };
@@ -2897,7 +2898,7 @@ function pick_upgrade() {
 	if (!CFG.upgrade_auto) return null;
 	const budget = upgrade_gold();
 	const rows = upgrade_steps_all().filter((r) => r.ok && r.cost <= budget && !skipped("upg:" + r.name) && (r.copy || is_merchant()))
-		.sort((a, b) => b.gain / b.cost - a.gain / a.cost);
+		.sort((a, b) => (b.p ?? 1) * b.gain / b.cost - (a.p ?? 1) * a.gain / a.cost); // (v25.79: expected gain per cost — a 25% step no longer outranks a 95% one)
 	const r = rows[0];
 	if (!r) return null;
 	const P = { name: r.name, to: r.to, for: r.who, slot: r.slot, gain: Math.round(r.gain), cost: r.cost, floor: r.floor, from_copy: r.from };
@@ -3020,7 +3021,7 @@ async function task_upgrade() {
 	if (!upg_gold_ok(step)) { town_reason.upgrade = `gold: step ${fmt_k(step)}, have ${fmt_k(character.gold)}, keep ${fmt_k(upgrade_keep())}`; return 0; }
 	state.fund_need = 0;
 	try {
-		const k = character.items.findIndex((i) => i && i.name === P.name && !i.l && !i.p && (i.level || 0) === P.to - 1); // (that exact plain copy)
+		const k = character.items.findIndex((i) => i && i.name === P.name && !i.l && !i.p && (P.worn || !i.stat_type) && (i.level || 0) === P.to - 1); // (that exact plain copy; a spare never a stat-scrolled one)
 		const r = await run_upgrade({ name: P.name, floor: P.floor, resources: [{ num: k }] }, { request: { name: P.name, level: P.to } });
 		game_log(`upgrade ${P.name} +${P.to - 1}→+${P.to} for ${P.for}: ${r?.success ? "done" : "failed"}`, r?.success ? C.ok : C.bad);
 		end(); return 1;

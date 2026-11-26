@@ -1297,6 +1297,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	vm.runInContext("state.partners = {}; state.merchant = null; state.upg = null; state.upg_pick_at = 0; state.gear_skip = {}; state.bank_gear = []; cmp_cache = null; my_gear_cache = null", ctx);
 	assert(vm.runInContext("upgrade_due()", ctx) && vm.runInContext("JSON.stringify([state.upg.name, state.upg.to, state.upg.from_copy, !!state.upg.worn, state.upg.floor])", ctx) === '["nhelm",1,0,false,0.2]',
 		`a spare at the worn level: one +1 step at the spare floor (${vm.runInContext("JSON.stringify(state.upg)", ctx)})`);
+	// v25.79 (owner: more risk with a spare): +5→+6 at 40% backed by a spare passes, +7→+8 at 15% doesn't; a stat-scrolled
+	// copy is never a spare (a failed low-odds roll would lose its stat scroll)
+	{ const st = (from, copies) => vm.runInContext(`JSON.stringify(upgrade_step({ name: "nhelm", level: ${from} }, "paladin", my_gear(), "helmet", ${copies}))`, ctx);
+		const s6 = JSON.parse(st(5, 5) || "null"), s8 = JSON.parse(st(7, 7) || "null");
+		const sp0 = vm.runInContext("owned_level('nhelm')", ctx);
+		character.items[2] = { name: "nhelm", level: 0, stat_type: "str" };
+		const sp1 = vm.runInContext("owned_level('nhelm')", ctx);
+		character.items[2] = { name: "nhelm", level: 0 };
+		assert((!s6 || s6.ok || !/odds/.test(s6.why || "")) && (!s8 || (!s8.ok && /odds 15%/.test(s8.why))) && sp0 === 0 && sp1 === -1,
+			`v25.79: a spare-backed 40% step isn't refused for odds, a 15% one is; a stat-scrolled copy isn't a spare (${JSON.stringify([s6, s8, sp0, sp1])})`); }
 	assert(vm.runInContext("upgrade_gold()", ctx) === 5e6 - 50_000, `a fighter's budget is its gold above gold_reserve (${vm.runInContext("upgrade_gold()", ctx)})`);
 	{ const nm = character.name, ct = character.ctype; Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
 		assert(vm.runInContext("upgrade_keep()", ctx) === 1e6, `the merchant keeps upgrade_keep (1M) (${vm.runInContext("upgrade_keep()", ctx)})`);
@@ -4511,7 +4521,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 				assert(/merchant's project/.test(a1 || "") && a2 === null, `upgrade_ahead: the merchant's project (${a1}); a piece at its top: nothing ahead (${a2})`);
 				// v25.66: a +1 step passing the rule is ahead — worn at +0 (99%): with the merchant (it upgrades the worn piece)
 				// yes; with no merchant and no spare, no; with a spare at the worn level, yes. Worn at +3 (+4 at 70%), no spare:
-				// under the last-copy floor (80%) → nothing ahead; a spare at +3 (50% floor) → ahead
+				// under the last-copy floor (80%) → nothing ahead; a spare at +3 (20% floor) → ahead
 				const w0 = `{ ...${g62}, w: { ...${g62}.w, gloves: 0 } }`;
 				const scs = [ctx.G.items.scroll0, ctx.G.items.scroll1]; ctx.G.items.scroll0 = { g: 1000 }; ctx.G.items.scroll1 = { g: 40000 };
 				R(`state.merchant = { name: CFG.merchant.name, t: Date.now() }; state.bank_gear = []`);
