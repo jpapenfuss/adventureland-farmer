@@ -796,6 +796,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
 		vm.runInContext("state.turn = null; state.directive = null; refresh_directive()", ctx);
 		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.82: a hunt that can't be finished doesn't start a hold");
+		// v25.83: but a directive that is the hunt itself starts it on arrival, whatever the estimate says at that tick
+		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
+			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "goo", map: "main", boundary: [-100, -100, 100, 100], count: 5, w: 3, reason: "monster hunt 7 left" }] } });
+		vm.runInContext("globalThis.__gf83 = state.guide_farm; state.guide_farm = null; state.goals_cache = null; state.turn = null; state.directive = null; refresh_directive()", ctx);
+		assert(vm.runInContext("state.hunt_hold?.monster === 'goo'", ctx), `v25.83: arriving on a hunt directive holds it (${vm.runInContext("JSON.stringify([state.directive?.reason, state.hunt_hold])", ctx)})`);
+		vm.runInContext("state.guide_farm = __gf83", ctx);
 		vm.runInContext("state.hunt_hold = null; state.turn = null", ctx); }
 
 	// 38) mutual goals win: Torlis's guide row is goo; Aspernari's goals include tortoise (hunt) and minimush (quest).
