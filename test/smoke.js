@@ -826,7 +826,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// v25.84: a hunt on a monster we can't fight is "lost" (it would block every hunt trip until it lapsed)
 		character.s = { monsterhunt: { id: "brute36", c: 3, ms: 600000 } };
 		vm.runInContext("globalThis.__hmx84 = CFG.hunt_min_xp; CFG.hunt_min_xp = 0", ctx);
-		assert(vm.runInContext("hunt_state()", ctx) === "lost" && (character.s.monsterhunt.id = "goo", vm.runInContext("hunt_state()", ctx) === "chase"), "v25.84: an unfightable hunt is lost, a fightable one chased");
+		assert(vm.runInContext("hunt_state()", ctx) === "chase", "v25.88 (owner): no fight-model gate — a hunt the model calls unfightable is still chased");
 		vm.runInContext("CFG.hunt_min_xp = __hmx84", ctx);
 		character.s = {};
 		vm.runInContext("state.hunt_hold = null; state.turn = null", ctx); }

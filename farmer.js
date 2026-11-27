@@ -5993,7 +5993,7 @@ function pick_pack() {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		const at_camp = character.map === d.map && valid_boundary(d.boundary) && in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]);
 		const route = !at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
-		const why_no = at_camp ? null : !state.safe[d.monster] && !fight_profile(d.monster) ? `the fight model won't take ${d.monster}` : route ? `no safe way there: ${route}` : null;
+		const why_no = at_camp ? null : route ? `no safe way there: ${route}` : null; // (v25.88, owner: the fight model doesn't end a plan)
 		if (why_no) plan_end(why_no, 600_000);
 		else {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
@@ -6600,7 +6600,7 @@ function hunt_gone_why(H) {
 }
 function hunt_directive() {
 	const h = character.s.monsterhunt;
-	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !G.monsters[h.id] || !hunt_feasible(h)) return null; // v25.88: no fight-model gate
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
 }
@@ -6721,7 +6721,7 @@ function refresh_directive__fighter() {
 	if (leads && settled && !state.hunt_hold) {
 		let pick = d && !d.boss && is_hunt(d) && hunt_open(d.monster) && !plan_skipped(d.monster) && valid_boundary(d.boundary) ? d : null;
 		if (!pick && !d?.boss) { // nobody's turn is a hunt now, but someone holds one: the party works it (fewest kills left first)
-			const h = hunt_list().filter((x) => fight_profile(x.mt) && !plan_skipped(x.mt)).sort((a, b) => a.c - b.c)[0];
+			const h = hunt_list().filter((x) => G.monsters[x.mt] && !plan_skipped(x.mt)) /* v25.88 (owner): no fight-model gate on hunts */.sort((a, b) => a.c - b.c)[0];
 			const a = h && resolve_area(h.mt);
 			if (a) pick = { monster: h.mt, ...a };
 		}
@@ -7126,7 +7126,7 @@ function hunt_state() {
 	const h = character.s.monsterhunt;
 	if (!h) return "none";
 	if (!(h.c > 0)) return "ready";
-	return hunt_feasible(h) && fight_profile(h.id) ? "chase" : "lost"; // v25.84: a monster we can't fight isn't chased (Fable)
+	return hunt_feasible(h) && G.monsters[h.id] ? "chase" : "lost"; // v25.88 (owner): no fight-model gate on hunts
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.

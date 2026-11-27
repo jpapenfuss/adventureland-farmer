@@ -111,7 +111,7 @@ function hunt_gone_why(H) {
 }
 function hunt_directive() {
 	const h = character.s.monsterhunt;
-	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
+	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !G.monsters[h.id] || !hunt_feasible(h)) return null; // v25.88: no fight-model gate
 	const best = resolve_area(h.id);
 	return best && { monster: h.id, ...best, reason: `monster hunt ${h.c} left`, guide_safe: false };
 }
@@ -232,7 +232,7 @@ function refresh_directive() {
 	if (leads && settled && !state.hunt_hold) {
 		let pick = d && !d.boss && is_hunt(d) && hunt_open(d.monster) && !plan_skipped(d.monster) && valid_boundary(d.boundary) ? d : null;
 		if (!pick && !d?.boss) { // nobody's turn is a hunt now, but someone holds one: the party works it (fewest kills left first)
-			const h = hunt_list().filter((x) => fight_profile(x.mt) && !plan_skipped(x.mt)).sort((a, b) => a.c - b.c)[0];
+			const h = hunt_list().filter((x) => G.monsters[x.mt] && !plan_skipped(x.mt)) /* v25.88 (owner): no fight-model gate on hunts */.sort((a, b) => a.c - b.c)[0];
 			const a = h && resolve_area(h.mt);
 			if (a) pick = { monster: h.mt, ...a };
 		}
