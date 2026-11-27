@@ -102,8 +102,6 @@ async function travel(dest) {
 			const P_ = state.pack;
 			if (e?.reason === "deadly_route" && P_ && !is_follower() && dest?.map === P_.map) {
 				rest_place(P_, 1_800_000);
-				// v25.89: the held hunt plan ends too (the pick would otherwise re-set the same camp every tick)
-				if (state.hunt_hold?.monster === P_.mtype && typeof plan_end === "function") plan_end(`no safe way there: ${e.why || "the walk was refused"}`, 1_800_000);
 				if (state.probe?.mtype === P_.mtype) { skip("probe:" + P_.mtype, 6 * 3600_000, "no safe way there"); state.probe = null; }
 				game_log(`${P_.mtype} @ ${P_.map}: no safe way there (${e.why || "?"}) — resting it 30 min, picking again`, C.warn);
 				state.pack = null; state.last_pick = 0;
