@@ -41,12 +41,12 @@ function cave_due() {
 	if (cave_blocked()) return false;
 	return others().every((n) => { const p = state.partners[n]; return fresh(p) && !p.rip && !p.errand; });
 }
-// v25.29: after a visit the cave beat us, not again until the party is stronger (party_power: average level, gear points)
+// v25.87 (owner): after a visit the cave beat us (give_up_deaths), not again for cave.hold_h hours (was: until the party
+// was stronger by retry_levels or retry_gear)
 function cave_blocked() {
-	const B = state.cave_block, pw = party_power();
+	const B = state.cave_block;
 	if (!B) return false;
-	// (only with at least as many fighters online as then: an average without a weaker member isn't the party stronger)
-	if (pw && pw.n >= (B.n || 0) && (pw.lv >= B.lv + CFG.cave.retry_levels || pw.gs >= B.gs * CFG.cave.retry_gear)) { state.cave_block = null; game_log("cave: the party is stronger now — trying the cave again", C.info); return false; }
+	if (Date.now() - (B.at || 0) >= CFG.cave.hold_h * 3600_000) { state.cave_block = null; game_log(`cave: ${CFG.cave.hold_h}h since it beat us — trying the cave again`, C.info); return false; }
 	return true;
 }
 // Leave the visit for good (Amber pays out on exit). The tank: after give_up_deaths; a follower: when the tank has left.
@@ -332,7 +332,7 @@ function facts_cave(F) {
 		F("cave_json", "self", `cave JSON: ${JSON.stringify({ floor: st.floor, doors: st.doors, objectives: st.objectives, choice: st.choice && { kind: st.choice.kind, options: st.choice.options }, hunts: st.hunts })}`);
 	} else if (CFG.cave?.enabled && is_tank_class(character.ctype)) {
 		const B = state.cave_block;
-		if (B) return F("cave", "self", `cave: on hold — it beat us ${ago(B.at)} ago (${B.deaths || "?"} deaths); back at average level ${(B.lv + CFG.cave.retry_levels).toFixed(1)} or ${Math.round(B.gs * CFG.cave.retry_gear)} gear points (now ${party_power()?.lv ?? "?"} / ${party_power()?.gs ?? "?"})`);
+		if (B) return F("cave", "self", `cave: on hold — it beat us ${ago(B.at)} ago (${B.deaths || "?"} deaths); back at ${new Date(B.at + CFG.cave.hold_h * 3600_000).toLocaleTimeString()} (${CFG.cave.hold_h}h hold)`);
 		F("cave", "self", `cave: ${!v ? "not checked yet" : v.error ? `check failed: ${v.error}` : cave_open() ? (skipped("cave") ? `open — paused (${skip_why["cave"] || "?"})` : "open — going today") : `visited today; next ${v.resets ? new Date(v.resets).toLocaleTimeString() : "?"}`}`);
 	}
 }
