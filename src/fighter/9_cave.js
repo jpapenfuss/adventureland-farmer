@@ -240,13 +240,29 @@ function cave_tick() {
 			}
 		}
 		// the tank on another floor or far away: walk after it (smart_move takes the cave's doors)
-		if (L && !L.rip && (L.map !== character.map || Math.hypot(partner_pos(L).x - character.x, partner_pos(L).y - character.y) > CFG.party.follow_far)) {
+		// v25.86 (owner: the mage and priest don't follow closely, the paladin walks into packs): in the cave a follower
+		// stays within cave.follow_px of the tank (was party.follow_far)
+		if (L && !L.rip && (L.map !== character.map || Math.hypot(partner_pos(L).x - character.x, partner_pos(L).y - character.y) > CFG.cave.follow_px)) {
 			const a = hit_on_me(); if (a) fight(a, false);
 			cave_walk({ map: L.map, x: partner_pos(L).x, y: partner_pos(L).y }, `after ${L.name}`);
 			return 200;
 		}
 		follower_tick();
 		return 150;
+	}
+	// v25.86: the tank fights what's on the party, but pulls nothing new and walks nowhere until every member is alive,
+	// on this floor and within cave.group_px — it used to walk on and pull packs with the healer still behind
+	const a0 = hit_on_me() || Object.values(parent.entities || {}).find((e) => cave_hostile(e) && e.target && party_names().has(e.target) && Math.hypot(e.x - character.x, e.y - character.y) < CFG.cave.engage_px);
+	const behind = (CFG.party.members || []).filter((n) => n !== character.name).filter((n) => {
+		const p = state.partners[n];
+		return !p || !fresh(p) || p.rip || p.map !== character.map || Math.hypot(partner_pos(p).x - character.x, partner_pos(p).y - character.y) > CFG.cave.group_px;
+	});
+	if (behind.length) {
+		if (a0) { if (!hold_for_tank(a0)) fight(a0); set_message(`cave: ${a0.name || a0.mtype} (waiting for ${behind.join(", ")})`); return 200; }
+		if (is_moving(character)) halt("cave_wait");
+		cave_st.walk = null;
+		set_message(`cave: waiting for ${behind.join(", ")}`);
+		return 250;
 	}
 	// the tank: what's on us, then what's hostile near us, then the next goal
 	const near = Object.values(parent.entities || {}).filter((e) => cave_hostile(e) && Math.hypot(e.x - character.x, e.y - character.y) < CFG.cave.engage_px)

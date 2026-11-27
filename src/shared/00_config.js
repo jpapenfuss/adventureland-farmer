@@ -1,4 +1,4 @@
-const VERSION = "25.85"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.86"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -281,7 +281,8 @@ const CFG = {
 		// stronger: average level + retry_levels or gear points x retry_gear (the first visit: 4 deaths in 2 min to the
 		// first camp's 6 rats + 2 spiders, no XP)
 		give_up_deaths: 3, retry_levels: 2, retry_gear: 1.1,
-		rejoin_hp: 0.7 },          // v25.41: a revived follower stays out of the fight until this share of its HP
+		rejoin_hp: 0.7,             // v25.41: a revived follower stays out of the fight until this share of its HP
+		group_px: 150, follow_px: 100 }, // v25.86: the tank waits for every member within group_px; followers keep within follow_px          // v25.41: a revived follower stays out of the fight until this share of its HP
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,
 		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text): taller (it grows up) and its
 		// text wraps. v25.23 w: "log" — its left edge lined up with the log's (owner); a number: that width (wider than the
