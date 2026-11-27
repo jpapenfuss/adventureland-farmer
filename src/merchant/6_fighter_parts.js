@@ -60,3 +60,4 @@ function cave_died() {}
 function cave_watch_deaths() {} // v25.41: fighters only
 function facts_cave() {}
 function cave_entry_tick() { return false; }
+function plan_end() {} // v25.89: the merchant holds no hunt plan

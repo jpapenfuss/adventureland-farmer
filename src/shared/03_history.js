@@ -171,6 +171,11 @@ function watchdog() {
 	if (state.pack && still(f) && no_hits(f)) { // no pack = nothing safe to fight: waiting is correct, not a stall
 		reset();
 		wd_act("frozen", `no movement and no hits for ${W.frozen_min} min${state.pack ? " at " + state.pack.mtype : ""}`);
+		// v25.89: frozen on the way to a held hunt (2:00 AM: stuck in winterland on the walk to osnake @ halloween, the pick
+		// re-setting it every few seconds, frozen 3x): the plan ends with the reason, that hunt is left 30 min
+		const H = state.hunt_hold, Pk = state.pack;
+		if (H && Pk && Pk.mtype === H.monster && !(character.map === Pk.map && in_boundary(Pk.boundary, 300)) && typeof plan_end === "function")
+			plan_end(`stuck on the way there (frozen ${W.frozen_min} min, at ${character.map})`, 1_800_000);
 		halt("watchdog");
 		state.travel_block_until = 0;
 		if (state.pack) rest_camp(pack_key(state.pack), CFG.pack_cooldown_ms, now);

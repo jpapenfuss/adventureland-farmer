@@ -1719,6 +1719,12 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	seed(4);
 	vm.runInContext("stats.xp += 5000; watchdog()", ctx); // xp from partners' kills doesn't count as our progress
 	assert(vm.runInContext("hist.ev.some((e) => e.type === 'stuck' && e.kind === 'frozen') && Object.keys(state.cooldown).length === 1", ctx) && stop66.includes("smart"), "frozen leader: walk stopped, pack cooled down, logged");
+	// v25.89: frozen on the way to a held hunt: the plan ends with the reason (2:00 AM: stuck in winterland, osnake @ halloween)
+	{ Object.assign(character, { map: "winterland" });
+		vm.runInContext("hist.ev = []; state.cooldown = {}; wd.acts = []; state.plan_log = []; state.plan_skip = {}; state.pack = { mtype: 'osnake', map: 'halloween', boundary: [0,0,400,400] }; state.hunt_hold = { monster: 'osnake', map: 'halloween', boundary: [0,0,400,400], at: Date.now() }", ctx);
+		vm.runInContext("wd.pos = [{ t: Date.now() - 4 * 60000, map: 'winterland', x: 100, y: 100, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]; watchdog()", ctx);
+		assert(vm.runInContext("!state.hunt_hold && /stuck on the way there/.test(state.plan_log.at(-1)?.why) && plan_skipped('osnake')", ctx), `v25.89: frozen on the way: the plan ends with the reason (${vm.runInContext("JSON.stringify(state.plan_log)", ctx)})`);
+		Object.assign(character, { map: "main" }); vm.runInContext("state.plan_skip = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }", ctx); }
 	// moving but no xp for 11 min → noprog; third time in an hour → town
 	vm.runInContext("hist.ev = []; state.cooldown = {}", ctx);
 	const town66 = []; ctx.use_skill = (s) => (town66.push(s), Promise.resolve());
