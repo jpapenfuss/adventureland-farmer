@@ -202,10 +202,11 @@ function refresh_directive() {
 	// (v25.83: an open hunt counts while it's open — its goal entry drops out whenever its estimate flickers to "can't finish")
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt)) || !!hunt_open(mt);
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
-		(state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster))) {
+		(hunt_open(cur.monster) || (state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster)))) { // v25.84: a hunt isn't dropped on the way by a safety flip
 		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
 		d = cur;
-	} else state.dir_held = null;
+	} else if (!d && cur && !cur.boss && L && now < L.until && L.monster === cur.monster && hunt_open(cur.monster)) d = cur; // v25.84: no goal this tick is no reason to turn back from a hunt
+	else state.dir_held = null;
 	if (d && (!cur || cur.monster !== d.monster || cur.map !== d.map)) {
 		const a = valid_boundary(d.boundary) ? d : resolve_area(d.monster, d.map, d.boundary);
 		state.dir_lock = { monster: d.monster, until: now + ((a ? travel_s(a.map, a.boundary) : 60) + CFG.travel.commit_min * 60) * 1000 };
@@ -310,11 +311,10 @@ function hunt_feasible(h) {
 	// v18.7: a low-end monster (under hunt_min_xp of the best we know) doesn't trap the party; kills there still count
 	const best = best_known_xps();
 	if (CFG.hunt_min_xp > 0 && best > 0 && mt_xps(h.id) < CFG.hunt_min_xp * best) return false;
-	if (!(h.ms > 0)) return true; // no expiry known
-	// v24.3: kills_per_s is already the party's rate (party table, or an estimate with the members counted); adding
-	// 0.6 per member near counted them twice and kept hunts that needed twice the real kill rate
-	const kps = kills_per_s(h.id);
-	return kps > 0 && h.c / kps * 1000 <= h.ms * 0.9;
+	// v25.84 (owner: hunts are completed): no kill-rate estimate any more. It flipped between "can finish" and "can't"
+	// as the measured rates aged, the hunt dropped off the goal list each time, and the party walked to cgoo and back
+	// every 10 min for an hour (36 left, never reached). A hunt is chased while it's open; it ends done or lapsed.
+	return true;
 }
 // Kills per second we'd manage at the best spawn area of a monster (measured if we've been there); 0 if unsafe
 function kills_per_s(mt) {
