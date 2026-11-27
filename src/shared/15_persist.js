@@ -11,7 +11,7 @@ function save_state() {
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
 	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
-		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
+		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, hunt_hold: state.hunt_hold || null, plan_log: state.plan_log || [], plan_skip: state.plan_skip || {}, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
@@ -98,6 +98,7 @@ function load_state() {
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.camp_deaths, d.camp_deaths || {}); // v25.29
 	if (d.cave_block) state.cave_block = d.cave_block;
+	if (d.hunt_hold) state.hunt_hold = d.hunt_hold; if (d.plan_log) state.plan_log = d.plan_log; if (d.plan_skip) state.plan_skip = d.plan_skip; // v25.88
 	Object.assign(state.gear_skip, live(d.gear_skip));
 	Object.assign(state.crafted, d.crafted || {});
 	Object.assign(state.bank_seen, d.bank_seen || {});

@@ -219,7 +219,7 @@ function hunt_state() {
 	const h = character.s.monsterhunt;
 	if (!h) return "none";
 	if (!(h.c > 0)) return "ready";
-	return hunt_feasible(h) && fight_profile(h.id) ? "chase" : "lost"; // v25.84: a monster we can't fight isn't chased (Fable)
+	return hunt_feasible(h) && G.monsters[h.id] ? "chase" : "lost"; // v25.88 (owner): no fight-model gate on hunts
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.

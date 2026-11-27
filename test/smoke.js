@@ -42,6 +42,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
+vm.runInContext("PLAN_T0 = 0", ctx); // v25.88: no 30 s settle wait for the hunt plan in the tests
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 vm.runInContext("globalThis.__collect0 = CFG.merchant.collect", ctx); // v25.43: the shipped default, before the fixtures override it
 vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
@@ -702,7 +703,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		attack: 180, frequency: 0.75, damage_type: "magical", hunt: { id: "tortoise", c: 20 },
 		goals: [{ monster: "tortoise", w: 4, reason: "monster hunt 20 left", eta_h: 0.5 }] } });
 	vm.runInContext("refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari: monster hunt/.test(state.directive.reason)", ctx),
+	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari 20 left \\(plan: until done\\)/.test(state.directive.reason)", ctx), // v25.88: the hunt plan
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 
 	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
@@ -794,8 +795,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a hunt its owner can't finish doesn't start a hold (Fable on v25.82)
 		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
-		vm.runInContext("state.turn = null; state.directive = null; refresh_directive()", ctx);
-		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.82: a hunt that can't be finished doesn't start a hold");
+		Object.assign(character, { x: 900, y: 900 });
+		vm.runInContext("state.turn = null; state.directive = null; state.plan_log = []; refresh_directive()", ctx);
+		// v25.88: the plan is chosen when a member holds a hunt, wherever the party stands, whatever the estimate or turn
+		assert(vm.runInContext("state.hunt_hold?.monster === 'goo' && state.directive.hold", ctx), "v25.88: a member's open hunt becomes the plan at once, far from its camp");
+		assert(vm.runInContext("state.plan_log.length === 1 && state.plan_log[0].why === 'chosen' && /hunt goo/.test(state.plan_log[0].what)", ctx), `v25.88: the choice is logged (${vm.runInContext("JSON.stringify(state.plan_log)", ctx)})`);
+		vm.runInContext("state.turn = { who: 'Aspernari', end: Date.now() - 1 }; state.dir_lock = null; refresh_directive(); refresh_directive()", ctx);
+		assert(vm.runInContext("state.directive.monster === 'goo' && state.plan_log.length === 1", ctx), "v25.88: turns and the walk lock don't change the plan, and log nothing");
+		// the pick ends a plan with no safe way there, with the reason, and leaves that hunt for 10 min
+		vm.runInContext("globalThis.__prd = party_route_danger; party_route_danger = () => 'fsp @ main'; pick_pack(); party_route_danger = globalThis.__prd", ctx);
+		assert(vm.runInContext("!state.hunt_hold && /no safe way there: fsp @ main/.test(state.plan_log.at(-1).why) && plan_skipped('goo')", ctx), `v25.88: no safe way: the plan ends with the reason (${vm.runInContext("JSON.stringify(state.plan_log.at(-1))", ctx)})`);
+		vm.runInContext("refresh_directive()", ctx);
+		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.88: ...and isn't chosen again for 10 min");
+		vm.runInContext("state.plan_skip = {}; state.hunt_hold = null", ctx); Object.assign(character, { x: 0, y: 0 });
 		// v25.83: but a directive that is the hunt itself starts it on arrival, whatever the estimate says at that tick
 		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "goo", map: "main", boundary: [-100, -100, 100, 100], count: 5, w: 3, reason: "monster hunt 7 left" }] } });
@@ -814,7 +826,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// v25.84: a hunt on a monster we can't fight is "lost" (it would block every hunt trip until it lapsed)
 		character.s = { monsterhunt: { id: "brute36", c: 3, ms: 600000 } };
 		vm.runInContext("globalThis.__hmx84 = CFG.hunt_min_xp; CFG.hunt_min_xp = 0", ctx);
-		assert(vm.runInContext("hunt_state()", ctx) === "lost" && (character.s.monsterhunt.id = "goo", vm.runInContext("hunt_state()", ctx) === "chase"), "v25.84: an unfightable hunt is lost, a fightable one chased");
+		assert(vm.runInContext("hunt_state()", ctx) === "chase", "v25.88 (owner): no fight-model gate — a hunt the model calls unfightable is still chased");
 		vm.runInContext("CFG.hunt_min_xp = __hmx84", ctx);
 		character.s = {};
 		vm.runInContext("state.hunt_hold = null; state.turn = null", ctx); }
@@ -2374,8 +2386,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	hb("Sanala", { ...san, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 20, mp: 200 } });
 	assert(!vm.runInContext("probe_ready()", ctx), "a member low on potions blocks the probe");
 	hb("Sanala", { ...san, level: 60, attack: 1, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } }); // negligible damage keeps edge over the limit
-	vm.runInContext("pick_pack()", ctx);
+	vm.runInContext("globalThis.__hh = state.hunt_hold; state.hunt_hold = null; pick_pack()", ctx);
 	assert(vm.runInContext("state.probe && state.probe.mtype === 'edge' && state.pack.probe", ctx), "pick_pack starts the probe");
+	vm.runInContext("state.hunt_hold = { monster: 'goo', map: 'main', boundary: [-100,-100,100,100], at: Date.now() }; globalThis.__pa88 = state.probe_at; globalThis.__pr88 = state.probe; globalThis.__pk88 = state.pack; state.probe_at = 0; state.probe = null", ctx);
+	assert(!vm.runInContext("(pick_pack(), state.probe)", ctx), "v25.88: no probe while a hunt is held");
+	vm.runInContext("state.hunt_hold = __hh; state.probe_at = __pa88; state.probe = __pr88; state.pack = __pk88", ctx);
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("state.pack.mtype === 'edge' && !state.probe_at_reset", ctx), "the probe holds the pack through repicks");
 	// a member under 40% → failure, 6h cooldown + incident
@@ -2627,7 +2642,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 51 }); // the leader
 	vm.runInContext("state.partners = {}", ctx);
 	hb("Sanala", { ...san, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
-	vm.runInContext(`CFG.travel.commit_min = 10; state.goals_cache = null; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
+	character.s = {}; // (no hunt: the v25.88 plan would replace the goal)
+	vm.runInContext(`CFG.travel.commit_min = 10; state.goals_cache = null; state.hunt_hold = null; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
 		state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.safe.arcticbee = { ttk: 1, xp: 1 };
 		globalThis.__ps = pick_shared; globalThis.__hd = hunt_directive; globalThis.__bd = boss_directive;
 		pick_shared = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], reason: "mutual" });
@@ -5537,6 +5553,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		let threw = false; try { vm.runInContext("keep_awake()", ctx); } catch (e) { threw = true; }
 		assert(!threw, "a failing performance_trick doesn't throw");
 		delete ctx.parent.Howler; delete ctx.parent.sounds;
+	}
+	// v25.88 (owner: no fight-model veto on hunts): a held hunt the model refuses is still picked and counted fightable
+	{
+		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 0, y: 0, rip: false });
+		character.s = { monsterhunt: { id: "goo", c: 5, ms: 900000 } };
+		vm.runInContext("PLAN_T0 = 0; state.partners = {}; state.plan_skip = {}; state.hunt_hold = null; state.directive = null; state.dir_lock = null; state.probe = null; globalThis.__fp88 = fight_profile; fight_profile = (mt, ...a) => mt === 'goo' ? null : __fp88(mt, ...a)", ctx);
+		const r88 = vm.runInContext("try { refresh_directive(); pick_pack(); JSON.stringify([state.pack?.mtype, !!state.safe.goo]) } catch (e) { 'threw: ' + e.message }", ctx);
+		vm.runInContext("fight_profile = __fp88", ctx);
+		assert(r88 === '["goo",true]', `v25.88: a model-refused held hunt is the pack and fightable, no throw (${r88})`);
 	}
 	all_done = true;
 	console.log("ALL PASS");
