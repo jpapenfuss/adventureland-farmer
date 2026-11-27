@@ -79,17 +79,19 @@ function hunt_open(mt, chasing = false) {
 // v25.88: every open hunt in the party: [{ mt, who, c }] (a member's last heartbeat counts for 5 min)
 function hunt_list() {
 	const own = character.s.monsterhunt, out = [], now = Date.now();
-	if (own?.id && own.c > 0) out.push({ mt: own.id, who: character.name, c: own.c });
+	if (own?.id && own.c > 0) out.push({ mt: own.id, who: character.name, c: own.c, ms: own.ms || 0 });
 	for (const n of others()) {
 		const p = state.partners[n];
-		if (p && now - (p.t || 0) < 300_000 && p.hunt?.id && p.hunt.c > 0) out.push({ mt: p.hunt.id, who: p.name || n, c: p.hunt.c });
+		if (p && now - (p.t || 0) < 300_000 && p.hunt?.id && p.hunt.c > 0) out.push({ mt: p.hunt.id, who: p.name || n, c: p.hunt.c, ms: p.hms ? Math.max(0, p.hms - (now - (p.t || now))) : 0 });
 	}
 	return out;
 }
 // v25.88: the plan's log — every choice and end with its reason (report: "plan" line, history: "plan" events)
 function plan_note(what, why) {
-	state.plan_log = [...(state.plan_log || []), { at: Date.now(), what, why }].slice(-8);
-	log_ev("plan", { what, why });
+	// (v25.92: with every member's hunt at that moment — kills left, minutes left — and where the tank stood)
+	const hs = hunt_list().map((x) => `${x.who} ${x.mt} ${x.c} left${x.ms ? ` ${Math.round(x.ms / 60_000)}m` : ""}`).join("; ") || "nobody holds a hunt";
+	state.plan_log = [...(state.plan_log || []), { at: Date.now(), what, why, hunts: hs, map: character.map }].slice(-12);
+	log_ev("plan", { what, why, hunts: hs, map: character.map, x: Math.round(character.x), y: Math.round(character.y) });
 	game_log(`plan: ${what} — ${why}`, C.info);
 }
 function plan_end(why, skip_ms = 0) {
@@ -417,3 +419,25 @@ function live_guide_farm() {
 	if (gxp !== null && best_known_xps() > 0 && gxp < CFG.guide_farm_min_xp * best_known_xps()) return null;
 	return g;
 }
+
+// v25.92 (owner: "Make sure shit gets logged. In detail."): every monster hunt's life on this character — taken, done,
+// turned in, lapsed, replaced — with its kills left and time left at that moment, where we were, what the plan held and
+// what errand we were on. History events "hunt"; the report's "hunt log" line. Checked every 2 s.
+let hw_prev = null;
+function hunt_watch() {
+	const h = character.s?.monsterhunt || null, now = Date.now();
+	const cur = h && h.id ? { id: h.id, c: h.c, ms: h.ms, at: now } : null;
+	const ctx = () => ({ map: character.map, x: Math.round(character.x), y: Math.round(character.y), errand: state.errand || null,
+		plan: state.hunt_hold?.monster || null, pack: state.pack?.mtype || null });
+	const p = hw_prev;
+	if (!p && cur) log_ev("hunt", { what: "taken", id: cur.id, c: cur.c, ms: cur.ms, first_seen: !hw_seen_once, ...ctx() });
+	else if (p && (!cur || cur.id !== p.id)) {
+		const left_ms = (p.ms || 0) - (now - p.at); // time it had left now, counted from the last tick that saw it
+		const how = !(p.c > 0) ? "turned in" : left_ms <= 5_000 ? "lapsed" : "gone early";
+		log_ev("hunt", { what: how, id: p.id, left: p.c, ms_left: Math.max(0, Math.round(left_ms)), ...ctx() });
+		if (cur) log_ev("hunt", { what: "taken", id: cur.id, c: cur.c, ms: cur.ms, ...ctx() });
+	} else if (p && cur && p.c > 0 && !(cur.c > 0)) log_ev("hunt", { what: "done", id: cur.id, ms_left: cur.ms, ...ctx() });
+	hw_prev = cur; hw_seen_once = true;
+}
+let hw_seen_once = false;
+setInterval(() => { try { if (!is_merchant()) hunt_watch(); } catch (e) {} }, 2000);
