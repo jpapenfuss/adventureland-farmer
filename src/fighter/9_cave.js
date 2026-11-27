@@ -17,6 +17,7 @@ function cave_run_check(st) {
 	if (!st || st.run === cave_st.run) return;
 	cave_st.run = st.run; cave_st.bought = {}; cave_st.deaths = {}; cave_st.stuck = {}; cave_st.prog = null; cave_st.last_obj = null; cave_st.walk = null;
 	cave_st.visit_deaths = 0; cave_st.exiting = false; cave_st.out_since = 0; cave_st.exit_tries = 0; cave_st.rip_seen = {}; cave_st.death_by = {}; cave_st.revived = false;
+	cave_st.wait_since = 0; cave_st.wait_tick = 0; // v25.86
 }
 // ---- the daily visit (the tank) ----
 async function cave_refresh_info() {
@@ -263,7 +264,7 @@ function cave_tick() {
 	});
 	if (!behind.length) cave_st.wait_since = 0;
 	else {
-		if (!cave_st.wait_since) cave_st.wait_since = now86;
+		if (!cave_st.wait_since || a0) cave_st.wait_since = now86; // (a fight with what's on the party doesn't count toward the limit)
 		if (cave_st.prog) { const dt = now86 - (cave_st.wait_tick || now86); cave_st.prog.best_at = now86; cave_st.prog.since += dt; }
 		cave_st.wait_tick = now86;
 		if (now86 - cave_st.wait_since > CFG.cave.wait_party_ms) { cave_st.wait_since = 0; cave_leave(`waited ${Math.round(CFG.cave.wait_party_ms / 60_000)} min for ${behind.join(", ")}`); return 400; }
