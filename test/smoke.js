@@ -5584,14 +5584,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// v25.92: every hunt change is logged with kills left, time left and where we were
 	{
 		Object.assign(character, { name: "Sanala", ctype: "mage", map: "desertland", x: 5, y: 5 });
-		vm.runInContext("hist.ev = []; hw_prev = null", ctx);
+		vm.runInContext("hist.ev = []; hw_prev = null; hw_seen_once = false", ctx);
 		character.s = { monsterhunt: { id: "porcupine", c: 187, ms: 1200000 } }; vm.runInContext("hunt_watch()", ctx);
 		character.s = {}; vm.runInContext("hunt_watch()", ctx);
 		character.s = { monsterhunt: { id: "snake", c: 1, ms: 900000 } }; vm.runInContext("hunt_watch()", ctx);
 		character.s.monsterhunt.c = 0; vm.runInContext("hunt_watch()", ctx);
 		character.s = {}; vm.runInContext("hunt_watch()", ctx);
 		const ev = JSON.parse(vm.runInContext("JSON.stringify(hist.ev.filter((e) => e.type === 'hunt').map((e) => [e.what, e.id, e.left ?? e.c, e.map]))", ctx));
-		assert(JSON.stringify(ev) === JSON.stringify([["taken","porcupine",187,"desertland"],["gone early","porcupine",187,"desertland"],["taken","snake",1,"desertland"],["done","snake",null,"desertland"],["turned in","snake",0,"desertland"]]), `v25.92: hunt changes logged (${JSON.stringify(ev)})`);
+		assert(JSON.stringify(ev) === JSON.stringify([["held at load","porcupine",187,"desertland"],["gone early","porcupine",187,"desertland"],["taken","snake",1,"desertland"],["done","snake",null,"desertland"],["turned in","snake",0,"desertland"]]), `v25.92: hunt changes logged (${JSON.stringify(ev)})`);
 		assert(/hunt log: .*turned in snake/.test(vm.runInContext("report_facts().map((f) => f.text).join('\\n')", ctx)), "v25.92: the hunt log line is in the report");
 	}
 	// v25.93: compounds/upgrades by item and step, with the odds and the scrolls
@@ -5600,6 +5600,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			{ t: Date.now(), type: 'compound', item: 'ringsj', from: 2, chance: 0.6, ok: false, scroll: 'cscroll0' }]`, ctx);
 		const hl = vm.runInContext("history_lines().join('\\n')", ctx);
 		assert(/compounds by step: ringsj \+0→\+1 1\/2 ok \(odds 90%\) \[cscroll0 2\] \| ringsj \+2→\+3 0\/1 ok \(odds 60%\)/.test(hl), `v25.93: compounds by step (${hl.split("\n").find((l) => /by step/.test(l))})`);
+		vm.runInContext("hist.ev = [{ t: Date.now(), type: 'gold_drop', g: 133000, map: 'main', errand: 'town', last_tag: 'scrolls', tag_age_s: 40 }]", ctx);
+		assert(/untracked gold drops \(1, 133k\): .*133k @main errand town \(last tag scrolls 40s before\)/.test(vm.runInContext("history_lines().join('\\n')", ctx)), "v25.95: untracked gold drops listed");
 		vm.runInContext("hist.ev = []", ctx);
 	}
 	all_done = true;
