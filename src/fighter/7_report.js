@@ -84,6 +84,11 @@ function facts_picks(F, ctx) {
 	if (!(!is_follower() && state.pick_table?.length)) return;
 	const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
 	const cur = p ? pack_key(p) : null;
+	if (!is_follower()) { // v25.88: the hunt plan and every change to it, with its reason
+		const H = state.hunt_hold, LG = (state.plan_log || []).slice(-5).reverse();
+		F("plan", "party", `plan: ${H ? `hunt ${H.monster} @ ${H.map} until done (${hunt_open(H.monster) || H.who || "?"}), since ${ago(H.at)} ago` : "no hunt — best camp"}` +
+			(LG.length ? ` | changes: ${LG.map((e) => `${ago(e.at)} ago ${e.what} — ${e.why}`).join("; ")}` : ""));
+	}
 	if (state.review_at && !is_follower()) {
 		const pw = party_power(), RL = state.review_last;
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +

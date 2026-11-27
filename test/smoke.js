@@ -702,7 +702,7 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		attack: 180, frequency: 0.75, damage_type: "magical", hunt: { id: "tortoise", c: 20 },
 		goals: [{ monster: "tortoise", w: 4, reason: "monster hunt 20 left", eta_h: 0.5 }] } });
 	vm.runInContext("refresh_directive()", ctx);
-	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari: monster hunt/.test(state.directive.reason)", ctx),
+	assert(vm.runInContext("state.directive && state.directive.monster === 'tortoise' && /Aspernari 20 left \\(plan: until done\\)/.test(state.directive.reason)", ctx), // v25.88: the hunt plan
 		`leader farms the partner's hunt (${vm.runInContext("JSON.stringify(state.directive)", ctx)})`);
 
 	// 33) shared town trips: 15 free (not short) → no trip alone; partner in town → go too
@@ -794,8 +794,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		// a hunt its owner can't finish doesn't start a hold (Fable on v25.82)
 		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "minimush", map: "main", boundary: [200, 200, 400, 400], count: 8, w: 2, reason: "guide quest wgloves: spores 0/20" }] } });
-		vm.runInContext("state.turn = null; state.directive = null; refresh_directive()", ctx);
-		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.82: a hunt that can't be finished doesn't start a hold");
+		Object.assign(character, { x: 900, y: 900 });
+		vm.runInContext("state.turn = null; state.directive = null; state.plan_log = []; refresh_directive()", ctx);
+		// v25.88: the plan is chosen when a member holds a hunt, wherever the party stands, whatever the estimate or turn
+		assert(vm.runInContext("state.hunt_hold?.monster === 'goo' && state.directive.hold", ctx), "v25.88: a member's open hunt becomes the plan at once, far from its camp");
+		assert(vm.runInContext("state.plan_log.length === 1 && state.plan_log[0].why === 'chosen' && /hunt goo/.test(state.plan_log[0].what)", ctx), `v25.88: the choice is logged (${vm.runInContext("JSON.stringify(state.plan_log)", ctx)})`);
+		vm.runInContext("state.turn = { who: 'Aspernari', end: Date.now() - 1 }; state.dir_lock = null; refresh_directive(); refresh_directive()", ctx);
+		assert(vm.runInContext("state.directive.monster === 'goo' && state.plan_log.length === 1", ctx), "v25.88: turns and the walk lock don't change the plan, and log nothing");
+		// the pick ends a plan with no safe way there, with the reason, and leaves that hunt for 10 min
+		vm.runInContext("globalThis.__prd = party_route_danger; party_route_danger = () => 'fsp @ main'; pick_pack(); party_route_danger = globalThis.__prd", ctx);
+		assert(vm.runInContext("!state.hunt_hold && /no safe way there: fsp @ main/.test(state.plan_log.at(-1).why) && plan_skipped('goo')", ctx), `v25.88: no safe way: the plan ends with the reason (${vm.runInContext("JSON.stringify(state.plan_log.at(-1))", ctx)})`);
+		vm.runInContext("refresh_directive()", ctx);
+		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.88: ...and isn't chosen again for 10 min");
+		vm.runInContext("state.plan_skip = {}; state.hunt_hold = null", ctx); Object.assign(character, { x: 0, y: 0 });
 		// v25.83: but a directive that is the hunt itself starts it on arrival, whatever the estimate says at that tick
 		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
 			hunt: { id: "goo", c: 7 }, hs: "lost", goals: [{ monster: "goo", map: "main", boundary: [-100, -100, 100, 100], count: 5, w: 3, reason: "monster hunt 7 left" }] } });

@@ -76,6 +76,38 @@ function hunt_open(mt, chasing = false) {
 	}
 	return out.length ? out.join(", ") : null;
 }
+// v25.88: every open hunt in the party: [{ mt, who, c }] (a member's last heartbeat counts for 5 min)
+function hunt_list() {
+	const own = character.s.monsterhunt, out = [], now = Date.now();
+	if (own?.id && own.c > 0) out.push({ mt: own.id, who: character.name, c: own.c });
+	for (const n of others()) {
+		const p = state.partners[n];
+		if (p && now - (p.t || 0) < 300_000 && p.hunt?.id && p.hunt.c > 0) out.push({ mt: p.hunt.id, who: p.name || n, c: p.hunt.c });
+	}
+	return out;
+}
+// v25.88: the plan's log — every choice and end with its reason (report: "plan" line, history: "plan" events)
+function plan_note(what, why) {
+	state.plan_log = [...(state.plan_log || []), { at: Date.now(), what, why }].slice(-8);
+	log_ev("plan", { what, why });
+	game_log(`plan: ${what} — ${why}`, C.info);
+}
+function plan_end(why, skip_ms = 0) {
+	const H = state.hunt_hold;
+	if (!H) return;
+	if (skip_ms) (state.plan_skip = state.plan_skip || {})[H.monster] = Date.now() + skip_ms;
+	plan_note(`hunt ${H.monster} ended`, why);
+	state.hunt_hold = null;
+}
+const plan_skipped = (mt) => (state.plan_skip?.[mt] || 0) > Date.now();
+// Why a held hunt is no longer open: done (its holder's count reached 0 / turned in), or gone (lapsed, holder offline)
+function hunt_gone_why(H) {
+	const own = character.s.monsterhunt;
+	if (own?.id === H.monster && !(own.c > 0)) return "done";
+	const p = Object.values(state.partners || {}).find((q) => q?.hs === "ready" && (H.who || "").includes(q.name));
+	if (p) return `done (${p.name})`;
+	return `no member holds it any more (turned in, lapsed, or its holder offline 5 min: ${H.who || "?"})`;
+}
 function hunt_directive() {
 	const h = character.s.monsterhunt;
 	if (!CFG.auto_monster_hunt || !h || !(h.c > 0) || !fight_profile(h.id) || !hunt_feasible(h)) return null;
@@ -184,18 +216,28 @@ function refresh_directive() {
 	// turns (pick_shared).
 	let d = mine;
 	if (partners().length && in_party_cfg() && !is_follower() && !mine?.boss) d = pick_shared(mine) || mine; // a boss beats every goal
-	// v25.82 (owner): once the party reaches a member's monster hunt, it stays until that hunt is done — no turns, no
-	// better camp, no boss. The one exception is a finished hunt about to lapse: hunts_trip_due's late turn-in (under
-	// hunt_turnin_ms) takes the party to town, and this hold brings it back.
-	if (state.hunt_hold && !hunt_open(state.hunt_hold.monster)) state.hunt_hold = null;
-	// v25.83: a directive that is a hunt starts the hold on arrival as it stands; the "chasing" test is only for a camp
-	// that's another goal (a guide row at the same monster). v25.82 asked it of hunt directives too, and a member's
-	// feasibility flickering on arrival kept the hold from ever starting (cgoo, 38 left, 4 visits in 1.2 h)
-	const is_hunt = (x) => /monster hunt/.test(x?.reason || "");
-	if (!state.hunt_hold && d && !d.boss && hunt_open(d.monster, !is_hunt(d)) && d.map === character.map && valid_boundary(d.boundary) &&
-		in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]))
-		state.hunt_hold = { monster: d.monster, map: d.map, boundary: d.boundary, count: d.count, at: now };
-	if (state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (held until done)`, guide_safe: false, hold: true };
+	// v25.88 (owner: "stay at a hunt camp until it's done, and stop letting the plan change without a documented
+	// reason"): the hunt plan. It is chosen when a hunt becomes the goal — not on arrival: v25.82-87 started the hold
+	// only at the camp, and before that the members' turns, the walk lock running out or the pick refusing the camp
+	// switched goals with no reason given. A plan ends only through plan_end(), which logs why: the hunt done or
+	// lapsed, its holder gone 5 min, no safe way there, or a monster the party can't fight.
+	const H0 = state.hunt_hold;
+	if (H0 && !hunt_open(H0.monster)) plan_end(hunt_gone_why(H0));
+	if (!state.hunt_hold) {
+		const is_hunt = (x) => /monster hunt/.test(x?.reason || "");
+		let pick = d && !d.boss && is_hunt(d) && hunt_open(d.monster) && !plan_skipped(d.monster) && valid_boundary(d.boundary) ? d : null;
+		if (!pick && !d?.boss) { // nobody's turn is a hunt now, but someone holds one: the party works it (fewest kills left first)
+			const h = hunt_list().filter((x) => fight_profile(x.mt) && !plan_skipped(x.mt)).sort((a, b) => a.c - b.c)[0];
+			const a = h && resolve_area(h.mt);
+			if (a) pick = { monster: h.mt, ...a };
+		}
+		if (pick) {
+			const who = hunt_list().filter((x) => x.mt === pick.monster).map((x) => `${x.who} ${x.c} left`).join(", ");
+			state.hunt_hold = { monster: pick.monster, map: pick.map, boundary: pick.boundary, count: pick.count, at: now, who };
+			plan_note(`hunt ${pick.monster} @ ${pick.map} (${who})`, "chosen");
+		}
+	}
+	if (state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (plan: until done)`, guide_safe: false, hold: true };
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list

@@ -244,18 +244,25 @@ function pick_pack() {
 		// or 5s if it gave none — the guide's own fight model judged this route safe for us
 	if (d && d.until > now && d.boss)
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
-	// v25.82: a held hunt (the party is at it, refresh_directive) is kept whatever the camp's rest, danger or safety verdict
-	// v25.85: only a held hunt (the party is at it) gets past the camp's checks. v25.84 let a hunt not yet reached past
-	// them too; the combat code still refused the camp, the pack was dropped and re-picked every tick (snake@halloween:
-	// 10 picks in a minute, then the tank frozen 3 min, twice)
-	const hunt_dir = !!d?.hold;
-	if (d && d.until > now && (state.safe[d.monster] || (hunt_dir && fight_profile(d.monster)))) {
+	// v25.88: the hunt plan (refresh_directive). Held from the moment it's chosen; at the camp it is kept whatever the
+	// camp's rest, danger or safety verdict. On the way, a route through danger, or a monster the fight model won't
+	// take at all, ends the plan with that reason (it would be retried every tick otherwise: v25.84's snake loop).
+	if (d?.hold && d.until > now) {
+		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
+		const at_camp = character.map === d.map && valid_boundary(d.boundary) && in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]);
+		const why_no = !state.safe[d.monster] && !fight_profile(d.monster) ? `the fight model won't take ${d.monster}` :
+			!at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
+		if (why_no) plan_end(at_camp ? why_no : `no safe way there: ${why_no}`, 600_000);
+		else {
+			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
+			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
+		}
+	} else if (d && d.until > now && state.safe[d.monster]) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		// (a hunt not yet reached keeps the route check: a camp with no safe way there would be retried every tick — Fable)
-		const dz = !d.boss && !d.hold && valid_boundary(area.boundary) && ((!hunt_dir && area_danger(area, d.monster)) || party_route_danger(area.map));
+		const dz = !d.boss && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
-		if (!dz && (hunt_dir || !((state.cooldown[pack_key(area)] || 0) > now))) {
+		if (!dz && !((state.cooldown[pack_key(area)] || 0) > now)) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
 		}
