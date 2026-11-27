@@ -86,7 +86,7 @@ function facts_picks(F, ctx) {
 	const cur = p ? pack_key(p) : null;
 	if (!is_follower()) { // v25.88: the hunt plan and every change to it, with its reason
 		const H = state.hunt_hold, LG = (state.plan_log || []).slice(-5).reverse();
-		F("plan", "party", `plan: ${H ? `hunt ${H.monster} @ ${H.map} until done (${hunt_open(H.monster) || H.who || "?"}), since ${ago(H.at)} ago` : "no hunt — best camp"}` +
+		F("plan", "self", `plan: ${H ? `hunt ${H.monster} @ ${H.map} until done (${hunt_open(H.monster) || H.who || "?"}), since ${ago(H.at)} ago` : "no hunt — best camp"}` +
 			(LG.length ? ` | changes: ${LG.map((e) => `${ago(e.at)} ago ${e.what} — ${e.why}`).join("; ")}` : ""));
 	}
 	if (state.review_at && !is_follower()) {
