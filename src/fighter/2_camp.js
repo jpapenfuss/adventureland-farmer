@@ -247,11 +247,12 @@ function pick_pack() {
 	// v25.82: a held hunt (the party is at it, refresh_directive) is kept whatever the camp's rest, danger or safety verdict
 	// v25.84: a hunt's directive on the way there is kept like a held one (a safety flip, a rest or a danger verdict
 	// mid-walk turned the party back before it ever arrived; Fable)
-	const hunt_dir = d && (d.hold || !!hunt_open(d.monster));
+	const hunt_dir = d && (d.hold || !!hunt_open(d.monster, true));
 	if (d && d.until > now && (state.safe[d.monster] || (hunt_dir && fight_profile(d.monster)))) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		const dz = !d.boss && !hunt_dir && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
+		// (a hunt not yet reached keeps the route check: a camp with no safe way there would be retried every tick — Fable)
+		const dz = !d.boss && !d.hold && valid_boundary(area.boundary) && ((!hunt_dir && area_danger(area, d.monster)) || party_route_danger(area.map));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
 		if (!dz && (hunt_dir || !((state.cooldown[pack_key(area)] || 0) > now))) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
