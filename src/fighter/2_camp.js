@@ -245,9 +245,10 @@ function pick_pack() {
 	if (d && d.until > now && d.boss)
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
 	// v25.82: a held hunt (the party is at it, refresh_directive) is kept whatever the camp's rest, danger or safety verdict
-	// v25.84: a hunt's directive on the way there is kept like a held one (a safety flip, a rest or a danger verdict
-	// mid-walk turned the party back before it ever arrived; Fable)
-	const hunt_dir = d && (d.hold || !!hunt_open(d.monster, true));
+	// v25.85: only a held hunt (the party is at it) gets past the camp's checks. v25.84 let a hunt not yet reached past
+	// them too; the combat code still refused the camp, the pack was dropped and re-picked every tick (snake@halloween:
+	// 10 picks in a minute, then the tank frozen 3 min, twice)
+	const hunt_dir = !!d?.hold;
 	if (d && d.until > now && (state.safe[d.monster] || (hunt_dir && fight_profile(d.monster)))) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
