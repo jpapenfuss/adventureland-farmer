@@ -5572,6 +5572,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		vm.runInContext("fight_profile = __fp88", ctx);
 		assert(r88 === '["goo",true]', `v25.88: a model-refused held hunt is the pack and fightable, no throw (${r88})`);
 	}
+	// v25.92: every hunt change is logged with kills left, time left and where we were
+	{
+		Object.assign(character, { name: "Sanala", ctype: "mage", map: "desertland", x: 5, y: 5 });
+		vm.runInContext("hist.ev = []; hw_prev = null", ctx);
+		character.s = { monsterhunt: { id: "porcupine", c: 187, ms: 1200000 } }; vm.runInContext("hunt_watch()", ctx);
+		character.s = {}; vm.runInContext("hunt_watch()", ctx);
+		character.s = { monsterhunt: { id: "snake", c: 1, ms: 900000 } }; vm.runInContext("hunt_watch()", ctx);
+		character.s.monsterhunt.c = 0; vm.runInContext("hunt_watch()", ctx);
+		character.s = {}; vm.runInContext("hunt_watch()", ctx);
+		const ev = JSON.parse(vm.runInContext("JSON.stringify(hist.ev.filter((e) => e.type === 'hunt').map((e) => [e.what, e.id, e.left ?? e.c, e.map]))", ctx));
+		assert(JSON.stringify(ev) === JSON.stringify([["taken","porcupine",187,"desertland"],["gone early","porcupine",187,"desertland"],["taken","snake",1,"desertland"],["done","snake",null,"desertland"],["turned in","snake",0,"desertland"]]), `v25.92: hunt changes logged (${JSON.stringify(ev)})`);
+		assert(/hunt log: .*turned in snake/.test(vm.runInContext("report_facts().map((f) => f.text).join('\\n')", ctx)), "v25.92: the hunt log line is in the report");
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();

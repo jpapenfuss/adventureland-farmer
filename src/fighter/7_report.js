@@ -81,14 +81,18 @@ function facts_engage(F, ctx) {
 
 function facts_picks(F, ctx) {
 	const { p, d, now } = ctx;
-	if (!(!is_follower() && state.pick_table?.length)) return;
-	const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
-	const cur = p ? pack_key(p) : null;
+	{ // v25.92: this character's hunts, every change (history "hunt" events)
+		const HL = (hist.ev || []).filter((e) => e.type === "hunt").slice(-8).reverse();
+		F("hunt_log", "self", `hunt log: ${HL.length ? HL.map((e) => `${ago(e.t)} ago ${e.what} ${e.id}${e.c != null ? ` (${e.c} kills, ${Math.round((e.ms || 0) / 60_000)}m)` : ""}${e.left != null ? ` with ${e.left} left, ${Math.round((e.ms_left || 0) / 60_000)}m left` : ""} @${e.map}${e.errand ? ` errand ${e.errand}` : ""}${e.plan ? ` plan ${e.plan}` : ""}`).join("; ") : "nothing yet"}`);
+	}
 	if (!is_follower()) { // v25.88: the hunt plan and every change to it, with its reason
 		const H = state.hunt_hold, LG = (state.plan_log || []).slice(-5).reverse();
 		F("plan", "self", `plan: ${H ? `hunt ${H.monster} @ ${H.map} until done (${hunt_open(H.monster) || H.who || "?"}), since ${ago(H.at)} ago` : "no hunt — best camp"}` +
-			(LG.length ? ` | changes: ${LG.map((e) => `${ago(e.at)} ago ${e.what} — ${e.why}`).join("; ")}` : ""));
+			(LG.length ? ` | changes: ${LG.map((e) => `${ago(e.at)} ago ${e.what} — ${e.why}${e.hunts ? ` [hunts then: ${e.hunts}]` : ""}${e.map ? ` @${e.map}` : ""}`).join("; ")}` : ""));
 	}
+	if (!(!is_follower() && state.pick_table?.length)) return;
+	const T_ = [...state.pick_table].sort((x, y) => Math.max(y.rate || 0, y.m) - Math.max(x.rate || 0, x.m)).slice(0, 6);
+	const cur = p ? pack_key(p) : null;
 	if (state.review_at && !is_follower()) {
 		const pw = party_power(), RL = state.review_last;
 		F("camp_review", "self", `camp review: next in ${mins((state.review_at || 0) + CFG.camp_review_min * 60_000)} (sooner once the party is stronger: now avg level ${pw?.lv ?? "?"}, gear ${pw?.gs ?? "?"} pts; at the last pick ${state.review_pw?.lv ?? "?"} / ${state.review_pw?.gs ?? "?"})` +
