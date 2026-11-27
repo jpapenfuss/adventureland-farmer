@@ -191,7 +191,11 @@ async function task_secondhands() {
 		if (state.errand) state.errand_at = Date.now();
 		const rt = route_of.get(it);
 		const why_buy = secondhand_reason(it, groups) || (rt ? `route to ${rt.name}+${rt.to} for ${rt.for}` : null), price = shop_price(it);
-		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !upg_gold_ok(price)) continue; // v25.46: every reason here is gear for the party: no earnings test
+		// v25.94 (owner: no advancement on rings): a stock copy is bought only while the gold above upgrade_keep still covers
+		// every compound scroll the held copies (plus this one) need on the way to the item's ceiling — ringsj takes cscroll1
+		// (240k) from +3, and buying down to the reserve left nothing for it, so the two spare +3s never became a +4
+		const reserve = /^stock for compounding/.test(why_buy || "") ? stock_scroll_reserve(it.name, 1) : 0;
+		if (!why_buy || price > CFG.secondhand_max_price || character.gold - price < CFG.gold_reserve || character.esize < 3 || !upg_gold_ok(price + reserve)) continue; // v25.46: every reason here is gear for the party: no earnings test
 		await wait_budget(1, RESERVE.errand);
 		const before = character.esize;
 		tag_spend("ponty");
@@ -212,3 +216,20 @@ async function task_secondhands() {
 
 // Open game windows (the client's modals), or -1 when that can't be told (then a poll's window is always closed, as before)
 function modals_open() { try { return typeof parent.$ === "function" ? parent.$(".modal:visible").length : -1; } catch (e) { return -1; } }
+
+// v25.94: gold the compound scrolls cost to turn every held plain copy of an item (bags + bank, + extra bought now) into
+// its highest sets up to cmp_max: per level, floor(n / 3) compounds at that level's scroll, their results carried up
+function stock_scroll_reserve(name, extra = 0) {
+	const n = [], top = cmp_max(name);
+	const add = (b) => { if (b && b.name === name && !b.p && !b.l && (b.level || 0) < top) n[b.level || 0] = (n[b.level || 0] || 0) + 1; };
+	character.items.forEach(add); (state.bank_gear || []).forEach(add);
+	n[0] = (n[0] || 0) + extra;
+	let cost = 0;
+	for (let L = 0; L < top; L++) {
+		const c = Math.floor((n[L] || 0) / 3);
+		if (!c) continue;
+		cost += c * (G.items["cscroll" + Math.max(0, item_grade({ name, level: L }))]?.g || 0);
+		n[L + 1] = (n[L + 1] || 0) + c;
+	}
+	return cost;
+}
