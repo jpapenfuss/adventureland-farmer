@@ -202,7 +202,7 @@ function refresh_directive() {
 	// (v25.83: an open hunt counts while it's open — its goal entry drops out whenever its estimate flickers to "can't finish")
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt)) || !!hunt_open(mt);
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
-		(state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster))) {
+		(hunt_open(cur.monster) || (state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster)))) { // v25.84: a hunt isn't dropped on the way by a safety flip
 		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
 		d = cur;
 	} else if (!d && cur && !cur.boss && L && now < L.until && L.monster === cur.monster && hunt_open(cur.monster)) d = cur; // v25.84: no goal this tick is no reason to turn back from a hunt

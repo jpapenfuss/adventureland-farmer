@@ -5985,12 +5985,15 @@ function pick_pack() {
 	if (d && d.until > now && d.boss)
 		return set_pack({ mtype: d.monster, map: d.map, boundary: d.boundary, count: 1, boss: true, est: 0, score: 0, directive: d.reason }, `→ ${d.reason} @ ${d.map}`);
 	// v25.82: a held hunt (the party is at it, refresh_directive) is kept whatever the camp's rest, danger or safety verdict
-	if (d && d.until > now && (state.safe[d.monster] || (d.hold && fight_profile(d.monster)))) {
+	// v25.84: a hunt's directive on the way there is kept like a held one (a safety flip, a rest or a danger verdict
+	// mid-walk turned the party back before it ever arrived; Fable)
+	const hunt_dir = d && (d.hold || !!hunt_open(d.monster));
+	if (d && d.until > now && (state.safe[d.monster] || (hunt_dir && fight_profile(d.monster)))) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		// v24.10: a goal's spot gets the same danger check (not a boss: the party gathers for it)
-		const dz = !d.boss && !d.hold && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
+		const dz = !d.boss && !hunt_dir && valid_boundary(area.boundary) && (area_danger(area, d.monster) || party_route_danger(area.map));
 		if (dz) state.pick_skips[pack_key(area)] = `goal ${d.monster}: ${dz}`;
-		if (!dz && (d.hold || !((state.cooldown[pack_key(area)] || 0) > now))) {
+		if (!dz && (hunt_dir || !((state.cooldown[pack_key(area)] || 0) > now))) {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
 		}
@@ -6677,7 +6680,7 @@ function refresh_directive__fighter() {
 	// (v25.83: an open hunt counts while it's open — its goal entry drops out whenever its estimate flickers to "can't finish")
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt)) || !!hunt_open(mt);
 	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
-		(state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster))) {
+		(hunt_open(cur.monster) || (state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster)))) { // v25.84: a hunt isn't dropped on the way by a safety flip
 		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
 		d = cur;
 	} else if (!d && cur && !cur.boss && L && now < L.until && L.monster === cur.monster && hunt_open(cur.monster)) d = cur; // v25.84: no goal this tick is no reason to turn back from a hunt
@@ -7065,7 +7068,7 @@ function hunt_state() {
 	const h = character.s.monsterhunt;
 	if (!h) return "none";
 	if (!(h.c > 0)) return "ready";
-	return hunt_feasible(h) ? "chase" : "lost";
+	return hunt_feasible(h) && fight_profile(h.id) ? "chase" : "lost"; // v25.84: a monster we can't fight isn't chased (Fable)
 }
 // The tank's party trip for hunts: no member still chasing one it can finish, and at least one with a hunt to turn in
 // or none held. Members on an older version (no hs) don't count.
