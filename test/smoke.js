@@ -5465,6 +5465,31 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		hb("Torlis", { ...tor, ctype: "paladin", level: 56, map: "zone_rz3_0", x: 0, y: 0 });
 		R("cave_tick()");
 		assert(R("cave_st.out_since") === 0, "...and the tank inside resets the clock");
+		// v25.86 (owner: the paladin walks into packs with the healer behind): the tank waits for every member within
+		// cave.group_px before it walks on or pulls anything new
+		{
+			const sv86 = { name: character.name, ctype: character.ctype, x: character.x, y: character.y, map: character.map }, cave86 = character.cave;
+			Object.assign(character, { name: "Torlis", ctype: "paladin", map: "zone_rz3_0", x: 0, y: 0 });
+			character.cave = { run: "rz3", floor: 0, paused: false, doors: [], objectives: [{ id: "0:9", floor: 0, kind: "fight", required: true, x: 2000, y: 0 }] };
+			const sm0 = ctx.smart_move; let moves = 0; ctx.smart_move = () => (moves++, Promise.resolve());
+			hb("Aspernari", { ...asp, map: "zone_rz3_0", x: 600, y: 0 }); hb("Sanala", { ...san, ctype: "mage", map: "zone_rz3_0", x: 40, y: 0 });
+			R("cave_st.walk = null; cave_st.prog = null; cave_tick()");
+			assert(moves === 0, "v25.86: a member 600 px behind: the tank doesn't walk on");
+			hb("Aspernari", { ...asp, map: "zone_rz3_0", x: 60, y: 0 });
+			R("cave_st.walk = null; cave_tick()");
+			assert(moves === 1, `v25.86: everyone within group_px: the tank walks to the next room (${moves})`);
+			// a member outside the cave isn't waited for; one inside but behind is, and waiting doesn't age the room's clock
+			hb("Aspernari", { ...asp, map: "main", x: 0, y: 0 }); R("cave_st.walk = null; cave_tick()");
+			assert(moves === 2, "v25.86: a member outside the cave: the tank carries on");
+			hb("Aspernari", { ...asp, map: "zone_rz3_0", x: 900, y: 0 });
+			R("cave_st.prog.best_at = Date.now() - CFG.cave.stuck_ms - 5000; cave_st.walk = null; cave_tick()");
+			assert(R("Date.now() - cave_st.prog.best_at < 1000"), "v25.86: waiting for the party resets the room's progress clock");
+			let left = 0; const ex86 = ctx.cave_exit; ctx.cave_exit = () => (left++, Promise.resolve({ exited: true }));
+			R("cave_st.exiting = false; cave_st.wait_since = Date.now() - CFG.cave.wait_party_ms - 1000; cave_tick()");
+			assert(left === 1, "v25.86: waited past wait_party_ms: the party leaves the cave");
+			ctx.cave_exit = ex86; R("cave_st.exiting = false; cave_st.wait_since = 0; cave_st.wait_tick = 0");
+			ctx.smart_move = sm0; character.cave = cave86; Object.assign(character, sv86); R("cave_st.walk = null; cave_st.prog = null");
+		}
 		// v25.41: a revived follower stays out of the fight until it's back to cave.rejoin_hp
 		{
 			let ft = 0; R("globalThis.__ft = follower_tick; follower_tick = () => { globalThis.__ftn = (globalThis.__ftn || 0) + 1; }; globalThis.__ftn = 0");
