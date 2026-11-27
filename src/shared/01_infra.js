@@ -110,7 +110,10 @@ async function go_route(dest, ms, tele_tried = false) {
 	if (T_ && T_.map !== character.map) {
 		// v24.59: a follower doesn't judge the way (its own verdict made it detour, refuse, or teleport while the tank
 		// walked on): it takes the shortest way, the transporter where that uses one
-		let pl = is_follower() ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y);
+		// v25.90 (owner: "Stop aborting plans. I just killed the wolves that are supposedly a blocker"): the way to a held
+		// hunt isn't judged either — the shortest way, as a follower walks
+		const to_hunt = !!state.hunt_hold && state.hunt_hold.map === T_.map;
+		let pl = is_follower() || to_hunt ? route_plain(T_.map, T_.x, T_.y) : route_plan(T_.map, T_.x, T_.y);
 		if (pl?.danger) {
 			if (Date.now() - (state.deadly_log_at || 0) > 60_000) { state.deadly_log_at = Date.now(); game_log(`walk to ${T_.map}: every way passes ${pl.danger} — not going`, C.warn); }
 			state.walk_refused = { to: T_.map, why: pl.danger, at: Date.now() };

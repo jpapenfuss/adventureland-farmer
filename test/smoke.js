@@ -802,11 +802,9 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(vm.runInContext("state.plan_log.length === 1 && state.plan_log[0].why === 'chosen' && /hunt goo/.test(state.plan_log[0].what)", ctx), `v25.88: the choice is logged (${vm.runInContext("JSON.stringify(state.plan_log)", ctx)})`);
 		vm.runInContext("state.turn = { who: 'Aspernari', end: Date.now() - 1 }; state.dir_lock = null; refresh_directive(); refresh_directive()", ctx);
 		assert(vm.runInContext("state.directive.monster === 'goo' && state.plan_log.length === 1", ctx), "v25.88: turns and the walk lock don't change the plan, and log nothing");
-		// the pick ends a plan with no safe way there, with the reason, and leaves that hunt for 10 min
+		// v25.90 (owner: stop aborting plans): a route verdict doesn't end a plan — the pick keeps it
 		vm.runInContext("globalThis.__prd = party_route_danger; party_route_danger = () => 'fsp @ main'; pick_pack(); party_route_danger = globalThis.__prd", ctx);
-		assert(vm.runInContext("!state.hunt_hold && /no safe way there: fsp @ main/.test(state.plan_log.at(-1).why) && plan_skipped('goo')", ctx), `v25.88: no safe way: the plan ends with the reason (${vm.runInContext("JSON.stringify(state.plan_log.at(-1))", ctx)})`);
-		vm.runInContext("refresh_directive()", ctx);
-		assert(vm.runInContext("!state.hunt_hold", ctx), "v25.88: ...and isn't chosen again for 10 min");
+		assert(vm.runInContext("state.hunt_hold?.monster === 'goo' && state.pack?.mtype === 'goo' && state.plan_log.length === 1", ctx), `v25.90: route danger doesn't end the plan (${vm.runInContext("JSON.stringify(state.plan_log)", ctx)})`);
 		vm.runInContext("state.plan_skip = {}; state.hunt_hold = null", ctx); Object.assign(character, { x: 0, y: 0 });
 		// v25.83: but a directive that is the hunt itself starts it on arrival, whatever the estimate says at that tick
 		handlers.cm({ name: "Aspernari", message: { k: "hb", level: 57, ctype: "priest", map: "main", x: 30, y: 0, hp: 2500, max_hp: 2500, errand: null, attack: 180, frequency: 0.75, damage_type: "magical",
@@ -1712,19 +1710,19 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	// 66) watchdog: frozen leader, no-progress leader (3rd time → town), lost follower; never during errands/parked
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", x: 100, y: 100, map: "main", rip: false, hp: 900, max_hp: 900 });
 	vm.runInContext("state.partners = {}; state.errand = null; state.parked = false; state.recovering = false; smart_depth = 0; hist.ev = []; wd.acts = []; wd.lost_since = null", ctx);
-	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}", ctx);
+	vm.runInContext("state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }; state.cooldown = {}; state.hunt_hold = null", ctx);
 	// v23.0: progress = our own hits/kills (party xp arrives from partners' kills anywhere)
 	const seed = (mins, dx = 0) => vm.runInContext(`wd.pos = [{ t: Date.now() - ${mins} * 60000, map: 'main', x: ${100 + dx}, y: 100, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]`, ctx);
 	const stop66 = []; ctx.stop = (w) => stop66.push(w);
 	seed(4);
 	vm.runInContext("stats.xp += 5000; watchdog()", ctx); // xp from partners' kills doesn't count as our progress
 	assert(vm.runInContext("hist.ev.some((e) => e.type === 'stuck' && e.kind === 'frozen') && Object.keys(state.cooldown).length === 1", ctx) && stop66.includes("smart"), "frozen leader: walk stopped, pack cooled down, logged");
-	// v25.89: frozen on the way to a held hunt: the plan ends with the reason (2:00 AM: stuck in winterland, osnake @ halloween)
+	// v25.90 (owner: stop aborting plans): frozen on the way to a held hunt: the walk restarts, the plan stays, its camp isn't rested
 	{ Object.assign(character, { map: "winterland" });
 		vm.runInContext("hist.ev = []; state.cooldown = {}; wd.acts = []; state.plan_log = []; state.plan_skip = {}; state.pack = { mtype: 'osnake', map: 'halloween', boundary: [0,0,400,400] }; state.hunt_hold = { monster: 'osnake', map: 'halloween', boundary: [0,0,400,400], at: Date.now() }", ctx);
 		vm.runInContext("wd.pos = [{ t: Date.now() - 4 * 60000, map: 'winterland', x: 100, y: 100, hits: seen.target_hit, kills: seen.kill, kc: seen.kc }]; watchdog()", ctx);
-		assert(vm.runInContext("!state.hunt_hold && /stuck on the way there/.test(state.plan_log.at(-1)?.why) && plan_skipped('osnake')", ctx), `v25.89: frozen on the way: the plan ends with the reason (${vm.runInContext("JSON.stringify(state.plan_log)", ctx)})`);
-		Object.assign(character, { map: "main" }); vm.runInContext("state.plan_skip = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }", ctx); }
+		assert(vm.runInContext("state.hunt_hold?.monster === 'osnake' && !state.plan_log.length && !Object.keys(state.cooldown).length", ctx), `v25.90: frozen on the way: plan kept, camp not rested (${vm.runInContext("JSON.stringify([state.plan_log, state.cooldown])", ctx)})`);
+		Object.assign(character, { map: "main" }); vm.runInContext("state.hunt_hold = null; state.plan_skip = {}; state.pack = { mtype: 'goo', map: 'main', boundary: [0,0,400,400] }", ctx); }
 	// moving but no xp for 11 min → noprog; third time in an hour → town
 	vm.runInContext("hist.ev = []; state.cooldown = {}", ctx);
 	const town66 = []; ctx.use_skill = (s) => (town66.push(s), Promise.resolve());
@@ -4182,6 +4180,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		walks.length = 0; character.map = "town";
 		vm.runInContext("rt_cache.clear(); globalThis.__g128 = go({ map: 'pit', x: 0, y: 0 }).then(() => 'went', (e) => e.reason)", ctx);
 		assert(await vm.runInContext("globalThis.__g128", ctx) === "deadly_route" && walks.length === 0, "the pit's only way is through the rats: not going");
+		// v25.90 (owner: stop aborting plans): the way to a held hunt isn't judged — through the rats it goes
+		walks.length = 0; character.map = "town";
+		vm.runInContext("rt_cache.clear(); state.hunt_hold = { monster: 'x', map: 'pit', boundary: [0,0,10,10] }; globalThis.__g90 = go({ map: 'pit', x: 0, y: 0 }).then(() => 'went', (e) => e.reason)", ctx);
+		assert(await vm.runInContext("globalThis.__g90", ctx) === "went" && walks.length > 0, `v25.90: the walk to a held hunt goes through (${walks})`);
+		vm.runInContext("state.hunt_hold = null", ctx); walks.length = 0; character.map = "town";
 		// named places resolve like smart_move's table
 		assert(JSON.stringify(vm.runInContext("dest_point('potions')", ctx)) === '{"map":"main","x":56,"y":-122}' && vm.runInContext("dest_point('goo')", ctx) === null, "dest_point: named places as smart_move resolves them (a monster: smart_move picks one, unknown)");
 		ctx.G.maps = maps0; ctx.G.monsters = mons0; ctx.G.npcs = npcs0; ctx.smart_move = sm0; delete ctx.transport;

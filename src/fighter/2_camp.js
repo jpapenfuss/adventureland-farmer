@@ -250,10 +250,7 @@ function pick_pack() {
 	if (d?.hold && d.until > now) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		const at_camp = character.map === d.map && valid_boundary(d.boundary) && in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]);
-		const route = !at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
-		const why_no = at_camp ? null : route ? `no safe way there: ${route}` : null; // (v25.88, owner: the fight model doesn't end a plan)
-		if (why_no) plan_end(why_no, 600_000);
-		else {
+		{ // (v25.90, owner: stop aborting plans — no route verdict ends one; go_route walks the shortest way to it)
 			// (v25.88, owner: the fight model doesn't veto a hunt) the held hunt's monster counts as fightable everywhere
 			// that reads state.safe — the target check, looming/keep_away, no_go — as a guide row's does above
 			if (!state.safe[d.monster] && G.monsters[d.monster]) state.safe[d.monster] = { ttk: 5, xp: G.monsters[d.monster].xp || 0, trusted: true, hunt: true };
