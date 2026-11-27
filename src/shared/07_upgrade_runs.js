@@ -153,7 +153,7 @@ async function run_upgrade(a, row) {
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(upgrade(k, find_slot(scroll, 0), off), 60_000); // the server takes 500·L·√L ms (+7: ~9s, +9: 13.5s)
 	game_log(`upgrade ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
-	log_ev("upgrade", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
+	log_ev("upgrade", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success, scroll });
 	return r;
 }
 // One compound step: three copies at level `from` + a compound scroll (cscroll0/1/2 by grade) → one at from+1.
@@ -174,7 +174,7 @@ async function run_compound(a, row, floor) {
 	await wait_budget(1, RESERVE.errand);
 	const r = await T(compound(ks[0], ks[1], ks[2], find_slot(scroll, 0)), 40_000); // the server takes 10s to combine
 	game_log(`compound ${a.name} +${from}→+${from + 1} (${(preview.chance * 100).toFixed(0)}%): ${r?.success ? "OK" : "FAILED"}`, r?.success ? C.ok : C.bad);
-	log_ev("compound", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success });
+	log_ev("compound", { item: a.name, from, chance: +preview.chance.toFixed(3), ok: !!r?.success, scroll });
 	return r;
 }
 
@@ -300,7 +300,9 @@ async function task_compound() {
 		const floor = tight_ok(g, g.bags.slice(0, 3)) ? 0 : Math.min(shop_for(g.name) && !G.items[g.name]?.cash && 3 * (G.items[g.name]?.g || 0) * Math.pow(3, g.level) <= CFG.rebuy_loss_max
 			? CFG.compound_min_chance_rebuyable : CFG.compound_min_chance, wanted ? CFG.compound_min_chance_wanted : 1);
 		const sc_cost = G.items["cscroll" + Math.max(0, item_grade({ name: g.name, level: g.level }))]?.g || 0;
-		if (!upg_gold_ok(sc_cost)) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll)`; break; }
+		// v25.93: a compound scroll only needs the plain gold floor (gold_keep), not upgrade_keep's 1M — the merchant bought
+		// ringsj+0 down to ~1.0M at Ponty, then paused compounding them for a 6.4k scroll ("almost no advancement")
+		if (character.gold - sc_cost < gold_keep()) { town_reason.compound = `gold budget (${g.name}+${g.level} needs a ${fmt_k(sc_cost)} scroll; ${fmt_k(character.gold)} held, keeping ${fmt_k(gold_keep())})`; break; }
 		try {
 			// resources: the exact spare slots, so run_compound never grabs a guide-needed copy of the same item
 			const before = g.bags.slice(0, 3).map((k) => character.items[k]);

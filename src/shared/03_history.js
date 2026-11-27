@@ -260,6 +260,12 @@ function history_lines(hours = 6) {
 		// v25.82: against the server's own odds at the time (owner: "failures seem a lot worse than 40%")
 		const exp = xs.filter((e) => e.chance > 0), ex = exp.length ? ` (the odds said ${Math.round(exp.reduce((t, e) => t + e.chance, 0) / exp.length * 100)}% ok)` : "";
 		if (xs.length) L.push(`${kind}s: ${xs.filter((e) => e.ok).length} ok / ${xs.filter((e) => !e.ok).length} failed${ex} — ${xs.slice(-4).map((e) => `${e.item}+${e.from}${e.ok ? "✓" : "✗"}`).join(" ")}`);
+		// v25.93 (owner): per item and step, against the odds the server gave for those rolls, and the scrolls used
+		if (xs.length) {
+			const by = {};
+			for (const e of xs) { const k = `${e.item} +${e.from}→+${e.from + 1}`; const b = (by[k] = by[k] || { n: 0, ok: 0, ch: 0, chn: 0, sc: {} }); b.n++; if (e.ok) b.ok++; if (e.chance > 0) { b.ch += e.chance; b.chn++; } if (e.scroll) b.sc[e.scroll] = (b.sc[e.scroll] || 0) + 1; }
+			L.push(`${kind}s by step: ` + Object.entries(by).sort((a, b) => b[1].n - a[1].n).map(([k, b]) => `${k} ${b.ok}/${b.n} ok${b.chn ? ` (odds ${Math.round(b.ch / b.chn * 100)}%)` : ""}${Object.keys(b.sc).length ? ` [${Object.entries(b.sc).map(([s_, n]) => `${s_} ${n}`).join(", ")}]` : ""}`).join(" | "));
+		}
 	}
 	const buys = ev.filter((e) => e.type === "buy");
 	if (buys.length) L.push(`buys: ${buys.slice(-6).map((e) => `${e.item} (${e.src}${e.price ? " " + fmt_k(e.price) : ""})`).join(", ")}`);
