@@ -1194,6 +1194,17 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.45 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
 	await vm.runInContext("task_compound()", ctx);
 	assert(cmp.includes("REAL"), `a 45% compound whose result a fighter would wear goes ahead (${JSON.stringify(cmp)})`);
+	// v25.93: the compound scroll needs only gold_keep, not upgrade_keep's 1M (the merchant sat at ~1.0M, compounding paused)
+	{
+		vm.runInContext("state.gear_skip = {}; state.cmp_caps = {}; cmp_cache = null; my_gear_cache = null", ctx); cmp.length = 0;
+		const sv93 = { name: character.name, ctype: character.ctype, gold: character.gold }, cp93 = ctx.compound;
+		ctx.compound = (a, b, c, sc, off, preview) => preview ? Promise.resolve({ chance: 0.99 }) : (cmp.push("REAL"), Promise.resolve({ success: true }));
+		Object.assign(character, { name: vm.runInContext("CFG.merchant.name", ctx), ctype: "merchant" });
+		character.gold = vm.runInContext("upgrade_keep()", ctx) - 1000; // under the merchant's 1M upgrade reserve, well over gold_keep
+		await vm.runInContext("task_compound()", ctx);
+		assert(cmp.includes("REAL") && vm.runInContext("upgrade_keep() > gold_keep()", ctx), `v25.93: the merchant compounds under upgrade_keep (${JSON.stringify(cmp)}, ${vm.runInContext("town_reason.compound", ctx)})`);
+		Object.assign(character, sv93); ctx.compound = cp93;
+	}
 	ctx.G.items.ringx.attack = 2; ctx.G.items.ringx.compound = { attack: 0 }; // (v25.60: no level wins for anyone — not even a +3)
 	// v25.32 (owner): the bank nearly full — a set nobody wants at 40% odds, paused and capped for its odds, is combined
 	{
@@ -5584,6 +5595,14 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		const ev = JSON.parse(vm.runInContext("JSON.stringify(hist.ev.filter((e) => e.type === 'hunt').map((e) => [e.what, e.id, e.left ?? e.c, e.map]))", ctx));
 		assert(JSON.stringify(ev) === JSON.stringify([["taken","porcupine",187,"desertland"],["gone early","porcupine",187,"desertland"],["taken","snake",1,"desertland"],["done","snake",null,"desertland"],["turned in","snake",0,"desertland"]]), `v25.92: hunt changes logged (${JSON.stringify(ev)})`);
 		assert(/hunt log: .*turned in snake/.test(vm.runInContext("report_facts().map((f) => f.text).join('\\n')", ctx)), "v25.92: the hunt log line is in the report");
+	}
+	// v25.93: compounds/upgrades by item and step, with the odds and the scrolls
+	{
+		vm.runInContext(`hist.ev = [{ t: Date.now(), type: 'compound', item: 'ringsj', from: 0, chance: 0.9, ok: true, scroll: 'cscroll0' }, { t: Date.now(), type: 'compound', item: 'ringsj', from: 0, chance: 0.9, ok: false, scroll: 'cscroll0' },
+			{ t: Date.now(), type: 'compound', item: 'ringsj', from: 2, chance: 0.6, ok: false, scroll: 'cscroll0' }]`, ctx);
+		const hl = vm.runInContext("history_lines().join('\\n')", ctx);
+		assert(/compounds by step: ringsj \+0→\+1 1\/2 ok \(odds 90%\) \[cscroll0 2\] \| ringsj \+2→\+3 0\/1 ok \(odds 60%\)/.test(hl), `v25.93: compounds by step (${hl.split("\n").find((l) => /by step/.test(l))})`);
+		vm.runInContext("hist.ev = []", ctx);
 	}
 	all_done = true;
 	console.log("ALL PASS");
