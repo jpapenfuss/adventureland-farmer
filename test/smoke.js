@@ -5478,6 +5478,16 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 			hb("Aspernari", { ...asp, map: "zone_rz3_0", x: 60, y: 0 });
 			R("cave_st.walk = null; cave_tick()");
 			assert(moves === 1, `v25.86: everyone within group_px: the tank walks to the next room (${moves})`);
+			// a member outside the cave isn't waited for; one inside but behind is, and waiting doesn't age the room's clock
+			hb("Aspernari", { ...asp, map: "main", x: 0, y: 0 }); R("cave_st.walk = null; cave_tick()");
+			assert(moves === 2, "v25.86: a member outside the cave: the tank carries on");
+			hb("Aspernari", { ...asp, map: "zone_rz3_0", x: 900, y: 0 });
+			R("cave_st.prog.best_at = Date.now() - CFG.cave.stuck_ms - 5000; cave_st.walk = null; cave_tick()");
+			assert(R("Date.now() - cave_st.prog.best_at < 1000"), "v25.86: waiting for the party resets the room's progress clock");
+			let left = 0; const ex86 = ctx.cave_exit; ctx.cave_exit = () => (left++, Promise.resolve({ exited: true }));
+			R("cave_st.exiting = false; cave_st.wait_since = Date.now() - CFG.cave.wait_party_ms - 1000; cave_tick()");
+			assert(left === 1, "v25.86: waited past wait_party_ms: the party leaves the cave");
+			ctx.cave_exit = ex86; R("cave_st.exiting = false; cave_st.wait_since = 0; cave_st.wait_tick = 0");
 			ctx.smart_move = sm0; character.cave = cave86; Object.assign(character, sv86); R("cave_st.walk = null; cave_st.prog = null");
 		}
 		// v25.41: a revived follower stays out of the fight until it's back to cave.rejoin_hp

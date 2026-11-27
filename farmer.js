@@ -283,7 +283,7 @@ const CFG = {
 		// first camp's 6 rats + 2 spiders, no XP)
 		give_up_deaths: 3, retry_levels: 2, retry_gear: 1.1,
 		rejoin_hp: 0.7,             // v25.41: a revived follower stays out of the fight until this share of its HP
-		group_px: 150, follow_px: 100 }, // v25.86: the tank waits for every member within group_px; followers keep within follow_px          // v25.41: a revived follower stays out of the fight until this share of its HP
+		group_px: 150, follow_px: 100 }, // v25.86: the tank waits for every member within group_px (at most wait_party_ms); followers keep within follow_px
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,
 		// v25.21: only the status box under CODE (the game's 128x60 cut set_message's text): taller (it grows up) and its
 		// text wraps. v25.23 w: "log" — its left edge lined up with the log's (owner); a number: that width (wider than the
@@ -7810,10 +7810,22 @@ function cave_tick__fighter() {
 	// v25.86: the tank fights what's on the party, but pulls nothing new and walks nowhere until every member is alive,
 	// on this floor and within cave.group_px — it used to walk on and pull packs with the healer still behind
 	const a0 = hit_on_me() || Object.values(parent.entities || {}).find((e) => cave_hostile(e) && e.target && party_names().has(e.target) && Math.hypot(e.x - character.x, e.y - character.y) < CFG.cave.engage_px);
+	// (only members inside the cave are waited for: offline or outside, the party carries on as before. A wait over
+	// cave.wait_party_ms leaves the cave; waiting doesn't count against the room's progress clock — Fable)
+	const now86 = Date.now();
 	const behind = (CFG.party.members || []).filter((n) => n !== character.name).filter((n) => {
 		const p = state.partners[n];
-		return !p || !fresh(p) || p.rip || p.map !== character.map || Math.hypot(partner_pos(p).x - character.x, partner_pos(p).y - character.y) > CFG.cave.group_px;
+		if (!p || !fresh(p) || !/^zone_/.test(p.map || "")) return false;
+		return p.rip || p.map !== character.map || Math.hypot(partner_pos(p).x - character.x, partner_pos(p).y - character.y) > CFG.cave.group_px;
 	});
+	if (!behind.length) cave_st.wait_since = 0;
+	else {
+		if (!cave_st.wait_since) cave_st.wait_since = now86;
+		if (cave_st.prog) { const dt = now86 - (cave_st.wait_tick || now86); cave_st.prog.best_at = now86; cave_st.prog.since += dt; }
+		cave_st.wait_tick = now86;
+		if (now86 - cave_st.wait_since > CFG.cave.wait_party_ms) { cave_st.wait_since = 0; cave_leave(`waited ${Math.round(CFG.cave.wait_party_ms / 60_000)} min for ${behind.join(", ")}`); return 400; }
+	}
+	if (!behind.length) cave_st.wait_tick = 0;
 	if (behind.length) {
 		if (a0) { if (!hold_for_tank(a0)) fight(a0); set_message(`cave: ${a0.name || a0.mtype} (waiting for ${behind.join(", ")})`); return 200; }
 		if (is_moving(character)) halt("cave_wait");
