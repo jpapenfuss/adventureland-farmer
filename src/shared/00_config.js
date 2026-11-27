@@ -1,4 +1,4 @@
-const VERSION = "25.86"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
+const VERSION = "25.87"; // Adventure Land farmer. Source: src/ — manifest.json lists the files per role (overview at the bottom of main.js).
 // Every tunable lives here. Units are in the name (_ms, _s, _min, _h) or the comment; fractions are 0..1 of max.
 const CFG = {
 	// --- fighting -------------------------------------------------------------------------------------------------
@@ -277,10 +277,10 @@ const CFG = {
 	// v25.22: the Cave of Many Dreams (fighter/9_cave.js): once a day the tank takes the party in (Dorr, main 816,1200)
 	cave: { enabled: true, info_every_ms: 600_000, engage_px: 260, arrive_px: 120, max_deaths_per_room: 2,
 		stuck_ms: 45_000, camp_max_ms: 300_000, wait_party_ms: 120_000, // progress watchdog; a camp at most 5 min; the party at Dorr 2 min
-		// v25.29: give_up_deaths deaths in a visit (v25.40: any member's — they were the tank's only) → the party leaves, and doesn't go back until it's
-		// stronger: average level + retry_levels or gear points x retry_gear (the first visit: 4 deaths in 2 min to the
+		// v25.29: give_up_deaths deaths in a visit (v25.40: any member's) → the party leaves; v25.87: and doesn't go back for hold_h hours
+		// (v25.29–v25.86: back once 2 levels or 10% gear stronger; the first visit: 4 deaths in 2 min to the
 		// first camp's 6 rats + 2 spiders, no XP)
-		give_up_deaths: 3, retry_levels: 2, retry_gear: 1.1,
+		give_up_deaths: 3, hold_h: 20, // v25.87 (owner): 3 deaths in a visit → no revisit for 20 h (was: until 2 levels or 10% gear stronger)
 		rejoin_hp: 0.7,             // v25.41: a revived follower stays out of the fight until this share of its HP
 		group_px: 150, follow_px: 100 }, // v25.86: the tank waits for every member within group_px (at most wait_party_ms); followers keep within follow_px
 	ui: { enabled: false, log_w: 560, log_h: 360, log_font: 15, status_w: 340, status_h: 90, status_font: 14,

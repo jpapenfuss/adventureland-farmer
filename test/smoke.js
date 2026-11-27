@@ -5445,10 +5445,10 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		delete character.cave;
 		R("state.cave_visit = { available: true, at: Date.now() }; cave_st.info_at = Date.now()");
 		assert(R("cave_blocked()") === true, "on hold while the party is as strong as when it lost");
-		R("party_power = () => ({ lv: 58, gs: 500, n: 2 })");
-		assert(R("cave_blocked()") === true, "a higher average with a member offline isn't the party stronger");
 		R("party_power = () => ({ lv: 58, gs: 500, n: 3 })");
-		assert(R("cave_blocked()") === false && R("state.cave_block") === null, "two levels stronger: the cave again");
+		assert(R("cave_blocked()") === true, "v25.87: two levels stronger is no longer a way back in (a 20h hold)");
+		R("state.cave_block.at = Date.now() - CFG.cave.hold_h * 3600000 - 1000");
+		assert(R("cave_blocked()") === false && R("state.cave_block") === null, "v25.87: 20h after the cave beat us: the cave again");
 		R("party_power = globalThis.__pp; save_state = globalThis.__ss");
 		// a follower: the tank's heartbeat shows it outside the cave → leave too
 		Object.assign(character, { name: "Sanala", ctype: "mage" });
