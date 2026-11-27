@@ -99,6 +99,7 @@ function plan_end(why, skip_ms = 0) {
 	plan_note(`hunt ${H.monster} ended`, why);
 	state.hunt_hold = null;
 }
+let PLAN_T0 = Date.now(); // v25.88: load time (the plan waits 30 s for the members' heartbeats)
 const plan_skipped = (mt) => (state.plan_skip?.[mt] || 0) > Date.now();
 // Why a held hunt is no longer open: done (its holder's count reached 0 / turned in), or gone (lapsed, holder offline)
 function hunt_gone_why(H) {
@@ -221,10 +222,14 @@ function refresh_directive() {
 	// only at the camp, and before that the members' turns, the walk lock running out or the pick refusing the camp
 	// switched goals with no reason given. A plan ends only through plan_end(), which logs why: the hunt done or
 	// lapsed, its holder gone 5 min, no safe way there, or a monster the party can't fight.
+	// (the leader's only; a plan is chosen no sooner than 30 s after a load, once the members' heartbeats are in, and
+	// a hunt set aside by plan_end isn't followed unheld either — Fable)
+	const is_hunt = (x) => /monster hunt/.test(x?.reason || "");
+	const leads = !is_follower(), settled = Date.now() - PLAN_T0 > 30_000;
+	if (d && is_hunt(d) && plan_skipped(d.monster)) d = null;
 	const H0 = state.hunt_hold;
-	if (H0 && !hunt_open(H0.monster)) plan_end(hunt_gone_why(H0));
-	if (!state.hunt_hold) {
-		const is_hunt = (x) => /monster hunt/.test(x?.reason || "");
+	if (leads && settled && H0 && !hunt_open(H0.monster)) plan_end(hunt_gone_why(H0));
+	if (leads && settled && !state.hunt_hold) {
 		let pick = d && !d.boss && is_hunt(d) && hunt_open(d.monster) && !plan_skipped(d.monster) && valid_boundary(d.boundary) ? d : null;
 		if (!pick && !d?.boss) { // nobody's turn is a hunt now, but someone holds one: the party works it (fewest kills left first)
 			const h = hunt_list().filter((x) => fight_profile(x.mt) && !plan_skipped(x.mt)).sort((a, b) => a.c - b.c)[0];
@@ -237,13 +242,13 @@ function refresh_directive() {
 			plan_note(`hunt ${pick.monster} @ ${pick.map} (${who})`, "chosen");
 		}
 	}
-	if (state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (plan: until done)`, guide_safe: false, hold: true };
+	if (leads && state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (plan: until done)`, guide_safe: false, hold: true };
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	// (v25.83: an open hunt counts while it's open — its goal entry drops out whenever its estimate flickers to "can't finish")
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt)) || !!hunt_open(mt);
-	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
+	if (CFG.travel.commit_min > 0 && cur && d && !d.hold && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
 		(hunt_open(cur.monster) || (state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster)))) { // v25.84: a hunt isn't dropped on the way by a safety flip
 		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
 		d = cur;

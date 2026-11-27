@@ -223,7 +223,7 @@ function pick_pack() {
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
-	if (probe_ready()) {
+	if (!state.hunt_hold && probe_ready()) { // (v25.88: never off a held hunt)
 		state.probe_at = now;
 		const pb = probe_pick();
 		if (!pb) state.probe_none = { at: now, best: Math.round(state.best_score || 0) };
@@ -250,9 +250,9 @@ function pick_pack() {
 	if (d?.hold && d.until > now) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		const at_camp = character.map === d.map && valid_boundary(d.boundary) && in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]);
-		const why_no = !state.safe[d.monster] && !fight_profile(d.monster) ? `the fight model won't take ${d.monster}` :
-			!at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
-		if (why_no) plan_end(at_camp ? why_no : `no safe way there: ${why_no}`, 600_000);
+		const route = !at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
+		const why_no = at_camp ? null : !state.safe[d.monster] && !fight_profile(d.monster) ? `the fight model won't take ${d.monster}` : route ? `no safe way there: ${route}` : null;
+		if (why_no) plan_end(why_no, 600_000);
 		else {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);

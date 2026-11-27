@@ -35,7 +35,8 @@ function cave_open() {
 // The tank takes the party in: the visit is open, every member is online, alive, on no errand, nothing on us
 function cave_due() {
 	if (!CFG.cave?.enabled || character.cave || !in_party_cfg() || is_follower() || !is_tank_class(character.ctype)) return false;
-	if (skipped("cave") || errand_busy() || state.ptown || Date.now() - cave_st.entered_at < 120_000) return false;
+	if (skipped("cave") || errand_busy() || state.ptown || state.hunt_hold || // v25.88: a held hunt comes first
+		 Date.now() - cave_st.entered_at < 120_000) return false;
 	cave_refresh_info();
 	if (!cave_open()) return false;
 	if (cave_blocked()) return false;

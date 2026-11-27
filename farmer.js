@@ -4392,7 +4392,7 @@ function save_state() {
 	// v: format version (load_state ignores anything else); at: save time (offline time is excluded from stall timers)
 	set(SAVE_KEY, { v: 1, at: Date.now(), data_v: DATA_V, rates_v: RATES_V, upg_v: 5, cmp_v: 4, model_v: 2, meas_v: 3, key_v: 2, measured: state.measured, measured_gold: state.measured_gold, gold_v: 1, meas_at: state.meas_at, realism: state.realism, danger: state.danger,
 		danger_at: state.danger_at, calib: state.calib, calib_all: state.calib_all,
-		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
+		cooldown: state.cooldown, camp_deaths: state.camp_deaths, cave_block: state.cave_block || null, hunt_hold: state.hunt_hold || null, plan_log: state.plan_log || [], plan_skip: state.plan_skip || {}, gear_skip: state.gear_skip, crafted: state.crafted, bank_seen: state.bank_seen,
 		guide_ignore: state.guide_ignore, guide_quests: state.guide_quests, qprog: state.qprog, gprog: state.gprog, bank_full_at: state.bank_full_at,
 		fetched: state.fetched, fetch_try: state.fetch_try, gold_xfer_at: state.gold_xfer_at || 0,
 		last_town: state.last_town || 0, town_end_at: state.town_end_at || 0, town_runs: state.town_runs || [], probe_at: state.probe_at || 0,
@@ -4479,6 +4479,7 @@ function load_state() {
 	Object.assign(state.cooldown, live(d.cooldown));
 	Object.assign(state.camp_deaths, d.camp_deaths || {}); // v25.29
 	if (d.cave_block) state.cave_block = d.cave_block;
+	if (d.hunt_hold) state.hunt_hold = d.hunt_hold; if (d.plan_log) state.plan_log = d.plan_log; if (d.plan_skip) state.plan_skip = d.plan_skip; // v25.88
 	Object.assign(state.gear_skip, live(d.gear_skip));
 	Object.assign(state.crafted, d.crafted || {});
 	Object.assign(state.bank_seen, d.bank_seen || {});
@@ -5964,7 +5965,7 @@ function pick_pack() {
 	state.best_score = best ? best.rate : 0; // in the farm mode's unit (the probe's reference)
 	state.best_xp = best ? best.xp : 0; // v25.51: xp/s at the pick, whatever the mode (goals, hunts, quests: best_known_xps)
 	state.best_at = now;
-	if (probe_ready()) {
+	if (!state.hunt_hold && probe_ready()) { // (v25.88: never off a held hunt)
 		state.probe_at = now;
 		const pb = probe_pick();
 		if (!pb) state.probe_none = { at: now, best: Math.round(state.best_score || 0) };
@@ -5991,9 +5992,9 @@ function pick_pack() {
 	if (d?.hold && d.until > now) {
 		const area = { map: d.map, boundary: d.boundary, count: d.count, mtype: d.monster };
 		const at_camp = character.map === d.map && valid_boundary(d.boundary) && in_rect(character.x, character.y, [d.boundary[0] - 200, d.boundary[1] - 200, d.boundary[2] + 200, d.boundary[3] + 200]);
-		const why_no = !state.safe[d.monster] && !fight_profile(d.monster) ? `the fight model won't take ${d.monster}` :
-			!at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
-		if (why_no) plan_end(at_camp ? why_no : `no safe way there: ${why_no}`, 600_000);
+		const route = !at_camp && valid_boundary(d.boundary) ? party_route_danger(area.map) : null;
+		const why_no = at_camp ? null : !state.safe[d.monster] && !fight_profile(d.monster) ? `the fight model won't take ${d.monster}` : route ? `no safe way there: ${route}` : null;
+		if (why_no) plan_end(why_no, 600_000);
 		else {
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
@@ -6587,6 +6588,7 @@ function plan_end(why, skip_ms = 0) {
 	plan_note(`hunt ${H.monster} ended`, why);
 	state.hunt_hold = null;
 }
+let PLAN_T0 = Date.now(); // v25.88: load time (the plan waits 30 s for the members' heartbeats)
 const plan_skipped = (mt) => (state.plan_skip?.[mt] || 0) > Date.now();
 // Why a held hunt is no longer open: done (its holder's count reached 0 / turned in), or gone (lapsed, holder offline)
 function hunt_gone_why(H) {
@@ -6709,10 +6711,14 @@ function refresh_directive__fighter() {
 	// only at the camp, and before that the members' turns, the walk lock running out or the pick refusing the camp
 	// switched goals with no reason given. A plan ends only through plan_end(), which logs why: the hunt done or
 	// lapsed, its holder gone 5 min, no safe way there, or a monster the party can't fight.
+	// (the leader's only; a plan is chosen no sooner than 30 s after a load, once the members' heartbeats are in, and
+	// a hunt set aside by plan_end isn't followed unheld either — Fable)
+	const is_hunt = (x) => /monster hunt/.test(x?.reason || "");
+	const leads = !is_follower(), settled = Date.now() - PLAN_T0 > 30_000;
+	if (d && is_hunt(d) && plan_skipped(d.monster)) d = null;
 	const H0 = state.hunt_hold;
-	if (H0 && !hunt_open(H0.monster)) plan_end(hunt_gone_why(H0));
-	if (!state.hunt_hold) {
-		const is_hunt = (x) => /monster hunt/.test(x?.reason || "");
+	if (leads && settled && H0 && !hunt_open(H0.monster)) plan_end(hunt_gone_why(H0));
+	if (leads && settled && !state.hunt_hold) {
 		let pick = d && !d.boss && is_hunt(d) && hunt_open(d.monster) && !plan_skipped(d.monster) && valid_boundary(d.boundary) ? d : null;
 		if (!pick && !d?.boss) { // nobody's turn is a hunt now, but someone holds one: the party works it (fewest kills left first)
 			const h = hunt_list().filter((x) => fight_profile(x.mt) && !plan_skipped(x.mt)).sort((a, b) => a.c - b.c)[0];
@@ -6725,13 +6731,13 @@ function refresh_directive__fighter() {
 			plan_note(`hunt ${pick.monster} @ ${pick.map} (${who})`, "chosen");
 		}
 	}
-	if (state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (plan: until done)`, guide_safe: false, hold: true };
+	if (leads && state.hunt_hold) d = { ...state.hunt_hold, reason: `monster hunt ${hunt_open(state.hunt_hold.monster)} (plan: until done)`, guide_safe: false, hold: true };
 	// commitment: don't turn around on the way to (or right after reaching) a target because the goal ranking shifted
 	const cur = state.directive, L = state.dir_lock;
 	// a finished goal ends the commitment: the held monster must still be on someone's goal list
 	// (v25.83: an open hunt counts while it's open — its goal entry drops out whenever its estimate flickers to "can't finish")
 	const still_goal = (mt) => goals_list().some((g) => g.monster === mt) || partners().some((p) => (p.goals || []).some((g) => g.monster === mt)) || !!hunt_open(mt);
-	if (CFG.travel.commit_min > 0 && cur && d && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
+	if (CFG.travel.commit_min > 0 && cur && d && !d.hold && !d.boss && !cur.boss && L && now < L.until && L.monster === cur.monster && (d.monster !== cur.monster || d.map !== cur.map) && still_goal(cur.monster) &&
 		(hunt_open(cur.monster) || (state.safe[cur.monster] !== undefined ? !!state.safe[cur.monster] : !!fight_profile(cur.monster)))) { // v25.84: a hunt isn't dropped on the way by a safety flip
 		if (!state.dir_held || state.dir_held.monster !== d.monster) state.dir_held = { monster: d.monster, reason: d.reason, at: now };
 		d = cur;
@@ -7646,7 +7652,8 @@ function cave_open() {
 // The tank takes the party in: the visit is open, every member is online, alive, on no errand, nothing on us
 function cave_due() {
 	if (!CFG.cave?.enabled || character.cave || !in_party_cfg() || is_follower() || !is_tank_class(character.ctype)) return false;
-	if (skipped("cave") || errand_busy() || state.ptown || Date.now() - cave_st.entered_at < 120_000) return false;
+	if (skipped("cave") || errand_busy() || state.ptown || state.hunt_hold || // v25.88: a held hunt comes first
+		 Date.now() - cave_st.entered_at < 120_000) return false;
 	cave_refresh_info();
 	if (!cave_open()) return false;
 	if (cave_blocked()) return false;

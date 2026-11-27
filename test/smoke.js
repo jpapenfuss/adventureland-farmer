@@ -42,6 +42,7 @@ const RUNNER_GLOBALS = ["CINF", "EPS", "G", "Heap", "PIXI", "REPS", "RESOLVE_ALL
 vm.createContext(ctx);
 vm.runInContext(src, ctx);
 vm.runInContext("CFG.guide_enabled = true", ctx); // most tests exercise the guide; 105 tests the default (off)
+vm.runInContext("PLAN_T0 = 0", ctx); // v25.88: no 30 s settle wait for the hunt plan in the tests
 if (!log.some((l) => /★ farmer v\S+ running — pasted; first run here/.test(l))) { console.log("FAIL: startup version line missing", log.slice(0, 5)); process.exit(1); }
 vm.runInContext("globalThis.__collect0 = CFG.merchant.collect", ctx); // v25.43: the shipped default, before the fixtures override it
 vm.runInContext("CFG.model_distrust = 1; CFG.quest_farm_max_h = 3; CFG.quest_park_h = 12; CFG.quest_farm_min_xp = 0.7; CFG.hunt_min_xp = 0.7; CFG.boss.enabled = true; CFG.merchant.collect = false; CFG.sell_junk = true; CFG.probe.enabled = true; CFG.town_soft_gap_ms = 1_200_000; CFG.quest_farm = true; CFG.auto_monster_hunt = true; CFG.travel_gear.enabled = true; CFG.travel.commit_min = 0; globalThis.__run_row_real = run_row", ctx); // commitment is tested on its own (99); other tests switch freely
@@ -2385,8 +2386,11 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	hb("Sanala", { ...san, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 20, mp: 200 } });
 	assert(!vm.runInContext("probe_ready()", ctx), "a member low on potions blocks the probe");
 	hb("Sanala", { ...san, level: 60, attack: 1, x: 20, y: 0, hp: 3000, max_hp: 3000, pots: { hp: 200, mp: 200 } }); // negligible damage keeps edge over the limit
-	vm.runInContext("pick_pack()", ctx);
+	vm.runInContext("globalThis.__hh = state.hunt_hold; state.hunt_hold = null; pick_pack()", ctx);
 	assert(vm.runInContext("state.probe && state.probe.mtype === 'edge' && state.pack.probe", ctx), "pick_pack starts the probe");
+	vm.runInContext("state.hunt_hold = { monster: 'goo', map: 'main', boundary: [-100,-100,100,100], at: Date.now() }; globalThis.__pa88 = state.probe_at; globalThis.__pr88 = state.probe; globalThis.__pk88 = state.pack; state.probe_at = 0; state.probe = null", ctx);
+	assert(!vm.runInContext("(pick_pack(), state.probe)", ctx), "v25.88: no probe while a hunt is held");
+	vm.runInContext("state.hunt_hold = __hh; state.probe_at = __pa88; state.probe = __pr88; state.pack = __pk88", ctx);
 	vm.runInContext("pick_pack()", ctx);
 	assert(vm.runInContext("state.pack.mtype === 'edge' && !state.probe_at_reset", ctx), "the probe holds the pack through repicks");
 	// a member under 40% → failure, 6h cooldown + incident
