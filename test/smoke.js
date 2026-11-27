@@ -2642,7 +2642,8 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 	Object.assign(character, { name: "Torlis", ...tor, ctype: "paladin", level: 51 }); // the leader
 	vm.runInContext("state.partners = {}", ctx);
 	hb("Sanala", { ...san, level: 60, goals: [{ monster: "arcticbee", w: 2, reason: "orbg: bfur 0/1" }] });
-	vm.runInContext(`CFG.travel.commit_min = 10; state.goals_cache = null; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
+	character.s = {}; // (no hunt: the v25.88 plan would replace the goal)
+	vm.runInContext(`CFG.travel.commit_min = 10; state.goals_cache = null; state.hunt_hold = null; state.directive = { monster: "arcticbee", map: "winterland", boundary: [0,0,100,100] };
 		state.dir_lock = { monster: "arcticbee", until: Date.now() + 600000 }; state.safe.arcticbee = { ttk: 1, xp: 1 };
 		globalThis.__ps = pick_shared; globalThis.__hd = hunt_directive; globalThis.__bd = boss_directive;
 		pick_shared = () => ({ monster: "bee", map: "main", boundary: [0,0,50,50], reason: "mutual" });
