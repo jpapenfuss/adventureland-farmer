@@ -5996,6 +5996,9 @@ function pick_pack() {
 		const why_no = at_camp ? null : route ? `no safe way there: ${route}` : null; // (v25.88, owner: the fight model doesn't end a plan)
 		if (why_no) plan_end(why_no, 600_000);
 		else {
+			// (v25.88, owner: the fight model doesn't veto a hunt) the held hunt's monster counts as fightable everywhere
+			// that reads state.safe — the target check, looming/keep_away, no_go — as a guide row's does above
+			if (!state.safe[d.monster] && G.monsters[d.monster]) state.safe[d.monster] = { ttk: 5, xp: G.monsters[d.monster].xp || 0, trusted: true, hunt: true };
 			const pack = (G.maps[d.map]?.monsters || []).find((pk) => pk.type === d.monster) || { count: d.count };
 			return set_pack({ mtype: d.monster, ...area, ...score_area(d.monster, pack, area), directive: d.reason }, `→ ${d.monster} @ ${d.map} (${d.reason})`);
 		}

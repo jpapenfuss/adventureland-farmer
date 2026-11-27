@@ -5554,6 +5554,15 @@ assert(!vm.runInContext("errand_busy()", ctx), "hung errand times out");
 		assert(!threw, "a failing performance_trick doesn't throw");
 		delete ctx.parent.Howler; delete ctx.parent.sounds;
 	}
+	// v25.88 (owner: no fight-model veto on hunts): a held hunt the model refuses is still picked and counted fightable
+	{
+		Object.assign(character, { name: "Torlis", ctype: "paladin", map: "main", x: 0, y: 0, rip: false });
+		character.s = { monsterhunt: { id: "goo", c: 5, ms: 900000 } };
+		vm.runInContext("PLAN_T0 = 0; state.partners = {}; state.plan_skip = {}; state.hunt_hold = null; state.directive = null; state.dir_lock = null; state.probe = null; globalThis.__fp88 = fight_profile; fight_profile = (mt, ...a) => mt === 'goo' ? null : __fp88(mt, ...a)", ctx);
+		const r88 = vm.runInContext("try { refresh_directive(); pick_pack(); JSON.stringify([state.pack?.mtype, !!state.safe.goo]) } catch (e) { 'threw: ' + e.message }", ctx);
+		vm.runInContext("fight_profile = __fp88", ctx);
+		assert(r88 === '["goo",true]', `v25.88: a model-refused held hunt is the pack and fightable, no throw (${r88})`);
+	}
 	all_done = true;
 	console.log("ALL PASS");
 })();
