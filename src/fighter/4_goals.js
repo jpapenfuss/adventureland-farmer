@@ -425,12 +425,13 @@ function live_guide_farm() {
 // what errand we were on. History events "hunt"; the report's "hunt log" line. Checked every 2 s.
 let hw_prev = null;
 function hunt_watch() {
+	if (character.rip) return; // (v25.95: around a death the status comes and goes — it logged the same hunt "taken" 3 times)
 	const h = character.s?.monsterhunt || null, now = Date.now();
 	const cur = h && h.id ? { id: h.id, c: h.c, ms: h.ms, at: now } : null;
 	const ctx = () => ({ map: character.map, x: Math.round(character.x), y: Math.round(character.y), errand: state.errand || null,
 		plan: state.hunt_hold?.monster || null, pack: state.pack?.mtype || null });
 	const p = hw_prev;
-	if (!p && cur) log_ev("hunt", { what: "taken", id: cur.id, c: cur.c, ms: cur.ms, first_seen: !hw_seen_once, ...ctx() });
+	if (!p && cur) log_ev("hunt", { what: hw_seen_once ? "taken" : "held at load", id: cur.id, c: cur.c, ms: cur.ms, ...ctx() });
 	else if (p && (!cur || cur.id !== p.id)) {
 		const left_ms = (p.ms || 0) - (now - p.at); // time it had left now, counted from the last tick that saw it
 		const how = !(p.c > 0) ? "turned in" : left_ms <= 5_000 ? "lapsed" : "gone early";

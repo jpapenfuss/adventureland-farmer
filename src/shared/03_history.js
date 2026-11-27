@@ -267,6 +267,9 @@ function history_lines(hours = 6) {
 			L.push(`${kind}s by step: ` + Object.entries(by).sort((a, b) => b[1].n - a[1].n).map(([k, b]) => `${k} ${b.ok}/${b.n} ok${b.chn ? ` (odds ${Math.round(b.ch / b.chn * 100)}%)` : ""}${Object.keys(b.sc).length ? ` [${Object.entries(b.sc).map(([s_, n]) => `${s_} ${n}`).join(", ")}]` : ""}`).join(" | "));
 		}
 	}
+	// v25.95: untagged spending, drop by drop (the 6h budget's "other")
+	const drops = ev.filter((e) => e.type === "gold_drop");
+	if (drops.length) L.push(`untracked gold drops (${drops.length}, ${fmt_k(drops.reduce((t, e) => t + e.g, 0))}): ` + drops.slice(-10).reverse().map((e) => `${ago(e.t)} ago ${fmt_k(e.g)} @${e.map}${e.errand ? ` errand ${e.errand}` : ""}${e.serving ? ` serving ${e.serving}` : ""}${e.stand ? " stand open" : ""}${e.last_tag ? ` (last tag ${e.last_tag} ${e.tag_age_s}s before)` : ""}`).join(" | "));
 	const buys = ev.filter((e) => e.type === "buy");
 	if (buys.length) L.push(`buys: ${buys.slice(-6).map((e) => `${e.item} (${e.src}${e.price ? " " + fmt_k(e.price) : ""})`).join(", ")}`);
 	const serves = ev.filter((e) => e.type === "serve");
@@ -398,6 +401,9 @@ function meas_tick() {
 			const cat = spend_tag && Date.now() < spend_tag.until ? spend_tag.cat : "other";
 			b.cats = b.cats || {};
 			b.cats[cat] = (b.cats[cat] || 0) - dg;
+			// v25.95 (owner: log it in detail): every untagged drop over 5k, with what we were doing, the last tag and its age
+			if (cat === "other" && -dg > 5_000) log_ev("gold_drop", { g: -dg, map: character.map, errand: state.errand || null, serving: state.serving || null,
+				stand: !!character.stand, last_tag: spend_tag?.cat || null, tag_age_s: spend_tag ? Math.round((Date.now() - (spend_tag.until - 5000)) / 1000) : null, gold: character.gold });
 		}
 		b.ls = (b.ls || 0) + 1;
 	}
